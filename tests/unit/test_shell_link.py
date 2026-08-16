@@ -19,6 +19,7 @@
 """  # noqa: RUF002
 
 import json
+import os
 import struct
 import subprocess
 import sys
@@ -533,8 +534,9 @@ def test_shortcut_command_from_source() -> None:
 # -- сторож [Р]-части: наш файл читает сам Windows --------------------------  # noqa: RUF003
 
 
-_READ_BACK_SCRIPT = """param([string]$LinkPath, [string]$OutPath)
-$ErrorActionPreference = 'Stop'
+_READ_BACK_SCRIPT = """$ErrorActionPreference = 'Stop'
+$LinkPath = $env:ONECSTARTER_LINK
+$OutPath = $env:ONECSTARTER_OUT
 $shell = New-Object -ComObject WScript.Shell
 $link = $shell.CreateShortcut($LinkPath)
 $values = @($link.TargetPath, $link.Arguments, $link.WorkingDirectory, $link.Description)
@@ -551,6 +553,12 @@ def _read_back_with_windows_shell(link: Path, workdir: Path) -> list[str]:
     Значения передаются через файл в UTF-8, а не через stdout: кодировка
     консоли Windows зависит от машины и испортила бы и кириллицу, и эмодзи.
 
+    Пути в скрипт идут через переменные окружения, а не аргументы `-File`:
+    PowerShell 5.1 прогоняет аргументы через ANSI-кодовую страницу, и на
+    en-US машине (cp1252) кириллический путь превращается в мусор —
+    `CreateShortcut` молча отдаёт пустой ярлык (снято на github-runner,
+    16.08.2026). Блок окружения процесса — всегда Unicode.
+
     Цель ярлыка не запускается: читаются только свойства.
     """  # noqa: RUF002
     script = workdir / "read_back.ps1"
@@ -559,8 +567,9 @@ def _read_back_with_windows_shell(link: Path, workdir: Path) -> list[str]:
     result = subprocess.run(
         [
             "powershell", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
-            "-File", str(script), str(link), str(out),
+            "-File", str(script),
         ],
+        env={**os.environ, "ONECSTARTER_LINK": str(link), "ONECSTARTER_OUT": str(out)},
         capture_output=True,
         text=True,
     )
