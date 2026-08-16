@@ -1,5 +1,7 @@
 # OneCStarter
 
+[![CI](https://github.com/AnanyevAl/OnecStarter/actions/workflows/ci.yml/badge.svg)](https://github.com/AnanyevAl/OnecStarter/actions/workflows/ci.yml)
+
 > Fast launcher for 1C:Enterprise infobases on Windows: tree, search,
 > explicit platform version control. Russian UI; docs below are in Russian.
 
