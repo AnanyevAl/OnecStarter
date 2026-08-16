@@ -1,0 +1,5 @@
+* text=auto
+tests/fixtures/** -text
+*.lnk binary
+*.ico binary
+*.png binary

@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OneCStarter 4b — итоговый дизайн</title>
+<style>
+  :root { --page:#eceef1; --ink:#14171a; --muted:#5a6169; --line:#d3d7dd; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:34px 24px 72px; background:var(--page); color:var(--ink);
+         font:15px/1.55 "Segoe UI", system-ui, sans-serif; }
+  .wrap { max-width:1260px; margin:0 auto; }
+  h1 { font-size:26px; margin:0 0 6px; letter-spacing:-.015em; }
+  .lede { color:var(--muted); margin:0 0 8px; max-width:80ch; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted);
+       margin:38px 0 6px; font-weight:600; }
+  h2 + p { margin:0 0 14px; color:var(--muted); font-size:13.5px; max-width:80ch; }
+  .pair { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  @media (max-width:960px){ .pair { grid-template-columns:1fr; } }
+  .frame { border:1px solid var(--line); border-radius:10px; overflow:hidden; background:#fff; }
+  .frame > .cap { padding:8px 13px; font-size:11.5px; font-weight:600; letter-spacing:.05em;
+                  text-transform:uppercase; color:var(--muted); border-bottom:1px solid var(--line);
+                  background:#f7f8fa; }
+  code { font:12.5px/1.4 Consolas, "Cascadia Mono", monospace; background:#eef0f3;
+         padding:1px 5px; border-radius:3px; }
+
+  /* ============ окно приложения ============ */
+  .app { font:13px/1.4 "Segoe UI", system-ui, sans-serif; display:flex; height:400px;
+         background:var(--bg); color:var(--text); position:relative; }
+  .app.light {
+    --bg:#fafafa; --surface:#f0f1f3; --raised:#ffffff; --border:#d8dbe0;
+    --text:#1a1a1a; --dim:#5c5c5c; --acc-text:#8a6600; --acc-fill:#f2d54c;
+    --problem:#c62828; --sel:#fdf3cf; --sel-text:#1a1a1a;
+  }
+  .app.dark {
+    --bg:#161616; --surface:#1e1e1e; --raised:#262626; --border:#333333;
+    --text:#e8e8e8; --dim:#9a9a9a; --acc-text:#f2d54c; --acc-fill:#f2d54c;
+    --problem:#e57373; --sel:#262626; --sel-text:#e8e8e8;
+  }
+  .rail { width:76px; flex:none; background:var(--surface); border-right:1px solid var(--border);
+          display:flex; flex-direction:column; padding:8px 0; gap:2px; }
+  .rail .item { font-size:11px; padding:8px 4px; text-align:center; color:var(--dim);
+                cursor:default; }
+  .rail .item .ico { display:block; font-size:16px; margin-bottom:2px; line-height:1.1; }
+  .rail .item.on { color:var(--acc-text); box-shadow:inset 2px 0 0 var(--acc-fill);
+                   background:var(--raised); }
+  .main { flex:1; display:flex; flex-direction:column; min-width:0; }
+  .search { margin:8px 8px 6px; padding:5px 8px; border-radius:4px; font-size:12px;
+            background:var(--raised); border:1px solid var(--border); color:var(--dim); }
+  .head { display:flex; padding:4px 10px; font-size:11px; color:var(--dim);
+          background:var(--surface); }
+  .head .c-name { flex:1; } .head .c-ver { width:96px; } .head .c-run { width:92px; }
+  .tree { flex:1; overflow:hidden; }
+  .row { display:flex; padding:3px 10px; align-items:center; }
+  .row.sel { background:var(--sel); color:var(--sel-text); }
+  .row .name { flex:1; display:flex; align-items:center; gap:7px; min-width:0;
+               white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .row .ver { width:96px; font-variant-numeric:tabular-nums; }
+  .row .run { width:92px; color:var(--dim); font-variant-numeric:tabular-nums; font-size:12px; }
+  .kid { padding-left:20px; } .kid2 { padding-left:38px; }
+  .dim { color:var(--dim); } .prob { color:var(--problem); }
+  .sect { font-weight:600; }
+  .caret { width:9px; display:inline-block; color:var(--dim); }
+  svg { flex:none; display:block; }
+
+  /* панель свойств (вариант B) */
+  .detail { border-top:1px solid var(--border); background:var(--surface); padding:8px 11px; }
+  .detail .title { display:flex; align-items:center; gap:7px; font-weight:600; margin-bottom:3px; }
+  .detail .kindword { font-weight:400; color:var(--dim); }
+  .detail .path { font:12px/1.45 Consolas, "Cascadia Mono", monospace;
+                  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .detail .acts { margin-top:7px; display:flex; gap:6px; }
+  .btn { border:1px solid var(--border); background:var(--raised); border-radius:4px;
+         padding:2px 9px; font-size:11.5px; color:var(--text); }
+  .btn.off { color:var(--dim); opacity:.55; }
+  .detail .hint { color:var(--dim); font-style:italic; font-size:12.5px; }
+
+  /* ============ раздел настроек ============ */
+  .pane { flex:1; min-width:0; overflow:auto; padding:16px 20px; }
+  .pane h3 { margin:0 0 3px; font-size:17px; }
+  .pane .sub { margin:0 0 16px; color:var(--dim); font-size:12px; }
+  .glabel { font-size:11px; text-transform:uppercase; letter-spacing:.07em;
+            color:var(--acc-text); font-weight:700; margin:16px 0 6px; }
+  .glabel:first-of-type { margin-top:0; }
+  .set { display:flex; align-items:flex-start; gap:12px; padding:8px 0;
+         border-top:1px solid var(--border); }
+  .set .body { flex:1; min-width:0; }
+  .set .t { font-size:13px; }
+  .set .d { font-size:11.5px; color:var(--dim); margin-top:1px; }
+  .set .ctl { flex:none; padding-top:1px; }
+  .set.disabled .t, .set.disabled .d { opacity:.5; }
+  .seg { display:inline-flex; border:1px solid var(--border); border-radius:5px; overflow:hidden; }
+  .seg span { padding:3px 10px; font-size:12px; background:var(--raised); color:var(--text);
+              border-left:1px solid var(--border); }
+  .seg span:first-child { border-left:none; }
+  .seg span.on { background:var(--sel); color:var(--acc-text); font-weight:600; }
+  .sw { width:34px; height:19px; border-radius:99px; background:var(--border);
+        position:relative; display:inline-block; }
+  .sw.on { background:var(--acc-fill); }
+  .sw::after { content:""; position:absolute; top:2px; left:2px; width:15px; height:15px;
+               border-radius:50%; background:var(--raised); }
+  .sw.on::after { left:auto; right:2px; background:#fff; }
+  .sw.dis { opacity:.4; }
+  .keycap { border:1px solid var(--border); border-radius:4px; background:var(--raised);
+            padding:3px 9px; font:12px Consolas, monospace; color:var(--text); }
+  .num { border:1px solid var(--border); border-radius:4px; background:var(--raised);
+         padding:3px 8px; font:12px Consolas, monospace; width:52px; text-align:center;
+         display:inline-block; color:var(--text); }
+
+  /* ============ меню ============ */
+  .menu { background:var(--raised); border:1px solid var(--border); border-radius:6px;
+          box-shadow:0 8px 22px rgba(0,0,0,.28); padding:4px 0; font-size:12.5px;
+          color:var(--text); width:250px; }
+  .menu .mi { display:flex; justify-content:space-between; gap:20px; padding:5px 13px; }
+  .menu .mi .sc { color:var(--dim); font-variant-numeric:tabular-nums; }
+  .menu .mi.on { background:var(--sel); color:var(--acc-text); }
+  .menu .sep { margin:4px 0; border-top:1px solid var(--border); }
+  .menufloat { padding:20px; display:flex; gap:26px; align-items:flex-start; flex-wrap:wrap; }
+  .menufloat.light { background:#fafafa; } .menufloat.dark { background:#161616; }
+
+  .trayline { display:flex; align-items:center; gap:10px; margin-bottom:10px;
+              font-size:12px; color:var(--dim); }
+  .trayico { width:26px; height:26px; border-radius:5px; flex:none; }
+
+  /* ============ палитра ============ */
+  .sw-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(168px,1fr)); gap:10px; }
+  .chip { border:1px solid var(--line); border-radius:8px; overflow:hidden; background:#fff; }
+  .chip .fill { height:44px; }
+  .chip .meta { padding:7px 9px; font-size:11.5px; line-height:1.4; }
+  .chip .meta b { display:block; font-size:12px; }
+  .chip .meta code { background:none; padding:0; font-size:11.5px; }
+  .ok { color:#17603a; font-weight:600; } .bad { color:#b3261e; font-weight:600; }
+
+  .final { background:#fff; border:1px solid var(--line); border-left:3px solid #8a6600;
+           border-radius:6px; padding:14px 17px; margin-top:30px; }
+  .final ul { margin:8px 0 0; padding-left:20px; } .final li { margin:3px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>OneCStarter 4b — итоговый дизайн</h1>
+<p class="lede">Всё, что мы решили, собрано в одном месте: раздел «Базы» и раздел «Настройки»
+в обеих темах, меню трея, контекстное меню и палитры с замерами контраста.
+Имена баз — из обезличенной фикстуры, не ваши.</p>
+
+<h2>Раздел «Базы»</h2>
+<p>Значки вида размещения в колонке имени, панель свойств внизу (вариант B). Выделена серверная
+база — в панели видно имя со значком, вид словом, путь подключения и действия.
+«Открыть каталог» неактивна: каталог есть только у файловой базы.</p>
+<div class="pair">
+
+  <div class="frame"><div class="cap">Светлая</div>
+  <div class="app light">
+    <div class="rail">
+      <div class="item on"><span class="ico">▤</span>Базы</div>
+      <div class="item"><span class="ico">⚙</span>Настройки</div>
+    </div>
+    <div class="main">
+      <div class="search">Поиск: начните вводить имя базы</div>
+      <div class="head"><span class="c-name">База</span><span class="c-ver">Версия</span><span class="c-run">Последний запуск</span></div>
+      <div class="tree">
+        <div class="row"><span class="name sect"><span class="caret">⌄</span>Избранное</span><span class="ver"></span><span class="run"></span></div>
+        <div class="row kid"><span class="name"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 4.5h4l1 1.5h7v6.5H2z"/></svg>Демо Бухгалтерия</span><span class="ver">8.3.25.1633 x64</span><span class="run">07.08 18:12</span></div>
+        <div class="row"><span class="name sect"><span class="caret">⌄</span>Клиенты</span><span class="ver"></span><span class="run"></span></div>
+        <div class="row kid"><span class="name"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 4.5h4l1 1.5h7v6.5H2z"/></svg>Демо Бухгалтерия</span><span class="ver">8.3.25.1633 x64</span><span class="run">07.08 18:12</span></div>
+        <div class="row kid sel"><span class="name"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2.5" y="3" width="11" height="3.4" rx=".7"/><rect x="2.5" y="9" width="11" height="3.4" rx=".7"/><circle cx="4.6" cy="4.7" r=".6" fill="currentColor" stroke="none"/><circle cx="4.6" cy="10.7" r=".6" fill="currentColor" stroke="none"/></svg>Демо Розница</span><span class="ver">8.3.27.2214 x64</span><span class="run">06.08 09:40</span></div>
+        <div class="row"><span class="name"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="5.6"/><ellipse cx="8" cy="8" rx="2.4" ry="5.6"/><path d="M2.6 8h10.8"/></svg>Портал</span><span class="ver dim">веб</span><span class="run"></span></div>
+        <div class="row"><span class="name dim"><span class="caret">›</span>Нет такой группы</span><span class="ver"></span><span class="run"></span></div>
+        <div class="row"><span class="name"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="var(--problem)" stroke-width="1.3"><circle cx="8" cy="8" r="5.6" stroke-dasharray="2.4 2"/><path d="M6.5 6.3c0-1.9 3.2-1.9 3.2 0 0 1.3-1.6 1.2-1.6 2.6" stroke-linecap="round"/><circle cx="8.1" cy="11.2" r=".7" fill="var(--problem)" stroke="none"/></svg>Старая запись <span class="dim">(не разобрано)</span></span><span class="ver prob">8.3.10.2252</span><span class="run"></span></div>
+      </div>
+      <div class="detail">
+        <div class="title"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2.5" y="3" width="11" height="3.4" rx=".7"/><rect x="2.5" y="9" width="11" height="3.4" rx=".7"/></svg>Демо Розница <span class="kindword">· серверная</span></div>
+        <div class="path">Srvr="srv-app-01";Ref="demo_retail"</div>
+        <div class="acts"><span class="btn">Копировать</span><span class="btn off">Открыть каталог</span></div>
+      </div>
+    </div>
+  </div></div>
+
+  <div class="frame"><div class="cap">Тёмная</div>
+  <div class="app dark">
+    <div class="rail">
+      <div class="item on"><span class="ico">▤</span>Базы</div>
+      <div class="item"><span class="ico">⚙</span>Настройки</div>
+    </div>
+    <div class="main">
+      <div class="search">Поиск: начните вводить имя базы</div>
+      <div class="head"><span class="c-name">База</span><span class="c-ver">Версия</span><span class="c-run">Последний запуск</span></div>
+      <div class="tree">
+        <div class="row"><span class="name sect"><span class="caret">⌄</span>Избранное</span><span class="ver"></span><span class="run"></span></div>
+        <div class="row kid"><span class="name"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 4.5h4l1 1.5h7v6.5H2z"/></svg>Демо Бухгалтерия</span><span class="ver">8.3.25.1633 x64</span><span class="run">07.08 18:12</span></div>
+        <div class="row"><span class="name sect"><span class="caret">⌄</span>Клиенты</span><span class="ver"></span><span class="run"></span></div>
+        <div class="row kid"><span class="name"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 4.5h4l1 1.5h7v6.5H2z"/></svg>Демо Бухгалтерия</span><span class="ver">8.3.25.1633 x64</span><span class="run">07.08 18:12</span></div>
+        <div class="row kid sel"><span class="name"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2.5" y="3" width="11" height="3.4" rx=".7"/><rect x="2.5" y="9" width="11" height="3.4" rx=".7"/><circle cx="4.6" cy="4.7" r=".6" fill="currentColor" stroke="none"/><circle cx="4.6" cy="10.7" r=".6" fill="currentColor" stroke="none"/></svg>Демо Розница</span><span class="ver">8.3.27.2214 x64</span><span class="run">06.08 09:40</span></div>
+        <div class="row"><span class="name"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><circle cx="8" cy="8" r="5.6"/><ellipse cx="8" cy="8" rx="2.4" ry="5.6"/><path d="M2.6 8h10.8"/></svg>Портал</span><span class="ver dim">веб</span><span class="run"></span></div>
+        <div class="row"><span class="name dim"><span class="caret">›</span>Нет такой группы</span><span class="ver"></span><span class="run"></span></div>
+        <div class="row"><span class="name"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="var(--problem)" stroke-width="1.3"><circle cx="8" cy="8" r="5.6" stroke-dasharray="2.4 2"/><path d="M6.5 6.3c0-1.9 3.2-1.9 3.2 0 0 1.3-1.6 1.2-1.6 2.6" stroke-linecap="round"/><circle cx="8.1" cy="11.2" r=".7" fill="var(--problem)" stroke="none"/></svg>Старая запись <span class="dim">(не разобрано)</span></span><span class="ver prob">8.3.10.2252</span><span class="run"></span></div>
+      </div>
+      <div class="detail">
+        <div class="title"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2.5" y="3" width="11" height="3.4" rx=".7"/><rect x="2.5" y="9" width="11" height="3.4" rx=".7"/></svg>Демо Розница <span class="kindword">· серверная</span></div>
+        <div class="path">Srvr="srv-app-01";Ref="demo_retail"</div>
+        <div class="acts"><span class="btn">Копировать</span><span class="btn off">Открыть каталог</span></div>
+      </div>
+    </div>
+  </div></div>
+
+</div>
+
+<h2>Панель свойств: остальные состояния</h2>
+<p>Панель никогда не пустеет — на строке без соединения она объясняет, почему его нет.</p>
+<div class="pair">
+  <div class="frame"><div class="cap">Светлая</div>
+    <div class="app light" style="height:auto;display:block">
+      <div class="detail" style="border-top:none">
+        <div class="title"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 4.5h4l1 1.5h7v6.5H2z"/></svg>Демо Бухгалтерия <span class="kindword">· файловая</span></div>
+        <div class="path">File="D:\Bases\Демо Бухгалтерия"</div>
+        <div class="acts"><span class="btn">Копировать</span><span class="btn">Открыть каталог</span></div>
+      </div>
+      <div class="detail">
+        <div class="title">Клиенты <span class="kindword">· группа</span></div>
+        <div class="path hint">Группа — строки подключения нет</div>
+      </div>
+      <div class="detail">
+        <div class="title">Нет такой группы <span class="kindword">· неявный узел</span></div>
+        <div class="path hint">Группы нет в файле — есть только путь Folder. Операции недоступны</div>
+      </div>
+      <div class="detail">
+        <div class="path hint">Выберите базу, чтобы увидеть путь подключения</div>
+      </div>
+    </div>
+  </div>
+  <div class="frame"><div class="cap">Тёмная</div>
+    <div class="app dark" style="height:auto;display:block">
+      <div class="detail" style="border-top:none">
+        <div class="title"><svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><path d="M2 4.5h4l1 1.5h7v6.5H2z"/></svg>Демо Бухгалтерия <span class="kindword">· файловая</span></div>
+        <div class="path">File="D:\Bases\Демо Бухгалтерия"</div>
+        <div class="acts"><span class="btn">Копировать</span><span class="btn">Открыть каталог</span></div>
+      </div>
+      <div class="detail">
+        <div class="title">Клиенты <span class="kindword">· группа</span></div>
+        <div class="path hint">Группа — строки подключения нет</div>
+      </div>
+      <div class="detail">
+        <div class="title">Нет такой группы <span class="kindword">· неявный узел</span></div>
+        <div class="path hint">Группы нет в файле — есть только путь Folder. Операции недоступны</div>
+      </div>
+      <div class="detail">
+        <div class="path hint">Выберите базу, чтобы увидеть путь подключения</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<h2>Раздел «Настройки»</h2>
+<p>Пять настроек. Автозапуск показан выключённым и неактивным — так он выглядит при работе
+из исходников: класть в реестр ссылку на python внутри <code>.venv</code> нельзя, она молча
+протухнет при пересборке окружения. В установленной версии переключатель активен.</p>
+<div class="pair">
+
+  <div class="frame"><div class="cap">Светлая</div>
+  <div class="app light" style="height:430px">
+    <div class="rail">
+      <div class="item"><span class="ico">▤</span>Базы</div>
+      <div class="item on"><span class="ico">⚙</span>Настройки</div>
+    </div>
+    <div class="pane">
+      <h3>Настройки</h3>
+      <p class="sub">%APPDATA%\OneCStarter\settings.json · применяются сразу</p>
+
+      <div class="glabel">Внешний вид</div>
+      <div class="set" style="border-top:none">
+        <div class="body"><div class="t">Тема</div>
+          <div class="d">«Авто» следует теме Windows и переключается вместе с ней</div></div>
+        <div class="ctl"><span class="seg"><span class="on">Авто</span><span>Светлая</span><span>Тёмная</span></span></div>
+      </div>
+
+      <div class="glabel">Окно и запуск</div>
+      <div class="set" style="border-top:none">
+        <div class="body"><div class="t">Закрытие окна сворачивает в трей</div>
+          <div class="d">Выключено — крестик завершает программу, глобальный вызов перестаёт работать</div></div>
+        <div class="ctl"><span class="sw on"></span></div>
+      </div>
+      <div class="set disabled">
+        <div class="body"><div class="t">Запускать при входе в Windows</div>
+          <div class="d">Доступно в установленной версии — из исходников ссылка в реестре протухнет</div></div>
+        <div class="ctl"><span class="sw dis"></span></div>
+      </div>
+
+      <div class="glabel">Горячие клавиши</div>
+      <div class="set" style="border-top:none">
+        <div class="body"><div class="t">Глобальный вызов окна</div>
+          <div class="d">Только с модификатором. Занятое сочетание — сообщение, а не тишина</div></div>
+        <div class="ctl"><span class="keycap">Ctrl + Alt + B</span></div>
+      </div>
+
+      <div class="glabel">Список баз</div>
+      <div class="set" style="border-top:none">
+        <div class="body"><div class="t">Записей в «Недавних»</div>
+          <div class="d">0 — ветка «Недавние» не показывается вовсе</div></div>
+        <div class="ctl"><span class="num">10</span></div>
+      </div>
+    </div>
+  </div></div>
+
+  <div class="frame"><div class="cap">Тёмная</div>
+  <div class="app dark" style="height:430px">
+    <div class="rail">
+      <div class="item"><span class="ico">▤</span>Базы</div>
+      <div class="item on"><span class="ico">⚙</span>Настройки</div>
+    </div>
+    <div class="pane">
+      <h3>Настройки</h3>
+      <p class="sub">%APPDATA%\OneCStarter\settings.json · применяются сразу</p>
+
+      <div class="glabel">Внешний вид</div>
+      <div class="set" style="border-top:none">
+        <div class="body"><div class="t">Тема</div>
+          <div class="d">«Авто» следует теме Windows и переключается вместе с ней</div></div>
+        <div class="ctl"><span class="seg"><span class="on">Авто</span><span>Светлая</span><span>Тёмная</span></span></div>
+      </div>
+
+      <div class="glabel">Окно и запуск</div>
+      <div class="set" style="border-top:none">
+        <div class="body"><div class="t">Закрытие окна сворачивает в трей</div>
+          <div class="d">Выключено — крестик завершает программу, глобальный вызов перестаёт работать</div></div>
+        <div class="ctl"><span class="sw on"></span></div>
+      </div>
+      <div class="set disabled">
+        <div class="body"><div class="t">Запускать при входе в Windows</div>
+          <div class="d">Доступно в установленной версии — из исходников ссылка в реестре протухнет</div></div>
+        <div class="ctl"><span class="sw dis"></span></div>
+      </div>
+
+      <div class="glabel">Горячие клавиши</div>
+      <div class="set" style="border-top:none">
+        <div class="body"><div class="t">Глобальный вызов окна</div>
+          <div class="d">Только с модификатором. Занятое сочетание — сообщение, а не тишина</div></div>
+        <div class="ctl"><span class="keycap">Ctrl + Alt + B</span></div>
+      </div>
+
+      <div class="glabel">Список баз</div>
+      <div class="set" style="border-top:none">
+        <div class="body"><div class="t">Записей в «Недавних»</div>
+          <div class="d">0 — ветка «Недавние» не показывается вовсе</div></div>
+        <div class="ctl"><span class="num">10</span></div>
+      </div>
+    </div>
+  </div></div>
+
+</div>
+
+<h2>Трей и контекстное меню</h2>
+<p>Иконка трея <b>не зависит от темы приложения</b> и всегда выглядит как тёмный вариант:
+она живёт на панели задач Windows, а её тема — системная и своя. Привязали бы к теме
+приложения — получили бы светлый значок на тёмной панели. Контекстное меню показано таким,
+каким оно <b>должно</b> быть: сочетание прижато вправо отдельной колонкой. Сейчас оно
+наезжает на название — это дефект задачи 15, и чинится он после замеров на вашем экране,
+а не подбором отступов.</p>
+<div class="pair">
+
+  <div class="frame"><div class="cap">Светлая</div>
+    <div class="menufloat light">
+      <div>
+        <div class="app light" style="height:auto;display:block">
+          <div class="trayline">
+            <svg class="trayico" viewBox="0 0 64 64"><rect width="64" height="64" rx="10" fill="#1e1e1e"/><polygon points="20,14 52,32 20,50" fill="#f2d54c"/></svg>
+            иконка в трее — одна и та же в обеих темах
+          </div>
+          <div class="menu">
+            <div class="mi"><span>Показать</span></div>
+            <div class="sep"></div>
+            <div class="mi"><span>Демо Бухгалтерия</span></div>
+            <div class="mi"><span>Демо Розница</span></div>
+            <div class="sep"></div>
+            <div class="mi"><span>Выход</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="app light" style="height:auto;display:block">
+        <div class="menu">
+          <div class="mi on"><span>Запустить</span><span class="sc"></span></div>
+          <div class="mi"><span>Тонкий клиент</span><span class="sc">Ctrl+1</span></div>
+          <div class="mi"><span>Толстый клиент</span><span class="sc">Ctrl+2</span></div>
+          <div class="mi"><span>Конфигуратор</span><span class="sc">Ctrl+3</span></div>
+          <div class="sep"></div>
+          <div class="mi"><span>В избранное</span><span class="sc">Ctrl+D</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="frame"><div class="cap">Тёмная</div>
+    <div class="menufloat dark">
+      <div>
+        <div class="app dark" style="height:auto;display:block">
+          <div class="trayline">
+            <svg class="trayico" viewBox="0 0 64 64"><rect width="64" height="64" rx="10" fill="#1e1e1e"/><polygon points="20,14 52,32 20,50" fill="#f2d54c"/></svg>
+            иконка в трее
+          </div>
+          <div class="menu">
+            <div class="mi"><span>Показать</span></div>
+            <div class="sep"></div>
+            <div class="mi"><span>Демо Бухгалтерия</span></div>
+            <div class="mi"><span>Демо Розница</span></div>
+            <div class="sep"></div>
+            <div class="mi"><span>Выход</span></div>
+          </div>
+        </div>
+      </div>
+      <div class="app dark" style="height:auto;display:block">
+        <div class="menu">
+          <div class="mi on"><span>Запустить</span><span class="sc"></span></div>
+          <div class="mi"><span>Тонкий клиент</span><span class="sc">Ctrl+1</span></div>
+          <div class="mi"><span>Толстый клиент</span><span class="sc">Ctrl+2</span></div>
+          <div class="mi"><span>Конфигуратор</span><span class="sc">Ctrl+3</span></div>
+          <div class="sep"></div>
+          <div class="mi"><span>В избранное</span><span class="sc">Ctrl+D</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<h2>Палитры с замерами</h2>
+<p>Контраст к фону своей темы. Норма для текста — 4.5:1.</p>
+
+<div class="sw-grid" style="margin-bottom:14px">
+  <div class="chip"><div class="fill" style="background:#161616"></div><div class="meta"><b>BACKGROUND</b><code>#161616</code> · тёмная</div></div>
+  <div class="chip"><div class="fill" style="background:#1e1e1e"></div><div class="meta"><b>SURFACE</b><code>#1e1e1e</code></div></div>
+  <div class="chip"><div class="fill" style="background:#262626"></div><div class="meta"><b>RAISED</b><code>#262626</code></div></div>
+  <div class="chip"><div class="fill" style="background:#e8e8e8"></div><div class="meta"><b>TEXT</b><code>#e8e8e8</code> · <span class="ok">14.8:1</span></div></div>
+  <div class="chip"><div class="fill" style="background:#9a9a9a"></div><div class="meta"><b>TEXT_DIM</b><code>#9a9a9a</code> · <span class="ok">6.4:1</span></div></div>
+  <div class="chip"><div class="fill" style="background:#f2d54c"></div><div class="meta"><b>ACCENT</b><code>#f2d54c</code> · <span class="ok">12.4:1</span></div></div>
+  <div class="chip"><div class="fill" style="background:#e57373"></div><div class="meta"><b>PROBLEM</b><code>#e57373</code> · <span class="ok">6.1:1</span></div></div>
+</div>
+
+<div class="sw-grid">
+  <div class="chip"><div class="fill" style="background:#fafafa"></div><div class="meta"><b>BACKGROUND</b><code>#fafafa</code> · светлая</div></div>
+  <div class="chip"><div class="fill" style="background:#f0f1f3"></div><div class="meta"><b>SURFACE</b><code>#f0f1f3</code></div></div>
+  <div class="chip"><div class="fill" style="background:#ffffff;border-bottom:1px solid #e6e8ec"></div><div class="meta"><b>RAISED</b><code>#ffffff</code></div></div>
+  <div class="chip"><div class="fill" style="background:#1a1a1a"></div><div class="meta"><b>TEXT</b><code>#1a1a1a</code> · <span class="ok">16.7:1</span></div></div>
+  <div class="chip"><div class="fill" style="background:#5c5c5c"></div><div class="meta"><b>TEXT_DIM</b><code>#5c5c5c</code> · <span class="ok">6.4:1</span></div></div>
+  <div class="chip"><div class="fill" style="background:#8a6600"></div><div class="meta"><b>ACCENT_TEXT</b><code>#8a6600</code> · <span class="ok">5.1:1</span></div></div>
+  <div class="chip"><div class="fill" style="background:#f2d54c"></div><div class="meta"><b>ACCENT_FILL</b><code>#f2d54c</code> · <span class="bad">1.4:1</span> — только заливка, не текст</div></div>
+  <div class="chip"><div class="fill" style="background:#c62828"></div><div class="meta"><b>PROBLEM</b><code>#c62828</code> · <span class="ok">5.4:1</span></div></div>
+</div>
+
+<div class="final">
+  <b>Чего в 4b нет — сознательно</b>
+  <ul>
+    <li>Любые правки списка: добавление, свойства записи, удаление, группы, порядок, drag&amp;drop, ярлыки <code>.lnk</code> — план 4c.</li>
+    <li>Клиент по умолчанию в настройках — единственная настройка, меняющая <b>что именно запустится</b>; переносится в 4c вместе с правками записей.</li>
+    <li><code>PPasswd</code> в <code>is_secret_key</code> — нужен показу свойств, которого в 4b нет.</li>
+    <li>Иконка приложения, локализация, очистка кэша.</li>
+  </ul>
+</div>
+
+</div>
+</body>
+</html>

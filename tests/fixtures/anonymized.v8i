@@ -1,0 +1,57 @@
+[Клиенты]
+ID=11111111-1111-1111-1111-111111111111
+OrderInList=-1
+Folder=/
+OrderInTree=16640
+External=0
+[Розница]
+ID=22222222-2222-2222-2222-222222222222
+OrderInList=-1
+Folder=/Клиенты
+OrderInTree=17664
+External=0
+[Пустая группа]
+ID=33333333-3333-3333-3333-333333333333
+OrderInList=-1
+Folder=/
+OrderInTree=18688
+External=0
+[Демо Бухгалтерия]
+Connect=File="C:\Bases\Demo";
+ID=44444444-4444-4444-4444-444444444444
+OrderInList=60.6814814814813
+OrderInTree=768
+Folder=/Клиенты
+Version=8.3.25
+App=Auto
+[Демо Розница]
+Connect=File="C:\Bases\Retail";
+ID=55555555-5555-5555-5555-555555555555
+OrderInList=20.2271604938271
+OrderInTree=1024
+Folder=/Клиенты/Розница
+Version=8.3.25.1633
+App=ThinClient
+XTest=1
+[Учёт серверный]
+Connect=Srvr="srv-1c";Ref="accounting";
+ID=66666666-6666-6666-6666-666666666666
+OrderInList=311296
+OrderInTree=1280
+Folder=/
+DefaultVersion=8.3.25.1633
+[Портал]
+Connect=ws="http://web-server/resource/";
+ID=77777777-7777-7777-7777-777777777777
+OrderInList=311552
+OrderInTree=1536
+Folder=/
+[Без идентификатора]
+Connect=File="C:\Bases\Manual";
+OrderInList=311808
+Folder=/
+[Потерянная]
+Connect=File="C:\Bases\Orphan";
+ID=88888888-8888-8888-8888-888888888888
+OrderInList=312064
+Folder=/Нет такой группы
