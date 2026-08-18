@@ -1,5 +1,8 @@
+import pytest
+
 from onecstarter.config.v8i import parse_v8i
 from onecstarter.domain.connect import ConnectKind
+from onecstarter.services.errors import InvalidRequestError
 from onecstarter.services.model import (
     InfobaseSource,
     binding_key,
@@ -7,6 +10,7 @@ from onecstarter.services.model import (
     key_of_section,
     normalize,
     parse_order,
+    validate_connect,
 )
 
 
@@ -58,6 +62,46 @@ def test_group_keys_differing_only_in_case_are_distinct() -> None:
     upper = parse_v8i("[Группа]\r\nFolder=/\r\nOrderInList=-1\r\n".encode()).sections[0]
     lower = parse_v8i("[группа]\r\nFolder=/\r\nOrderInList=-1\r\n".encode()).sections[0]
     assert key_of_section(upper) != key_of_section(lower)
+
+
+def test_validate_connect_accepts_filled_placements() -> None:
+    validate_connect('File="C:\\Bases\\Demo";')
+    validate_connect('Srvr="srv";Ref="demo";')
+    validate_connect('ws="https://host/demo";')
+
+
+def test_validate_connect_accepts_unknown_kind() -> None:
+    # Незнакомую строку соединения не отвергаем: чем она должна быть,
+    # мы не знаем, а запереть экзотическую живую запись — хуже, чем  # noqa: RUF003
+    # пропустить. Рубеж — про пустоту того, что мы понимаем.
+    validate_connect("Нечто=1")
+
+
+def test_validate_connect_rejects_blank_string() -> None:
+    # Пустой Connect= — признак группы ([Ф] T-05.6): запись базы с такой  # noqa: RUF003
+    # строкой молча сменила бы вид секции.
+    for connect in ("", "   "):
+        with pytest.raises(InvalidRequestError):
+            validate_connect(connect)
+
+
+def test_validate_connect_rejects_empty_placement_value() -> None:
+    for connect in (
+        'File="";',  # ровно то, что собирает build_connect(FILE, file_path="")
+        'File="   ";',
+        'file="";',  # имя фрагмента — без учёта регистра, как в формате
+        'Srvr="srv";Ref="";',
+        'Srvr="";Ref="demo";',
+        'ws="";',
+    ):
+        with pytest.raises(InvalidRequestError):
+            validate_connect(connect)
+
+
+def test_validate_connect_ignores_empty_non_placement_fragments() -> None:
+    # Пустое значение не-размещения (Usr="" пишет и платформа) — не повод
+    # запирать правку записи, пришедшей из файла.
+    validate_connect('File="C:\\Bases\\Demo";Usr="";')
 
 
 def test_parse_order_accepts_fractional_and_negative() -> None:

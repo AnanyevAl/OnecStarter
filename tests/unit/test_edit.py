@@ -180,6 +180,57 @@ def test_update_cannot_turn_a_base_into_a_group() -> None:
         assert serialize_v8i(document) == TWO_SECTIONS
 
 
+def test_add_with_empty_placement_is_rejected() -> None:
+    """Второй рубеж валидации размещения (долг ревью 4b, №1): у диалога
+    есть обязательные поля, но `build_connect(FILE, file_path="")` в обход
+    диалога собирает `File="";`, и без рубежа в `services` такая запись
+    попадала в файл.
+    """  # noqa: RUF002
+    document = parse_v8i(TWO_SECTIONS)
+    with pytest.raises(InvalidRequestError):
+        apply_patch(
+            document,
+            SectionPatch(PatchKind.ADD, name="Новая", changes={"Connect": 'File="";'}),
+            NEW_ID,
+        )
+    assert serialize_v8i(document) == TWO_SECTIONS
+
+
+def test_add_without_connect_is_rejected() -> None:
+    """ADD без `Connect` создал бы секцию-группу операцией записи базы:
+    признак группы — отсутствие `Connect` ([Ф] скил v8i-format). Для групп
+    есть своя операция с каскадом — `add_group`.
+    """  # noqa: RUF002
+    document = parse_v8i(TWO_SECTIONS)
+    cases: tuple[dict[str, str | None], ...] = ({}, {"Connect": None})
+    for changes in cases:
+        with pytest.raises(InvalidRequestError):
+            apply_patch(
+                document,
+                SectionPatch(PatchKind.ADD, name="Новая", changes=changes),
+                NEW_ID,
+            )
+    assert serialize_v8i(document) == TWO_SECTIONS
+
+
+def test_update_with_empty_placement_is_rejected() -> None:
+    """Тот же рубеж на пути правки: пустое значение фрагмента размещения
+    не должно попадать в файл и через UPDATE.
+    """
+    document = parse_v8i(TWO_SECTIONS)
+    with pytest.raises(InvalidRequestError):
+        apply_patch(
+            document,
+            SectionPatch(
+                PatchKind.UPDATE,
+                target_key="id:abc",
+                changes={"Connect": 'Srvr="s";Ref="";'},
+            ),
+            NEW_ID,
+        )
+    assert serialize_v8i(document) == TWO_SECTIONS
+
+
 def test_group_remove_is_rejected() -> None:
     """Удаление секции-группы оставляло потомков сиротами."""
     document = parse_v8i(GROUP_AND_CHILD)

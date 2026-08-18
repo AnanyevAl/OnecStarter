@@ -21,7 +21,7 @@ from datetime import datetime
 from enum import Enum
 
 from onecstarter.config.v8i import KeyValueLine, V8iDocument, V8iSection
-from onecstarter.domain.connect import ConnectKind, classify_connect
+from onecstarter.domain.connect import ConnectKind, classify_connect, parse_connect
 from onecstarter.services.errors import InvalidRequestError
 from onecstarter.services.paths import group_path
 
@@ -176,6 +176,36 @@ def find_target(document: V8iDocument, key: str) -> V8iSection | None:
         if key_of_section(section) == key:
             return section
     return None
+
+
+_PLACEMENT_FRAGMENT_NAMES = frozenset({"file", "srvr", "ref", "ws"})
+
+
+def validate_connect(connect: str) -> None:
+    """Отвергнуть строку соединения, которая молча портит запись базы.
+
+    Второй рубеж после обязательных полей диалога (долг ревью 4b, №1):
+    программный путь — `build_connect(FILE, file_path="")` даёт `File="";` —
+    диалог не проходит, и без рубежа в `services` пустое размещение попадало
+    в файл. Пустая строка целиком — вовсе не база: признак группы —
+    отсутствие `Connect` ([Ф] T-05.6, пустое значение равносильно снятию).
+
+    Пустым отвергается только фрагмент размещения, который в строке есть.
+    Отсутствующие фрагменты не требуются: экзотическая, но живая запись
+    из файла (один `Srvr` без `Ref`) должна оставаться правимой. Пустые
+    значения не-размещения (`Usr=""`) пишет и платформа — они не наши.
+    """
+    if not connect.strip():
+        raise InvalidRequestError(
+            "Строка соединения не может быть пустой: секция без неё — группа"
+        )
+    for fragment in parse_connect(connect):
+        if fragment.name.casefold() not in _PLACEMENT_FRAGMENT_NAMES:
+            continue
+        if not fragment.value.strip():
+            raise InvalidRequestError(
+                f"{fragment.name}: размещение не может быть пустым"
+            )
 
 
 def validate_section_name(name: str) -> None:

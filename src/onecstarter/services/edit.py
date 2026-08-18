@@ -26,6 +26,7 @@ from onecstarter.services.model import (
     find_target,
     key_of_section,
     parse_order,
+    validate_connect,
     validate_section_name,
 )
 from onecstarter.services.order import format_order, reorder_values, sort_key
@@ -138,6 +139,18 @@ def _require_target_folder_exists(
         require_group_exists(document, normalize_folder(value))
 
 
+def _connect_change(changes: Mapping[str, str | None]) -> str | None:
+    """Значение `Connect` из патча — `None`, если ключа нет или он снимается.
+
+    Имя ключа сравнивается без учёта регистра — так же, как его находит
+    сам формат (`_reject_connect_removal`, `_remove_key`).
+    """  # noqa: RUF002
+    for key, value in changes.items():
+        if key.casefold() == "connect":
+            return value
+    return None
+
+
 def _reject_connect_removal(changes: Mapping[str, str | None]) -> None:
     """Не дать записи базы превратиться в секцию-группу.
 
@@ -227,6 +240,15 @@ def _apply_add(document: V8iDocument, patch: SectionPatch, new_id: str) -> Patch
     # `str | None` для `append_section`.
     name = patch.name or ""
     validate_section_name(name)
+    connect = _connect_change(patch.changes)
+    if connect is None:
+        # `{"Connect": None}` и отсутствие ключа равносильны: значения None
+        # ADD не пишет, а секция без Connect — группа, у групп своя операция.  # noqa: RUF003
+        raise InvalidRequestError(
+            "Новой записи базы нужна строка соединения: секция без Connect — "
+            "это группа, группы создаёт своя операция"
+        )
+    validate_connect(connect)
     _require_target_folder_exists(document, patch.changes)
     section = document.append_section(name)
     for key, value in patch.changes.items():
@@ -241,6 +263,9 @@ def _apply_update(
     document: V8iDocument, section: V8iSection, patch: SectionPatch, new_id: str
 ) -> None:
     _reject_connect_removal(patch.changes)
+    connect = _connect_change(patch.changes)
+    if connect is not None:
+        validate_connect(connect)
     _require_target_folder_exists(document, patch.changes)
     if patch.new_name:
         _rename(section, patch.new_name)
