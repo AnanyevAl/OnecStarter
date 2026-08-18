@@ -1,5 +1,5 @@
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -93,6 +93,21 @@ def _view(
     return view, calls, recorded, opened
 
 
+def _iter_tree(model: Any, parent: QModelIndex | None = None) -> Iterator[QModelIndex]:
+    """Все индексы колонки 0 дерева модели, в глубину, в порядке модели.
+
+    Единственный обходчик на файл (долг ревью 4b, №4 — раньше тот же
+    рекурсивный скелет жил семью копиями): роли выставлены только
+    на колонке 0 (`ui/bases/tree_model.py`), поэтому предикаты
+    вызывающих — поверх этих индексов.
+    """  # noqa: RUF002
+    parent = QModelIndex() if parent is None else parent
+    for row in range(model.rowCount(parent)):
+        index = model.index(row, 0, parent)
+        yield index
+        yield from _iter_tree(model, index)
+
+
 def _column_texts(view: BasesView, column: int) -> list[str]:
     """Текст заданной колонки во всех строках-базах (RowKind.BASE) дерева.
 
@@ -104,17 +119,11 @@ def _column_texts(view: BasesView, column: int) -> list[str]:
     вызывающему тесту нужен факт «эта колонка нигде не „…“», а не счётчик.
     """  # noqa: RUF002
     model = view.model()
-    texts: list[str] = []
-
-    def walk(parent: QModelIndex) -> None:
-        for row in range(model.rowCount(parent)):
-            index = model.index(row, 0, parent)
-            if index.data(KIND_ROLE) == RowKind.BASE.value:
-                texts.append(str(model.index(row, column, parent).data() or ""))
-            walk(index)
-
-    walk(QModelIndex())
-    return texts
+    return [
+        str(model.index(index.row(), column, index.parent()).data() or "")
+        for index in _iter_tree(model)
+        if index.data(KIND_ROLE) == RowKind.BASE.value
+    ]
 
 
 def test_pending_installations_show_ellipsis_then_versions(qtbot, workspace_factory):
@@ -160,19 +169,10 @@ def _type(widget: QWidget, text: str) -> None:
 
 def _first_base_index(view: BasesView) -> QModelIndex:
     """Первая строка с KIND_ROLE == RowKind.BASE.value, обходом всего дерева."""  # noqa: RUF002
-    model = view.model()
-
-    def walk(parent: QModelIndex) -> QModelIndex | None:
-        for row in range(model.rowCount(parent)):
-            index = model.index(row, 0, parent)
-            if index.data(KIND_ROLE) == RowKind.BASE.value:
-                return index
-            found = walk(index)
-            if found is not None:
-                return found
-        return None
-
-    index = walk(QModelIndex())
+    index = next(
+        (i for i in _iter_tree(view.model()) if i.data(KIND_ROLE) == RowKind.BASE.value),
+        None,
+    )
     assert index is not None, "в дереве нет ни одной строки базы"
     return index
 
@@ -222,27 +222,18 @@ def _spy_on(monkeypatch: Any, workspace: Any, name: str) -> list[tuple[Any, Any]
     return calls
 
 
-def _select_key(view: BasesView, key: str) -> None:
-    """Поставить currentIndex дерева на строку базы с данным ключом.
-
-    Поиск идёт по KEY_ROLE колонки 0 (роли на других колонках не выставлены —
-    ui/bases/tree_model.py), рекурсивно по всему дереву модели.
-    """  # noqa: RUF002
-    model = view.model()
-
-    def walk(parent: QModelIndex) -> QModelIndex | None:
-        for row in range(model.rowCount(parent)):
-            index = model.index(row, 0, parent)
-            if index.data(KEY_ROLE) == key:
-                return index
-            found = walk(index)
-            if found is not None:
-                return found
-        return None
-
-    index = walk(QModelIndex())
+def _index_of_key(view: BasesView, key: str) -> QModelIndex:
+    """Индекс строки с данным ключом привязки (KEY_ROLE колонки 0)."""  # noqa: RUF002
+    index = next(
+        (i for i in _iter_tree(view.model()) if i.data(KEY_ROLE) == key), None
+    )
     assert index is not None, f"строка с ключом {key!r} не найдена в дереве"  # noqa: RUF001
-    view._tree.setCurrentIndex(index)
+    return index
+
+
+def _select_key(view: BasesView, key: str) -> None:
+    """Поставить currentIndex дерева на строку базы с данным ключом."""  # noqa: RUF002
+    view._tree.setCurrentIndex(_index_of_key(view, key))
 
 
 def test_tree_is_populated_from_file(qtbot, workspace_factory):
@@ -655,17 +646,11 @@ def test_ctrl_d_toggles_favorite_on_current_row(qtbot, workspace_factory):
 def _expansion(view: BasesView) -> list[tuple[str, bool]]:
     """Снять развёрнутость всех узлов дерева, у которых есть потомки."""  # noqa: RUF002
     model = view.model()
-    state: list[tuple[str, bool]] = []
-
-    def walk(parent: QModelIndex) -> None:
-        for row in range(model.rowCount(parent)):
-            index = model.index(row, 0, parent)
-            if model.rowCount(index):
-                state.append((index.data(), view._tree.isExpanded(index)))
-            walk(index)
-
-    walk(QModelIndex())
-    return state
+    return [
+        (index.data(), view._tree.isExpanded(index))
+        for index in _iter_tree(model)
+        if model.rowCount(index)
+    ]
 
 
 def test_collapsed_state_survives_a_search_cycle(qtbot, workspace_factory):
@@ -1073,18 +1058,13 @@ def test_theme_switch_leaves_no_stale_colours(qtbot: Any, workspace_factory: Any
     stale = {theme.DARK.text_dim.casefold(), theme.DARK.problem.casefold()}
     icons_dark = _icon_bytes(theme.DARK)
 
-    def walk(parent: QModelIndex) -> None:
-        model = view.model()
-        for row in range(model.rowCount(parent)):
-            index = model.index(row, 0, parent)
-            item = model.itemFromIndex(index)
-            assert item.foreground().color().name().casefold() not in stale
-            if not item.icon().isNull():
-                pixels = item.icon().pixmap(16, 16).toImage().constBits()
-                assert pixels.tobytes() not in icons_dark  # type: ignore[union-attr]
-            walk(index)
-
-    walk(QModelIndex())
+    model = view.model()
+    for index in _iter_tree(model):
+        item = model.itemFromIndex(index)
+        assert item.foreground().color().name().casefold() not in stale
+        if not item.icon().isNull():
+            pixels = item.icon().pixmap(16, 16).toImage().constBits()
+            assert pixels.tobytes() not in icons_dark  # type: ignore[union-attr]
 
 
 # -- Задача 10: добавление записи ------------------------------------------------
@@ -1988,19 +1968,9 @@ def _find_index_by_kind(view: BasesView, kind: RowKind) -> QModelIndex:
     для этих тестов не важен (проверка одна на весь класс `RowKind.SECTION`,
     а не отдельно на «Избранное»/«Недавние»/«Общие списки»).
     """  # noqa: RUF002
-    model = view.model()
-
-    def walk(parent: QModelIndex) -> QModelIndex | None:
-        for row in range(model.rowCount(parent)):
-            index = model.index(row, 0, parent)
-            if index.data(KIND_ROLE) == kind.value:
-                return index
-            found = walk(index)
-            if found is not None:
-                return found
-        return None
-
-    found = walk(QModelIndex())
+    found = next(
+        (i for i in _iter_tree(view.model()) if i.data(KIND_ROLE) == kind.value), None
+    )
     assert found is not None, f"в дереве нет строки вида {kind}"
     return found
 
@@ -2054,21 +2024,7 @@ def _visible_rect_of_key(view: BasesView, key: str) -> QRect:
     в свёрнутой ветке, и `center()` указал бы совсем на другую строку.
     """  # noqa: RUF002
     view._tree.expandAll()
-    model = view.model()
-
-    def walk(parent: QModelIndex) -> QModelIndex | None:
-        for row in range(model.rowCount(parent)):
-            index = model.index(row, 0, parent)
-            if index.data(KEY_ROLE) == key:
-                return index
-            found = walk(index)
-            if found is not None:
-                return found
-        return None
-
-    index = walk(QModelIndex())
-    assert index is not None, f"строка с ключом {key!r} не найдена в дереве"  # noqa: RUF001
-    rect = view._tree.visualRect(index)
+    rect = view._tree.visualRect(_index_of_key(view, key))
     assert not rect.isEmpty(), f"строка {key!r} не видима — прямоугольник пуст"
     return rect
 
