@@ -642,7 +642,7 @@ def test_new_dialog_accept_is_blocked_when_a_violation_is_present(
 #
 # Ре-ревью, N3: имя было защищено только `validate_section_name` в services,  # noqa: RUF003
 # то есть отказом ПОСЛЕ нажатия «ОК». Внутри одного диалога получалось  # noqa: RUF003
-# противоречие: поле пути запирает кнопку до клика, поле имени — нет.  # noqa: RUF003, RUF100
+# противоречие: поле пути запирает кнопку до клика, поле имени — нет.
 # Решение заказчика 09.08.2026 «отказ показывается до действия» распространяется
 # и на имя; спека §3.1 расширена с «размещение» на «имя и размещение».  # noqa: RUF003
 
@@ -710,7 +710,7 @@ def test_new_dialog_accepts_once_everything_required_is_filled(qtbot: Any) -> No
 
 
 def test_new_dialog_treats_whitespace_as_an_empty_placement(qtbot: Any) -> None:
-    """Путь из одних пробелов — то же пустое размещение, только незаметное."""  # noqa: RUF002, RUF100
+    """Путь из одних пробелов — то же пустое размещение, только незаметное."""
     dialog = InfobaseDialog.for_new(groups=["/"], installations=INSTALLED, cfg_rules=[])
     qtbot.addWidget(dialog)
 

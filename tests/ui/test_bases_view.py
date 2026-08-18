@@ -366,7 +366,7 @@ def test_context_menu_has_properties_action(qtbot, workspace_factory):
 
 
 def _block_user_data(view: BasesView) -> None:
-    """Каталог на месте `bases.json`: запись падает, чтение уже состоялось."""  # noqa: RUF002, RUF100
+    """Каталог на месте `bases.json`: запись падает, чтение уже состоялось."""
     path = view.workspace().paths.user_data
     if path.is_file():
         path.unlink()
@@ -378,7 +378,7 @@ def test_favorite_write_failure_is_shown_and_not_drawn(qtbot, workspace_factory)
 
     `rebuild()` стоит после `try`, поэтому без отката состояния в services
     экран показал бы избранное, которого в файле нет.
-    """  # noqa: RUF002, RUF100
+    """
     view, _, errors, _ = _view(qtbot, workspace_factory)
     key = "id:44444444-4444-4444-4444-444444444444"
     _block_user_data(view)
@@ -441,7 +441,7 @@ def test_common_record_menu_keeps_the_harmless_actions_working(
     Первые два в файл списка не пишут вовсе, третий пишет только в наши
     данные (`bases.json`), к которым источник записи отношения не имеет.
     Гасить их значило бы отобрать работающие операции ради симметрии.
-    """  # noqa: RUF002, RUF100
+    """
     view, _, _, _ = _view(qtbot, workspace_factory, cfg_paths=common_base_cfg_paths)
     item = next(i for i in view.workspace().items() if i.key == COMMON_BASE_KEY)
 
@@ -2069,7 +2069,7 @@ def _visible_rect_of_key(view: BasesView, key: str) -> QRect:
     index = walk(QModelIndex())
     assert index is not None, f"строка с ключом {key!r} не найдена в дереве"  # noqa: RUF001
     rect = view._tree.visualRect(index)
-    assert not rect.isEmpty(), f"строка {key!r} не видима — прямоугольник пуст"  # noqa: RUF001, RUF100
+    assert not rect.isEmpty(), f"строка {key!r} не видима — прямоугольник пуст"
     return rect
 
 

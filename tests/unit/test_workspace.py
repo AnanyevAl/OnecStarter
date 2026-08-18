@@ -594,7 +594,7 @@ def test_failed_favorite_write_leaves_no_star_in_memory(tmp_path: Path) -> None:
     Без отката звёздочка горела бы на записи, которой в файле нет, —
     `BasesView.toggle_favorite` зовёт `rebuild()` после `try`, то есть
     даже показав ошибку, показал бы и несуществующее избранное.
-    """  # noqa: RUF002, RUF100
+    """
     workspace = _workspace(tmp_path)
     key = "id:44444444-4444-4444-4444-444444444444"
     _block_user_data(workspace)
@@ -612,7 +612,7 @@ def test_launch_reports_a_write_failure_without_claiming_it_did_not_start(
 
     Иначе пользователь прочтёт отказ как «база не запустилась» и нажмёт
     ещё раз, получив второй экземпляр клиента.
-    """  # noqa: RUF002, RUF100
+    """
     calls: list[LaunchCommand] = []
     workspace = _workspace(tmp_path, calls)
     key = "id:44444444-4444-4444-4444-444444444444"
@@ -649,7 +649,7 @@ def test_rekey_write_failure_still_leaves_the_list_consistent(tmp_path: Path) ->
 
 
 def test_user_data_write_error_is_a_services_error() -> None:
-    """Ловцы слоя представления ловят `ServicesError` — тип обязан быть в иерархии."""  # noqa: RUF002, RUF100
+    """Ловцы слоя представления ловят `ServicesError` — тип обязан быть в иерархии."""
     assert issubclass(UserDataWriteError, ServicesError)
 
 
