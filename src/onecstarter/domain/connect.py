@@ -208,14 +208,25 @@ def find_fragment(fragments: Sequence[ConnectFragment], name: str) -> str | None
     return None
 
 
+# Фрагменты размещения по виду записи — единственный источник этого знания:
+# по нему и классифицируется строка (classify_connect), и проверяется пустота
+# размещения (services.model.validate_connect). Порядок объявления — приоритет
+# классификации: File раньше ws раньше Srvr/Ref. Диалог (_PLACEMENT_SPEC
+# в ui/dialogs/infobase.py) перечисляет те же фрагменты с метками полей  # noqa: RUF003
+# и каноническим регистром записи.
+PLACEMENT_FRAGMENTS: dict[ConnectKind, tuple[str, ...]] = {
+    ConnectKind.FILE: ("file",),
+    ConnectKind.WEB: ("ws",),
+    ConnectKind.SERVER: ("srvr", "ref"),
+    ConnectKind.UNKNOWN: (),
+}
+
+
 def classify_connect(connect: str) -> ConnectKind:
     names = {fragment.name.casefold() for fragment in parse_connect(connect)}
-    if "file" in names:
-        return ConnectKind.FILE
-    if "ws" in names:
-        return ConnectKind.WEB
-    if "srvr" in names or "ref" in names:
-        return ConnectKind.SERVER
+    for kind, fragments in PLACEMENT_FRAGMENTS.items():
+        if any(fragment in names for fragment in fragments):
+            return kind
     return ConnectKind.UNKNOWN
 
 

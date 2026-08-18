@@ -21,7 +21,12 @@ from datetime import datetime
 from enum import Enum
 
 from onecstarter.config.v8i import KeyValueLine, V8iDocument, V8iSection
-from onecstarter.domain.connect import ConnectKind, classify_connect, parse_connect
+from onecstarter.domain.connect import (
+    PLACEMENT_FRAGMENTS,
+    ConnectKind,
+    classify_connect,
+    parse_connect,
+)
 from onecstarter.services.errors import InvalidRequestError
 from onecstarter.services.paths import group_path
 
@@ -178,9 +183,6 @@ def find_target(document: V8iDocument, key: str) -> V8iSection | None:
     return None
 
 
-_PLACEMENT_FRAGMENT_NAMES = frozenset({"file", "srvr", "ref", "ws"})
-
-
 def validate_connect(connect: str) -> None:
     """Отвергнуть строку соединения, которая молча портит запись базы.
 
@@ -190,17 +192,22 @@ def validate_connect(connect: str) -> None:
     в файл. Пустая строка целиком — вовсе не база: признак группы —
     отсутствие `Connect` ([Ф] T-05.6, пустое значение равносильно снятию).
 
-    Пустым отвергается только фрагмент размещения, который в строке есть.
-    Отсутствующие фрагменты не требуются: экзотическая, но живая запись
-    из файла (один `Srvr` без `Ref`) должна оставаться правимой. Пустые
-    значения не-размещения (`Usr=""`) пишет и платформа — они не наши.
-    """
+    Проверяются только фрагменты размещения вида записи (`classify_connect`,
+    общий источник — `PLACEMENT_FRAGMENTS`): диалог показывает и требует
+    ровно их, а пустой фрагмент чужого вида (`File="…";Ref="";`) может уже
+    лежать в живом файле, который пишем не только мы, — рубеж, отвергающий
+    его, запирал бы правку записи ошибкой про невидимое пользователю поле
+    (финальное ревью ветки 18.08.2026). Отсутствующие фрагменты своего вида
+    тоже не требуются: экзотическая, но живая запись (один `Srvr` без `Ref`)
+    должна оставаться правимой.
+    """  # noqa: RUF002
     if not connect.strip():
         raise InvalidRequestError(
             "Строка соединения не может быть пустой: секция без неё — группа"
         )
+    placement = PLACEMENT_FRAGMENTS[classify_connect(connect)]
     for fragment in parse_connect(connect):
-        if fragment.name.casefold() not in _PLACEMENT_FRAGMENT_NAMES:
+        if fragment.name.casefold() not in placement:
             continue
         if not fragment.value.strip():
             raise InvalidRequestError(

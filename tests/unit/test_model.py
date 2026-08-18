@@ -77,31 +77,51 @@ def test_validate_connect_accepts_unknown_kind() -> None:
     validate_connect("Нечто=1")
 
 
-def test_validate_connect_rejects_blank_string() -> None:
+@pytest.mark.parametrize("connect", ["", "   "])
+def test_validate_connect_rejects_blank_string(connect: str) -> None:
     # Пустой Connect= — признак группы ([Ф] T-05.6): запись базы с такой  # noqa: RUF003
     # строкой молча сменила бы вид секции.
-    for connect in ("", "   "):
-        with pytest.raises(InvalidRequestError):
-            validate_connect(connect)
+    with pytest.raises(InvalidRequestError):
+        validate_connect(connect)
 
 
-def test_validate_connect_rejects_empty_placement_value() -> None:
-    for connect in (
+@pytest.mark.parametrize(
+    "connect",
+    [
         'File="";',  # ровно то, что собирает build_connect(FILE, file_path="")
         'File="   ";',
         'file="";',  # имя фрагмента — без учёта регистра, как в формате
         'Srvr="srv";Ref="";',
         'Srvr="";Ref="demo";',
         'ws="";',
-    ):
-        with pytest.raises(InvalidRequestError):
-            validate_connect(connect)
+    ],
+)
+def test_validate_connect_rejects_empty_placement_value(connect: str) -> None:
+    with pytest.raises(InvalidRequestError):
+        validate_connect(connect)
 
 
 def test_validate_connect_ignores_empty_non_placement_fragments() -> None:
-    # Пустое значение не-размещения (Usr="" пишет и платформа) — не повод
-    # запирать правку записи, пришедшей из файла.
+    # Пустое значение не-размещения может уже лежать в живом файле,
+    # который пишем не только мы; его пустота — не предмет этого рубежа.  # noqa: RUF003
     validate_connect('File="C:\\Bases\\Demo";Usr="";')
+
+
+@pytest.mark.parametrize(
+    "connect",
+    [
+        'File="C:\\Bases\\Demo";Ref="";',
+        'ws="https://host/demo";Srvr="";',
+    ],
+)
+def test_validate_connect_ignores_empty_fragment_of_foreign_kind(connect: str) -> None:
+    """Финальное ревью ветки (18.08.2026): пустой фрагмент чужого вида уже
+    может лежать в живом файле; диалог показывает и требует только поля
+    вида записи, а точечная правка проносит остальное без потерь — рубеж,
+    отвергающий такую строку, запирал бы правку живой записи ошибкой
+    про невидимое пользователю поле.
+    """  # noqa: RUF002
+    validate_connect(connect)
 
 
 def test_parse_order_accepts_fractional_and_negative() -> None:

@@ -118,10 +118,9 @@ def _column_texts(view: BasesView, column: int) -> list[str]:
     ключи, что и в дереве файла, display_forest), дубли не схлопываются:
     вызывающему тесту нужен факт «эта колонка нигде не „…“», а не счётчик.
     """  # noqa: RUF002
-    model = view.model()
     return [
-        str(model.index(index.row(), column, index.parent()).data() or "")
-        for index in _iter_tree(model)
+        str(index.siblingAtColumn(column).data() or "")
+        for index in _iter_tree(view.model())
         if index.data(KIND_ROLE) == RowKind.BASE.value
     ]
 
@@ -167,14 +166,20 @@ def _type(widget: QWidget, text: str) -> None:
             )
 
 
+def _find_index(view: BasesView, predicate: Any, message: str) -> QModelIndex:
+    """Первый индекс дерева (преордер `_iter_tree`), прошедший предикат."""
+    index = next((i for i in _iter_tree(view.model()) if predicate(i)), None)
+    assert index is not None, message
+    return index
+
+
 def _first_base_index(view: BasesView) -> QModelIndex:
     """Первая строка с KIND_ROLE == RowKind.BASE.value, обходом всего дерева."""  # noqa: RUF002
-    index = next(
-        (i for i in _iter_tree(view.model()) if i.data(KIND_ROLE) == RowKind.BASE.value),
-        None,
+    return _find_index(
+        view,
+        lambda i: i.data(KIND_ROLE) == RowKind.BASE.value,
+        "в дереве нет ни одной строки базы",
     )
-    assert index is not None, "в дереве нет ни одной строки базы"
-    return index
 
 
 def _select_first_file_base(view: BasesView) -> None:
@@ -224,11 +229,11 @@ def _spy_on(monkeypatch: Any, workspace: Any, name: str) -> list[tuple[Any, Any]
 
 def _index_of_key(view: BasesView, key: str) -> QModelIndex:
     """Индекс строки с данным ключом привязки (KEY_ROLE колонки 0)."""  # noqa: RUF002
-    index = next(
-        (i for i in _iter_tree(view.model()) if i.data(KEY_ROLE) == key), None
+    return _find_index(
+        view,
+        lambda i: i.data(KEY_ROLE) == key,
+        f"строка с ключом {key!r} не найдена в дереве",  # noqa: RUF001
     )
-    assert index is not None, f"строка с ключом {key!r} не найдена в дереве"  # noqa: RUF001
-    return index
 
 
 def _select_key(view: BasesView, key: str) -> None:
@@ -684,12 +689,7 @@ def test_expansion_by_user_is_remembered_across_search(qtbot, workspace_factory)
     # Обратная сторона: то, что пользователь развернул сам при пустом
     # поиске, обязано вернуться после цикла поиска.
     view, _, _, _ = _view(qtbot, workspace_factory)
-    model = view.model()
-    group = next(
-        model.index(row, 0, QModelIndex())
-        for row in range(model.rowCount())
-        if model.item(row, 0).text() == "Клиенты"
-    )
+    group = _find_index(view, lambda i: i.data() == "Клиенты", "нет узла Клиенты")
     view._tree.expand(group)
     _type(view.search(), "демо")
     view.search().clear()
@@ -1968,11 +1968,11 @@ def _find_index_by_kind(view: BasesView, kind: RowKind) -> QModelIndex:
     для этих тестов не важен (проверка одна на весь класс `RowKind.SECTION`,
     а не отдельно на «Избранное»/«Недавние»/«Общие списки»).
     """  # noqa: RUF002
-    found = next(
-        (i for i in _iter_tree(view.model()) if i.data(KIND_ROLE) == kind.value), None
+    return _find_index(
+        view,
+        lambda i: i.data(KIND_ROLE) == kind.value,
+        f"в дереве нет строки вида {kind}",
     )
-    assert found is not None, f"в дереве нет строки вида {kind}"
-    return found
 
 
 # Задача 20: `_BasesTree.dropEvent` теперь читает `event.mimeData()` (проверка

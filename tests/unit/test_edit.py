@@ -196,20 +196,53 @@ def test_add_with_empty_placement_is_rejected() -> None:
     assert serialize_v8i(document) == TWO_SECTIONS
 
 
-def test_add_without_connect_is_rejected() -> None:
+@pytest.mark.parametrize("changes", [{}, {"Connect": None}])
+def test_add_without_connect_is_rejected(changes: dict[str, str | None]) -> None:
     """ADD без `Connect` создал бы секцию-группу операцией записи базы:
     признак группы — отсутствие `Connect` ([Ф] скил v8i-format). Для групп
     есть своя операция с каскадом — `add_group`.
     """  # noqa: RUF002
     document = parse_v8i(TWO_SECTIONS)
-    cases: tuple[dict[str, str | None], ...] = ({}, {"Connect": None})
-    for changes in cases:
-        with pytest.raises(InvalidRequestError):
-            apply_patch(
-                document,
-                SectionPatch(PatchKind.ADD, name="Новая", changes=changes),
-                NEW_ID,
-            )
+    with pytest.raises(InvalidRequestError):
+        apply_patch(
+            document,
+            SectionPatch(PatchKind.ADD, name="Новая", changes=changes),
+            NEW_ID,
+        )
+    assert serialize_v8i(document) == TWO_SECTIONS
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        SectionPatch(
+            PatchKind.ADD,
+            name="Новая",
+            changes={"Connect": 'File="C:\\Good";', "CONNECT": 'File="";'},
+        ),
+        SectionPatch(
+            PatchKind.UPDATE,
+            target_key="id:abc",
+            changes={"Connect": 'File="C:\\Good";', "CONNECT": 'File="";'},
+        ),
+        SectionPatch(
+            PatchKind.UPDATE,
+            target_key="id:abc",
+            changes={"Version": "8.3.24", "VERSION": "8.3.25"},
+        ),
+    ],
+)
+def test_changes_with_case_duplicate_keys_are_rejected(patch: SectionPatch) -> None:
+    """Финальное ревью ветки (18.08.2026), воспроизведённый обход рубежа:
+    применение пишет каждый ключ изменений, а `V8iSection.set` сливает их
+    без учёта регистра — побеждает последний, и валидация, смотревшая
+    на первое совпадение, ничего не гарантирует: дубль `Connect`/`CONNECT`
+    доносил пустое размещение до файла. Дубль ключа — ошибка запроса,
+    для любых ключей и обеих операций.
+    """  # noqa: RUF002
+    document = parse_v8i(TWO_SECTIONS)
+    with pytest.raises(InvalidRequestError):
+        apply_patch(document, patch, NEW_ID)
     assert serialize_v8i(document) == TWO_SECTIONS
 
 

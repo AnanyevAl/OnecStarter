@@ -78,6 +78,10 @@ def test_failed_task_log_carries_type_not_message(caplog):
     assert "Секретный каталог" not in caplog.text
     assert "скрытый-сервер" not in caplog.text
     assert caplog.text.count("OSError") == 2
+    # Места кадров (файл:строка, без строк исходника) — обязаны остаться:
+    # без них тип исключения не локализует шаг, на котором упало
+    # (финальное ревью ветки 18.08.2026).
+    assert "test_background.py" in caplog.text
 
 
 def test_log_carries_counts_not_paths(caplog):
