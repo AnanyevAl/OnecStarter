@@ -55,11 +55,13 @@ class StartupTasks(QObject):
         _log.info("обнаружение платформ: начато")
         try:
             found = self._discover()
-        except Exception:
+        except Exception as exc:
             # Падение фона не должно оставлять окно в вечном «…»: логируем
             # причину и отдаём пустой результат — состояние видно и в окне,
-            # и в логе.
-            _log.exception("обнаружение платформ: отказ")
+            # и в логе. В лог — тип исключения, не текст и не traceback:  # noqa: RUF003
+            # сообщение несёт содержимое (OSError вкладывает путь), а лог  # noqa: RUF003
+            # прикладывают к issue (докстринг модуля, инвариант 5).
+            _log.error("обнаружение платформ: отказ (%s)", type(exc).__name__)
             found = []
         _log.info(
             "обнаружение платформ: закончено за %d мс, найдено %d",
@@ -73,8 +75,9 @@ class StartupTasks(QObject):
         _log.info("общие списки: чтение начато")
         try:
             data = self._read_common()
-        except Exception:
-            _log.exception("общие списки: отказ")
+        except Exception as exc:
+            # Тип, не текст — та же причина, что у ветки обнаружения.  # noqa: RUF003
+            _log.error("общие списки: отказ (%s)", type(exc).__name__)
             data = EMPTY_COMMON_DATA
         _log.info(
             "общие списки: закончено за %d мс, файлов %d, ошибок %d",

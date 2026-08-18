@@ -56,6 +56,30 @@ def test_failed_task_logs_and_emits_empty(qtbot, caplog):
     assert "обнаружение" in caplog.text
 
 
+def test_failed_task_log_carries_type_not_message(caplog):
+    """Сторож инварианта 5 на пути отказа (МУТАЦИЯ): текст исключения — не в лог.
+
+    Сообщение исключения несёт содержимое: `OSError` вкладывает путь —
+    UNC-сервер общего списка из cfg, каталог установки, — а лог прикладывают
+    к issue. Поэтому ветка отказа пишет тип исключения, не его текст
+    и не traceback (его последняя строка — тот же текст).
+    """  # noqa: RUF002
+    from onecstarter.services.catalog import CommonListData
+
+    def explode_discovery() -> list[Installation]:
+        raise OSError(r"C:\Секретный каталог\1cv8.exe недоступен")
+
+    def explode_lists() -> CommonListData:
+        raise OSError(r"\\скрытый-сервер\список.v8i недоступен")
+
+    tasks = StartupTasks(explode_discovery, explode_lists, spawn=_SYNC)
+    with caplog.at_level(logging.ERROR):
+        tasks.start()
+    assert "Секретный каталог" not in caplog.text
+    assert "скрытый-сервер" not in caplog.text
+    assert caplog.text.count("OSError") == 2
+
+
 def test_log_carries_counts_not_paths(caplog):
     """Сторож инварианта 5: в лог — счётчики, не содержимое (МУТАЦИЯ)."""
     from onecstarter.services.catalog import CommonListData
