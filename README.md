@@ -55,6 +55,8 @@ powershell -File build/build.ps1
 Установщик требует Inno Setup 6. Без него — сборка только portable-варианта:
 `powershell -File build/build.ps1 -SkipInstaller`.
 
+Устройство исходников и правила для изменений — [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Границы
 
 1С:Предприятие 7.7 не поддерживается; телеметрии нет; пароли
