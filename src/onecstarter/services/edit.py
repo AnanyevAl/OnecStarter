@@ -149,14 +149,14 @@ def _reject_ambiguous_keys(changes: Mapping[str, str | None]) -> None:
     размещение до файла в обход рубежа. Дубль — противоречивый запрос,
     а не вариант записи.
     """  # noqa: RUF002
-    seen: set[str] = set()
+    seen: dict[str, str] = {}
     for key in changes:
-        folded = key.casefold()
-        if folded in seen:
+        first = seen.setdefault(key.casefold(), key)
+        if first != key:
             raise InvalidRequestError(
-                f"Изменения содержат ключ {key} дважды в разном регистре"
+                f"Изменения содержат один ключ дважды в разном регистре: "
+                f"{first} и {key}"
             )
-        seen.add(folded)
 
 
 def _connect_change(changes: Mapping[str, str | None]) -> tuple[bool, str | None]:

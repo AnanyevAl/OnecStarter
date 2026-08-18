@@ -71,7 +71,7 @@
 потом заменяет.
 """  # noqa: RUF002
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
 
@@ -214,7 +214,7 @@ def find_fragment(fragments: Sequence[ConnectFragment], name: str) -> str | None
 # классификации: File раньше ws раньше Srvr/Ref. Диалог (_PLACEMENT_SPEC
 # в ui/dialogs/infobase.py) перечисляет те же фрагменты с метками полей  # noqa: RUF003
 # и каноническим регистром записи.
-PLACEMENT_FRAGMENTS: dict[ConnectKind, tuple[str, ...]] = {
+PLACEMENT_FRAGMENTS: Mapping[ConnectKind, tuple[str, ...]] = {
     ConnectKind.FILE: ("file",),
     ConnectKind.WEB: ("ws",),
     ConnectKind.SERVER: ("srvr", "ref"),
