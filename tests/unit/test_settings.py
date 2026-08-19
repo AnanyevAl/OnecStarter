@@ -179,7 +179,7 @@ def test_hotkey_is_canonicalized_on_read(tmp_path: Path) -> None:
     [(0, 0), (50, 50), (7, 7), (-3, 0), (999, 50), (10.5, 10), ("10", 10), (True, 10)],
 )
 def test_recent_limit_is_clamped(tmp_path: Path, value: object, expected: int) -> None:
-    """Границы 0-50; не-целое и bool — в дефолт.  # noqa: RUF003
+    """Границы 0-50; не-целое и bool — в дефолт.
 
     `True` проверяется отдельно: в Python `bool` — подкласс `int`, и без
     явной проверки `{"recent_limit": true}` прошло бы как 1.
