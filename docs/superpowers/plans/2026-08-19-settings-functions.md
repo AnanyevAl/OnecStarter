@@ -2565,12 +2565,30 @@ def has_autostart_flag(argv: Sequence[str]) -> bool:
     # и хоткей собрал бы сборщик мусора сразу после выхода из функции.
     window.settings_store = store
     window.global_hotkey = hotkey
+    last_recent_limit = store.settings.recent_limit
 
     def apply_close_to_tray() -> None:
         # Трея нет — настройка ведёт себя как выключенная (спека §2):
         # спрятать окно, из которого его нечем вернуть, значит потерять
         # программу с экрана.
         window.close_to_tray = store.settings.close_to_tray and tray is not None
+
+    def rebuild_if_recent_limit_changed() -> None:
+        """Дерево перестраивается только когда изменился лимит «Недавних».
+
+        **Исправлено 20.08.2026 по находке ревью Task 9.** Первая редакция
+        плана вешала на `store.changed` безусловный `view.rebuild()`. Замер
+        ревьюера: клик по теме давал ДВЕ перестройки дерева — одна уже идёт
+        через `on_theme_changed` → `apply_palette`, — а смена сочетания
+        хоткея или поведения крестика дёргала полную перестройку, хотя
+        к дереву отношения не имеет. Настройка меняет только показ
+        «Недавних» (спека §5); всё остальное дерева не касается.
+        """  # noqa: RUF002
+        nonlocal last_recent_limit
+        if store.settings.recent_limit == last_recent_limit:
+            return
+        last_recent_limit = store.settings.recent_limit
+        view.rebuild()
 
     def apply_hotkey(text: str) -> str | None:
         """Перевесить хоткей. Текст отказа либо None."""
@@ -2587,7 +2605,7 @@ def has_autostart_flag(argv: Sequence[str]) -> bool:
 
     apply_close_to_tray()
     store.changed.connect(apply_close_to_tray)
-    store.changed.connect(lambda: view.rebuild())
+    store.changed.connect(rebuild_if_recent_limit_changed)
     settings_view.set_hotkey_handler(apply_hotkey)
 
     problem = apply_hotkey(store.settings.hotkey)
