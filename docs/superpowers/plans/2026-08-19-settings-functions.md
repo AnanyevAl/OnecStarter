@@ -973,9 +973,15 @@ git commit -m "refactor: лимит Недавних аргументом displa
 - Create: `src/onecstarter/ui/settings_store.py`
 - Create: `tests/ui/test_settings_store.py`
 - Modify: `src/onecstarter/ui/theme_controller.py`
-- Modify: `src/onecstarter/ui/settings_view.py:30-40` (конструктор берёт store)
 - Modify: `src/onecstarter/ui/app.py:303` (создание контроллера)
 - Modify: `tests/ui/test_theme_controller.py`, `tests/ui/test_settings_view.py`
+  (только помощники, строившие `ThemeController` из `Path`)
+
+> **Исправлено 19.08.2026 по находке ревью Task 5.** Из списка убран
+> `ui/settings_view.py`: ни один шаг задачи его не правит, и править не должен.
+> `last_save_error` становится свойством контроллера именно затем, чтобы
+> существующие читатели не менялись; новая сигнатура `SettingsView` —
+> предмет Task 8, и трогать файл здесь значило бы забежать вперёд.
 
 **Interfaces:**
 - Consumes: `Settings`, `load_settings`, `save_settings` из Task 2.
@@ -1243,7 +1249,7 @@ Run: `uv run pytest -q; uv run ruff check .; uv run mypy`
 Expected: коды выхода 0
 
 ```bash
-git add src/onecstarter/ui/settings_store.py src/onecstarter/ui/theme_controller.py src/onecstarter/ui/app.py tests/ui/test_settings_store.py tests/ui/test_theme_controller.py
+git add src/onecstarter/ui/settings_store.py src/onecstarter/ui/theme_controller.py src/onecstarter/ui/app.py tests/ui/test_settings_store.py tests/ui/test_theme_controller.py tests/ui/test_settings_view.py
 git commit -m "refactor: SettingsStore единственным писателем settings.json"
 ```
 
