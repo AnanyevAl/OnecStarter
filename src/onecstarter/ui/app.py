@@ -27,6 +27,7 @@ from onecstarter.platform_1c.discovery import cfg_paths, find_installations
 from onecstarter.platform_1c.registry import load_conventions
 from onecstarter.services.catalog import CommonListData, read_common_lists
 from onecstarter.services.errors import ServicesError, UserDataUnavailableError
+from onecstarter.services.hotkeys import parse_hotkey
 from onecstarter.services.model import InfobaseItem
 from onecstarter.services.settings import DEFAULT_RECENT_LIMIT
 from onecstarter.services.workspace import Workspace, WorkspacePaths
@@ -363,12 +364,10 @@ def _build_main_window(
     window.close_to_tray = tray is not None
 
     hotkey = GlobalHotkey(window.show_and_focus_search)
-    if hotkey.registered:
-        application.installNativeEventFilter(hotkey)
-        if tray is not None:
-            tray.setToolTip("OneCStarter — Ctrl+Alt+B")
-    elif tray is not None:
-        tray.setToolTip("OneCStarter — хоткей Ctrl+Alt+B занят другим приложением")
+    application.installNativeEventFilter(hotkey)
+    hotkey.rebind(parse_hotkey(store.settings.hotkey))
+    if tray is not None:
+        tray.setToolTip("OneCStarter")
     application.aboutToQuit.connect(hotkey.dispose)
 
     tasks = StartupTasks(

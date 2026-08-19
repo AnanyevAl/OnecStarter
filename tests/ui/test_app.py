@@ -6,12 +6,20 @@ from datetime import datetime
 from typing import Any
 
 import pytest
-from PySide6.QtCore import QCoreApplication, QEvent, QObject, QTimer, Signal
+from PySide6.QtCore import (
+    QAbstractNativeEventFilter,
+    QCoreApplication,
+    QEvent,
+    QObject,
+    QTimer,
+    Signal,
+)
 from PySide6.QtWidgets import QApplication, QMessageBox, QProgressDialog, QPushButton
 
 from onecstarter.domain.launch import LaunchCommand
 from onecstarter.services.catalog import EMPTY_COMMON_DATA
-from onecstarter.services.settings import ThemeMode
+from onecstarter.services.hotkeys import parse_hotkey
+from onecstarter.services.settings import DEFAULT_HOTKEY, ThemeMode
 from onecstarter.services.workspace import Workspace, WorkspacePaths
 from onecstarter.ui import app as app_module
 from onecstarter.ui import theme
@@ -346,13 +354,34 @@ class _FakeTray:
         self.tooltips.append(text)
 
 
-class _FakeHotkey:
-    """Замена `GlobalHotkey`: настоящая зовёт `RegisterHotKey` у Windows."""  # noqa: RUF002
+class _FakeHotkey(QAbstractNativeEventFilter):
+    """Замена `GlobalHotkey`: настоящая зовёт `RegisterHotKey` у Windows.
+
+    Наследует `QAbstractNativeEventFilter`: `_build_main_window` теперь ставит
+    фильтр безусловно (`application.installNativeEventFilter(hotkey)`), а тот
+    у PySide6 отказывает объекту неверного типа — обычный `object` здесь
+    свалил бы `main()` с `TypeError` ещё до дела теста. `nativeEventFilter`
+    переопределён пустышкой по той же причине: раз фильтр действительно
+    ставится на `qapp`, метод — чистая виртуальная функция C++-базы, и Qt
+    честно роняет `NotImplementedError` на первом же нативном событии сессии,
+    не обязательно из теста хоткея (так и обнаружилось — падал несвязанный
+    `test_watcher.py::test_atomic_replace_keeps_watching`).
+    """  # noqa: RUF002
 
     def __init__(self, callback: Any, **_kwargs: Any) -> None:
+        super().__init__()
         self.callback = callback
         self.registered = False
         self.disposed = False
+        self.rebind_calls: list[Any] = []
+
+    def rebind(self, spec: Any) -> bool:
+        self.rebind_calls.append(spec)
+        self.registered = spec is not None
+        return True
+
+    def nativeEventFilter(self, event_type: Any, message: Any) -> tuple[bool, int]:  # noqa: N802
+        return False, 0
 
     def dispose(self) -> None:
         self.disposed = True
@@ -735,19 +764,30 @@ def test_main_hides_the_window_into_a_live_tray(assembled_with_tray: _Assembly) 
     assert assembled_with_tray.window.close_to_tray is True
 
 
-def test_main_tells_the_tray_that_the_hotkey_is_taken(
-    assembled_with_tray: _Assembly,
-) -> None:
-    """Занятый хоткей объясняется подсказкой трея, а не молчанием.
+def test_main_sets_a_plain_tray_tooltip(assembled_with_tray: _Assembly) -> None:
+    """Тултип трея на этом шаге фиксирован и не различает успех/занятость.
 
-    `_FakeHotkey.registered` — `False`, то есть воспроизводится случай
-    «сочетание занято другим приложением» ([Р] спека 4a, §3: приложение
-    из-за этого не падает, но и молчать не должно).
+    Task 6 ставит только промежуточную проводку хоткея (`rebind` вызывается
+    один раз от значения из настроек, фильтр стоит безусловно); тултип,
+    различающий успешную регистрацию, занятое и выключенное сочетание,
+    с балуном при отказе — предмет Task 9 (спека §4.2). Прежний тест здесь
+    (`test_main_tells_the_tray_that_the_hotkey_is_taken`) проверял ветку
+    «занято», которую эта задача убрала из `app.py` вместе с веткой «свободно»
+    — обе вернутся в Task 9 с реальным сигналом от `rebind`, а не от
+    захардкоженного `_FakeHotkey.registered`.
     """  # noqa: RUF002
     assert assembled_with_tray.tray is not None
-    assert assembled_with_tray.tray.tooltips == [
-        "OneCStarter — хоткей Ctrl+Alt+B занят другим приложением"
-    ]
+    assert assembled_with_tray.tray.tooltips == ["OneCStarter"]
+
+
+def test_main_rebinds_the_hotkey_from_settings(assembled: _Assembly) -> None:
+    """`_build_main_window` больше не полагается на регистрацию в конструкторе.
+
+    `rebind` обязан быть вызван ровно один раз, значением из настроек
+    (дефолт — `DEFAULT_HOTKEY`, тестовый `Runtime` указывает на несуществующий
+    `settings.json`, поэтому `SettingsStore` отдаёт значения по умолчанию).
+    """
+    assert assembled.hotkey.rebind_calls == [parse_hotkey(DEFAULT_HOTKEY)]
 
 
 def test_main_does_not_hide_the_window_into_a_missing_tray(assembled: _Assembly) -> None:
