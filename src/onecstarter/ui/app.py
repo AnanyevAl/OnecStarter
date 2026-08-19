@@ -25,6 +25,7 @@ from onecstarter.domain.launch import ClientConvention
 from onecstarter.domain.version import Installation
 from onecstarter.platform_1c.discovery import cfg_paths, find_installations
 from onecstarter.platform_1c.registry import load_conventions
+from onecstarter.services import autostart
 from onecstarter.services.catalog import CommonListData, read_common_lists
 from onecstarter.services.errors import ServicesError, UserDataUnavailableError
 from onecstarter.services.hotkeys import parse_hotkey
@@ -318,7 +319,13 @@ def _build_main_window(
         recent_limit=lambda: DEFAULT_RECENT_LIMIT,
         palette=controller.palette,
     )
-    settings_view = SettingsView(controller)
+    settings_view = SettingsView(
+        controller,
+        store,
+        autostart_registry=autostart.WindowsRegistry(),
+        frozen=bool(getattr(sys, "frozen", False)),
+        executable=sys.executable,
+    )
     window = MainWindow(
         [("Базы", view), ("Настройки", settings_view)], palette=controller.palette
     )
