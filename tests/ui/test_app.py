@@ -3,7 +3,7 @@ import shutil
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 from PySide6.QtCore import (
@@ -366,7 +366,18 @@ class _FakeHotkey(QAbstractNativeEventFilter):
     честно роняет `NotImplementedError` на первом же нативном событии сессии,
     не обязательно из теста хоткея (так и обнаружилось — падал несвязанный
     `test_watcher.py::test_atomic_replace_keeps_watching`).
+
+    `instances` — реестр всех созданных за тест объектов: `qapp` у pytest-qt
+    сессионный, `aboutToQuit` в тестах не эмитируется (см. `fake_exec`), и
+    без явной уборки каждый фильтр, поставленный `_build_main_window`/`main()`
+    (мест вызова 15+: и через `_assemble`, и впрямую — `test_build_main_window_*`,
+    `test_run_smoke_*`), оставался бы в цепочке `qapp` до конца сессии и получал
+    нативные события ВСЕХ последующих тестов. Снимает реестр автоиспользуемая
+    `_cleanup_fake_hotkey_filters` ниже — по всем местам создания разом, а не
+    только по `_assemble`, где объект и так уже был на виду.
     """  # noqa: RUF002
+
+    instances: ClassVar[list["_FakeHotkey"]] = []
 
     def __init__(self, callback: Any, **_kwargs: Any) -> None:
         super().__init__()
@@ -374,6 +385,7 @@ class _FakeHotkey(QAbstractNativeEventFilter):
         self.registered = False
         self.disposed = False
         self.rebind_calls: list[Any] = []
+        _FakeHotkey.instances.append(self)
 
     def rebind(self, spec: Any) -> bool:
         self.rebind_calls.append(spec)
@@ -385,6 +397,24 @@ class _FakeHotkey(QAbstractNativeEventFilter):
 
     def dispose(self) -> None:
         self.disposed = True
+
+
+@pytest.fixture(autouse=True)
+def _cleanup_fake_hotkey_filters(qapp: Any) -> Iterator[None]:
+    """Снять с `qapp` все нативные фильтры `_FakeHotkey`, поставленные тестом.
+
+    См. докстринг `_FakeHotkey.instances` выше: без этой уборки фильтр
+    одного теста продолжает получать нативные события всех следующих
+    (сессионный `qapp`, `aboutToQuit` в тестах не эмитируется) — так и
+    падал несвязанный `test_watcher.py::test_atomic_replace_keeps_watching`.
+    Teardown фикстуры pytest выполняется и при упавшем теле теста — в
+    отличие от кода после `yield` внутри самого тела `_assemble`, поэтому
+    уборка стоит здесь, а не там.
+    """  # noqa: RUF002
+    yield
+    for hotkey in _FakeHotkey.instances:
+        qapp.removeNativeEventFilter(hotkey)
+    _FakeHotkey.instances.clear()
 
 
 class _FakeStartupTasks(QObject):

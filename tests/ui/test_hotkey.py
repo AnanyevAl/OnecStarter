@@ -43,10 +43,11 @@ def test_rebind_registers_and_dispatches() -> None:
 
 
 def test_rebind_releases_previous_registration() -> None:
-    """Снять прежнее до регистрации нового — иначе сочетание останется занятым нами.
+    """Смена на другое сочетание снимает прежнее до регистрации нового.
 
-    **[Проверено, 19.08.2026, эксперимент §7 спеки]**: освобождение мгновенно,
-    то же сочетание тут же берётся другой регистрацией.
+    Ctrl+Alt+B → Ctrl+Alt+Y: разные сочетания, порядок вызовов подделки —
+    вот что здесь проверяется. Случай «то же самое сочетание повторно» —
+    отдельный тест, `test_rebind_same_combination_releases_and_reregisters`.
     """
     hotkey, calls, _ = _hotkey()
     assert CTRL_ALT_B is not None
@@ -55,6 +56,30 @@ def test_rebind_releases_previous_registration() -> None:
     hotkey.rebind(CTRL_ALT_Y)
     assert calls["unregister"] == [HOTKEY_ID]
     assert calls["register"][-1] == (HOTKEY_ID, CTRL_ALT_Y.modifiers, CTRL_ALT_Y.vk)
+
+
+def test_rebind_same_combination_releases_and_reregisters() -> None:
+    """Повторный `rebind` тем же сочетанием тоже снимает и ставит заново.
+
+    Инвариант из докстринга `rebind` — снимать прежнее ДО попытки нового
+    «в том числе когда новое сочетание совпадает со старым» — иначе
+    прячется ровно тем видом «оптимизации», что пропускает unregister+
+    register при совпадении спеков: тогда `registered` уже `True` и обе
+    подделки молчат, а этот тест ловит именно пустые списки вызовов.
+
+    **[Проверено, 19.08.2026, эксперимент §7 спеки]**: освобождение мгновенно,
+    то же сочетание тут же берётся другой регистрацией — здесь это «другая»
+    в смысле «повторная», не «чужая».
+    """  # noqa: RUF002
+    hotkey, calls, _ = _hotkey()
+    assert CTRL_ALT_B is not None
+    hotkey.rebind(CTRL_ALT_B)
+    calls["register"].clear()
+
+    assert hotkey.rebind(CTRL_ALT_B) is True
+
+    assert calls["unregister"] == [HOTKEY_ID]
+    assert calls["register"] == [(HOTKEY_ID, CTRL_ALT_B.modifiers, CTRL_ALT_B.vk)]
 
 
 def test_rebind_to_none_disables() -> None:
