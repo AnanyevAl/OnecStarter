@@ -1916,6 +1916,11 @@ def test_autostart_writes_registry_not_settings_file(
     view.autostart_checkbox().setChecked(True)
 
     assert registry.values[VALUE_NAME] == autostart_command(EXE)
+    # Проверки JSON-файла НЕДОСТАТОЧНО: `save_settings` перечисляет ключи
+    # явным списком, и лишнее поле в `Settings` в файл не протекло бы
+    # никогда — тест остался бы зелёным на сломанной реализации. Сравнение
+    # всего store целиком ловит сам факт «автозапуск потрогал настройки».
+    assert store.settings == Settings()
     import json
 
     payload = json.loads((tmp_path / "settings.json").read_text(encoding="utf-8"))
@@ -2795,8 +2800,17 @@ git commit -m "build: удаление значения автозапуска �
 | --- | --- | --- |
 | 1 | `test_settings_store.py::test_update_keeps_other_fields` | В `SettingsStore.update` заменить `replace(self._settings, **changes)` на `Settings(**changes)` |
 | 2 | `test_hotkey.py::test_rebind_to_none_disables` | В `GlobalHotkey.rebind` убрать ветку `if spec is None: return True` |
-| 3 | `test_settings_view.py::test_autostart_writes_registry_not_settings_file` | В `_choose_autostart` дописать `self._store.update(autostart=checked)` (и поле в `Settings`) |
+| 3 | `test_settings_view.py::test_autostart_writes_registry_not_settings_file` | В `_choose_autostart` дописать `self._store.update(autostart=checked)` (и поле в `Settings`) — **выполнена в Task 8, см. сноску** |
 | 4 | `test_app.py::test_disabled_hotkey_is_not_registered` | В `apply_hotkey` заменить `parse_hotkey(text)` на `parse_hotkey(text) or parse_hotkey(DEFAULT_HOTKEY)` |
+
+> **Исправлено 20.08.2026 по находке Task 8.** Мутация №3 в первой редакции
+> таблицы была **бессильной**: тест проверял только отсутствие ключа в JSON,
+> а `save_settings` перечисляет ключи явным списком — лишнее поле в `Settings`
+> в файл не протекло бы никогда, и тест остался бы зелёным на сломанной
+> реализации. Тест усилен сравнением `store.settings == Settings()`, мутация
+> проведена в Task 8 и подтверждена ревьюером; здесь её не повторять, запись
+> перенести из леджера. Урок общий: тест «поле не попало в файл» проверяет
+> сериализатор, а не то, трогали ли настройки.
 
 - [ ] **Step 1: Убедиться, что дерево чистое и всё зелёное**
 
