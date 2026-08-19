@@ -41,6 +41,10 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("OneCStarter")
         self.resize(900, 600)
         self.close_to_tray = False
+        # Проставляются сборкой приложения (ui/app.py): окну они нужны
+        # только как владельцу времени жизни, поведение их не читает.
+        self.settings_store: object | None = None
+        self.global_hotkey: object | None = None
         self._palette = palette
         self._icon_factories: dict[int, Callable[[Palette], QIcon]] = {}
         self._stack = QStackedWidget()

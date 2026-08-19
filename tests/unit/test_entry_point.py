@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 
-from onecstarter.__main__ import main, parse_ib_name, parse_smoke_dir
+from onecstarter.__main__ import has_autostart_flag, main, parse_ib_name, parse_smoke_dir
 
 
 @pytest.mark.parametrize(
@@ -57,6 +57,17 @@ def test_option_without_value_is_not_the_same_as_absent() -> None:
     assert parse_ib_name([]) is None
 
 
+def test_autostart_flag_detected() -> None:
+    assert has_autostart_flag(["--autostart"]) is True
+    assert has_autostart_flag(["--autostart", "--ib-name", "Демо"]) is True
+
+
+def test_autostart_flag_absent() -> None:
+    assert has_autostart_flag([]) is False
+    assert has_autostart_flag(["--ib-name", "Демо"]) is False
+    assert has_autostart_flag(["--autostart-something"]) is False
+
+
 # -- развилка `main`: разбор → нужный режим (финальное ревью, I3) -------------
 #
 # `parse_ib_name` покрыт таблично, а сама развилка — нет: `main` мог бы звать  # noqa: RUF003
@@ -85,8 +96,8 @@ class _AppStub(types.ModuleType):
         self.launch_calls: list[tuple[Any, ...]] = []
         self.smoke_calls: list[tuple[Any, ...]] = []
 
-    def main(self) -> int:
-        self.window_calls.append(())
+    def main(self, *, start_hidden: bool = False) -> int:
+        self.window_calls.append((start_hidden,))
         return 0
 
     def run_launch(self, name: str, env: Any) -> int:
@@ -111,7 +122,19 @@ def app_stub(monkeypatch: pytest.MonkeyPatch) -> _AppStub:
 
 def test_main_without_arguments_opens_the_window(app_stub: _AppStub) -> None:
     assert main([]) == 0
-    assert app_stub.window_calls == [()]
+    assert app_stub.window_calls == [(False,)]
+    assert app_stub.launch_calls == []
+
+
+def test_main_with_autostart_opens_the_window_hidden(app_stub: _AppStub) -> None:
+    """`--autostart` доходит до `show_window(start_hidden=True)` (спека §3.4).
+
+    Без этой проводки автозапуск ничем не отличался бы от обычного окна:
+    `has_autostart_flag` покрыт табличными тестами выше, но развилка
+    `_dispatch`, которая передаёт его результат дальше, — нет.
+    """  # noqa: RUF002
+    assert main(["--autostart"]) == 0
+    assert app_stub.window_calls == [(True,)]
     assert app_stub.launch_calls == []
 
 

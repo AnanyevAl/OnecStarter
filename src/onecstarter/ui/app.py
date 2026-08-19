@@ -15,7 +15,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QApplication, QMessageBox, QProgressDialog
+from PySide6.QtWidgets import QApplication, QMessageBox, QProgressDialog, QSystemTrayIcon
 
 from onecstarter.config.atomic import atomic_write
 from onecstarter.config.cestart_cfg import parse_cestart_cfg
@@ -30,7 +30,6 @@ from onecstarter.services.catalog import CommonListData, read_common_lists
 from onecstarter.services.errors import ServicesError, UserDataUnavailableError
 from onecstarter.services.hotkeys import parse_hotkey
 from onecstarter.services.model import InfobaseItem
-from onecstarter.services.settings import DEFAULT_RECENT_LIMIT
 from onecstarter.services.workspace import Workspace, WorkspacePaths
 from onecstarter.ui import app_icon, rail_icons, theme
 from onecstarter.ui.background import StartupTasks
@@ -283,6 +282,19 @@ def run_smoke(
     return 0
 
 
+def _set_tray_tooltip(
+    tray: QSystemTrayIcon | None, combination: str | None, *, busy: bool = False
+) -> None:
+    if tray is None:
+        return
+    if combination is None:
+        tray.setToolTip("OneCStarter")
+    elif busy:
+        tray.setToolTip(f"OneCStarter — {combination} занято другим приложением")
+    else:
+        tray.setToolTip(f"OneCStarter — {combination}")
+
+
 def _build_main_window(
     application: QApplication, runtime: Runtime, env: Mapping[str, str]
 ) -> tuple[MainWindow, StartupTasks]:
@@ -313,10 +325,7 @@ def _build_main_window(
         runtime.workspace,
         installations=None,
         cfg_rules=runtime.cfg_rules,
-        # Заглушка: SettingsStore появится только в задаче 5, настоящий
-        # провайдер из настроек подключит задача 9. Здесь — временная
-        # ступень, константа по умолчанию, а не решение по проводке.  # noqa: RUF003
-        recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+        recent_limit=lambda: store.settings.recent_limit,
         palette=controller.palette,
     )
     settings_view = SettingsView(
@@ -368,14 +377,46 @@ def _build_main_window(
         theme_mode=lambda: controller.mode,
         on_theme=controller.set_mode,
     )
-    window.close_to_tray = tray is not None
-
     hotkey = GlobalHotkey(window.show_and_focus_search)
     application.installNativeEventFilter(hotkey)
-    hotkey.rebind(parse_hotkey(store.settings.hotkey))
-    if tray is not None:
-        tray.setToolTip("OneCStarter")
     application.aboutToQuit.connect(hotkey.dispose)
+    # Ссылки на окне — тестам и на время жизни процесса: без них store
+    # и хоткей собрал бы сборщик мусора сразу после выхода из функции.
+    window.settings_store = store
+    window.global_hotkey = hotkey
+
+    def apply_close_to_tray() -> None:
+        # Трея нет — настройка ведёт себя как выключенная (спека §2):
+        # спрятать окно, из которого его нечем вернуть, значит потерять  # noqa: RUF003
+        # программу с экрана.  # noqa: RUF003
+        window.close_to_tray = store.settings.close_to_tray and tray is not None
+
+    def apply_hotkey(text: str) -> str | None:
+        """Перевесить хоткей. Текст отказа либо None."""
+        spec = parse_hotkey(text)
+        if spec is None:
+            hotkey.rebind(None)
+            _set_tray_tooltip(tray, None)
+            return None
+        if hotkey.rebind(spec):
+            _set_tray_tooltip(tray, text)
+            return None
+        _set_tray_tooltip(tray, text, busy=True)
+        return f"Сочетание {text} занято другим приложением"
+
+    apply_close_to_tray()
+    store.changed.connect(apply_close_to_tray)
+    store.changed.connect(lambda: view.rebuild())
+    settings_view.set_hotkey_handler(apply_hotkey)
+
+    problem = apply_hotkey(store.settings.hotkey)
+    if problem is not None:
+        settings_view.report_hotkey_problem(problem)
+        if tray is not None:
+            # Балун, а не модальное окно: при тихом автозапуске диалог  # noqa: RUF003
+            # встречал бы пользователя при каждом входе в систему
+            # (спека §4.3). **[Проверено, 19.08.2026, эксперимент §7]**
+            tray.showMessage("OneCStarter", problem, QSystemTrayIcon.MessageIcon.Warning, 7000)
 
     tasks = StartupTasks(
         lambda: find_installations(env, runtime.conventions),
@@ -397,7 +438,12 @@ def _build_main_window(
     return window, tasks
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
+    """Обычный запуск. `start_hidden` — старт при входе в Windows (спека §3.4).
+
+    Тихий старт показывает окно всё равно, если трея нет: невидимый процесс,
+    который нечем вызвать, пользователю не принадлежит.
+    """
     application = QApplication(argv if argv is not None else sys.argv)
     application.setApplicationName("OneCStarter")
     application.setStyleSheet(theme.stylesheet(theme.DARK))
@@ -419,7 +465,10 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     window, tasks = _build_main_window(application, runtime, os.environ)
-    window.show()
-    _log.info("окно показано")
+    if start_hidden and window.close_to_tray:
+        _log.info("тихий старт: окно скрыто, программа в трее")
+    else:
+        window.show()
+        _log.info("окно показано")
     tasks.start()
     return application.exec()

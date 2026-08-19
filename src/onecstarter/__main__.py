@@ -1,6 +1,7 @@
 """Точка входа gui-скрипта onecstarter (pyproject: onecstarter.__main__:main).
 
-Три режима: без аргументов — обычное окно, с `--ib-name <имя>` — запуск
+Три режима: без аргументов — обычное окно (с `--autostart` — то же, но окно
+не показывается: программа живёт в трее), с `--ib-name <имя>` — запуск
 одной базы и выход, с `--smoke <каталог>` — самопроверка собранного
 экземпляра (задача 10 запускает её из `build/smoke.py`). Режим `--ib-name`
 нужен ярлыкам с рабочего стола (задача 17): ярлык несёт имя базы, а не
@@ -25,6 +26,7 @@ from onecstarter import diagnostics as diagnostics  # реэкспорт: entry.
 
 IB_NAME_OPTION = "--ib-name"
 SMOKE_OPTION = "--smoke"
+AUTOSTART_OPTION = "--autostart"
 
 
 def parse_smoke_dir(argv: Sequence[str]) -> str | None:
@@ -69,6 +71,15 @@ def parse_ib_name(argv: Sequence[str]) -> str | None:
     return None
 
 
+def has_autostart_flag(argv: Sequence[str]) -> bool:
+    """Запуск при входе в Windows: окно не показывается (спека §3.4).
+
+    Флаг без значения, поэтому сравнение точное: `--autostart-something`
+    нашим ключом не является и молча тихий старт не включает.
+    """
+    return AUTOSTART_OPTION in argv
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Настроить диагностику и поймать всё, что уйдёт из `_dispatch`.
 
@@ -110,7 +121,7 @@ def _dispatch(arguments: list[str]) -> int:
     if name is None:
         from onecstarter.ui.app import main as show_window
 
-        return show_window()
+        return show_window(start_hidden=has_autostart_flag(arguments))
     from onecstarter.ui.app import run_launch
 
     return run_launch(name, os.environ)

@@ -3,6 +3,7 @@ import shutil
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
@@ -14,18 +15,25 @@ from PySide6.QtCore import (
     QTimer,
     Signal,
 )
-from PySide6.QtWidgets import QApplication, QMessageBox, QProgressDialog, QPushButton
+from PySide6.QtWidgets import (
+    QApplication,
+    QMessageBox,
+    QProgressDialog,
+    QPushButton,
+    QSystemTrayIcon,
+)
 
 from onecstarter.domain.launch import LaunchCommand
 from onecstarter.services.catalog import EMPTY_COMMON_DATA
 from onecstarter.services.hotkeys import parse_hotkey
-from onecstarter.services.settings import DEFAULT_HOTKEY, ThemeMode
+from onecstarter.services.settings import DEFAULT_HOTKEY, Settings, ThemeMode, save_settings
 from onecstarter.services.workspace import Workspace, WorkspacePaths
 from onecstarter.ui import app as app_module
 from onecstarter.ui import theme
 from onecstarter.ui.app import _build_main_window, build_runtime, run_launch, run_smoke
 from onecstarter.ui.background import StartupTasks
 from onecstarter.ui.bases.view import BasesView
+from onecstarter.ui.hotkey import GlobalHotkey
 from onecstarter.ui.shell import MainWindow
 from onecstarter.ui.theme_controller import ThemeController
 from onecstarter.ui.watcher import FileWatcher
@@ -794,20 +802,21 @@ def test_main_hides_the_window_into_a_live_tray(assembled_with_tray: _Assembly) 
     assert assembled_with_tray.window.close_to_tray is True
 
 
-def test_main_sets_a_plain_tray_tooltip(assembled_with_tray: _Assembly) -> None:
-    """Тултип трея на этом шаге фиксирован и не различает успех/занятость.
+def test_main_sets_the_combination_tooltip_on_success(assembled_with_tray: _Assembly) -> None:
+    """Тултип трея на успешной регистрации несёт сочетание (спека §4.3).
 
-    Task 6 ставит только промежуточную проводку хоткея (`rebind` вызывается
-    один раз от значения из настроек, фильтр стоит безусловно); тултип,
-    различающий успешную регистрацию, занятое и выключенное сочетание,
-    с балуном при отказе — предмет Task 9 (спека §4.2). Прежний тест здесь
-    (`test_main_tells_the_tray_that_the_hotkey_is_taken`) проверял ветку
-    «занято», которую эта задача убрала из `app.py` вместе с веткой «свободно»
-    — обе вернутся в Task 9 с реальным сигналом от `rebind`, а не от
-    захардкоженного `_FakeHotkey.registered`.
+    Task 6 ставила здесь фиксированный «OneCStarter» — тултип, различающий
+    успех/занятость/выключено, был предметом Task 9. `_FakeHotkey.rebind`
+    хардкоженно отдаёт `True` (см. её докстринг), поэтому через полный
+    `main()` здесь проверяется именно ветка успеха; занятое и выключенное
+    сочетание — предмет `test_busy_hotkey_shows_balloon_and_tooltip` и
+    `test_disabled_hotkey_sets_the_plain_tooltip` (`_window_with_settings`,
+    настоящий `GlobalHotkey.rebind` с инжектированным `register`) — там
+    результат правда управляет исходом, а не хардкоженное поле подделки
+    (долг Task 9, п. 2).
     """  # noqa: RUF002
     assert assembled_with_tray.tray is not None
-    assert assembled_with_tray.tray.tooltips == ["OneCStarter"]
+    assert assembled_with_tray.tray.tooltips == [f"OneCStarter — {DEFAULT_HOTKEY}"]
 
 
 def test_main_rebinds_the_hotkey_from_settings(assembled: _Assembly) -> None:
@@ -943,6 +952,207 @@ def test_startup_log_has_no_connect_strings(
 
     assert "Srvr" not in caplog.text
     assert "File=" not in caplog.text
+
+
+def test_build_main_window_installs_the_hotkey_native_filter(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """`application.installNativeEventFilter(hotkey)` — без него WM_HOTKEY
+
+    никогда не дойдёт до `GlobalHotkey.nativeEventFilter` (спека §4.2).
+
+    Долг Task 9, п. 3: эта строка проводки не была покрыта ни одним тестом
+    ни до вехи (когда регистрация стояла в конструкторе `GlobalHotkey` и
+    фильтр ставился условно), ни в Task 6 (фильтр стал безусловным, но
+    сам факт установки так и остался непроверенным). `_FakeHotkey`
+    подходит: `installNativeEventFilter` у PySide6 отказывает объекту, не
+    унаследованному от `QAbstractNativeEventFilter`, а нам важен только
+    факт вызова с верным объектом — не настоящая доставка сообщений.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    installed: list[Any] = []
+
+    def spy(self: Any, event_filter: Any) -> None:
+        installed.append(event_filter)
+
+    monkeypatch.setattr(QApplication, "installNativeEventFilter", spy)
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+
+    window, _tasks = _build_main_window(qapp, runtime, env)
+    qtbot.addWidget(window)
+
+    assert installed == [window.global_hotkey]
+
+
+# -- задача 9: проводка настроек — close_to_tray, хоткей, тихий старт --------
+#
+# Ниже — сборка окна поверх настоящих `GlobalHotkey`/`SettingsStore` и
+# настоящего (но недоступного под offscreen без подмены) `QSystemTrayIcon`:
+# `register`/`unregister` инжектированы в `GlobalHotkey` — настоящий
+# `RegisterHotKey` в тестах не звучит ни разу (CLAUDE.md, «настоящий
+# RegisterHotKey в тестах не звать»). Ровно поэтому `rebind()` здесь
+# отдаёт то, что задал тест (через `register_result`), а не хардкоженное  # noqa: RUF003
+# поле подделки — находка ревью Task 6, долг Task 9 п. 2.
+
+
+def _settings_path(tmp_path: Path) -> Path:
+    """Куда смотрит build_runtime при APPDATA=tmp_path (см. ui/app.py)."""
+    return tmp_path / "OneCStarter" / "settings.json"
+
+
+def _window_with_settings(
+    qapp: Any,
+    tmp_path: Any,
+    monkeypatch: Any,
+    *,
+    tray_available: bool,
+    register_result: int = 1,
+    registrations: list[Any] | None = None,
+    messages: list[Any] | None = None,
+    tooltips: list[Any] | None = None,
+) -> Any:
+    """Собрать окно поверх подменённых трея и user32.
+
+    Настоящая регистрация хоткея и настоящий трей в offscreen-тесте
+    недопустимы: первая отобрала бы сочетание у машины разработчика,
+    второй недоступен под offscreen-платформой.
+
+    Возврат не аннотирован `MainWindow` нарочно: `settings_store` и
+    `global_hotkey` объявлены в `shell.py` как `object | None` (окну не
+    положено знать их настоящий тип, только владеть временем жизни), и
+    строгий mypy отказал бы в доступе к `.update`/`.registered` ниже —
+    тем же полям, которыми пользуются тесты этого блока.
+    """  # noqa: RUF002
+    monkeypatch.setattr(
+        QSystemTrayIcon, "isSystemTrayAvailable", staticmethod(lambda: tray_available)
+    )
+    if messages is not None:
+        monkeypatch.setattr(
+            QSystemTrayIcon,
+            "showMessage",
+            lambda self, title, text, *args: messages.append((title, text)),
+        )
+    if tooltips is not None:
+        monkeypatch.setattr(
+            QSystemTrayIcon,
+            "setToolTip",
+            lambda self, text: tooltips.append(text),
+        )
+
+    def register(hwnd: Any, hotkey_id: Any, modifiers: Any, vk: Any) -> int:
+        if registrations is not None:
+            registrations.append((modifiers, vk))
+        return register_result
+
+    monkeypatch.setattr(
+        "onecstarter.ui.app.GlobalHotkey",
+        lambda callback: GlobalHotkey(
+            callback, register=register, unregister=lambda hwnd, hotkey_id: 1
+        ),
+    )
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+    window, _tasks = _build_main_window(qapp, runtime, env)
+    return window
+
+
+def test_close_to_tray_follows_the_setting(qapp: Any, tmp_path: Any, monkeypatch: Any) -> None:
+    """Настройка выключена — крестик завершает программу (спека §2)."""
+    save_settings(_settings_path(tmp_path), Settings(close_to_tray=False))
+    window = _window_with_settings(qapp, tmp_path, monkeypatch, tray_available=True)
+    assert window.close_to_tray is False
+
+
+def test_close_to_tray_requires_available_tray(
+    qapp: Any, tmp_path: Any, monkeypatch: Any
+) -> None:
+    """Трея нет — настройка ведёт себя как выключенная (спека §2)."""
+    save_settings(_settings_path(tmp_path), Settings(close_to_tray=True))
+    window = _window_with_settings(qapp, tmp_path, monkeypatch, tray_available=False)
+    assert window.close_to_tray is False
+
+
+def test_close_to_tray_updates_without_restart(qapp: Any, tmp_path: Any, monkeypatch: Any) -> None:
+    window = _window_with_settings(qapp, tmp_path, monkeypatch, tray_available=True)
+    assert window.close_to_tray is True
+
+    window.settings_store.update(close_to_tray=False)
+
+    assert window.close_to_tray is False
+
+
+def test_disabled_hotkey_is_not_registered(qapp: Any, tmp_path: Any, monkeypatch: Any) -> None:
+    """Защитный: пустое сочетание — регистрации нет (спека §4.1).
+
+    Мутация: в проводке звать rebind всегда с дефолтным сочетанием —
+    тест обязан упасть на непустом списке регистраций.
+    """  # noqa: RUF002
+    save_settings(_settings_path(tmp_path), Settings(hotkey=""))
+    registered: list[tuple[int, int]] = []
+    window = _window_with_settings(
+        qapp, tmp_path, monkeypatch, tray_available=True, registrations=registered
+    )
+    assert registered == []
+    assert window.global_hotkey.registered is False
+
+
+def test_disabled_hotkey_sets_the_plain_tooltip(qapp: Any, tmp_path: Any, monkeypatch: Any) -> None:
+    """Выключенное сочетание — тултип без сочетания, без балуна (спека §4.3).
+
+    Долг Task 9, п. 1: третий из трёх исходов rebind, которого не было
+    ни разу — до вехи хоткей нельзя было выключить вовсе.
+    """
+    save_settings(_settings_path(tmp_path), Settings(hotkey=""))
+    tooltips: list[str] = []
+    messages: list[tuple[str, str]] = []
+    _window_with_settings(
+        qapp,
+        tmp_path,
+        monkeypatch,
+        tray_available=True,
+        tooltips=tooltips,
+        messages=messages,
+    )
+    assert tooltips[-1] == "OneCStarter"
+    assert messages == []
+
+
+def test_success_hotkey_sets_the_combination_tooltip(
+    qapp: Any, tmp_path: Any, monkeypatch: Any
+) -> None:
+    """Успешная регистрация на старте — тултип с сочетанием, без балуна (спека §4.3)."""  # noqa: RUF002
+    tooltips: list[str] = []
+    messages: list[tuple[str, str]] = []
+    _window_with_settings(
+        qapp,
+        tmp_path,
+        monkeypatch,
+        tray_available=True,
+        tooltips=tooltips,
+        messages=messages,
+    )
+    assert tooltips[-1] == f"OneCStarter — {DEFAULT_HOTKEY}"
+    assert messages == []
+
+
+def test_busy_hotkey_shows_balloon_and_tooltip(qapp: Any, tmp_path: Any, monkeypatch: Any) -> None:
+    """Занято на старте — балун, а не тишина (спека §4.3)."""  # noqa: RUF002
+    messages: list[tuple[str, str]] = []
+    tooltips: list[str] = []
+    window = _window_with_settings(
+        qapp,
+        tmp_path,
+        monkeypatch,
+        tray_available=True,
+        register_result=0,
+        messages=messages,
+        tooltips=tooltips,
+    )
+    assert messages, "балун при занятом сочетании обязателен"
+    assert "занят" in messages[0][1]
+    assert "занято" in tooltips[-1]
+    assert window.global_hotkey.registered is False
 
 
 # -- задача 8: режим самопроверки (--smoke) ----------------------------------

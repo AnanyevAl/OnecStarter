@@ -221,6 +221,16 @@ class SettingsView(QWidget):
     def hotkey_note(self) -> str:
         return self._hotkey_note.text()
 
+    # --- проводка приложения ------------------------------------------------
+
+    def set_hotkey_handler(self, handler: Callable[[str], str | None]) -> None:
+        """Кто перевешивает хоткей. Ставится сборкой приложения после создания."""
+        self._on_hotkey = handler
+
+    def report_hotkey_problem(self, problem: str) -> None:
+        """Показать отказ, случившийся не по нажатию в разделе (занято на старте)."""
+        self._hotkey_note.setText(problem)
+
     # --- реакции ----------------------------------------------------------
 
     def _choose_theme(self, mode: ThemeMode) -> None:
