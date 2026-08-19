@@ -11,6 +11,7 @@ CORE = (
     "onecstarter.services.workspace",
     "onecstarter.services.display",
     "onecstarter.services.hotkeys",
+    "onecstarter.services.autostart",
     "onecstarter.services.settings",
     "onecstarter.services.connection",
     "onecstarter.config.v8i",
