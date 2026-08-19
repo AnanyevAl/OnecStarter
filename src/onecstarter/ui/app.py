@@ -28,6 +28,7 @@ from onecstarter.platform_1c.registry import load_conventions
 from onecstarter.services.catalog import CommonListData, read_common_lists
 from onecstarter.services.errors import ServicesError, UserDataUnavailableError
 from onecstarter.services.model import InfobaseItem
+from onecstarter.services.settings import DEFAULT_RECENT_LIMIT
 from onecstarter.services.workspace import Workspace, WorkspacePaths
 from onecstarter.ui import app_icon, rail_icons, theme
 from onecstarter.ui.background import StartupTasks
@@ -308,6 +309,10 @@ def _build_main_window(
         runtime.workspace,
         installations=None,
         cfg_rules=runtime.cfg_rules,
+        # Заглушка: SettingsStore появится только в задаче 5, настоящий
+        # провайдер из настроек подключит задача 9. Здесь — временная
+        # ступень, константа по умолчанию, а не решение по проводке.  # noqa: RUF003
+        recent_limit=lambda: DEFAULT_RECENT_LIMIT,
         palette=controller.palette,
     )
     settings_view = SettingsView(controller)

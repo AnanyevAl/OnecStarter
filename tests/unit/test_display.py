@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -14,7 +14,6 @@ from onecstarter.services.display import (
     EMPTY_CONNECT_NOTE,
     GROUP_CONTENT_MARK,
     IMPLICIT_NOTE,
-    RECENT_LIMIT,
     Row,
     RowKind,
     display_forest,
@@ -25,6 +24,7 @@ from onecstarter.services.display import (
     version_cell,
 )
 from onecstarter.services.model import InfobaseItem, InfobaseSource
+from onecstarter.services.settings import DEFAULT_RECENT_LIMIT
 from onecstarter.services.user_data import BaseUserData
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "anonymized.v8i"
@@ -43,7 +43,7 @@ def _items(entries: dict[str, BaseUserData] | None = None) -> list[InfobaseItem]
 
 def _forest(entries: dict[str, BaseUserData] | None = None) -> list[Row]:
     items = _items(entries)
-    return display_forest(items, build_tree(items), [])
+    return display_forest(items, build_tree(items), [], recent_limit=DEFAULT_RECENT_LIMIT)
 
 
 def test_forest_without_user_data_has_no_virtual_sections() -> None:
@@ -61,7 +61,7 @@ def test_favorites_section_lists_marked_bases_first() -> None:
     assert [row.label for row in forest[0].children] == ["Демо Бухгалтерия"]
 
 
-def test_recent_section_sorted_by_launch_time_desc_and_limited() -> None:
+def test_recent_section_sorted_by_launch_time_desc() -> None:
     stamp = datetime(2026, 8, 1, tzinfo=UTC)
     entries = {
         "id:44444444-4444-4444-4444-444444444444": BaseUserData(
@@ -73,7 +73,39 @@ def test_recent_section_sorted_by_launch_time_desc_and_limited() -> None:
     }
     recent = next(row for row in _forest(entries) if row.label == "Недавние")
     assert [row.label for row in recent.children] == ["Демо Розница", "Демо Бухгалтерия"]
-    assert RECENT_LIMIT == 10
+
+
+def _stamp(index: int) -> datetime:
+    return datetime(2026, 8, 1, tzinfo=UTC) + timedelta(minutes=index)
+
+
+def _base_item(*, name: str, last_launched_at: datetime) -> InfobaseItem:
+    return InfobaseItem(
+        key=f"id:{name}", name=name, folder="/", is_group=False, connect='File="C:\\b";',
+        kind=ConnectKind.FILE, requested_version=None, section_default_version=None,
+        app=None, source=InfobaseSource.USER, order=None, section_id=name,
+        last_launched_at=last_launched_at,
+    )
+
+
+def test_recent_limit_zero_hides_the_branch() -> None:
+    """0 — ветки «Недавние» нет вовсе (подпись мокапа, спека §5)."""
+    items = [
+        _base_item(name=f"База {index}", last_launched_at=_stamp(index))
+        for index in range(3)
+    ]
+    forest = display_forest(items, build_tree(items), [], recent_limit=0)
+    assert all(row.label != "Недавние" for row in forest)
+
+
+def test_recent_limit_cuts_the_branch() -> None:
+    items = [
+        _base_item(name=f"База {index}", last_launched_at=_stamp(index))
+        for index in range(5)
+    ]
+    forest = display_forest(items, build_tree(items), [], recent_limit=2)
+    recent = next(row for row in forest if row.label == "Недавние")
+    assert len(recent.children) == 2
 
 
 def _broken_item() -> InfobaseItem:
@@ -90,7 +122,7 @@ def test_broken_record_note_carries_parse_error() -> None:
     item = _broken_item()
     problem = item.parse_error
     assert problem is not None
-    (row,) = display_forest([item], build_tree([item]), [])
+    (row,) = display_forest([item], build_tree([item]), [], recent_limit=DEFAULT_RECENT_LIMIT)
     assert row.note is not None
     assert problem in row.note
 
@@ -100,7 +132,7 @@ def test_broken_record_label_is_visibly_marked() -> None:
     # с клавиатуры — пометка обязана быть в самой метке строки  # noqa: RUF003
     # (находка финального ревью 07.08.2026).
     item = _broken_item()
-    (row,) = display_forest([item], build_tree([item]), [])
+    (row,) = display_forest([item], build_tree([item]), [], recent_limit=DEFAULT_RECENT_LIMIT)
     assert row_label(row) == f"Битая {BROKEN_SUFFIX}"
 
 
@@ -120,7 +152,7 @@ def test_filter_matches_name_without_the_marker() -> None:
     # Пометка — свойство показа, а не имени: поиск идёт по row.label,  # noqa: RUF003
     # поэтому суффикс не мешает найти базу и не находится сам.
     item = _broken_item()
-    forest = display_forest([item], build_tree([item]), [])
+    forest = display_forest([item], build_tree([item]), [], recent_limit=DEFAULT_RECENT_LIMIT)
     assert [row.label for row in filter_rows(forest, "битая")] == ["Битая"]
     assert filter_rows(forest, "не разобрано") == []
 
@@ -142,7 +174,9 @@ def test_common_branch_collects_items_and_errors() -> None:
         )
     )
     error = CommonListError(Path(r"C:\нет.v8i"), "нет файла")
-    forest = display_forest(items + common, build_tree(items), [error])
+    forest = display_forest(
+        items + common, build_tree(items), [error], recent_limit=DEFAULT_RECENT_LIMIT
+    )
     branch = next(row for row in forest if row.label == "Общие списки")
     labels = [row.label for row in branch.children]
     assert "Общая" in labels
@@ -366,5 +400,10 @@ def test_is_degraded_group(connect: str | None, degraded: bool) -> None:
 
 
 def test_degraded_group_row_carries_a_warning() -> None:
-    rows = display_forest([_group_item(connect="")], build_tree([_group_item(connect="")]), [])
+    rows = display_forest(
+        [_group_item(connect="")],
+        build_tree([_group_item(connect="")]),
+        [],
+        recent_limit=DEFAULT_RECENT_LIMIT,
+    )
     assert EMPTY_CONNECT_NOTE in (rows[0].note or "")

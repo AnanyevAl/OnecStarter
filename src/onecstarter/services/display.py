@@ -16,7 +16,6 @@ from onecstarter.domain.version import Arch, Installation
 from onecstarter.services.catalog import CommonListError, TreeNode, build_tree
 from onecstarter.services.model import InfobaseItem, InfobaseSource
 
-RECENT_LIMIT = 10
 CONTENT_NAME_LIMIT = 10
 # Помечает подгруппу в плоском списке имён `group_contents`: без пометки
 # «Розница» (подгруппа) неотличима от «Демо Розница» (база внутри неё) —
@@ -73,13 +72,20 @@ def display_forest(
     items: Sequence[InfobaseItem],
     tree: Sequence[TreeNode],
     common_errors: Sequence[CommonListError],
+    *,
+    recent_limit: int,
 ) -> list[Row]:
     """Собрать лес раздела: Избранное, Недавние, дерево файла, Общие списки.
 
     Пустые виртуальные ветки не показываются — они шум. Порядок записей
     внутри веток повторяет порядок items (он уже отсортирован по OrderInList),
     Недавние — по времени запуска, новые сверху.
-    """
+
+    `recent_limit` — обязательный аргумент, а не константа с умолчанием:
+    это пользовательская настройка (спека §5), и значение по умолчанию
+    здесь было бы вторым источником истины рядом с
+    `settings.DEFAULT_RECENT_LIMIT`. `0` гасит ветку целиком.
+    """  # noqa: RUF002
     forest: list[Row] = []
     bases = [item for item in items if not item.is_group]
     favorites = tuple(_base_row(item) for item in bases if item.favorite)
@@ -90,7 +96,7 @@ def display_forest(
         key=lambda item: item.last_launched_at or _EPOCH,
         reverse=True,
     )
-    recent = tuple(_base_row(item) for item in launched[:RECENT_LIMIT])
+    recent = tuple(_base_row(item) for item in launched[:recent_limit])
     if recent:
         forest.append(Row(RowKind.SECTION, "Недавние", None, recent))
     forest.extend(_row_of(node) for node in tree)

@@ -86,6 +86,7 @@ def _view(
         workspace,
         installations=installations,
         cfg_rules=[],
+        recent_limit=lambda: 10,
         on_error=recorded.append,
         **kwargs,
     )
@@ -788,7 +789,7 @@ def test_ctrl_1_on_web_base_does_nothing(qtbot, workspace_factory):
 
 def test_panel_follows_selection(qtbot, workspace_factory):
     workspace, _calls, _opened = workspace_factory()
-    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[])
+    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[], recent_limit=lambda: 10)
     qtbot.addWidget(view)
     index = _first_base_index(view)
     view._tree.setCurrentIndex(index)
@@ -940,7 +941,7 @@ def test_f3_launches_in_default_mode(qtbot: Any, workspace_factory: Any) -> None
     поэтому forced_client не передаётся — как у Enter.
     """  # noqa: RUF002
     workspace, calls, _opened = workspace_factory()
-    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[])
+    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[], recent_limit=lambda: 10)
     qtbot.addWidget(view)
     _show_exposed(qtbot, view)
     _select_first_file_base(view)
@@ -953,7 +954,7 @@ def test_f3_launches_in_default_mode(qtbot: Any, workspace_factory: Any) -> None
 
 def test_f4_launches_designer(qtbot: Any, workspace_factory: Any) -> None:
     workspace, calls, _opened = workspace_factory()
-    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[])
+    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[], recent_limit=lambda: 10)
     qtbot.addWidget(view)
     _show_exposed(qtbot, view)
     _select_first_file_base(view)
@@ -972,7 +973,7 @@ def test_f4_does_nothing_for_web_base(qtbot: Any, workspace_factory: Any) -> Non
     задача 8 плана 4a уже закрыла для Ctrl+1/2/3 — здесь он не должен вернуться.
     """
     workspace, calls, opened = workspace_factory()
-    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[])
+    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[], recent_limit=lambda: 10)
     qtbot.addWidget(view)
     _show_exposed(qtbot, view)
     _select_first_web_base(view)
@@ -985,7 +986,7 @@ def test_f4_does_nothing_for_web_base(qtbot: Any, workspace_factory: Any) -> Non
 
 def test_f3_opens_browser_for_web_base(qtbot: Any, workspace_factory: Any) -> None:
     workspace, _calls, opened = workspace_factory()
-    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[])
+    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[], recent_limit=lambda: 10)
     qtbot.addWidget(view)
     _show_exposed(qtbot, view)
     _select_first_web_base(view)
@@ -1006,7 +1007,7 @@ def test_f3_and_f4_shortcuts_are_registered_on_view(qtbot: Any, workspace_factor
     даже если окружение теста изменится.
     """
     workspace, _calls, _opened = workspace_factory()
-    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[])
+    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[], recent_limit=lambda: 10)
     qtbot.addWidget(view)
 
     sequences = {shortcut.key().toString() for shortcut in view.findChildren(QShortcut)}
@@ -1050,7 +1051,13 @@ def test_theme_switch_leaves_no_stale_colours(qtbot: Any, workspace_factory: Any
     (спека 4b, §2.4).
     """  # noqa: RUF002
     workspace, _calls, _opened = workspace_factory()
-    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[], palette=theme.DARK)
+    view = BasesView(
+        workspace,
+        installations=INSTALLED,
+        cfg_rules=[],
+        recent_limit=lambda: 10,
+        palette=theme.DARK,
+    )
     qtbot.addWidget(view)
 
     view.apply_palette(theme.LIGHT)
@@ -1077,7 +1084,7 @@ def test_ctrl_n_shortcut_is_registered_on_view(qtbot: Any, workspace_factory: An
     в офскрин-тесте без монопатча — здесь достаточно проверить саму привязку.
     """  # noqa: RUF002
     workspace, _calls, _opened = workspace_factory()
-    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[])
+    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[], recent_limit=lambda: 10)
     qtbot.addWidget(view)
 
     sequences = {shortcut.key().toString() for shortcut in view.findChildren(QShortcut)}
@@ -2328,7 +2335,7 @@ def test_alt_up_and_alt_down_shortcuts_are_registered_on_view(
 ) -> None:
     """Подстраховка отдельно от поведения — тот же приём, что у F3/F4/Ctrl+N."""  # noqa: RUF002
     workspace, _calls, _opened = workspace_factory()
-    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[])
+    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[], recent_limit=lambda: 10)
     qtbot.addWidget(view)
 
     sequences = {shortcut.key().toString() for shortcut in view.findChildren(QShortcut)}
