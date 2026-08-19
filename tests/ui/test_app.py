@@ -1406,7 +1406,7 @@ def _capture_window(monkeypatch: Any) -> dict[str, Any]:
 
 
 def test_run_smoke_writes_shortcut_and_reports_zero(
-    tmp_path: Any, monkeypatch: Any, qtbot: Any
+    tmp_path: Any, monkeypatch: Any, qtbot: Any, caplog: Any
 ) -> None:
     """Успешная самопроверка: код 0, окно показано, `smoke.lnk` записан.
 
@@ -1414,6 +1414,13 @@ def test_run_smoke_writes_shortcut_and_reports_zero(
     и общие списки мгновенны на пустом окружении, спека §5 задачи 8):
     ни `ibases.v8i`, ни `1cestart.cfg` не создаются — build_runtime
     и без них честно собирает пустой pending-Workspace.
+
+    Строка `smoke: frozen=False` — единственная быстрая (без полной сборки)
+    защита метки достоверности §3.3 спеки: без неё смену `_log.info` на
+    `_log.debug` или правку текста строки поймал бы только тяжёлый
+    `build/smoke.py`, гоняемый лишь при полной сборке (задача 10, круг
+    исправлений 1). Из исходников `sys.frozen` отсутствует, поэтому
+    ожидаемое значение — `False`, не `True`.
     """
     monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
     captured = _capture_window(monkeypatch)
@@ -1421,8 +1428,10 @@ def test_run_smoke_writes_shortcut_and_reports_zero(
     target = tmp_path / "out"
     target.mkdir()
 
-    assert run_smoke(str(target), {"APPDATA": str(appdata)}) == 0
+    with caplog.at_level(logging.INFO):
+        assert run_smoke(str(target), {"APPDATA": str(appdata)}) == 0
 
+    assert "smoke: frozen=False" in caplog.text
     assert (target / "smoke.lnk").exists()
     qtbot.addWidget(captured["window"])
 
