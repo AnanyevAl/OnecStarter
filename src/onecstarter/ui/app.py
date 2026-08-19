@@ -235,6 +235,9 @@ def run_smoke(
     не порождаются (обе фоновые задачи работают с тем, что в `env`).
     Ярлык пишется с фактическим `frozen`: в сборке исполняется ветка
     `frozen=True` (шаг 8 задачи 17, долг №7), из исходников — `frozen=False`.
+    То же значение уходит в лог явной строкой (`smoke: frozen=...`, задача 10,
+    спека §3.3) — раньше факт `sys.frozen == True` в сборке подтверждался
+    только косвенно, через совпадение цели ярлыка с запущенным exe.
 
     `make_tasks` — та же инъекция фабрики фоновых задач, что у `run_launch`,
     только для теста таймаута: молчаливая замена (`spawn`, ничего не
@@ -273,8 +276,14 @@ def run_smoke(
     if any(pending.values()):
         _log.error("smoke: фоновые задачи не завершились за %d мс", timeout_ms)
         return 1
+    frozen = bool(getattr(sys, "frozen", False))
+    # Строка для build/smoke.py (задача 10, спека §3.3): явная, а не косвенная  # noqa: RUF003
+    # через цель ярлыка, проверка того, что собранный exe исполняет
+    # frozen-ветку. Значение — булев признак сборки, не пользовательские
+    # данные (инвариант 5).
+    _log.info("smoke: frozen=%s", frozen)
     target, arguments = shortcut_command(
-        sys.executable, "OneCStarter smoke", frozen=bool(getattr(sys, "frozen", False))
+        sys.executable, "OneCStarter smoke", frozen=frozen
     )
     payload = build_shell_link(target, arguments, target.parent, "OneCStarter smoke")
     atomic_write(Path(target_dir) / "smoke.lnk", payload)

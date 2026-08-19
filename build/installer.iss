@@ -30,6 +30,16 @@ Source: "..\dist\OneCStarter\*"; DestDir: "{app}"; Flags: recursesubdirs ignorev
 [Icons]
 Name: "{userprograms}\OneCStarter"; Filename: "{app}\OneCStarter.exe"
 
+[Registry]
+; Значение автозапуска пишет само приложение (спека §3.1: истина — реестр).
+; Установщик его не создаёт (dontcreatekey), но обязан убрать при удалении:
+; иначе после деинсталляции Windows будет пытаться запустить стёртый exe.
+; **[Из документации Inno Setup, не проверено]** — ISCC.exe на машине сборки
+; недоступен (Inno Setup не установлен), реальный прогон установщика/
+; деинсталлятора не выполнялся. Метку поднять только после проверки на
+; собранном установщике (спека §3.5).
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "OneCStarter"; Flags: dontcreatekey uninsdeletevalue
+
 [Run]
 Filename: "{app}\OneCStarter.exe"; Description: "{cm:LaunchProgram,OneCStarter}"; Flags: nowait postinstall skipifsilent
 

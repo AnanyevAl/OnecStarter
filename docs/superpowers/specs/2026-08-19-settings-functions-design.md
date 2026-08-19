@@ -96,8 +96,14 @@
 
 - **[Проверено, 19.08.2026]** При запуске из исходников `sys.frozen`
   отсутствует (замер: `getattr(sys, "frozen", False) == False`).
-- **[Из документации PyInstaller]** В собранном exe `sys.frozen == True`;
-  подтверждается smoke-тестом сборки (`build/smoke.py`) при реализации.
+- **[Проверено, 20.08.2026]** В собранном exe `sys.frozen == True`:
+  `run_smoke` (`src/onecstarter/ui/app.py`) пишет в лог явную строку
+  `smoke: frozen=<значение>`, а `build/smoke.py` (задача 10) проверяет,
+  что записано именно `smoke: frozen=True`. Проверено сборкой
+  `build/build.ps1 -SkipInstaller` (PyInstaller 6.22.1, `smoke: OK`,
+  код выхода 0) и повторным ручным запуском
+  `OneCStarterc.exe --smoke <каталог>` с подменённым `APPDATA` —
+  в логе присутствует строка `smoke: frozen=True`.
 
 ### 3.4. Тихий старт
 
