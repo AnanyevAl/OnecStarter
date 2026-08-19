@@ -6,6 +6,7 @@ from typing import Any
 from PySide6.QtWidgets import QApplication
 
 from onecstarter.services.settings import ThemeMode
+from onecstarter.ui.settings_store import SettingsStore
 from onecstarter.ui.settings_view import SettingsView
 from onecstarter.ui.theme_controller import ThemeController
 
@@ -13,7 +14,9 @@ from onecstarter.ui.theme_controller import ThemeController
 def _view(
     qtbot: Any, application: QApplication, path: Path
 ) -> tuple[SettingsView, ThemeController]:
-    controller = ThemeController(application, path, system_mode=lambda: ThemeMode.DARK)
+    controller = ThemeController(
+        application, SettingsStore(path), system_mode=lambda: ThemeMode.DARK
+    )
     view = SettingsView(controller)
     qtbot.addWidget(view)
     return view, controller

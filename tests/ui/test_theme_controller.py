@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QApplication
 
 from onecstarter.services.settings import Settings, ThemeMode, save_settings
 from onecstarter.ui import theme
+from onecstarter.ui.settings_store import SettingsStore
 from onecstarter.ui.theme_controller import ThemeController
 
 
@@ -18,7 +19,7 @@ def application(qapp: QApplication) -> QApplication:
 def _controller(
     application: QApplication, path: Path, system: ThemeMode = ThemeMode.DARK
 ) -> ThemeController:
-    return ThemeController(application, path, system_mode=lambda: system)
+    return ThemeController(application, SettingsStore(path), system_mode=lambda: system)
 
 
 def test_starts_from_saved_mode(application: QApplication, tmp_path: Path) -> None:
@@ -57,7 +58,7 @@ def test_refresh_system_repaints_only_in_auto(
     """В AUTO смена системной темы меняет палитру; при явном выборе — нет."""  # noqa: RUF002
     current = {"mode": ThemeMode.DARK}
     controller = ThemeController(
-        application, tmp_path / "s.json", system_mode=lambda: current["mode"]
+        application, SettingsStore(tmp_path / "s.json"), system_mode=lambda: current["mode"]
     )
     current["mode"] = ThemeMode.LIGHT
     controller.refresh_system()
@@ -74,7 +75,7 @@ def test_controller_exposes_its_settings_path(
 ) -> None:
     """Разделу настроек нужен живой путь для подписи — не литерал %APPDATA%."""
     target = tmp_path / "settings.json"
-    controller = ThemeController(qapp, target, system_mode=lambda: ThemeMode.DARK)
+    controller = ThemeController(qapp, SettingsStore(target), system_mode=lambda: ThemeMode.DARK)
     assert controller.path == target
 
 

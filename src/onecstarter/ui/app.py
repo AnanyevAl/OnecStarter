@@ -34,6 +34,7 @@ from onecstarter.ui import app_icon, rail_icons, theme
 from onecstarter.ui.background import StartupTasks
 from onecstarter.ui.bases.view import BasesView
 from onecstarter.ui.hotkey import GlobalHotkey
+from onecstarter.ui.settings_store import SettingsStore
 from onecstarter.ui.settings_view import SettingsView
 from onecstarter.ui.shell import MainWindow
 from onecstarter.ui.theme_controller import ThemeController
@@ -301,7 +302,8 @@ def _build_main_window(
     глифа — `onecstarter.ui.app_icon`.
     """  # noqa: RUF002
     application.setWindowIcon(app_icon.application_icon())
-    controller = ThemeController(application, runtime.settings)
+    store = SettingsStore(runtime.settings, parent=application)
+    controller = ThemeController(application, store)
     # installations=None: колонка версии покажет «…» до первого
     # apply_installations — Workspace на этом этапе тоже ещё pending
     # (build_runtime больше не обнаруживает платформы сам).
