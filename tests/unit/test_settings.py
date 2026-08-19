@@ -6,6 +6,8 @@ from pathlib import Path
 import pytest
 
 from onecstarter.services.settings import (
+    DEFAULT_HOTKEY,
+    DEFAULT_RECENT_LIMIT,
     SCHEMA_VERSION,
     Settings,
     ThemeMode,
@@ -28,7 +30,13 @@ def test_schema_is_written(tmp_path: Path) -> None:
     path = tmp_path / "settings.json"
     save_settings(path, Settings(theme=ThemeMode.DARK))
     payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload == {"schema": SCHEMA_VERSION, "theme": "dark"}
+    assert payload == {
+        "schema": SCHEMA_VERSION,
+        "theme": "dark",
+        "close_to_tray": True,
+        "hotkey": "Ctrl+Alt+B",
+        "recent_limit": 10,
+    }
 
 
 def test_unknown_theme_value_falls_back_to_auto(tmp_path: Path) -> None:
@@ -95,3 +103,87 @@ def test_save_reports_failure(tmp_path: Path) -> None:
     # Родитель существует и доступен: отказ пришёл именно с записи, а не  # noqa: RUF003
     # с создания каталога.  # noqa: RUF003
     assert path.parent.is_dir()
+
+
+def test_defaults_of_new_fields() -> None:
+    """Дефолты не меняют поведение работающей программы (спека §1)."""
+    settings = Settings()
+    assert settings.close_to_tray is True
+    assert settings.hotkey == DEFAULT_HOTKEY
+    assert settings.recent_limit == DEFAULT_RECENT_LIMIT
+    assert DEFAULT_RECENT_LIMIT == 10
+    assert DEFAULT_HOTKEY == "Ctrl+Alt+B"
+
+
+def test_old_file_without_new_keys_reads_with_defaults(tmp_path: Path) -> None:
+    """Файл прошлой версии читается без миграции — схема та же (спека §6.1)."""
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"schema": 1, "theme": "light"}), encoding="utf-8")
+    assert load_settings(path) == Settings(theme=ThemeMode.LIGHT)
+    assert not path.with_name("settings.json.bad").exists()
+
+
+def test_round_trip_keeps_all_fields(tmp_path: Path) -> None:
+    path = tmp_path / "settings.json"
+    settings = Settings(
+        theme=ThemeMode.DARK, close_to_tray=False, hotkey="Win+F9", recent_limit=0
+    )
+    save_settings(path, settings)
+    assert load_settings(path) == settings
+
+
+def test_all_fields_are_written(tmp_path: Path) -> None:
+    path = tmp_path / "settings.json"
+    save_settings(path, Settings())
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload == {
+        "schema": SCHEMA_VERSION,
+        "theme": "auto",
+        "close_to_tray": True,
+        "hotkey": "Ctrl+Alt+B",
+        "recent_limit": 10,
+    }
+
+
+@pytest.mark.parametrize("value", ["да", 1, None, [], {}])
+def test_broken_close_to_tray_falls_back(tmp_path: Path, value: object) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text(
+        json.dumps({"schema": 1, "close_to_tray": value}), encoding="utf-8"
+    )
+    assert load_settings(path).close_to_tray is True
+
+
+def test_empty_hotkey_means_disabled_not_default(tmp_path: Path) -> None:
+    """Пустая строка — валидное «выключен» (спека §4.5), а не повод к дефолту."""  # noqa: RUF002
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"schema": 1, "hotkey": "   "}), encoding="utf-8")
+    assert load_settings(path).hotkey == ""
+
+
+@pytest.mark.parametrize("value", ["Shift+B", "мусор", "B", 42, None])
+def test_unusable_hotkey_falls_back_to_default(tmp_path: Path, value: object) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"schema": 1, "hotkey": value}), encoding="utf-8")
+    assert load_settings(path).hotkey == DEFAULT_HOTKEY
+
+
+def test_hotkey_is_canonicalized_on_read(tmp_path: Path) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"schema": 1, "hotkey": "alt+ctrl+b"}), encoding="utf-8")
+    assert load_settings(path).hotkey == "Ctrl+Alt+B"
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(0, 0), (50, 50), (7, 7), (-3, 0), (999, 50), (10.5, 10), ("10", 10), (True, 10)],
+)
+def test_recent_limit_is_clamped(tmp_path: Path, value: object, expected: int) -> None:
+    """Границы 0-50; не-целое и bool — в дефолт.  # noqa: RUF003
+
+    `True` проверяется отдельно: в Python `bool` — подкласс `int`, и без
+    явной проверки `{"recent_limit": true}` прошло бы как 1.
+    """
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"schema": 1, "recent_limit": value}), encoding="utf-8")
+    assert load_settings(path).recent_limit == expected
