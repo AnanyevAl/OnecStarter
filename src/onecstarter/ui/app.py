@@ -404,9 +404,26 @@ def _build_main_window(
         _set_tray_tooltip(tray, text, busy=True)
         return f"Сочетание {text} занято другим приложением"
 
+    recent_limit_seen = store.settings.recent_limit
+
+    def rebuild_if_recent_limit_changed() -> None:
+        # Круг исправлений 1, находка 2: `store.changed` эмитируется на  # noqa: RUF003
+        # любую настройку, а дереву есть дело только до `recent_limit`  # noqa: RUF003
+        # («Недавние» строятся по этому числу). Смена темы уже перестраивает
+        # дерево своим путём (controller.changed → on_theme_changed →
+        # view.apply_palette → rebuild()) — безусловная перестройка здесь
+        # дублировала бы её, а close_to_tray/хоткей к дереву отношения  # noqa: RUF003
+        # не имеют вовсе (решение заказчика 20.08.2026).
+        nonlocal recent_limit_seen
+        current = store.settings.recent_limit
+        if current == recent_limit_seen:
+            return
+        recent_limit_seen = current
+        view.rebuild()
+
     apply_close_to_tray()
     store.changed.connect(apply_close_to_tray)
-    store.changed.connect(lambda: view.rebuild())
+    store.changed.connect(rebuild_if_recent_limit_changed)
     settings_view.set_hotkey_handler(apply_hotkey)
 
     problem = apply_hotkey(store.settings.hotkey)
