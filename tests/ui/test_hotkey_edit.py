@@ -5,7 +5,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import QApplication
 
-from onecstarter.services.hotkeys import MOD_ALT, MOD_CONTROL
+from onecstarter.services.hotkeys import MOD_ALT, MOD_CONTROL, key_name_for_vk
 from onecstarter.ui.hotkey_edit import HotkeyEdit, spec_from_event
 
 
@@ -175,6 +175,10 @@ def test_cyrillic_key_without_latin_counterpart_is_still_rejected(
     [
         (Qt.Key.Key_B, "B"),
         (Qt.Key.Key_1, "1"),
+        # `0` и `F10` — не для симметрии: на них пережила набор мутация
+        # `.replace("0", "")`, превращавшая `F10` в `F1`, а `0` — в отказ.  # noqa: RUF003
+        (Qt.Key.Key_0, "0"),
+        (Qt.Key.Key_F10, "F10"),
         # F-клавиша обязательна: у неё единственной имя многосимвольное,  # noqa: RUF003
         # и только на ней видно, что запасной путь не режет и не путает имя.
         # F12, а не F5, — по той же причине, что и в тесте драйверного пути:  # noqa: RUF003
@@ -345,3 +349,43 @@ def test_driver_code_names_every_form_of_key(
     assert spec is not None
     assert spec.key == expected
     assert spec.vk == native_vk
+
+
+def test_every_supported_driver_code_names_itself(application: QApplication) -> None:
+    """Перебор всех кодов `0x00`–`0xFF`, а не три удачных представителя.
+
+    Три волны мутационной проверки подряд отвечали на вопрос «закрыт ли класс
+    искажений имени» одинаково: «добавьте ещё представителя» — сначала `F5`
+    к `B`, потом `F12` вместо `F5`, потом на очереди оказались `0` и `F10`
+    (мутация `.replace("0", "")` пережила все 1242 теста, превращая
+    `Ctrl+Alt+F10` в `Ctrl+Alt+F1`, а `Ctrl+Alt+0` — в отказ). Спор о выборе
+    представителей дороже самого перебора, а утверждение при переборе
+    перестаёт быть «мы взяли удачные примеры» и становится «каждая
+    поддержанная клавиша именуется собой».
+
+    Диапазоны здесь не перечисляются: что поддержано, знает `key_name_for_vk`,
+    и тест спрашивает её — потому расширение таблицы автоматически попадёт
+    под перебор, в отличие от `test_key_name_for_vk_agrees_with_parse_hotkey`
+    (тот перебирает `services` и в `ui` не заглядывает вовсе — дублирование
+    здесь кажущееся, слой другой).
+
+    `key()` на каждой итерации задан заведомо не тем — кириллической «Б»,
+    у которой латинского эквивалента нет: так каждая итерация заодно
+    закрепляет приоритет драйверного кода над раскладкой.
+    """  # noqa: RUF002
+    modifiers = Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier
+    supported = 0
+    for vk in range(0x100):
+        event = _press(KEY_CYRILLIC_BE, modifiers, native_vk=vk, native_scan=1)
+        spec = spec_from_event(event)
+        name = key_name_for_vk(vk)
+        if name is None:
+            assert spec is None, f"код 0x{vk:02X} не поддержан, но принят как {spec}"
+            continue
+        supported += 1
+        assert spec is not None, f"код 0x{vk:02X} — это {name}, но нажатие отвергнуто"
+        assert spec.key == name
+        assert spec.vk == vk
+    # Сторож самого перебора: молча опустевшая таблица превратила бы тест
+    # в проверку одних отказов, и он остался бы зелёным ни на чём.
+    assert supported == 10 + 26 + 12
