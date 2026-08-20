@@ -288,24 +288,49 @@ def test_numpad_key_is_not_silently_taken_for_the_main_row(
     assert spec_from_event(event) is None
 
 
-def test_shifted_digit_is_named_by_the_driver_not_by_the_punctuation(
+@pytest.mark.parametrize(
+    ("key", "native_vk", "extra_modifier", "expected"),
+    [
+        # Буква: `key()` кириллический, драйверный код латинский.
+        (KEY_CYRILLIC_I, VK_B, Qt.KeyboardModifier.NoModifier, "B"),
+        # Цифра под Shift: `key()` отдаёт `@`, драйвер — цифру `2`.
+        (Qt.Key.Key_At, 0x32, Qt.KeyboardModifier.ShiftModifier, "2"),
+        # F-клавиша: единственная форма с многосимвольным именем.  # noqa: RUF003
+        (Qt.Key.Key_F5, 0x74, Qt.KeyboardModifier.NoModifier, "F5"),
+    ],
+)
+def test_driver_code_names_every_form_of_key(
+    key: Qt.Key | int,
+    native_vk: int,
+    extra_modifier: Qt.KeyboardModifier,
+    expected: str,
     application: QApplication,
 ) -> None:
-    """`Ctrl+Alt+Shift+2` на US-раскладке, где `key()` отдаёт `@`.
+    """Драйверный путь именует все три формы имени, и `vk` совпадает с нажатым.
 
-    Правка расширила набор принимаемых нажатий, и расширение полезное:
-    имя берётся у драйвера (`0x32` — цифра `2`), а не у символа, который
-    получился бы с учётом Shift. До правки такое нажатие отвергалось,
-    хотя `RegisterHotKey` принял бы его без разговоров.
+    Три формы, а не одна (находка мутационной проверки 20.08.2026, вторая
+    волна): прошлая волна параметризовала так **запасной** путь, а основной —
+    драйверный, по которому идёт каждое реальное нажатие, — остался закреплён
+    только односимвольными именами. Мутация `(key_name_for_vk(vk) or "")[:1]`
+    пережила из-за этого весь набор из 1240 тестов, превращая и `F5`, и `F12`
+    в `Ctrl+Alt+F`: не отказ, а тихая подмена на другое рабочее сочетание.
+
+    Сверка `spec.vk == native_vk` здесь не украшение, а суть: именно она ловит
+    случай, когда имя на экране одно, а регистрация уходит на другую клавишу.
+
+    Заодно закреплено полезное расширение набора: `Ctrl+Alt+Shift+2`
+    на US-раскладке до правки отвергалось, хотя `RegisterHotKey` принял бы
+    его без разговоров.
     """  # noqa: RUF002
     event = _press(
-        Qt.Key.Key_At,
+        key,
         Qt.KeyboardModifier.ControlModifier
         | Qt.KeyboardModifier.AltModifier
-        | Qt.KeyboardModifier.ShiftModifier,
-        native_vk=0x32,
+        | extra_modifier,
+        native_vk=native_vk,
         native_scan=3,
     )
     spec = spec_from_event(event)
     assert spec is not None
-    assert spec.key == "2"
+    assert spec.key == expected
+    assert spec.vk == native_vk
