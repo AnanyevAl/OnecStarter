@@ -252,43 +252,55 @@ def run_smoke(
         _log.exception("smoke: рантайм не собрался")
         return 1
     window, built_tasks = _build_main_window(application, runtime, env)
-    tasks = built_tasks if make_tasks is None else make_tasks()
-    pending = {"installations": True, "common": True}
-    loop = QEventLoop()
+    try:
+        tasks = built_tasks if make_tasks is None else make_tasks()
+        pending = {"installations": True, "common": True}
+        loop = QEventLoop()
 
-    def done(kind: str) -> None:
-        pending[kind] = False
-        if not any(pending.values()):
-            loop.quit()
+        def done(kind: str) -> None:
+            pending[kind] = False
+            if not any(pending.values()):
+                loop.quit()
 
-    tasks.installations_ready.connect(lambda _found: done("installations"))
-    tasks.common_lists_ready.connect(lambda _data: done("common"))
-    timer = QTimer()
-    timer.setSingleShot(True)
-    timer.timeout.connect(loop.quit)
-    timer.start(timeout_ms)
-    window.show()
-    _log.info("smoke: окно показано")
-    tasks.start()
-    if any(pending.values()):
-        loop.exec()
-    timer.stop()
-    if any(pending.values()):
-        _log.error("smoke: фоновые задачи не завершились за %d мс", timeout_ms)
-        return 1
-    frozen = bool(getattr(sys, "frozen", False))
-    # Строка для build/smoke.py (задача 10, спека §3.3): явная, а не косвенная  # noqa: RUF003
-    # через цель ярлыка, проверка того, что собранный exe исполняет
-    # frozen-ветку. Значение — булев признак сборки, не пользовательские
-    # данные (инвариант 5).
-    _log.info("smoke: frozen=%s", frozen)
-    target, arguments = shortcut_command(
-        sys.executable, "OneCStarter smoke", frozen=frozen
-    )
-    payload = build_shell_link(target, arguments, target.parent, "OneCStarter smoke")
-    atomic_write(Path(target_dir) / "smoke.lnk", payload)
-    _log.info("smoke: ярлык записан")
-    return 0
+        tasks.installations_ready.connect(lambda _found: done("installations"))
+        tasks.common_lists_ready.connect(lambda _data: done("common"))
+        timer = QTimer()
+        timer.setSingleShot(True)
+        timer.timeout.connect(loop.quit)
+        timer.start(timeout_ms)
+        window.show()
+        _log.info("smoke: окно показано")
+        tasks.start()
+        if any(pending.values()):
+            loop.exec()
+        timer.stop()
+        if any(pending.values()):
+            _log.error("smoke: фоновые задачи не завершились за %d мс", timeout_ms)
+            return 1
+        frozen = bool(getattr(sys, "frozen", False))
+        # Строка для build/smoke.py (задача 10, спека §3.3): явная, а не косвенная  # noqa: RUF003
+        # через цель ярлыка, проверка того, что собранный exe исполняет
+        # frozen-ветку. Значение — булев признак сборки, не пользовательские
+        # данные (инвариант 5).
+        _log.info("smoke: frozen=%s", frozen)
+        target, arguments = shortcut_command(
+            sys.executable, "OneCStarter smoke", frozen=frozen
+        )
+        payload = build_shell_link(target, arguments, target.parent, "OneCStarter smoke")
+        atomic_write(Path(target_dir) / "smoke.lnk", payload)
+        _log.info("smoke: ярлык записан")
+        return 0
+    finally:
+        # `run_smoke` не крутит `application.exec()` — `aboutToQuit` не
+        # наступает, и без явного снятия здесь собранный exe держал бы
+        # сочетание занятым системой до конца процесса при каждой
+        # самопроверке (находка финального ревью ветки, п. 9, продолжение).
+        # `getattr` — `window.global_hotkey` объявлено `object | None`
+        # (окну не положено знать настоящий тип, см. `ui/shell.py`).
+        hotkey = getattr(window, "global_hotkey", None)
+        if hotkey is not None:
+            hotkey.dispose()
+            application.removeNativeEventFilter(hotkey)
 
 
 def _set_tray_tooltip(
@@ -386,9 +398,22 @@ def _build_main_window(
         theme_mode=lambda: controller.mode,
         on_theme=controller.set_mode,
     )
+    window.tray_available = tray is not None
+
     hotkey = GlobalHotkey(window.show_and_focus_search)
     application.installNativeEventFilter(hotkey)
-    application.aboutToQuit.connect(hotkey.dispose)
+
+    def dispose_hotkey() -> None:
+        # Фильтр ставит не сам `GlobalHotkey` — его ставит эта функция  # noqa: RUF003
+        # строкой выше (`application.installNativeEventFilter`), значит и
+        # снимать обязан тот же владелец (находка финального ревью ветки,
+        # п. 9): `GlobalHotkey.dispose()` снимает только регистрацию
+        # `RegisterHotKey`, `removeNativeEventFilter` без этой обёртки
+        # не звался вовсе.
+        hotkey.dispose()
+        application.removeNativeEventFilter(hotkey)
+
+    application.aboutToQuit.connect(dispose_hotkey)
     # Ссылки на окне — тестам и на время жизни процесса: без них store
     # и хоткей собрал бы сборщик мусора сразу после выхода из функции.
     window.settings_store = store
@@ -468,8 +493,14 @@ def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
     """Обычный запуск. `start_hidden` — старт при входе в Windows (спека §3.4).
 
     Тихий старт показывает окно всё равно, если трея нет: невидимый процесс,
-    который нечем вызвать, пользователю не принадлежит.
-    """
+    который нечем вызвать, пользователю не принадлежит. Признак — доступность
+    трея САМА ПО СЕБЕ (`window.tray_available`), не `window.close_to_tray`
+    (находка финального ревью ветки, п. 2): то поле уже смешивает настройку
+    крестика И доступность трея через AND (спека §2), и пользователь,
+    выключивший «сворачивание в трей» и включивший автозапуск, получал бы
+    окно в лицо при каждом входе в Windows, хотя трей жив и скрываться
+    было чем.
+    """  # noqa: RUF002
     application = QApplication(argv if argv is not None else sys.argv)
     application.setApplicationName("OneCStarter")
     application.setStyleSheet(theme.stylesheet(theme.DARK))
@@ -491,7 +522,7 @@ def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
         return 1
 
     window, tasks = _build_main_window(application, runtime, os.environ)
-    if start_hidden and window.close_to_tray:
+    if start_hidden and window.tray_available:
         _log.info("тихий старт: окно скрыто, программа в трее")
     else:
         window.show()

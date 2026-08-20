@@ -14,6 +14,7 @@ from PySide6.QtCore import (
     QObject,
     QTimer,
     Signal,
+    SignalInstance,
 )
 from PySide6.QtWidgets import (
     QApplication,
@@ -730,6 +731,28 @@ def assembled_hidden_start_without_tray(
     )
 
 
+@pytest.fixture
+def assembled_hidden_start_with_tray_and_close_to_tray_off(
+    monkeypatch: Any, qapp: Any, workspace_factory: Any, tmp_path: Any
+) -> Iterator[_Assembly]:
+    """Четвёртая комбинация (находка финального ревью ветки, п. 2): трей есть,
+    `close_to_tray` явно выключен пользователем, тихий автозапуск — окно
+    НЕ показывается.
+
+    До находки `main()` смотрел на `window.close_to_tray` (настройка AND
+    трей доступен, спека §2) вместо доступности трея самой по себе —
+    пользователь, выключивший «сворачивание в трей» и включивший
+    автозапуск, получал окно в лицо при каждом входе в Windows, хотя трей
+    жив и скрываться было чем. Настройки пишутся в файл ДО сборки: `_assemble`
+    указывает `SettingsStore` на `tmp_path / "settings.json"`, и `main()`
+    читает его при построении окна.
+    """  # noqa: RUF002
+    save_settings(tmp_path / "settings.json", Settings(close_to_tray=False))
+    yield from _assemble(
+        monkeypatch, qapp, workspace_factory, tmp_path, _FakeTray(), start_hidden=True
+    )
+
+
 def test_main_returns_the_event_loop_code(assembled: _Assembly) -> None:
     assert assembled.code == 0
 
@@ -841,23 +864,6 @@ def test_main_gives_the_tray_the_real_launcher(assembled: _Assembly) -> None:
     assert len(assembled.launch_calls) == 1
 
 
-def test_main_disposes_the_hotkey_on_quit(assembled: _Assembly, qapp: Any) -> None:
-    """`RegisterHotKey` без парного `UnregisterHotKey` держит сочетание до
-
-    перезагрузки — отвязка обязана быть подключена к `aboutToQuit`.
-
-    Проверяется отключением, а не эмиссией: `aboutToQuit` у живого
-    `QApplication` — сигнал общего пользования, и его настоящая эмиссия
-    посреди прогона дёргает чужие обработчики завершения (наблюдался
-    аварийный выход процесса в следующем же тесте, внутри `setStyleSheet`).
-    `disconnect` отвечает на тот же вопрос — подписка есть или нет —
-    и заодно убирает её за собой.
-    """  # noqa: RUF002
-    disconnected = qapp.aboutToQuit.disconnect(assembled.hotkey.dispose)
-
-    assert disconnected is True
-
-
 def test_main_dresses_the_application_before_the_controller_exists(
     assembled: _Assembly,
 ) -> None:
@@ -953,6 +959,29 @@ def test_main_start_hidden_without_tray_shows_the_window(
     """
     assert assembled_hidden_start_without_tray.window.close_to_tray is False
     assert assembled_hidden_start_without_tray.shown == [1]
+
+
+def test_main_start_hidden_with_tray_and_close_to_tray_off_keeps_the_window_hidden(
+    assembled_hidden_start_with_tray_and_close_to_tray_off: _Assembly,
+) -> None:
+    """Четвёртая комбинация условия показа окна (финальное ревью ветки, п. 2):
+    трей есть, `close_to_tray` выключен пользователем, тихий автозапуск —
+    окно НЕ показывается, потому что скрываться было чем (трей жив, хоткей
+    зарегистрирован), независимо от настройки крестика.
+
+    Прежнее условие (`if start_hidden and window.close_to_tray:`) читало
+    `window.close_to_tray` — поле, УЖЕ смешивающее настройку И доступность
+    трея через AND (спека §2). С выключенной настройкой `close_to_tray`
+    оказывался `False` даже при живом трее, и окно показывалось бы в лицо
+    при каждом входе в Windows. Новое условие смотрит на
+    `window.tray_available` — признак доступности трея САМ ПО СЕБЕ, не
+    смешанный с настройкой (см. докстринг `MainWindow.tray_available`,
+    `ui/shell.py`).
+    """  # noqa: RUF002
+    assembled = assembled_hidden_start_with_tray_and_close_to_tray_off
+    assert assembled.window.close_to_tray is False, "настройка выключена"
+    assert assembled.window.tray_available is True, "но трей доступен"
+    assert assembled.shown == [], "скрываться было чем — окно не показывается"
 
 
 def test_store_changed_rebuilds_the_tree_only_on_recent_limit_change(
@@ -1163,6 +1192,62 @@ def test_build_main_window_installs_the_hotkey_native_filter(
     assert installed == [window.global_hotkey]
 
 
+def test_build_main_window_disposes_hotkey_and_removes_filter_together_on_quit(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """`aboutToQuit` обязан снять и регистрацию хоткея, и нативный фильтр
+    (финальное ревью ветки, п. 9).
+
+    Заменяет `test_main_disposes_the_hotkey_on_quit`: тот сравнивал
+    подключённый слот с `assembled.hotkey.dispose` через `disconnect` —
+    проверка стала неверной, как только `ui/app.py` начал подключать к
+    `aboutToQuit` не `hotkey.dispose` напрямую, а обёртку `dispose_hotkey`
+    (снимает и регистрацию, и `removeNativeEventFilter` — фильтр ставит не
+    `GlobalHotkey`, а `_build_main_window`, значит и снимать обязан тот же
+    владелец). Прямая эмиссия `aboutToQuit` по-прежнему опасна (см. прежний
+    докстринг — сигнал общий для сессионного `qapp`, чужие обработчики
+    завершения от более ранних тестов файла копятся на нём и настоящая
+    эмиссия дёргает их все разом), поэтому здесь перехватывается сам вызов
+    `connect` — `SignalInstance.connect` монкейпатчится на уровне класса
+    (подтверждено пробой: закрытые функции ловятся по ссылке, `disconnect`
+    по ссылке тоже работает — риск именно в РЕАЛЬНОЙ эмиссии, не в перехвате
+    вызова `connect`), подключённый слот вызывается вручную и напрямую —
+    сам `aboutToQuit` ни разу не эмитируется.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    real_remove = QApplication.removeNativeEventFilter
+    removed: list[Any] = []
+
+    def spy_remove(self: Any, event_filter: Any) -> None:
+        removed.append(event_filter)
+        real_remove(self, event_filter)
+
+    monkeypatch.setattr(QApplication, "removeNativeEventFilter", spy_remove)
+
+    real_connect = SignalInstance.connect
+    connected: list[Any] = []
+
+    def spy_connect(self: Any, slot: Any, *args: Any, **kwargs: Any) -> Any:
+        connected.append(slot)
+        return real_connect(self, slot, *args, **kwargs)
+
+    monkeypatch.setattr(SignalInstance, "connect", spy_connect)
+
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+    window, _tasks = _build_main_window(qapp, runtime, env)
+    qtbot.addWidget(window)
+
+    dispose_hotkey = next(
+        slot for slot in connected if getattr(slot, "__name__", "") == "dispose_hotkey"
+    )
+    dispose_hotkey()
+
+    hotkey: Any = window.global_hotkey
+    assert hotkey.disposed is True
+    assert removed == [hotkey]
+
+
 # -- задача 9: проводка настроек — close_to_tray, хоткей, тихий старт --------
 #
 # Ниже — сборка окна поверх настоящих `GlobalHotkey`/`SettingsStore` и
@@ -1280,25 +1365,52 @@ def test_disabled_hotkey_is_not_registered(qapp: Any, tmp_path: Any, monkeypatch
     assert window.global_hotkey.registered is False
 
 
-def test_disabled_hotkey_sets_the_plain_tooltip(qapp: Any, tmp_path: Any, monkeypatch: Any) -> None:
-    """Выключенное сочетание — тултип без сочетания, без балуна (спека §4.3).
+def test_clearing_a_busy_hotkey_resets_the_tooltip_to_plain(
+    qapp: Any, tmp_path: Any, monkeypatch: Any
+) -> None:
+    """Очистка сочетания после «занято» на старте обязана снять его с тултипа (спека §4.3).
 
-    Долг Task 9, п. 1: третий из трёх исходов rebind, которого не было
-    ни разу — до вехи хоткей нельзя было выключить вовсе.
-    """
-    save_settings(_settings_path(tmp_path), Settings(hotkey=""))
+    Долг Task 9, п. 1 — переоткрыт финальным ревью ветки, пункт 1: прежняя
+    редакция (`test_disabled_hotkey_sets_the_plain_tooltip`) сверяла
+    `tooltips[-1]` со значением по умолчанию `"OneCStarter"` — той же
+    строкой, что `create_tray` (`ui/tray.py:87`) ставит ПРИ СОЗДАНИИ трея,
+    ещё до всякой логики хоткея. Тест поэтому проходил и на сломанной
+    реализации: доказано мутацией ревьюера (`_set_tray_tooltip(tray, None)`
+    убрана из ветки выключенного хоткея, `ui/app.py:405-408`) — **1207
+    passed**, ни один тест не покраснел. Причина: и «трей только что создан»,
+    и «хоткей выключен» дают один и тот же текст, так что мутация ничего
+    не портит с точки зрения этого сравнения.
+
+    Здесь тултип обязан пройти состояние, ОТЛИЧНОЕ от дефолтного («занято»),
+    и только потом вернуться к чистому — переход, а не значение по
+    умолчанию. Сценарий отказа из находки: сочетание занято на старте →
+    тултип «OneCStarter — Ctrl+Alt+B занято другим приложением». Пользователь
+    очищает поле в «Настройках» → без рабочей ветки `apply_hotkey` тултип
+    застрял бы на «занято» до конца сессии.
+    """  # noqa: RUF002
+    save_settings(_settings_path(tmp_path), Settings(hotkey=DEFAULT_HOTKEY))
     tooltips: list[str] = []
     messages: list[tuple[str, str]] = []
-    _window_with_settings(
+    window = _window_with_settings(
         qapp,
         tmp_path,
         monkeypatch,
         tray_available=True,
+        register_result=0,  # занято на старте
         tooltips=tooltips,
         messages=messages,
     )
+    assert "занято" in tooltips[-1]
+    balloons_after_start = len(messages)
+
+    window.show_section(1)
+    settings_view = window.current_section()
+    settings_view.hotkey_edit().captured.emit("")
+
     assert tooltips[-1] == "OneCStarter"
-    assert messages == []
+    # Очистка сочетания сама по себе — не повод для балуна (тот показывается  # noqa: RUF003
+    # только при занятости на старте, спека §4.3); число балунов не растёт.
+    assert len(messages) == balloons_after_start
 
 
 def test_success_hotkey_sets_the_combination_tooltip(
@@ -1434,6 +1546,39 @@ def test_run_smoke_writes_shortcut_and_reports_zero(
     assert "smoke: frozen=False" in caplog.text
     assert (target / "smoke.lnk").exists()
     qtbot.addWidget(captured["window"])
+
+
+def test_run_smoke_disposes_the_hotkey_before_returning(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any
+) -> None:
+    """Находка финального ревью ветки, п. 9 (продолжение): `run_smoke` строит
+    настоящий (здесь — `_FakeHotkey`, зарегистрированный тем же путём) хоткей
+    и зовёт `apply_hotkey`, но не крутит `application.exec()` — `aboutToQuit`
+    не наступает, и `dispose_hotkey` (`ui/app.py::_build_main_window`) не
+    зовётся вовсе. Собранный exe при каждой самопроверке держал бы сочетание
+    занятым до конца процесса. `run_smoke` обязан снять регистрацию и
+    нативный фильтр явно перед возвратом, независимо от исхода (код 0 или 1).
+    """
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    real_remove = QApplication.removeNativeEventFilter
+    removed: list[Any] = []
+
+    def spy_remove(self: Any, event_filter: Any) -> None:
+        removed.append(event_filter)
+        real_remove(self, event_filter)
+
+    monkeypatch.setattr(QApplication, "removeNativeEventFilter", spy_remove)
+    appdata = tmp_path / "appdata"
+    target = tmp_path / "out"
+    target.mkdir()
+
+    assert run_smoke(str(target), {"APPDATA": str(appdata)}) == 0
+
+    window = captured["window"]
+    assert window.global_hotkey.disposed is True
+    assert window.global_hotkey in removed
+    qtbot.addWidget(window)
 
 
 def test_run_smoke_times_out_without_background(

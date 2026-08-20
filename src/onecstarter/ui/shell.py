@@ -45,6 +45,15 @@ class MainWindow(QMainWindow):
         # только как владельцу времени жизни, поведение их не читает.
         self.settings_store: object | None = None
         self.global_hotkey: object | None = None
+        # Доступность трея САМА ПО СЕБЕ, в отличие от close_to_tray (которое  # noqa: RUF003
+        # уже смешивает настройку И доступность трея через AND, спека §2).
+        # Показ окна на тихом старте (ui/app.py::main) обязан зависеть от
+        # доступности трея, а не от настройки крестика — находка финального  # noqa: RUF003
+        # ревью ветки, п. 2: с прежним условием `start_hidden and  # noqa: RUF003
+        # window.close_to_tray` пользователь, выключивший «сворачивание
+        # в трей» и включивший автозапуск, получал окно в лицо при каждом
+        # входе в Windows, хотя трей жив и скрываться было чем.
+        self.tray_available = False
         self._palette = palette
         self._icon_factories: dict[int, Callable[[Palette], QIcon]] = {}
         self._stack = QStackedWidget()
