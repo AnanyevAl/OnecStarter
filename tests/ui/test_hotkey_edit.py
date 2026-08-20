@@ -16,9 +16,18 @@ def application(qapp: QApplication) -> QApplication:
 
 VK_B = 0x42
 SCAN_B = 48
-# Кириллическая «Б» приходит в `key()` той же клавишей, что латинская B,
-# когда активна русская раскладка: `key()` раскладко-зависим, драйверный
-# `nativeVirtualKey` — нет (спека §4.1, находка блока В протокола 20.08.2026).  # noqa: RUF003
+# На клавише латинской `B` в русской раскладке стоит «И» (ЙЦУКЕН: нижний ряд  # noqa: RUF003
+# ZXCVBNM → ЯЧСМИТЬ). Именно её `key()` и отдаёт при активной русской
+# раскладке, тогда как драйверный `nativeVirtualKey` остаётся `VK_B`
+# (спека §4.1, находка блока В протокола 20.08.2026).  # noqa: RUF003
+#
+# Первая редакция этих тестов брала «Б» (`0x411`) и утверждала, что она
+# приходит с клавиши `B`. Это неверно — «Б» живёт на клавише `,`  # noqa: RUF003
+# (`VK_OEM_COMMA`), то есть в одном классе с «Ё» и «Ж»: у неё нет латинского  # noqa: RUF003
+# буквенного эквивалента, и она правильно отвергается. Тест доказывал верное
+# утверждение событием, которого железо не порождает (находка финального
+# ревью ветки, п. Б-2).
+KEY_CYRILLIC_I = 0x418
 KEY_CYRILLIC_BE = 0x411
 
 
@@ -126,7 +135,7 @@ def test_cyrillic_layout_captures_the_latin_key_of_the_same_button(
     Захват обязан читать тот же код, а не раскладко-зависимый `key()`.
     """  # noqa: RUF002
     event = _press(
-        KEY_CYRILLIC_BE,
+        KEY_CYRILLIC_I,
         Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier,
         native_vk=VK_B,
         native_scan=SCAN_B,
@@ -224,7 +233,7 @@ def test_widget_accepts_cyrillic_layout_press(application: QApplication) -> None
 
     edit.keyPressEvent(
         _press(
-            KEY_CYRILLIC_BE,
+            KEY_CYRILLIC_I,
             Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier,
             native_vk=VK_B,
             native_scan=SCAN_B,
@@ -233,3 +242,70 @@ def test_widget_accepts_cyrillic_layout_press(application: QApplication) -> None
 
     assert seen == ["Ctrl+Alt+B"]
     assert edit.text() == "Ctrl+Alt+B"
+
+
+def test_cyrillic_be_lives_on_another_key_and_is_rejected(
+    application: QApplication,
+) -> None:
+    """«Б» — это клавиша `,`, а не клавиша `B` (находка ревью ветки, п. Б-2).
+
+    Тест закрепляет разделение двух классов, которые прежняя редакция путала:
+    буква с латинским позиционным эквивалентом принимается (тест выше),
+    буква без него отвергается — `VK_OEM_COMMA` в наборе не значится.
+    Спутав их, следующий исполнитель решит, что правка про раскладку
+    не работает, и «починит» верное поведение.
+    """  # noqa: RUF002
+    event = _press(
+        KEY_CYRILLIC_BE,
+        Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier,
+        native_vk=0xBC,  # VK_OEM_COMMA
+        native_scan=51,
+    )
+    assert spec_from_event(event) is None
+
+
+def test_numpad_key_is_not_silently_taken_for_the_main_row(
+    application: QApplication,
+) -> None:
+    """NumPad 5 — не главная «5», и подменять одну другой нельзя.
+
+    Драйвер шлёт `VK_NUMPAD5` (`0x65`), а `key()` для той же клавиши отдаёт
+    `Key_5`. Приняв нажатие по `key()`, поле показало бы `Ctrl+Alt+5`,
+    `RegisterHotKey` подписался бы на код главного ряда `0x35` — и клавиша,
+    которую пользователь нажал при назначении, хоткей не подняла бы никогда.
+    Это ровно то «назначено на экране, не работает в системе», ради чего
+    таблица VK — одна на оба направления.
+
+    Правило: код от драйвера пришёл (не ноль) — судит только таблица.
+    Нет кода — только тогда запасной путь через `key()`.
+    """  # noqa: RUF002
+    event = _press(
+        Qt.Key.Key_5,
+        Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier,
+        native_vk=0x65,  # VK_NUMPAD5
+        native_scan=76,
+    )
+    assert spec_from_event(event) is None
+
+
+def test_shifted_digit_is_named_by_the_driver_not_by_the_punctuation(
+    application: QApplication,
+) -> None:
+    """`Ctrl+Alt+Shift+2` на US-раскладке, где `key()` отдаёт `@`.
+
+    Правка расширила набор принимаемых нажатий, и расширение полезное:
+    имя берётся у драйвера (`0x32` — цифра `2`), а не у символа, который
+    получился бы с учётом Shift. До правки такое нажатие отвергалось,
+    хотя `RegisterHotKey` принял бы его без разговоров.
+    """  # noqa: RUF002
+    event = _press(
+        Qt.Key.Key_At,
+        Qt.KeyboardModifier.ControlModifier
+        | Qt.KeyboardModifier.AltModifier
+        | Qt.KeyboardModifier.ShiftModifier,
+        native_vk=0x32,
+        native_scan=3,
+    )
+    spec = spec_from_event(event)
+    assert spec is not None
+    assert spec.key == "2"
