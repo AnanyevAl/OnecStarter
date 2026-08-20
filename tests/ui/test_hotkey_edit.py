@@ -143,9 +143,15 @@ def test_cyrillic_key_without_latin_counterpart_is_still_rejected(
     """«Ж» на клавише `;` — настоящий промах, и трактовка для него не меняется.
 
     Драйверный код такой клавиши (`VK_OEM_1`) в поддержанный набор не входит:
-    ни буква, ни цифра, ни F-клавиша. Отказ обязан остаться отказом — иначе
-    захват примет то, что `parse_hotkey` потом отвергнет.
-    """
+    ни буква, ни цифра, ни F-клавиша.
+
+    Что именно охраняет этот тест (уточнено по разбору мутаций 20.08.2026,
+    прежняя формулировка обещала больше, чем тест ловит): `key_name_for_vk`
+    не имеет права перевести НЕподдержанный драйверный код в имя ИЗ набора.
+    Мусорное имя на выходе таблицы безопасно — его добьёт `parse_hotkey`,
+    и отказ сохранится; а вот подстановка годного имени превращает промах
+    в чужое рабочее сочетание, и остановить это уже некому.
+    """  # noqa: RUF002
     event = _press(
         0x416,  # «Ж»
         Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier,
@@ -155,22 +161,39 @@ def test_cyrillic_key_without_latin_counterpart_is_still_rejected(
     assert spec_from_event(event) is None
 
 
+@pytest.mark.parametrize(
+    ("key", "expected"),
+    [
+        (Qt.Key.Key_B, "B"),
+        (Qt.Key.Key_1, "1"),
+        # F-клавиша обязательна: у неё единственной имя многосимвольное,  # noqa: RUF003
+        # и только на ней видно, что запасной путь не режет и не путает имя.
+        (Qt.Key.Key_F5, "F5"),
+    ],
+)
 def test_synthesized_event_without_native_code_still_captures(
-    application: QApplication,
+    key: Qt.Key, expected: str, application: QApplication
 ) -> None:
     """Запасной путь: `nativeVirtualKey == 0` — код от драйвера не пришёл.
 
     Так выглядят события, собранные программно (короткий конструктор
     `QKeyEvent` ставит ноль). Терять на них работающий захват нельзя:
     иначе правка ради раскладки сломала бы всё, что синтезирует нажатия.
-    """
+
+    Три стимула, а не один (разбор мутаций 20.08.2026): в первой редакции
+    тест бил ровно по латинской `B` — тем же стимулом, что и соседний
+    `test_captures_modifier_combination`, — и потому был бессилен. Мутация
+    `QKeySequence(...).toString()[:1]` пережила весь набор из 1235 тестов,
+    молча превращая `Ctrl+Alt+F5` в `Ctrl+Alt+F`: не отказ, а подмена
+    сочетания на другое, рабочее. Ловит её только F-клавиша.
+    """  # noqa: RUF002
     event = _press(
-        Qt.Key.Key_B,
+        key,
         Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.AltModifier,
     )
     spec = spec_from_event(event)
     assert spec is not None
-    assert spec.key == "B"
+    assert spec.key == expected
 
 
 def test_native_code_wins_over_the_layout_dependent_key(
