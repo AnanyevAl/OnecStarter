@@ -23,6 +23,10 @@ from onecstarter.services.hotkeys import (
         ("Ctrl+Shift+F5", MOD_CONTROL | MOD_SHIFT, 0x74, "F5"),
         ("Win+1", MOD_WIN, 0x31, "1"),
         ("Ctrl+Alt+Shift+Win+Z", MOD_CONTROL | MOD_ALT | MOD_SHIFT | MOD_WIN, 0x5A, "Z"),
+        # Только F4 с модификаторами РОВНО Alt запрещён (см. параметризацию  # noqa: RUF003
+        # ниже) — эти два система не перехватывает как закрытие окна.
+        ("Ctrl+Alt+F4", MOD_CONTROL | MOD_ALT, 0x73, "F4"),
+        ("Alt+Shift+F4", MOD_ALT | MOD_SHIFT, 0x73, "F4"),
     ],
 )
 def test_parses_valid_combinations(text: str, modifiers: int, vk: int, key: str) -> None:
@@ -42,6 +46,12 @@ def test_parses_valid_combinations(text: str, modifiers: int, vk: int, key: str)
         "Ctrl+Alt+F13",
         "Ctrl+Alt+B+C",
         "мусор",
+        # Заказчик 20.08.2026: Alt+F4 успешно РЕГИСТРИРУЕТСЯ RegisterHotKey
+        # (в отличие от «занято» — это отказ регистрации, а не запрет разбора),  # noqa: RUF003
+        # и назначив его, пользователь отбирает закрытие окон у всей Windows.  # noqa: RUF003
+        # Ctrl+Alt+F4 и Alt+Shift+F4 система так не перехватывает — они валидны
+        # (см. test_parses_valid_combinations).
+        "Alt+F4",
     ],
 )
 def test_rejects_invalid_combinations(text: str) -> None:

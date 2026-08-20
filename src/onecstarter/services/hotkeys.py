@@ -31,6 +31,20 @@ MODIFIER_ORDER = (
 # текста, и глобальный перехват отобрал бы его у всей системы (спека §4.1).  # noqa: RUF003
 REQUIRED_MODIFIERS = MOD_CONTROL | MOD_ALT | MOD_WIN
 
+# Alt+F4 — единственное сочетание, которое правило допустимости пропускает
+# (есть модификатор, F4 в таблице), но которое `RegisterHotKey` УСПЕШНО
+# регистрирует: механизм «занятость видна отказом регистрации» (§4.3) здесь
+# не срабатывает, потому что система не считает Alt+F4 «занятым» — она отдаёт
+# его нам. Назначив это сочетание, пользователь отбирает закрытие окон  # noqa: RUF003
+# у всей Windows на время работы программы. Решение заказчика 20.08.2026:  # noqa: RUF003
+# запретить ровно эту комбинацию модификаторов и клавиши — не Ctrl+Alt+F4,
+# не Alt+Shift+F4, те система не перехватывает как закрытие окна.
+# **[Из документации Microsoft, не проверено]**: факт «RegisterHotKey не
+# отклоняет Alt+F4» экспериментально не проверялся и проверяться не будет —
+# спека §4.1 и docs/tasks.md фиксируют метку явно.
+_FORBIDDEN_KEY = "F4"
+_FORBIDDEN_MODIFIERS = MOD_ALT
+
 __all__ = [
     "MODIFIER_ORDER",
     "MOD_ALT",
@@ -81,6 +95,8 @@ def parse_hotkey(text: str) -> HotkeySpec | None:
     key = parts[-1].upper()
     vk = _VK_BY_KEY.get(key)
     if vk is None:
+        return None
+    if key == _FORBIDDEN_KEY and modifiers == _FORBIDDEN_MODIFIERS:
         return None
     return HotkeySpec(modifiers, vk, key)
 
