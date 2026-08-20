@@ -54,6 +54,7 @@ __all__ = [
     "REQUIRED_MODIFIERS",
     "HotkeySpec",
     "format_hotkey",
+    "key_name_for_vk",
     "parse_hotkey",
 ]
 
@@ -72,6 +73,25 @@ _VK_BY_KEY: dict[str, int] = {
     **{chr(code): code for code in range(0x30, 0x3A)},  # 0–9  # noqa: RUF003
     **{f"F{number}": 0x6F + number for number in range(1, 13)},  # F1–F12  # noqa: RUF003
 }
+
+
+_KEY_BY_VK = {vk: key for key, vk in _VK_BY_KEY.items()}
+
+
+def key_name_for_vk(vk: int) -> str | None:
+    """Имя клавиши по коду от драйвера. `None` — код вне поддержанного набора.
+
+    Обратная сторона `_VK_BY_KEY`, и намеренно из неё же построенная: две
+    таблицы, набранные вручную, разошлись бы при первом добавлении клавиши,
+    и захват начал бы принимать сочетание, которое `parse_hotkey` потом
+    отвергает, — «назначено» на экране, не работает в системе.
+
+    Нужна захвату сочетания (`ui/hotkey_edit.py`): `QKeyEvent.key()`
+    раскладко-зависим и при русской раскладке отдаёт кириллический код,
+    а `nativeVirtualKey` — тот самый код, на который подписывается
+    `RegisterHotKey` (спека §4.1, находка блока В протокола 20.08.2026).
+    """  # noqa: RUF002
+    return _KEY_BY_VK.get(vk)
 
 
 def parse_hotkey(text: str) -> HotkeySpec | None:

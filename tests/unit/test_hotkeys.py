@@ -9,6 +9,7 @@ from onecstarter.services.hotkeys import (
     MOD_WIN,
     HotkeySpec,
     format_hotkey,
+    key_name_for_vk,
     parse_hotkey,
 )
 
@@ -82,3 +83,52 @@ def test_parse_format_round_trip() -> None:
         spec = parse_hotkey(text)
         assert spec is not None
         assert parse_hotkey(format_hotkey(spec)) == spec
+
+
+@pytest.mark.parametrize(
+    ("vk", "name"),
+    [
+        (0x42, "B"),
+        (0x41, "A"),
+        (0x5A, "Z"),
+        (0x30, "0"),
+        (0x39, "9"),
+        (0x70, "F1"),
+        (0x74, "F5"),
+        (0x7B, "F12"),
+    ],
+)
+def test_key_name_for_vk_names_supported_keys(vk: int, name: str) -> None:
+    """Код от драйвера → имя клавиши (спека §4.1, захват без зависимости от раскладки)."""
+    assert key_name_for_vk(vk) == name
+
+
+@pytest.mark.parametrize(
+    "vk",
+    [
+        0,      # событие синтезировано, драйвер кода не давал — запасной путь UI
+        0x10,   # Shift: модификатор, самостоятельным сочетанием не бывает
+        0x2E,   # Delete: выключает хоткей, в набор сочетаний не входит
+        0x6F,   # на единицу ниже F1
+        0x7C,   # F13 — выше поддержанного F12
+        0xBC,   # запятая: набор намеренно узкий (докстринг модуля)
+        -1,
+    ],
+)
+def test_key_name_for_vk_rejects_unsupported(vk: int) -> None:
+    assert key_name_for_vk(vk) is None
+
+
+def test_key_name_for_vk_agrees_with_parse_hotkey() -> None:
+    """Две стороны одной таблицы не расходятся.
+
+    Разъехавшись, они дали бы худший из возможных исходов: захват принимает
+    клавишу, которую разбор той же строки потом отвергает, — сочетание
+    «назначено» на экране и не работает в системе.
+    """
+    for vk in (*range(0x30, 0x3A), *range(0x41, 0x5B), *range(0x70, 0x7C)):
+        name = key_name_for_vk(vk)
+        assert name is not None
+        spec = parse_hotkey(f"Ctrl+Alt+{name}")
+        assert spec is not None
+        assert spec.vk == vk

@@ -14,7 +14,12 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeyEvent, QKeySequence
 from PySide6.QtWidgets import QLineEdit, QWidget
 
-from onecstarter.services.hotkeys import HotkeySpec, format_hotkey, parse_hotkey
+from onecstarter.services.hotkeys import (
+    HotkeySpec,
+    format_hotkey,
+    key_name_for_vk,
+    parse_hotkey,
+)
 
 _MODIFIER_KEYS = {
     Qt.Key.Key_Control,
@@ -47,12 +52,32 @@ def spec_from_event(event: QKeyEvent) -> HotkeySpec | None:
         return None
     modifiers = event.modifiers()
     names = [name for bit, name in _MODIFIER_NAMES if modifiers & bit]
-    # int(key), а не сам enum: конструктор QKeySequence в PySide6  # noqa: RUF003
-    # перегружен, и передача Qt.Key может уйти не в ту перегрузку.
-    key_name = QKeySequence(int(key)).toString()
+    key_name = _key_name(event, key)
     if not key_name:
         return None
     return parse_hotkey("+".join([*names, key_name]))
+
+
+def _key_name(event: QKeyEvent, key: Qt.Key) -> str:
+    """Имя клавиши: сначала код от драйвера, потом раскладко-зависимый `key()`.
+
+    Порядок — суть правки 20.08.2026 (спека §4.1). `key()` при русской
+    раскладке отдаёт кириллический код, и `Ctrl+Alt+B` не назначался вовсе,
+    хотя в системе это сочетание срабатывает при любой раскладке:
+    `RegisterHotKey` подписан на `nativeVirtualKey`, тот же для клавиши
+    в обеих раскладках. Спросив сначала `key()`, мы отвергли бы нажатие
+    раньше, чем прочитали драйверный код.
+
+    Запасной путь остаётся: `nativeVirtualKey` равен нулю у событий, которые
+    собраны программно, а не пришли от драйвера, — терять на них работающий
+    захват нельзя.
+    """  # noqa: RUF002
+    from_driver = key_name_for_vk(event.nativeVirtualKey())
+    if from_driver is not None:
+        return from_driver
+    # int(key), а не сам enum: конструктор QKeySequence в PySide6  # noqa: RUF003
+    # перегружен, и передача Qt.Key может уйти не в ту перегрузку.
+    return QKeySequence(int(key)).toString()
 
 
 class HotkeyEdit(QLineEdit):
