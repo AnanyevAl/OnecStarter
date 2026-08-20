@@ -221,6 +221,39 @@ def test_unreadable_registry_blocks_the_toggle(
     assert "отказано" in view.autostart_note()
 
 
+def test_autostart_toggle_resyncs_on_show(
+    application: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Спека §3.1: тумблер обязан подхватить внешнюю правку реестра при повторном показе раздела.
+
+    Находка финального ревью ветки, п. 5: пользователь мог снять автозапуск
+    штатным путём (Диспетчер задач → Автозагрузка), пока раздел «Настройки»
+    был скрыт — без пересинхронизации в `showEvent` тумблер держал бы
+    состояние, снятое один раз при конструировании.
+
+    Заодно — защитный сторож `blockSignals` вокруг `_autostart` (находка
+    п. 6): приведение тумблера к прочитанному факту не смеет само вызвать
+    запись/удаление в реестре — `write`/`delete` не звучат ни разу, хотя
+    состояние чекбокса при показе меняется с True на False.
+    """  # noqa: RUF002
+    registry = FakeRegistry({VALUE_NAME: autostart_command(EXE)})
+    view, _ = _view(application, tmp_path, registry=registry)
+    assert view.autostart_checkbox().isChecked() is True
+
+    writes: list[tuple[str, str]] = []
+    deletes: list[str] = []
+    monkeypatch.setattr(registry, "write", lambda name, data: writes.append((name, data)))
+    monkeypatch.setattr(registry, "delete", lambda name: deletes.append(name))
+    registry.values.pop(VALUE_NAME)  # снято снаружи, штатным Диспетчером задач
+
+    view.show()
+
+    assert view.autostart_checkbox().isChecked() is False
+    assert writes == []
+    assert deletes == []
+    view.close()
+
+
 def test_hotkey_field_shows_saved_value(
     application: QApplication, tmp_path: Path
 ) -> None:
@@ -274,3 +307,38 @@ def test_recent_spinbox_bounds_and_persistence(
     spin.setValue(0)
 
     assert store.settings.recent_limit == 0
+
+
+def test_sync_does_not_bounce_external_settings_changes_back_into_the_store(
+    application: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_sync` глушит `_tray`/`_recent` — без этого внешняя правка настройки
+    эхом вернулась бы в `store.update` (`changed` → `update` → `changed`,
+    докстринг `_sync`).
+
+    Находка финального ревью ветки, п. 6: мутация ревьюера (снятие всех трёх
+    `blockSignals` разом — этой пары и пары `_autostart` в `_set_autostart_
+    state`, покрытой отдельно `test_autostart_toggle_resyncs_on_show`) не
+    роняла ни один из 1207 тестов. Здесь — внешняя правка `store.update(...)`
+    (не через сам виджет), при которой `_sync` обязан привести `_tray`/
+    `_recent` к новому значению, ни разу не породив собственный вызов
+    `store.update`.
+    """
+    view, store = _view(application, tmp_path)
+    calls: list[dict[str, object]] = []
+    original_update = store.update
+
+    def spy_update(**changes: object) -> None:
+        calls.append(changes)
+        original_update(**changes)
+
+    monkeypatch.setattr(store, "update", spy_update)
+    new_close_to_tray = not store.settings.close_to_tray
+
+    store.update(close_to_tray=new_close_to_tray, recent_limit=25)
+
+    assert view.tray_checkbox().isChecked() == new_close_to_tray
+    assert view.recent_spinbox().value() == 25
+    # Единственный вызов — наш явный; без глушения _sync породил бы ещё два
+    # (эхо toggled/valueChanged от setChecked/setValue на новое значение).
+    assert calls == [{"close_to_tray": new_close_to_tray, "recent_limit": 25}]

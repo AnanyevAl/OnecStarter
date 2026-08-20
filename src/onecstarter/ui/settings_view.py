@@ -15,6 +15,7 @@
 from collections.abc import Callable
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QShowEvent
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -263,13 +264,24 @@ class SettingsView(QWidget):
             else:
                 autostart.disable(self._registry)
         except OSError as error:
-            self._autostart_note.setText(f"Не удалось изменить автозапуск: {error}")  # noqa: RUF001
-            self._sync_autostart()
+            # Заметку передаём явно параметром, а не через уже установленный  # noqa: RUF003
+            # текст виджета (находка финального ревью ветки, п. 5): прежняя
+            # редакция звала `_sync_autostart()` без аргумента, а тот читал  # noqa: RUF003
+            # `self._autostart_note.text()` — свой же вывод, установленный
+            # строкой выше. Работало только из-за узкого графа вызовов —
+            # третий вызывающий, не выставивший текст заранее, получил бы
+            # протухшую или пустую заметку.
+            self._sync_autostart(note=f"Не удалось изменить автозапуск: {error}")  # noqa: RUF001
             return
         self._autostart_note.setText("")
 
-    def _sync_autostart(self) -> None:
-        """Привести тумблер к факту: сборка, реестр, доступность чтения."""
+    def _sync_autostart(self, *, note: str = "") -> None:
+        """Привести тумблер к факту: сборка, реестр, доступность чтения.
+
+        `note` — что показать у строки при успешном чтении реестра; источник
+        явный (аргумент), а не неявный (текст, уже лежащий в виджете) —
+        находка финального ревью ветки, п. 5, см. докстринг `_choose_autostart`.
+        """  # noqa: RUF002
         if not self._frozen or self._registry is None:
             self._set_autostart_state(checked=False, enabled=False, note=NOT_FROZEN_NOTE)
             return
@@ -284,7 +296,18 @@ class SettingsView(QWidget):
                 note=f"Не удалось прочитать автозапуск: {error}",  # noqa: RUF001
             )
             return
-        self._set_autostart_state(checked=enabled, enabled=True, note=self._autostart_note.text())
+        self._set_autostart_state(checked=enabled, enabled=True, note=note)
+
+    def showEvent(self, event: QShowEvent) -> None:  # noqa: N802
+        """Тумблер автозапуска — фактическое состояние реестра на момент показа (спека §3.1).
+
+        Пользователь мог снять автозапуск штатным путём (Диспетчер задач →
+        Автозагрузка), пока раздел был скрыт; без пересинхронизации при
+        каждом показе тумблер держал бы состояние, снятое один раз при
+        конструировании (находка финального ревью ветки, п. 5).
+        """
+        super().showEvent(event)
+        self._sync_autostart()
 
     def _set_autostart_state(self, *, checked: bool, enabled: bool, note: str) -> None:
         # Сигнал глушится: приведение тумблера к факту — не выбор
