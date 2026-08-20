@@ -1241,6 +1241,7 @@ def test_build_main_window_disposes_hotkey_and_removes_filter_together_on_quit(
     dispose_hotkey = next(
         slot for slot in connected if getattr(slot, "__name__", "") == "dispose_hotkey"
     )
+    assert qapp.aboutToQuit.disconnect(dispose_hotkey) is True
     dispose_hotkey()
 
     hotkey: Any = window.global_hotkey
