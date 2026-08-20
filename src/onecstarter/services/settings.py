@@ -130,14 +130,24 @@ def _hotkey_of(value: Any) -> str:
 
 
 def _recent_of(value: Any) -> int:
-    """Границы 0-50; не-целое — дефолт.
+    """Сверху — обрезание до RECENT_MAX, снизу — дефолт (решение заказчика 20.08.2026).
+
+    Асимметрично намеренно: значение больше `RECENT_MAX` — пользователь явно
+    хотел «много», обрезаем до максимума, это осмысленный ввод, не порча.
+    Значение меньше `RECENT_MIN` (то есть отрицательное) — мягко в дефолт,
+    НЕ в `RECENT_MIN` (`0`): `0` — осознанный выбор «не показывать ветку
+    „Недавние" вовсе», и молча выдать его из битого файла означало бы
+    подменить выбор пользователя видимым изменением поведения, которого он
+    не совершал. `0`, прочитанный из файла, так и остаётся `0`.
 
     `bool` отсекается первым: он подкласс `int`, и `true` в файле
     иначе прошёл бы единицей.
-    """
+    """  # noqa: RUF002
     if isinstance(value, bool) or not isinstance(value, int):
         return DEFAULT_RECENT_LIMIT
-    return max(RECENT_MIN, min(RECENT_MAX, value))
+    if value < RECENT_MIN:
+        return DEFAULT_RECENT_LIMIT
+    return min(RECENT_MAX, value)
 
 
 def _move_aside(path: Path) -> None:
