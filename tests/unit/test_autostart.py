@@ -64,6 +64,30 @@ def test_enabled_when_value_present() -> None:
     assert is_enabled(registry) is True
 
 
+@pytest.mark.parametrize("data", ["", "   ", "\t", "\r\n"])
+def test_empty_value_is_not_autostart(data: str) -> None:
+    """Пустое значение в Run — не включённый автозапуск (находка шага А3, 21.08.2026).
+
+    Не гипотетический случай, а измеренный: установщик версии 0.1.0 сам создавал
+    в `HKCU\\...\\Run` значение `OneCStarter` длиной 0 символов. `ValueType: string`
+    без `ValueData` создаёт пустую строку, а флаг `dontcreatekey` этому не мешает —
+    он про КЛЮЧ (**[из документации Inno Setup]** «Setup will not attempt to create
+    the key or any value if the key did not already exist»), а ключ `Run` существует
+    на любой машине всегда.
+
+    Цена ошибки — ложь о состоянии системы, а не мусор в реестре: пока `is_enabled`
+    отвечал «включено» на любое непустое-по-факту-существования значение, раздел
+    «Настройки» показывал автозапуск включённым, хотя Windows при входе выполнять
+    было нечего. Пользователь, видя «включено», не стал бы включать — и расхождение
+    не вылечилось бы никогда (тот самый сценарий, о котором предупреждает докстринг
+    `is_enabled`).
+
+    Пробельные строки здесь не педантизм: `write` принимает что угодно, а чужой
+    установщик или ручная правка реестра могут оставить и такое.
+    """  # noqa: RUF002
+    assert is_enabled(FakeRegistry({VALUE_NAME: data})) is False
+
+
 def test_enable_writes_command_of_this_copy() -> None:
     registry = FakeRegistry({VALUE_NAME: r'"C:\old\OneCStarter.exe" --autostart'})
     enable(registry, r"C:\new\OneCStarter.exe")
