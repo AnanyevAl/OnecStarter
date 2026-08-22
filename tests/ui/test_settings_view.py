@@ -414,6 +414,33 @@ def test_show_resyncs_on_value_that_became_empty(
     assert view.autostart_checkbox().isChecked() is False
 
 
+def test_show_keeps_enabled_autostart_checked(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Повторный показ при НОРМАЛЬНОМ значении: галка на месте, реестр не тронут.
+
+    Последняя непройденная комбинация двух правил и трёх путей (разбор мутаций
+    21.08.2026). `view.show()` встречался в наборе дважды, и оба раза в реестре
+    либо не было значения, либо лежала пустая строка, — то есть показ при
+    обычном, рабочем значении не проверял никто. Переживали сразу две мутации:
+    «показ всегда снимает галку» (раздел врёт о включённом автозапуске, только
+    в другую сторону) и «показ пишет в реестр» (запись в `HKCU` при каждом
+    открытии раздела на нормальной машине).
+
+    Отдельным тестом, а не строкой в `test_autostart_toggle_resyncs_on_show`:
+    повторный `show()` без `hide()` события показа не доставляет, и вставка
+    второго вызова молча сломала бы логику того теста.
+    """  # noqa: RUF002
+    registry = FakeRegistry({VALUE_NAME: autostart_command(EXE)})
+    view, _store = _view(application, tmp_path, registry=registry)
+
+    view.show()
+
+    assert view.autostart_checkbox().isChecked() is True
+    assert registry.written == []
+    view.close()
+
+
 def test_autostart_row_warns_about_task_manager(
     application: QApplication, tmp_path: Path
 ) -> None:
