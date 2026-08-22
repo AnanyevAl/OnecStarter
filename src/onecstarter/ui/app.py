@@ -371,9 +371,13 @@ def _build_main_window(
         executable=sys.executable,
     )
     sections = [("Базы", view), ("Настройки", settings_view)]
-    settings_section = next(i for i, (title, _w) in enumerate(sections) if title == "Настройки")
+    # Ключ — сам объект вьюхи, а не подпись: подпись показывается пользователю  # noqa: RUF003
+    # и однажды может быть переименована, и тогда поиск по ней уронил бы старт
+    # `StopIteration` ещё до создания окна (находка ревью ветки 22.08.2026).
+    bases_section = next(i for i, (_t, w) in enumerate(sections) if w is view)
+    settings_section = next(i for i, (_t, w) in enumerate(sections) if w is settings_view)
     window = MainWindow(sections, palette=controller.palette)
-    window.set_section_icon(0, rail_icons.bases_icon)
+    window.set_section_icon(bases_section, rail_icons.bases_icon)
     window.set_section_icon(settings_section, rail_icons.settings_icon)
 
     def on_theme_changed() -> None:
