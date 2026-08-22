@@ -33,7 +33,16 @@ version_info = VSVersionInfo(
                     "041904B0",
                     [
                         StringStruct("ProductName", "OneCStarter"),
-                        StringStruct("FileDescription", "Запуск информационных баз 1С:Предприятие"),
+                        # Имя программы в описании — не украшение: именно
+                        # FileDescription Windows показывает в «Диспетчере задач»
+                        # на вкладке автозагрузки, а раздел «Настройки» отправляет
+                        # пользователя туда своей подсказкой. С прежним описанием
+                        # он искал бы «OneCStarter» и не нашёл (находка финального
+                        # ревью ветки 21.08.2026, шаг В7 ручного прогона).
+                        StringStruct(
+                            "FileDescription",
+                            "OneCStarter — запуск информационных баз 1С:Предприятие",
+                        ),
                         StringStruct("FileVersion", VERSION),
                         StringStruct("ProductVersion", VERSION),
                         StringStruct("LegalCopyright", "MIT License"),
