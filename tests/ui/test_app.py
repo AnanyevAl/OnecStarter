@@ -1452,6 +1452,31 @@ def test_busy_hotkey_shows_balloon_and_tooltip(qapp: Any, tmp_path: Any, monkeyp
     assert window.global_hotkey.registered is False
 
 
+def test_busy_hotkey_without_tray_opens_the_settings_section(
+    qapp: Any, tmp_path: Any, monkeypatch: Any
+) -> None:
+    """Без трея занятое сочетание видно хотя бы разделом (долг №10).
+
+    Спека §4.3 перечисляет три канала: балун, тултип трея и строка у поля
+    в «Настройках». Без трея первые два вырождаются, а третий пользователь
+    не видит — программа открывается на «Базах», и о том, что глобальный
+    вызов не работает, узнать неоткуда. Раз показать нечем, кроме окна,
+    оно и открывается на нужном разделе: строка отказа там уже стоит.
+
+    Модального окна по-прежнему нет (спека §4.3): без трея тихого старта
+    не бывает — `main` показывает окно, когда скрываться некуда, — поэтому
+    смена раздела никого не встречает диалогом при входе в систему.
+    """  # noqa: RUF002
+    window = _window_with_settings(
+        qapp,
+        tmp_path,
+        monkeypatch,
+        tray_available=False,
+        register_result=0,
+    )
+    assert window.current_section_index() == 1
+
+
 def test_window_with_settings_balances_native_filter_install_and_remove(
     qapp: Any, tmp_path: Any, monkeypatch: Any
 ) -> None:

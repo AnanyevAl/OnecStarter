@@ -321,6 +321,10 @@ def _set_tray_tooltip(
         tray.setToolTip(f"OneCStarter — {combination}")
 
 
+SETTINGS_SECTION = 1
+"""Индекс раздела «Настройки» в окне: порядок задаёт `MainWindow` ниже."""
+
+
 def _build_main_window(
     application: QApplication,
     runtime: Runtime,
@@ -479,6 +483,14 @@ def _build_main_window(
             # встречал бы пользователя при каждом входе в систему
             # (спека §4.3). **[Проверено, 19.08.2026, эксперимент §7]**
             tray.showMessage("OneCStarter", problem, QSystemTrayIcon.MessageIcon.Warning, 7000)
+        else:
+            # Трея нет — два канала из трёх (балун и тултип) вырождаются,
+            # а третий, строка у поля, лежит в разделе, который пользователь  # noqa: RUF003
+            # не открывал: программа стартует на «Базах» (долг №10). Раз
+            # показать нечем, кроме окна, — открыть его сразу на «Настройках».  # noqa: RUF003
+            # Диалога по-прежнему нет: без трея тихого старта не бывает,
+            # `main` в этом случае окно показывает (спека §3.4).
+            window.show_section(SETTINGS_SECTION)
 
     tasks = StartupTasks(
         lambda: find_installations(env, runtime.conventions),
