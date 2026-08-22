@@ -27,6 +27,13 @@ def test_round_trip(tmp_path: Path) -> None:
 
 
 def test_schema_is_written(tmp_path: Path) -> None:
+    """Файл несёт все пять ключей, включая номер схемы.
+
+    Долг №3 вехи закрыт здесь: соседний `test_all_fields_are_written` проверял
+    ровно то же самое на дефолтных настройках и удалён. Разница была
+    в единственном поле темы, а утверждение — одно и то же: `save_settings`
+    пишет полный состав, а не только изменённое.
+    """  # noqa: RUF002
     path = tmp_path / "settings.json"
     save_settings(path, Settings(theme=ThemeMode.DARK))
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -130,19 +137,6 @@ def test_round_trip_keeps_all_fields(tmp_path: Path) -> None:
     )
     save_settings(path, settings)
     assert load_settings(path) == settings
-
-
-def test_all_fields_are_written(tmp_path: Path) -> None:
-    path = tmp_path / "settings.json"
-    save_settings(path, Settings())
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload == {
-        "schema": SCHEMA_VERSION,
-        "theme": "auto",
-        "close_to_tray": True,
-        "hotkey": "Ctrl+Alt+B",
-        "recent_limit": 10,
-    }
 
 
 @pytest.mark.parametrize("value", ["да", 1, None, [], {}])
