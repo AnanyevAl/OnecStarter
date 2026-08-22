@@ -50,13 +50,30 @@ Name: "{userprograms}\OneCStarter"; Filename: "{app}\OneCStarter.exe"
 ; `dontcreatekey` оставлен: ключа Run может не быть в экзотическом окружении,
 ; и создавать его ради записи, которой мы не пишем, незачем.
 ;
-; **[Из документации Inno Setup, не проверено]** Что `uninsdeletevalue` удалит
-; значение, которое установщик НЕ создавал, — всё ещё утверждение документации:
-; проверяется шагом А6 протокола docs/research/t04-7-settings-protocol.md.
+; **[Проверено, 21.08.2026, шаг А6 ручного прогона]** `uninsdeletevalue` удаляет
+; значение, которое установщик НЕ создавал: его записало приложение при включении
+; тумблера, и после деинсталляции значения в Run не осталось. Прочие записи
+; автозагрузки не тронуты, контрольный вход в систему прошёл без ошибок Windows.
 Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "OneCStarter"; Flags: dontcreatekey uninsdeletevalue
 
 [Run]
 Filename: "{app}\OneCStarter.exe"; Description: "{cm:LaunchProgram,OneCStarter}"; Flags: nowait postinstall skipifsilent
 
-; [UninstallDelete] намеренно НЕТ: %APPDATA%\OneCStarter (история, избранное,
-; настройки) и ibases.v8i переживают удаление — «удаление ничего не теряет».
+[UninstallDelete]
+; Только служебный каталог сборки. Пользовательских данных здесь нет и быть
+; не может: %APPDATA%\OneCStarter (история, избранное, настройки) и ibases.v8i
+; лежат в другом месте и удаление переживают — «удаление ничего не теряет».
+;
+; **[Проверено, 21.08.2026, шаг А6 ручного прогона]** Без этой секции после
+; деинсталляции оставался скелет из шести пустых каталогов: `_internal`
+; и вложенные `PySide6`, `shiboken6`, `plugins`, `platforms`, `styles`. Файлы
+; Inno Setup удаляет по своему списку, а каталоги, созданные под `recursesubdirs`,
+; сами по себе не убирает.
+;
+; `filesandordirs` для `_internal`, а не перечень `dirifempty` по каждому уровню:
+; состав каталогов внутри задаёт PyInstaller и меняет при смене версий PySide6 —
+; жёсткий перечень протух бы молча, и скелет вернулся бы незамеченным.
+; На пользовательские данные это не распространяется: `_internal` целиком наш,
+; его содержимое кладёт сборка.
+Type: filesandordirs; Name: "{app}\_internal"
+Type: dirifempty; Name: "{app}"

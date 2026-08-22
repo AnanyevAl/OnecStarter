@@ -4,13 +4,13 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QLabel
 
 from onecstarter.services.autostart import VALUE_NAME, autostart_command
 from onecstarter.services.settings import Settings, ThemeMode, save_settings
 from onecstarter.ui.hotkey_edit import HotkeyEdit
 from onecstarter.ui.settings_store import SettingsStore
-from onecstarter.ui.settings_view import SettingsView
+from onecstarter.ui.settings_view import AUTOSTART_ROW_NOTE, SettingsView
 from onecstarter.ui.theme_controller import ThemeController
 
 EXE = r"C:\Programs\OneCStarter\OneCStarter.exe"
@@ -342,3 +342,24 @@ def test_sync_does_not_bounce_external_settings_changes_back_into_the_store(
     # Единственный вызов — наш явный; без глушения _sync породил бы ещё два
     # (эхо toggled/valueChanged от setChecked/setValue на новое значение).
     assert calls == [{"close_to_tray": new_close_to_tray, "recent_limit": 25}]
+
+
+def test_autostart_row_warns_about_task_manager(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Подсказка про Диспетчер задач стоит у строки и видна всегда (находка В7).
+
+    Windows держит автозапуск в двух местах: значение в `Run` (его пишем мы)
+    и метку `StartupApproved` (её ставит «Диспетчер задач»). Отключив
+    автозапуск там, пользователь получает мёртвую запись при нашем
+    «включено» — и починить это из раздела нельзя: тумблер перезаписывает
+    `Run`, а метку не трогает (проверено 21.08.2026 на живой машине).
+
+    Раз состояние не в наших силах, честный минимум — сказать, где включать.
+    Проверяется именно текст на экране, а не константа: константа, которую
+    забыли отдать в раскладку, никого ни о чём не предупредит.
+    """  # noqa: RUF002
+    view, _store = _view(application, tmp_path)
+    notes = [label.text() for label in view.findChildren(QLabel)]
+    assert AUTOSTART_ROW_NOTE in notes
+    assert "Диспетчер" in AUTOSTART_ROW_NOTE
