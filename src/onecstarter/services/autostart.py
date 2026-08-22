@@ -29,6 +29,7 @@ __all__ = [
     "AUTOSTART_FLAG",
     "RUN_KEY",
     "VALUE_NAME",
+    "NullRegistry",
     "Registry",
     "WindowsRegistry",
     "autostart_command",
@@ -73,6 +74,29 @@ class WindowsRegistry:
         except FileNotFoundError:
             # Выключить выключённое — не ошибка.
             return
+
+
+class NullRegistry:
+    """Реестр, которого нет: для самопроверки собранного экземпляра (долг №8).
+
+    `run_smoke` поднимает настоящее окно, а `SettingsView` читает реестр прямо
+    в конструкторе (`_sync_autostart`). С настоящим `WindowsRegistry`
+    самопроверка сборки зависела бы от состояния машины сборщика: у одного
+    автозапуск включён, у другого нет — и smoke проверял бы разное.
+
+    Чтение отвечает «автозапуска нет». Изменение — ошибка, а не тихое ничего:
+    самопроверка тумблера не трогает, но если однажды тронет, правильный исход
+    красный, а не «всё хорошо, только ничего не записалось».
+    """  # noqa: RUF002
+
+    def read(self, name: str) -> str | None:
+        return None
+
+    def write(self, name: str, data: str) -> None:
+        raise RuntimeError(f"самопроверка не пишет в реестр: {name}")
+
+    def delete(self, name: str) -> None:
+        raise RuntimeError(f"самопроверка не пишет в реестр: {name}")
 
 
 def autostart_command(executable: str) -> str:

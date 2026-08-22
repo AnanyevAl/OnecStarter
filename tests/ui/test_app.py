@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 )
 
 from onecstarter.domain.launch import LaunchCommand
+from onecstarter.services import autostart
 from onecstarter.services.catalog import EMPTY_COMMON_DATA
 from onecstarter.services.hotkeys import parse_hotkey
 from onecstarter.services.settings import DEFAULT_HOTKEY, Settings, ThemeMode, save_settings
@@ -1509,9 +1510,12 @@ def _capture_window(monkeypatch: Any) -> dict[str, Any]:
     captured: dict[str, Any] = {}
     real_build = app_module._build_main_window
 
-    def capturing(application: Any, runtime: Any, env: Any) -> Any:
-        window, tasks = real_build(application, runtime, env)
+    def capturing(application: Any, runtime: Any, env: Any, **kwargs: Any) -> Any:
+        window, tasks = real_build(application, runtime, env, **kwargs)
         captured["window"] = window
+        # Чем именно `run_smoke` попросил собрать окно — тестам видно: долг №8
+        # закрыт подменой реестра, и подмену надо уметь проверить.
+        captured["kwargs"] = kwargs
         return window, tasks
 
     monkeypatch.setattr(app_module, "_build_main_window", capturing)
@@ -1580,6 +1584,34 @@ def test_run_smoke_disposes_the_hotkey_before_returning(
     assert window.global_hotkey.disposed is True
     assert window.global_hotkey in removed
     qtbot.addWidget(window)
+
+
+def test_run_smoke_does_not_touch_the_live_registry(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any
+) -> None:
+    """Самопроверка сборки не зависит от автозапуска на машине сборщика (долг №8).
+
+    `SettingsView` читает реестр прямо в конструкторе, поэтому с настоящим
+    `WindowsRegistry` результат `run_smoke` менялся бы от того, включён ли
+    автозапуск у того, кто собирает: у одного «включено», у другого нет.
+    Прогон в CI и на машине разработчика обязан проверять одно и то же.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    appdata = tmp_path / "appdata"
+    target = tmp_path / "out"
+    target.mkdir()
+
+    code = app_module.run_smoke(str(target), {"APPDATA": str(appdata)})
+
+    assert code == 0
+    registry = captured["kwargs"]["autostart_registry"]
+    assert isinstance(registry, autostart.NullRegistry)
+    # Заглушка молчит о состоянии и не даёт себя изменить — иначе самопроверка  # noqa: RUF003
+    # писала бы в HKCU машины сборки.
+    assert registry.read(autostart.VALUE_NAME) is None
+    with pytest.raises(RuntimeError):
+        registry.write(autostart.VALUE_NAME, "x")
 
 
 def test_run_smoke_times_out_without_background(

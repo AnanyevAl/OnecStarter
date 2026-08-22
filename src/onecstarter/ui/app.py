@@ -251,7 +251,12 @@ def run_smoke(
     except (UserDataUnavailableError, OSError):
         _log.exception("smoke: рантайм не собрался")
         return 1
-    window, built_tasks = _build_main_window(application, runtime, env)
+    # Реестр — заглушка, а не настоящий HKCU (долг №8): `SettingsView` читает  # noqa: RUF003
+    # его прямо в конструкторе, и самопроверка собранного экземпляра иначе  # noqa: RUF003
+    # зависела бы от того, включён ли автозапуск на машине сборщика.
+    window, built_tasks = _build_main_window(
+        application, runtime, env, autostart_registry=autostart.NullRegistry()
+    )
     try:
         tasks = built_tasks if make_tasks is None else make_tasks()
         pending = {"installations": True, "common": True}
@@ -317,7 +322,11 @@ def _set_tray_tooltip(
 
 
 def _build_main_window(
-    application: QApplication, runtime: Runtime, env: Mapping[str, str]
+    application: QApplication,
+    runtime: Runtime,
+    env: Mapping[str, str],
+    *,
+    autostart_registry: autostart.Registry | None = None,
 ) -> tuple[MainWindow, StartupTasks]:
     """Собрать окно, трей, хоткей, watcher и фоновые задачи, не запуская их.
 
@@ -352,7 +361,9 @@ def _build_main_window(
     settings_view = SettingsView(
         controller,
         store,
-        autostart_registry=autostart.WindowsRegistry(),
+        autostart_registry=(
+            autostart_registry if autostart_registry is not None else autostart.WindowsRegistry()
+        ),
         frozen=bool(getattr(sys, "frozen", False)),
         executable=sys.executable,
     )
