@@ -360,6 +360,12 @@ def test_autostart_row_warns_about_task_manager(
     забыли отдать в раскладку, никого ни о чём не предупредит.
     """  # noqa: RUF002
     view, _store = _view(application, tmp_path)
-    notes = [label.text() for label in view.findChildren(QLabel)]
-    assert AUTOSTART_ROW_NOTE in notes
-    assert "Диспетчер" in AUTOSTART_ROW_NOTE
+    notes = [label for label in view.findChildren(QLabel) if label.text() == AUTOSTART_ROW_NOTE]
+    assert notes, "подсказка не отдана в раскладку"
+    # `isHidden`, а не `isVisible`: окно раздела в тесте не показано, и  # noqa: RUF003
+    # `isVisible` вернул бы False даже для нормальной метки. Находка
+    # мутационной проверки 21.08.2026: без этой строки мутация
+    # `row_note.setVisible(False)` переживала набор, а докстринг обещал  # noqa: RUF003
+    # «видна всегда».
+    assert all(not label.isHidden() for label in notes)
+    assert any("Диспетчер" in label.text() for label in view.findChildren(QLabel))

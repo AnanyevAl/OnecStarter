@@ -88,6 +88,30 @@ def test_empty_value_is_not_autostart(data: str) -> None:
     assert is_enabled(FakeRegistry({VALUE_NAME: data})) is False
 
 
+@pytest.mark.parametrize(
+    "data",
+    [
+        r'"C:\other\OneCStarter.exe" --autostart',  # наш формат
+        r'"C:\other\OneCStarter.exe"',              # чужой писатель, без флага
+        r"C:\o\s.exe",                             # без кавычек, коротко
+        "x",                                        # короче любого мыслимого порога
+    ],
+)
+def test_any_non_blank_value_is_autostart(data: str) -> None:
+    """Включено — любое непустое значение, в какой бы форме оно ни было записано.
+
+    Находка мутационной проверки 21.08.2026: тест «включено» подавал ровно одно
+    значение — наше собственное, с путём в кавычках и флагом. Из-за этого любое
+    лишнее условие на СОДЕРЖИМОЕ проходило незамеченным: мутации
+    `and AUTOSTART_FLAG in value` и `and len(value) > 4` пережили весь набор.
+
+    Цена такой дыры — зеркало только что закрытого дефекта. Значение без флага
+    Windows исполняет: программа стартует при входе, а тумблер показывал бы
+    «выключено». Ни путь, ни флаг не сверяются намеренно (докстринг `is_enabled`).
+    """  # noqa: RUF002
+    assert is_enabled(FakeRegistry({VALUE_NAME: data})) is True
+
+
 def test_enable_writes_command_of_this_copy() -> None:
     registry = FakeRegistry({VALUE_NAME: r'"C:\old\OneCStarter.exe" --autostart'})
     enable(registry, r"C:\new\OneCStarter.exe")
