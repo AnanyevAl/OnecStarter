@@ -19,11 +19,13 @@ EXE = r"C:\Programs\OneCStarter\OneCStarter.exe"
 class FakeRegistry:
     def __init__(self, values: dict[str, str] | None = None) -> None:
         self.values = dict(values or {})
+        self.written: list[tuple[str, str]] = []
 
     def read(self, name: str) -> str | None:
         return self.values.get(name)
 
     def write(self, name: str, data: str) -> None:
+        self.written.append((name, data))
         self.values[name] = data
 
     def delete(self, name: str) -> None:
@@ -161,6 +163,12 @@ def test_autostart_reflects_registry(application: QApplication, tmp_path: Path) 
     # (разбор 21.08.2026). Пользователь при этом видел бы верное состояние
     # и не мог его изменить.  # noqa: RUF003
     assert view.autostart_checkbox().isEnabled() is True
+    # Показ состояния не смеет писать в реестр — даже тем же содержимым.
+    # Прежние сторожа чистоты стояли на изменении содержимого и на удалённом
+    # значении, поэтому запись «той же строкой» при каждом открытии раздела
+    # проходила незамеченной (разбор 21.08.2026). Монкипатч тут не годится:
+    # писал бы как раз конструктор, до которого его не поставить.  # noqa: RUF003
+    assert registry.written == []
 
 
 def test_autostart_writes_registry_not_settings_file(
@@ -205,11 +213,21 @@ def test_autostart_writes_registry_not_settings_file(
     assert "autostart" not in payload
 
 
+@pytest.mark.parametrize("values", [None, {VALUE_NAME: ""}])
 def test_autostart_write_failure_rolls_back_toggle(
-    application: QApplication, tmp_path: Path
+    values: dict[str, str] | None, application: QApplication, tmp_path: Path
 ) -> None:
-    """Отказ записи не смеет оставить включённый тумблер (спека §3.6)."""
-    view, _ = _view(application, tmp_path, registry=BrokenRegistry())
+    """Отказ записи не смеет оставить включённый тумблер (спека §3.6).
+
+    Второй случай — реестр с ПУСТЫМ значением — добавлен по разбору мутаций
+    21.08.2026: откат идёт через тот же `_sync_autostart`, то есть это
+    четвёртое место, где действует правило «включено = непустое значение».
+    На пустом реестре старая проверка существования отвечала бы так же, как
+    новая, и подмена именно здесь переживала набор. Живой сценарий: в `Run`
+    лежит пустая строка от установщика, запись падает (реестр заперт
+    политикой) — и раздел откатывается в «включено» на пустом месте.
+    """  # noqa: RUF002
+    view, _ = _view(application, tmp_path, registry=BrokenRegistry(values))
 
     view.autostart_checkbox().setChecked(True)
 
