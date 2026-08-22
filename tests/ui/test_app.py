@@ -1,5 +1,7 @@
 import logging
 import shutil
+import sys
+import winreg
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
@@ -25,7 +27,6 @@ from PySide6.QtWidgets import (
 )
 
 from onecstarter.domain.launch import LaunchCommand
-from onecstarter.services import autostart
 from onecstarter.services.catalog import EMPTY_COMMON_DATA
 from onecstarter.services.hotkeys import parse_hotkey
 from onecstarter.services.settings import DEFAULT_HOTKEY, Settings, ThemeMode, save_settings
@@ -37,6 +38,7 @@ from onecstarter.ui.background import StartupTasks
 from onecstarter.ui.bases.view import BasesView
 from onecstarter.ui.hotkey import GlobalHotkey
 from onecstarter.ui.settings_store import SettingsStore
+from onecstarter.ui.settings_view import SettingsView
 from onecstarter.ui.shell import MainWindow
 from onecstarter.ui.theme_controller import ThemeController
 from onecstarter.ui.watcher import FileWatcher
@@ -1461,11 +1463,17 @@ def test_busy_hotkey_without_tray_opens_the_settings_section(
     в «Настройках». Без трея первые два вырождаются, а третий пользователь
     не видит — программа открывается на «Базах», и о том, что глобальный
     вызов не работает, узнать неоткуда. Раз показать нечем, кроме окна,
-    оно и открывается на нужном разделе: строка отказа там уже стоит.
+    оно и открывается на нужном разделе.
 
-    Модального окна по-прежнему нет (спека §4.3): без трея тихого старта
-    не бывает — `main` показывает окно, когда скрываться некуда, — поэтому
-    смена раздела никого не встречает диалогом при входе в систему.
+    Проверяется состояние окна, а не значение аксессора: мутационная проверка
+    показала, что `current_section_index()`, заглушённый константой, делал
+    первую редакцию теста вакуумно зелёной. `current_section()` и
+    `section_buttons()` закреплены отдельно в `test_shell.py`, подменить их
+    молча не выйдет.
+
+    Последнее утверждение — про полезную нагрузку: раздел без строки отказа
+    оставляет пользователя ровно там, где он был. Мутация «снять
+    `report_hotkey_problem`» переживала набор, пока эта строка не появилась.
     """  # noqa: RUF002
     window = _window_with_settings(
         qapp,
@@ -1474,7 +1482,32 @@ def test_busy_hotkey_without_tray_opens_the_settings_section(
         tray_available=False,
         register_result=0,
     )
-    assert window.current_section_index() == 1
+    section = window.current_section()
+    assert isinstance(section, SettingsView)
+    assert [button.isChecked() for button in window.section_buttons()] == [False, True]
+    assert "занято" in section.hotkey_note()
+
+
+def test_busy_hotkey_with_tray_leaves_the_section_alone(
+    qapp: Any, tmp_path: Any, monkeypatch: Any
+) -> None:
+    """С треем раздел не дёргается: канал — балун, а не рывок интерфейса.
+
+    Обратная сторона долга №10, без неё мутация «переключать раздел всегда»
+    переживала набор. Пользователь с живым треем при каждом входе в систему
+    получал бы окно, самовольно ушедшее с «Баз» на «Настройки».
+    """  # noqa: RUF002
+    messages: list[tuple[str, str]] = []
+    window = _window_with_settings(
+        qapp,
+        tmp_path,
+        monkeypatch,
+        tray_available=True,
+        register_result=0,
+        messages=messages,
+    )
+    assert messages, "балун при живом трее обязателен"
+    assert isinstance(window.current_section(), BasesView)
 
 
 def test_window_with_settings_balances_native_filter_install_and_remove(
@@ -1611,32 +1644,43 @@ def test_run_smoke_disposes_the_hotkey_before_returning(
     qtbot.addWidget(window)
 
 
-def test_run_smoke_does_not_touch_the_live_registry(
+def test_run_smoke_never_reaches_the_windows_registry(
     tmp_path: Any, monkeypatch: Any, qtbot: Any
 ) -> None:
-    """Самопроверка сборки не зависит от автозапуска на машине сборщика (долг №8).
+    """Самопроверка сборки не обращается к реестру вовсе (долг №8).
 
-    `SettingsView` читает реестр прямо в конструкторе, поэтому с настоящим
-    `WindowsRegistry` результат `run_smoke` менялся бы от того, включён ли
-    автозапуск у того, кто собирает: у одного «включено», у другого нет.
-    Прогон в CI и на машине разработчика обязан проверять одно и то же.
+    Первая редакция теста смотрела, ЧТО `run_smoke` передал в
+    `_build_main_window`, — то есть намерение вызывающего, а не поведение
+    системы. Мутационная проверка показала цену: `_build_main_window`,
+    игнорирующая переданный реестр и всегда берущая настоящий, переживала
+    весь набор из 1275 тестов. Долг откатывался бесшумно.
+
+    Здесь проверяется факт: `winreg` подменён запрещающими заглушками ДО
+    вызова, и ни одна из них не сработала. `sys.frozen` включается намеренно —
+    без него `_sync_autostart` уходит по короткой ветке «из исходников
+    тумблер заблокирован» и до реестра не доходит вообще, так что настоящий
+    и поддельный реестр были бы наблюдаемо неотличимы.
     """  # noqa: RUF002
     monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
-    captured = _capture_window(monkeypatch)
-    appdata = tmp_path / "appdata"
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    touched: list[str] = []
+
+    def forbid(name: str) -> Any:
+        def guard(*_args: Any, **_kwargs: Any) -> Any:
+            touched.append(name)
+            raise AssertionError(f"самопроверка полезла в реестр: {name}")
+
+        return guard
+
+    for fn in ("OpenKey", "CreateKeyEx", "QueryValueEx", "SetValueEx", "DeleteValue"):
+        monkeypatch.setattr(winreg, fn, forbid(fn))
     target = tmp_path / "out"
     target.mkdir()
 
-    code = app_module.run_smoke(str(target), {"APPDATA": str(appdata)})
+    code = app_module.run_smoke(str(target), {"APPDATA": str(tmp_path / "appdata")})
 
     assert code == 0
-    registry = captured["kwargs"]["autostart_registry"]
-    assert isinstance(registry, autostart.NullRegistry)
-    # Заглушка молчит о состоянии и не даёт себя изменить — иначе самопроверка  # noqa: RUF003
-    # писала бы в HKCU машины сборки.
-    assert registry.read(autostart.VALUE_NAME) is None
-    with pytest.raises(RuntimeError):
-        registry.write(autostart.VALUE_NAME, "x")
+    assert touched == []
 
 
 def test_run_smoke_times_out_without_background(

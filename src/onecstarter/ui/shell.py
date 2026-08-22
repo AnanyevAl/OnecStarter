@@ -104,10 +104,6 @@ class MainWindow(QMainWindow):
         self._stack.setCurrentIndex(index)
         self._buttons[index].setChecked(True)
 
-    def current_section_index(self) -> int:
-        """Какой раздел показан сейчас — тестам и проводке приложения."""
-        return self._stack.currentIndex()
-
     def set_section_icon(
         self, index: int, factory: Callable[[Palette], QIcon]
     ) -> None:

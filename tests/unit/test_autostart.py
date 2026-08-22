@@ -216,7 +216,13 @@ def _winreg_stub(
     и тот же объект — а обращение через чужой модуль `mypy` в strict-режиме
     справедливо не пропускает.
     """  # noqa: RUF002
-    def open_key(_root: object, _path: str, *_args: object) -> _FakeKey:
+    def open_key(root: object, path: str, *_args: object) -> _FakeKey:
+        # Куст и путь проверяются здесь, а не «где-нибудь»: подделка, молча  # noqa: RUF003
+        # принимающая любой аргумент, пропустила бы чтение из HKLM — там наше
+        # значение чужое, а запись потребовала бы прав администратора, чего  # noqa: RUF003
+        # модуль явно не требует (находка мутационной проверки 22.08.2026).
+        assert root == winreg.HKEY_CURRENT_USER, "автозапуск живёт в HKCU"
+        assert path == RUN_KEY
         if not key_exists:
             raise FileNotFoundError(2, "нет ключа")
         return _FakeKey(values)
@@ -226,10 +232,17 @@ def _winreg_stub(
             raise FileNotFoundError(2, "нет значения")
         return key.store[name], 1
 
-    def create_key(_root: object, _path: str, *_args: object) -> _FakeKey:
+    def create_key(root: object, path: str, *_args: object) -> _FakeKey:
+        assert root == winreg.HKEY_CURRENT_USER, "автозапуск живёт в HKCU"
+        assert path == RUN_KEY
         return _FakeKey(values)
 
-    def set_value(key: _FakeKey, name: str, _r: int, _t: int, data: str) -> None:
+    def set_value(key: _FakeKey, name: str, _r: int, kind: int, data: str) -> None:
+        # Тип значения — измеренный факт (докстринг модуля: **[Проверено,
+        # 19.08.2026]** все значения ключа Run — REG_SZ), и до сих пор его  # noqa: RUF003
+        # не удерживал ни один тест. REG_DWORD со строкой упал бы TypeError  # noqa: RUF003
+        # при первом включении автозапуска в собранном экземпляре.
+        assert kind == winreg.REG_SZ, "значения ключа Run — строки"
         key.store[name] = data
 
     def delete_value(key: _FakeKey, name: str) -> None:
@@ -327,3 +340,23 @@ def test_windows_registry_read_does_not_swallow_other_errors(
     monkeypatch.setattr(winreg, "OpenKey", denied)
     with pytest.raises(PermissionError):
         WindowsRegistry().read(VALUE_NAME)
+
+
+def test_windows_registry_delete_does_not_swallow_other_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Отказ в доступе при удалении обязан дойти до вьюхи (спека §3.6).
+
+    Симметрия к тесту чтения, и она не formальность: `delete` глушит
+    `FileNotFoundError` («выключить выключённое — не ошибка»), а мутация,
+    расширяющая перехват до `Exception`, переживала набор. Последствие —
+    выключение тумблера падает в HKCU, `_choose_autostart` не видит `OSError`,
+    и пользователь получает «выключено» вместо причины отказа.
+    """  # noqa: RUF002
+
+    def denied(*_args: object, **_kwargs: object) -> None:
+        raise PermissionError(5, "отказано в доступе")
+
+    monkeypatch.setattr(winreg, "OpenKey", denied)
+    with pytest.raises(PermissionError):
+        WindowsRegistry().delete(VALUE_NAME)
