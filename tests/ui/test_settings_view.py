@@ -155,6 +155,12 @@ def test_autostart_reflects_registry(application: QApplication, tmp_path: Path) 
     registry = FakeRegistry({VALUE_NAME: autostart_command(EXE)})
     view, _ = _view(application, tmp_path, registry=registry)
     assert view.autostart_checkbox().isChecked() is True
+    # Тумблер не заперт. Про запертость в файле сказано дважды — несобранная
+    # версия и нечитаемый реестр, — а что при успешном чтении он ДОСТУПЕН,  # noqa: RUF003
+    # не утверждал никто: мутация «всегда enabled=False» переживала набор
+    # (разбор 21.08.2026). Пользователь при этом видел бы верное состояние
+    # и не мог его изменить.  # noqa: RUF003
+    assert view.autostart_checkbox().isEnabled() is True
 
 
 def test_autostart_writes_registry_not_settings_file(
@@ -364,6 +370,30 @@ def test_empty_registry_value_shows_autostart_off(
     view, _store = _view(application, tmp_path, registry=registry)
     assert view.autostart_checkbox().isChecked() is False
     assert registry.values == {VALUE_NAME: ""}
+
+
+def test_show_resyncs_on_value_that_became_empty(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Повторный показ раздела ловит и пустое значение, а не только исчезнувшее.
+
+    Разбор мутаций 21.08.2026: старую проверку существования можно было вернуть
+    ТОЛЬКО в ветку `showEvent`, и набор оставался зелёным. Тест конструктора
+    вьюху не показывает, а `test_autostart_toggle_resyncs_on_show` снаружи
+    значение **удаляет** — на удалённом обе редакции отвечают одинаково.
+
+    Сценарий развёрнут во времени, но это ровно тот случай, что завёл ветку:
+    раздел открыт, пользователь его скрыл, установщик оставил в `Run` пустую
+    строку, раздел открыли снова.
+    """  # noqa: RUF002
+    registry = FakeRegistry({VALUE_NAME: autostart_command(EXE)})
+    view, _store = _view(application, tmp_path, registry=registry)
+    assert view.autostart_checkbox().isChecked() is True
+
+    registry.values[VALUE_NAME] = ""  # пустая строка от установщика, не удаление
+    view.show()
+
+    assert view.autostart_checkbox().isChecked() is False
 
 
 def test_autostart_row_warns_about_task_manager(
