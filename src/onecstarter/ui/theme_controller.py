@@ -13,13 +13,9 @@ from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import QApplication
 
-from onecstarter.services.settings import (
-    Settings,
-    ThemeMode,
-    load_settings,
-    save_settings,
-)
+from onecstarter.services.settings import ThemeMode
 from onecstarter.ui import theme
+from onecstarter.ui.settings_store import SettingsStore
 
 
 def detect_system_mode() -> ThemeMode:
@@ -55,17 +51,16 @@ class ThemeController(QObject):
     def __init__(
         self,
         application: QApplication,
-        path: Path,
+        store: SettingsStore,
         *,
         system_mode: Callable[[], ThemeMode] = detect_system_mode,
     ) -> None:
         super().__init__(application)
         self._application = application
-        self._path = path
+        self._store = store
         self._system_mode = system_mode
-        self._mode = load_settings(path).theme
+        self._mode = store.settings.theme
         self._palette = theme.palette_for(self._mode, self._system_mode())
-        self.last_save_error: str | None = None
         self._apply()
 
     @property
@@ -79,17 +74,18 @@ class ThemeController(QObject):
     @property
     def path(self) -> Path:
         """Куда пишутся настройки — разделу «Настройки» для подписи."""
-        return self._path
+        return self._store.path
+
+    @property
+    def last_save_error(self) -> str | None:
+        """Отказ записи виден там же, где был: файл теперь пишет store."""
+        return self._store.last_save_error
 
     def set_mode(self, mode: ThemeMode) -> None:
         self._mode = mode
-        try:
-            save_settings(self._path, Settings(theme=mode))
-            self.last_save_error = None
-        except OSError as error:
-            # Тема применяется всё равно: пользователь её выбрал. Но соврать  # noqa: RUF003
-            # «запомнили» нельзя — раздел «Настройки» покажет причину.
-            self.last_save_error = f"Не удалось сохранить {self._path}: {error}"  # noqa: RUF001
+        # Тема применяется всегда: пользователь её выбрал. Отказ записи
+        # не гасится — раздел «Настройки» покажет причину из store.
+        self._store.update(theme=mode)
         self._repaint()
 
     def refresh_system(self) -> None:

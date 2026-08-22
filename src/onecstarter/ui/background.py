@@ -13,7 +13,9 @@
 import logging
 import threading
 import time
+import traceback
 from collections.abc import Callable
+from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
@@ -25,6 +27,25 @@ _log = logging.getLogger("onecstarter.startup")
 
 def _spawn_daemon(task: Callable[[], None]) -> None:
     threading.Thread(target=task, daemon=True).start()
+
+
+def _log_failure(stage: str, exc: BaseException) -> None:
+    """Отказ фоновой задачи: тип исключения и места кадров, без текста.
+
+    Сообщение исключения несёт содержимое — `OSError` вкладывает путь
+    (UNC общего списка из cfg, каталог установки), — а лог прикладывают
+    к issue (докстринг модуля, инвариант 5). Полный traceback непригоден
+    по той же причине: его последняя строка — то же сообщение, а строки
+    исходника могут нести литералы. Места кадров (имя файла кода : строка)
+    содержимого пользователя не несут, а шаг, на котором упало,
+    локализуют — одного имени типа для этого мало (финальное ревью
+    ветки 18.08.2026).
+    """  # noqa: RUF002
+    frames = " -> ".join(
+        f"{Path(frame.filename).name}:{frame.lineno}"
+        for frame in traceback.extract_tb(exc.__traceback__)
+    )
+    _log.error("%s: отказ (%s @ %s)", stage, type(exc).__name__, frames)
 
 
 class StartupTasks(QObject):
@@ -55,11 +76,11 @@ class StartupTasks(QObject):
         _log.info("обнаружение платформ: начато")
         try:
             found = self._discover()
-        except Exception:
+        except Exception as exc:
             # Падение фона не должно оставлять окно в вечном «…»: логируем
-            # причину и отдаём пустой результат — состояние видно и в окне,
-            # и в логе.
-            _log.exception("обнаружение платформ: отказ")
+            # причину (что и почему нельзя — докстринг _log_failure) и отдаём
+            # пустой результат — состояние видно и в окне, и в логе.
+            _log_failure("обнаружение платформ", exc)
             found = []
         _log.info(
             "обнаружение платформ: закончено за %d мс, найдено %d",
@@ -73,8 +94,8 @@ class StartupTasks(QObject):
         _log.info("общие списки: чтение начато")
         try:
             data = self._read_common()
-        except Exception:
-            _log.exception("общие списки: отказ")
+        except Exception as exc:
+            _log_failure("общие списки", exc)
             data = EMPTY_COMMON_DATA
         _log.info(
             "общие списки: закончено за %d мс, файлов %d, ошибок %d",

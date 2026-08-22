@@ -180,6 +180,90 @@ def test_update_cannot_turn_a_base_into_a_group() -> None:
         assert serialize_v8i(document) == TWO_SECTIONS
 
 
+def test_add_with_empty_placement_is_rejected() -> None:
+    """Второй рубеж валидации размещения (долг ревью 4b, №1): у диалога
+    есть обязательные поля, но `build_connect(FILE, file_path="")` в обход
+    диалога собирает `File="";`, и без рубежа в `services` такая запись
+    попадала в файл.
+    """  # noqa: RUF002
+    document = parse_v8i(TWO_SECTIONS)
+    with pytest.raises(InvalidRequestError):
+        apply_patch(
+            document,
+            SectionPatch(PatchKind.ADD, name="Новая", changes={"Connect": 'File="";'}),
+            NEW_ID,
+        )
+    assert serialize_v8i(document) == TWO_SECTIONS
+
+
+@pytest.mark.parametrize("changes", [{}, {"Connect": None}])
+def test_add_without_connect_is_rejected(changes: dict[str, str | None]) -> None:
+    """ADD без `Connect` создал бы секцию-группу операцией записи базы:
+    признак группы — отсутствие `Connect` ([Ф] скил v8i-format). Для групп
+    есть своя операция с каскадом — `add_group`.
+    """  # noqa: RUF002
+    document = parse_v8i(TWO_SECTIONS)
+    with pytest.raises(InvalidRequestError):
+        apply_patch(
+            document,
+            SectionPatch(PatchKind.ADD, name="Новая", changes=changes),
+            NEW_ID,
+        )
+    assert serialize_v8i(document) == TWO_SECTIONS
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        SectionPatch(
+            PatchKind.ADD,
+            name="Новая",
+            changes={"Connect": 'File="C:\\Good";', "CONNECT": 'File="";'},
+        ),
+        SectionPatch(
+            PatchKind.UPDATE,
+            target_key="id:abc",
+            changes={"Connect": 'File="C:\\Good";', "CONNECT": 'File="";'},
+        ),
+        SectionPatch(
+            PatchKind.UPDATE,
+            target_key="id:abc",
+            changes={"Version": "8.3.24", "VERSION": "8.3.25"},
+        ),
+    ],
+)
+def test_changes_with_case_duplicate_keys_are_rejected(patch: SectionPatch) -> None:
+    """Финальное ревью ветки (18.08.2026), воспроизведённый обход рубежа:
+    применение пишет каждый ключ изменений, а `V8iSection.set` сливает их
+    без учёта регистра — побеждает последний, и валидация, смотревшая
+    на первое совпадение, ничего не гарантирует: дубль `Connect`/`CONNECT`
+    доносил пустое размещение до файла. Дубль ключа — ошибка запроса,
+    для любых ключей и обеих операций.
+    """  # noqa: RUF002
+    document = parse_v8i(TWO_SECTIONS)
+    with pytest.raises(InvalidRequestError):
+        apply_patch(document, patch, NEW_ID)
+    assert serialize_v8i(document) == TWO_SECTIONS
+
+
+def test_update_with_empty_placement_is_rejected() -> None:
+    """Тот же рубеж на пути правки: пустое значение фрагмента размещения
+    не должно попадать в файл и через UPDATE.
+    """
+    document = parse_v8i(TWO_SECTIONS)
+    with pytest.raises(InvalidRequestError):
+        apply_patch(
+            document,
+            SectionPatch(
+                PatchKind.UPDATE,
+                target_key="id:abc",
+                changes={"Connect": 'Srvr="s";Ref="";'},
+            ),
+            NEW_ID,
+        )
+    assert serialize_v8i(document) == TWO_SECTIONS
+
+
 def test_group_remove_is_rejected() -> None:
     """Удаление секции-группы оставляло потомков сиротами."""
     document = parse_v8i(GROUP_AND_CHILD)

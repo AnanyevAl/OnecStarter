@@ -28,7 +28,9 @@ def test_setup_logging_creates_rotating_file(tmp_path: Path) -> None:
 
 def test_setup_logging_survives_unwritable_directory(tmp_path: Path) -> None:
     blocker = tmp_path / "APPDATA"
-    blocker.write_text("файл на месте каталога")
+    # encoding обязателен: по умолчанию write_text берёт ANSI-кодировку
+    # машины, и на en-US runner (cp1252) кириллица падает UnicodeEncodeError.
+    blocker.write_text("файл на месте каталога", encoding="utf-8")
     try:
         assert diagnostics.setup_logging({"APPDATA": str(blocker)}) is None
     finally:

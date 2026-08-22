@@ -287,6 +287,7 @@ class BasesView(QWidget):
         *,
         installations: Sequence[Installation] | None,
         cfg_rules: Sequence[DefaultVersionRule],
+        recent_limit: Callable[[], int],
         on_error: Callable[[ServicesError], None] | None = None,
         confirm_removal: Callable[[QWidget | None, InfobaseItem], bool] = confirm_removal,
         ask_group_removal: Callable[
@@ -306,6 +307,10 @@ class BasesView(QWidget):
         # готовый список и снимает состояние ожидания.
         self._installations = None if installations is None else list(installations)
         self._cfg_rules = list(cfg_rules)
+        # Провайдер, а не число: настройка меняется на лету и следующая  # noqa: RUF003
+        # пересборка обязана взять новое значение (тот же приём, что
+        # `theme_mode=lambda: controller.mode` у трея).  # noqa: RUF003
+        self._recent_limit = recent_limit
         self._on_error = on_error or (lambda error: error_ui.show_service_error(self, error))
         # Инъекция, а не вызов функции модуля напрямую (тот же приём, что  # noqa: RUF003
         # у `open_directory` в ConnectionPanel и `choose_directory`  # noqa: RUF003
@@ -453,7 +458,12 @@ class BasesView(QWidget):
         current_position = self._current_position()
         column_widths = self._column_widths()
         items = self._workspace.items()
-        forest = display_forest(items, self._workspace.tree(), self._workspace.common_errors())
+        forest = display_forest(
+            items,
+            self._workspace.tree(),
+            self._workspace.common_errors(),
+            recent_limit=self._recent_limit(),
+        )
         query = self._search.text()
         self._rows = filter_rows(forest, query)
         # discovery_pending отдельно от пустого списка (спека T-04.6, §3.4):

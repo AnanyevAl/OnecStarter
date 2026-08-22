@@ -1,5 +1,7 @@
 # OneCStarter
 
+[![CI](https://github.com/AnanyevAl/OnecStarter/actions/workflows/ci.yml/badge.svg)](https://github.com/AnanyevAl/OnecStarter/actions/workflows/ci.yml)
+
 > Fast launcher for 1C:Enterprise infobases on Windows: tree, search,
 > explicit platform version control. Russian UI; docs below are in Russian.
 
@@ -22,9 +24,9 @@
 
 ## Установка
 
-- **Установщик:** `OneCStarter-0.1.0-setup.exe` — per-user, права
+- **Установщик:** `OneCStarter-0.2.0-setup.exe` — per-user, права
   администратора не нужны.
-- **Portable:** распаковать `OneCStarter-0.1.0-portable.zip`, запустить
+- **Portable:** распаковать `OneCStarter-0.2.0-portable.zip`, запустить
   `OneCStarter.exe`.
 
 SmartScreen при первом запуске предупредит о неизвестном издателе:
@@ -52,6 +54,8 @@ powershell -File build/build.ps1
 
 Установщик требует Inno Setup 6. Без него — сборка только portable-варианта:
 `powershell -File build/build.ps1 -SkipInstaller`.
+
+Устройство исходников и правила для изменений — [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Границы
 

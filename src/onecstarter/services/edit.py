@@ -26,6 +26,7 @@ from onecstarter.services.model import (
     find_target,
     key_of_section,
     parse_order,
+    validate_connect,
     validate_section_name,
 )
 from onecstarter.services.order import format_order, reorder_values, sort_key
@@ -138,23 +139,40 @@ def _require_target_folder_exists(
         require_group_exists(document, normalize_folder(value))
 
 
-def _reject_connect_removal(changes: Mapping[str, str | None]) -> None:
-    """Не дать записи базы превратиться в секцию-группу.
+def _reject_ambiguous_keys(changes: Mapping[str, str | None]) -> None:
+    """Отвергнуть изменения с дублями ключей, различающимися регистром.
 
-    Признак группы — отсутствие `Connect` (**[Ф]** скил v8i-format), поэтому
-    снятие ключа меняет не значение, а вид секции: наши данные группам
-    не подмешиваются, и избранное с историей молча отвязались бы, а при
-    совпадении имени с соседней группой под тем же родителем в дереве
-    появились бы две группы с одним путём — состояние, которое операции
-    над группами создавать запрещают.
+    Применение пишет каждый ключ изменений, а `V8iSection.set` сливает их
+    без учёта регистра — побеждает последний. Валидация, смотревшая
+    на первое совпадение, при дубле ничего не гарантирует: финальное ревью
+    ветки (18.08.2026) воспроизвело, как `Connect`/`CONNECT` доносил пустое
+    размещение до файла в обход рубежа. Дубль — противоречивый запрос,
+    а не вариант записи.
+    """  # noqa: RUF002
+    seen: dict[str, str] = {}
+    for key in changes:
+        first = seen.setdefault(key.casefold(), key)
+        if first != key:
+            raise InvalidRequestError(
+                f"Изменения содержат один ключ дважды в разном регистре: "
+                f"{first} и {key}"
+            )
+
+
+def _connect_change(changes: Mapping[str, str | None]) -> tuple[bool, str | None]:
+    """`Connect` из патча: (ключ присутствует, значение).
+
+    Три состояния в одной точке: (False, None) — ключ не трогают,
+    (True, None) — ключ снимается, (True, str) — новое значение. Раньше
+    их восстанавливали две функции с зависимостью от порядка вызова.
+    Имя ключа сравнивается без учёта регистра — так же, как его находит
+    сам формат (`_remove_key`); дубли отсеяны `_reject_ambiguous_keys`
+    до этого вызова, поэтому совпадение не больше одного.
     """  # noqa: RUF002
     for key, value in changes.items():
-        if key.casefold() == "connect" and value is None:
-            raise InvalidRequestError(
-                "Снять Connect у записи базы нельзя: без него секция станет "  # noqa: RUF001
-                "группой. Удалите запись, если она больше не нужна, или "
-                "задайте другую строку соединения"
-            )
+        if key.casefold() == "connect":
+            return True, value
+    return False, None
 
 
 def _apply_reorder(document: V8iDocument, patch: ReorderPatch) -> PatchResult:
@@ -227,6 +245,16 @@ def _apply_add(document: V8iDocument, patch: SectionPatch, new_id: str) -> Patch
     # `str | None` для `append_section`.
     name = patch.name or ""
     validate_section_name(name)
+    _reject_ambiguous_keys(patch.changes)
+    _present, connect = _connect_change(patch.changes)
+    if connect is None:
+        # `{"Connect": None}` и отсутствие ключа равносильны: значения None
+        # ADD не пишет, а секция без Connect — группа, у групп своя операция.  # noqa: RUF003
+        raise InvalidRequestError(
+            "Новой записи базы нужна строка соединения: секция без Connect — "
+            "это группа, группы создаёт своя операция"
+        )
+    validate_connect(connect)
     _require_target_folder_exists(document, patch.changes)
     section = document.append_section(name)
     for key, value in patch.changes.items():
@@ -240,7 +268,19 @@ def _apply_add(document: V8iDocument, patch: SectionPatch, new_id: str) -> Patch
 def _apply_update(
     document: V8iDocument, section: V8iSection, patch: SectionPatch, new_id: str
 ) -> None:
-    _reject_connect_removal(patch.changes)
+    _reject_ambiguous_keys(patch.changes)
+    present, connect = _connect_change(patch.changes)
+    if present and connect is None:
+        # Признак группы — отсутствие Connect ([Ф] скил v8i-format): снятие
+        # ключа меняет не значение, а вид секции — наши данные группам  # noqa: RUF003
+        # не подмешиваются, избранное с историей молча отвязались бы.  # noqa: RUF003
+        raise InvalidRequestError(
+            "Снять Connect у записи базы нельзя: без него секция станет "  # noqa: RUF001
+            "группой. Удалите запись, если она больше не нужна, или "
+            "задайте другую строку соединения"
+        )
+    if connect is not None:
+        validate_connect(connect)
     _require_target_folder_exists(document, patch.changes)
     if patch.new_name:
         _rename(section, patch.new_name)
@@ -256,7 +296,7 @@ def _apply_update(
     #
     # Вид секции здесь не проверяется: группа сюда не доходит. На входе её  # noqa: RUF003
     # отсеивает `_reject_group`, а стать группой по ходу правки секция  # noqa: RUF003
-    # не может — `_reject_connect_removal` не даёт снять `Connect`.
+    # не может — снятие `Connect` отвергнуто выше (`present and connect is None`).
     if not section.id:
         section.set("ID", new_id)
 

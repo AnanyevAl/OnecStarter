@@ -353,7 +353,7 @@ class Workspace:
         try:
             self._store_user(
                 record_launch(self._user, key, client, self._now()),
-                "База запущена, но не удалось запомнить время запуска",  # noqa: RUF001, RUF100
+                "База запущена, но не удалось запомнить время запуска",
             )
         finally:
             self._rebuild()
@@ -504,7 +504,7 @@ class Workspace:
             try:
                 self._store_user(
                     rekey(self._user, rekey_from, result.key),
-                    "Запись изменена, но не удалось перенести на неё избранное "  # noqa: RUF001, RUF100
+                    "Запись изменена, но не удалось перенести на неё избранное "
                     "и историю запусков",
                 )
             except UserDataWriteError as error:

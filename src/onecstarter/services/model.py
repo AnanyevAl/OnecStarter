@@ -21,7 +21,12 @@ from datetime import datetime
 from enum import Enum
 
 from onecstarter.config.v8i import KeyValueLine, V8iDocument, V8iSection
-from onecstarter.domain.connect import ConnectKind, classify_connect
+from onecstarter.domain.connect import (
+    PLACEMENT_FRAGMENTS,
+    ConnectKind,
+    classify_connect,
+    parse_connect,
+)
 from onecstarter.services.errors import InvalidRequestError
 from onecstarter.services.paths import group_path
 
@@ -176,6 +181,38 @@ def find_target(document: V8iDocument, key: str) -> V8iSection | None:
         if key_of_section(section) == key:
             return section
     return None
+
+
+def validate_connect(connect: str) -> None:
+    """Отвергнуть строку соединения, которая молча портит запись базы.
+
+    Второй рубеж после обязательных полей диалога (долг ревью 4b, №1):
+    программный путь — `build_connect(FILE, file_path="")` даёт `File="";` —
+    диалог не проходит, и без рубежа в `services` пустое размещение попадало
+    в файл. Пустая строка целиком — вовсе не база: признак группы —
+    отсутствие `Connect` ([Ф] T-05.6, пустое значение равносильно снятию).
+
+    Проверяются только фрагменты размещения вида записи (`classify_connect`,
+    общий источник — `PLACEMENT_FRAGMENTS`): диалог показывает и требует
+    ровно их, а пустой фрагмент чужого вида (`File="…";Ref="";`) может уже
+    лежать в живом файле, который пишем не только мы, — рубеж, отвергающий
+    его, запирал бы правку записи ошибкой про невидимое пользователю поле
+    (финальное ревью ветки 18.08.2026). Отсутствующие фрагменты своего вида
+    тоже не требуются: экзотическая, но живая запись (один `Srvr` без `Ref`)
+    должна оставаться правимой.
+    """  # noqa: RUF002
+    if not connect.strip():
+        raise InvalidRequestError(
+            "Строка соединения не может быть пустой: секция без неё — группа"
+        )
+    placement = PLACEMENT_FRAGMENTS[classify_connect(connect)]
+    for fragment in parse_connect(connect):
+        if fragment.name.casefold() not in placement:
+            continue
+        if not fragment.value.strip():
+            raise InvalidRequestError(
+                f"{fragment.name}: размещение не может быть пустым"
+            )
 
 
 def validate_section_name(name: str) -> None:

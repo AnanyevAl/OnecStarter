@@ -131,7 +131,15 @@ def test_unencodable_text_is_rejected(tmp_path: Path) -> None:
     # кириллица записалась бы штатно.
     path.write_bytes(b"[Demo]\r\nConnect=File=\"C:\\B\";\r\nX=\x98\r\n")
     with pytest.raises(EncodingRejectedError):
-        write_patch(path, SectionPatch(PatchKind.ADD, name="Кириллица", changes={}), NEW_ID)
+        # Connect — валидный и ASCII: некодируемой частью остаётся имя секции,
+        # а до отказа кодировки патч обязан пройти рубежи apply_patch.  # noqa: RUF003
+        write_patch(
+            path,
+            SectionPatch(
+                PatchKind.ADD, name="Кириллица", changes={"Connect": 'File="C:\\New";'}
+            ),
+            NEW_ID,
+        )
 
 
 def test_line_break_in_value_is_a_layer_error(tmp_path: Path) -> None:

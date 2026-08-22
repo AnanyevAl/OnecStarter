@@ -1,5 +1,5 @@
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -86,11 +86,27 @@ def _view(
         workspace,
         installations=installations,
         cfg_rules=[],
+        recent_limit=lambda: 10,
         on_error=recorded.append,
         **kwargs,
     )
     qtbot.addWidget(view)
     return view, calls, recorded, opened
+
+
+def _iter_tree(model: Any, parent: QModelIndex | None = None) -> Iterator[QModelIndex]:
+    """Все индексы колонки 0 дерева модели, в глубину, в порядке модели.
+
+    Единственный обходчик на файл (долг ревью 4b, №4 — раньше тот же
+    рекурсивный скелет жил семью копиями): роли выставлены только
+    на колонке 0 (`ui/bases/tree_model.py`), поэтому предикаты
+    вызывающих — поверх этих индексов.
+    """  # noqa: RUF002
+    parent = QModelIndex() if parent is None else parent
+    for row in range(model.rowCount(parent)):
+        index = model.index(row, 0, parent)
+        yield index
+        yield from _iter_tree(model, index)
 
 
 def _column_texts(view: BasesView, column: int) -> list[str]:
@@ -103,18 +119,11 @@ def _column_texts(view: BasesView, column: int) -> list[str]:
     ключи, что и в дереве файла, display_forest), дубли не схлопываются:
     вызывающему тесту нужен факт «эта колонка нигде не „…“», а не счётчик.
     """  # noqa: RUF002
-    model = view.model()
-    texts: list[str] = []
-
-    def walk(parent: QModelIndex) -> None:
-        for row in range(model.rowCount(parent)):
-            index = model.index(row, 0, parent)
-            if index.data(KIND_ROLE) == RowKind.BASE.value:
-                texts.append(str(model.index(row, column, parent).data() or ""))
-            walk(index)
-
-    walk(QModelIndex())
-    return texts
+    return [
+        str(index.siblingAtColumn(column).data() or "")
+        for index in _iter_tree(view.model())
+        if index.data(KIND_ROLE) == RowKind.BASE.value
+    ]
 
 
 def test_pending_installations_show_ellipsis_then_versions(qtbot, workspace_factory):
@@ -158,23 +167,20 @@ def _type(widget: QWidget, text: str) -> None:
             )
 
 
+def _find_index(view: BasesView, predicate: Any, message: str) -> QModelIndex:
+    """Первый индекс дерева (преордер `_iter_tree`), прошедший предикат."""
+    index = next((i for i in _iter_tree(view.model()) if predicate(i)), None)
+    assert index is not None, message
+    return index
+
+
 def _first_base_index(view: BasesView) -> QModelIndex:
     """Первая строка с KIND_ROLE == RowKind.BASE.value, обходом всего дерева."""  # noqa: RUF002
-    model = view.model()
-
-    def walk(parent: QModelIndex) -> QModelIndex | None:
-        for row in range(model.rowCount(parent)):
-            index = model.index(row, 0, parent)
-            if index.data(KIND_ROLE) == RowKind.BASE.value:
-                return index
-            found = walk(index)
-            if found is not None:
-                return found
-        return None
-
-    index = walk(QModelIndex())
-    assert index is not None, "в дереве нет ни одной строки базы"
-    return index
+    return _find_index(
+        view,
+        lambda i: i.data(KIND_ROLE) == RowKind.BASE.value,
+        "в дереве нет ни одной строки базы",
+    )
 
 
 def _select_first_file_base(view: BasesView) -> None:
@@ -222,27 +228,18 @@ def _spy_on(monkeypatch: Any, workspace: Any, name: str) -> list[tuple[Any, Any]
     return calls
 
 
+def _index_of_key(view: BasesView, key: str) -> QModelIndex:
+    """Индекс строки с данным ключом привязки (KEY_ROLE колонки 0)."""  # noqa: RUF002
+    return _find_index(
+        view,
+        lambda i: i.data(KEY_ROLE) == key,
+        f"строка с ключом {key!r} не найдена в дереве",  # noqa: RUF001
+    )
+
+
 def _select_key(view: BasesView, key: str) -> None:
-    """Поставить currentIndex дерева на строку базы с данным ключом.
-
-    Поиск идёт по KEY_ROLE колонки 0 (роли на других колонках не выставлены —
-    ui/bases/tree_model.py), рекурсивно по всему дереву модели.
-    """  # noqa: RUF002
-    model = view.model()
-
-    def walk(parent: QModelIndex) -> QModelIndex | None:
-        for row in range(model.rowCount(parent)):
-            index = model.index(row, 0, parent)
-            if index.data(KEY_ROLE) == key:
-                return index
-            found = walk(index)
-            if found is not None:
-                return found
-        return None
-
-    index = walk(QModelIndex())
-    assert index is not None, f"строка с ключом {key!r} не найдена в дереве"  # noqa: RUF001
-    view._tree.setCurrentIndex(index)
+    """Поставить currentIndex дерева на строку базы с данным ключом."""  # noqa: RUF002
+    view._tree.setCurrentIndex(_index_of_key(view, key))
 
 
 def test_tree_is_populated_from_file(qtbot, workspace_factory):
@@ -366,7 +363,7 @@ def test_context_menu_has_properties_action(qtbot, workspace_factory):
 
 
 def _block_user_data(view: BasesView) -> None:
-    """Каталог на месте `bases.json`: запись падает, чтение уже состоялось."""  # noqa: RUF002, RUF100
+    """Каталог на месте `bases.json`: запись падает, чтение уже состоялось."""
     path = view.workspace().paths.user_data
     if path.is_file():
         path.unlink()
@@ -378,7 +375,7 @@ def test_favorite_write_failure_is_shown_and_not_drawn(qtbot, workspace_factory)
 
     `rebuild()` стоит после `try`, поэтому без отката состояния в services
     экран показал бы избранное, которого в файле нет.
-    """  # noqa: RUF002, RUF100
+    """
     view, _, errors, _ = _view(qtbot, workspace_factory)
     key = "id:44444444-4444-4444-4444-444444444444"
     _block_user_data(view)
@@ -441,7 +438,7 @@ def test_common_record_menu_keeps_the_harmless_actions_working(
     Первые два в файл списка не пишут вовсе, третий пишет только в наши
     данные (`bases.json`), к которым источник записи отношения не имеет.
     Гасить их значило бы отобрать работающие операции ради симметрии.
-    """  # noqa: RUF002, RUF100
+    """
     view, _, _, _ = _view(qtbot, workspace_factory, cfg_paths=common_base_cfg_paths)
     item = next(i for i in view.workspace().items() if i.key == COMMON_BASE_KEY)
 
@@ -655,17 +652,11 @@ def test_ctrl_d_toggles_favorite_on_current_row(qtbot, workspace_factory):
 def _expansion(view: BasesView) -> list[tuple[str, bool]]:
     """Снять развёрнутость всех узлов дерева, у которых есть потомки."""  # noqa: RUF002
     model = view.model()
-    state: list[tuple[str, bool]] = []
-
-    def walk(parent: QModelIndex) -> None:
-        for row in range(model.rowCount(parent)):
-            index = model.index(row, 0, parent)
-            if model.rowCount(index):
-                state.append((index.data(), view._tree.isExpanded(index)))
-            walk(index)
-
-    walk(QModelIndex())
-    return state
+    return [
+        (index.data(), view._tree.isExpanded(index))
+        for index in _iter_tree(model)
+        if model.rowCount(index)
+    ]
 
 
 def test_collapsed_state_survives_a_search_cycle(qtbot, workspace_factory):
@@ -699,12 +690,7 @@ def test_expansion_by_user_is_remembered_across_search(qtbot, workspace_factory)
     # Обратная сторона: то, что пользователь развернул сам при пустом
     # поиске, обязано вернуться после цикла поиска.
     view, _, _, _ = _view(qtbot, workspace_factory)
-    model = view.model()
-    group = next(
-        model.index(row, 0, QModelIndex())
-        for row in range(model.rowCount())
-        if model.item(row, 0).text() == "Клиенты"
-    )
+    group = _find_index(view, lambda i: i.data() == "Клиенты", "нет узла Клиенты")
     view._tree.expand(group)
     _type(view.search(), "демо")
     view.search().clear()
@@ -803,7 +789,7 @@ def test_ctrl_1_on_web_base_does_nothing(qtbot, workspace_factory):
 
 def test_panel_follows_selection(qtbot, workspace_factory):
     workspace, _calls, _opened = workspace_factory()
-    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[])
+    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[], recent_limit=lambda: 10)
     qtbot.addWidget(view)
     index = _first_base_index(view)
     view._tree.setCurrentIndex(index)
@@ -955,7 +941,7 @@ def test_f3_launches_in_default_mode(qtbot: Any, workspace_factory: Any) -> None
     поэтому forced_client не передаётся — как у Enter.
     """  # noqa: RUF002
     workspace, calls, _opened = workspace_factory()
-    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[])
+    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[], recent_limit=lambda: 10)
     qtbot.addWidget(view)
     _show_exposed(qtbot, view)
     _select_first_file_base(view)
@@ -968,7 +954,7 @@ def test_f3_launches_in_default_mode(qtbot: Any, workspace_factory: Any) -> None
 
 def test_f4_launches_designer(qtbot: Any, workspace_factory: Any) -> None:
     workspace, calls, _opened = workspace_factory()
-    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[])
+    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[], recent_limit=lambda: 10)
     qtbot.addWidget(view)
     _show_exposed(qtbot, view)
     _select_first_file_base(view)
@@ -987,7 +973,7 @@ def test_f4_does_nothing_for_web_base(qtbot: Any, workspace_factory: Any) -> Non
     задача 8 плана 4a уже закрыла для Ctrl+1/2/3 — здесь он не должен вернуться.
     """
     workspace, calls, opened = workspace_factory()
-    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[])
+    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[], recent_limit=lambda: 10)
     qtbot.addWidget(view)
     _show_exposed(qtbot, view)
     _select_first_web_base(view)
@@ -1000,7 +986,7 @@ def test_f4_does_nothing_for_web_base(qtbot: Any, workspace_factory: Any) -> Non
 
 def test_f3_opens_browser_for_web_base(qtbot: Any, workspace_factory: Any) -> None:
     workspace, _calls, opened = workspace_factory()
-    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[])
+    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[], recent_limit=lambda: 10)
     qtbot.addWidget(view)
     _show_exposed(qtbot, view)
     _select_first_web_base(view)
@@ -1021,7 +1007,7 @@ def test_f3_and_f4_shortcuts_are_registered_on_view(qtbot: Any, workspace_factor
     даже если окружение теста изменится.
     """
     workspace, _calls, _opened = workspace_factory()
-    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[])
+    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[], recent_limit=lambda: 10)
     qtbot.addWidget(view)
 
     sequences = {shortcut.key().toString() for shortcut in view.findChildren(QShortcut)}
@@ -1065,7 +1051,13 @@ def test_theme_switch_leaves_no_stale_colours(qtbot: Any, workspace_factory: Any
     (спека 4b, §2.4).
     """  # noqa: RUF002
     workspace, _calls, _opened = workspace_factory()
-    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[], palette=theme.DARK)
+    view = BasesView(
+        workspace,
+        installations=INSTALLED,
+        cfg_rules=[],
+        recent_limit=lambda: 10,
+        palette=theme.DARK,
+    )
     qtbot.addWidget(view)
 
     view.apply_palette(theme.LIGHT)
@@ -1073,18 +1065,13 @@ def test_theme_switch_leaves_no_stale_colours(qtbot: Any, workspace_factory: Any
     stale = {theme.DARK.text_dim.casefold(), theme.DARK.problem.casefold()}
     icons_dark = _icon_bytes(theme.DARK)
 
-    def walk(parent: QModelIndex) -> None:
-        model = view.model()
-        for row in range(model.rowCount(parent)):
-            index = model.index(row, 0, parent)
-            item = model.itemFromIndex(index)
-            assert item.foreground().color().name().casefold() not in stale
-            if not item.icon().isNull():
-                pixels = item.icon().pixmap(16, 16).toImage().constBits()
-                assert pixels.tobytes() not in icons_dark  # type: ignore[union-attr]
-            walk(index)
-
-    walk(QModelIndex())
+    model = view.model()
+    for index in _iter_tree(model):
+        item = model.itemFromIndex(index)
+        assert item.foreground().color().name().casefold() not in stale
+        if not item.icon().isNull():
+            pixels = item.icon().pixmap(16, 16).toImage().constBits()
+            assert pixels.tobytes() not in icons_dark  # type: ignore[union-attr]
 
 
 # -- Задача 10: добавление записи ------------------------------------------------
@@ -1097,7 +1084,7 @@ def test_ctrl_n_shortcut_is_registered_on_view(qtbot: Any, workspace_factory: An
     в офскрин-тесте без монопатча — здесь достаточно проверить саму привязку.
     """  # noqa: RUF002
     workspace, _calls, _opened = workspace_factory()
-    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[])
+    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[], recent_limit=lambda: 10)
     qtbot.addWidget(view)
 
     sequences = {shortcut.key().toString() for shortcut in view.findChildren(QShortcut)}
@@ -1988,21 +1975,11 @@ def _find_index_by_kind(view: BasesView, kind: RowKind) -> QModelIndex:
     для этих тестов не важен (проверка одна на весь класс `RowKind.SECTION`,
     а не отдельно на «Избранное»/«Недавние»/«Общие списки»).
     """  # noqa: RUF002
-    model = view.model()
-
-    def walk(parent: QModelIndex) -> QModelIndex | None:
-        for row in range(model.rowCount(parent)):
-            index = model.index(row, 0, parent)
-            if index.data(KIND_ROLE) == kind.value:
-                return index
-            found = walk(index)
-            if found is not None:
-                return found
-        return None
-
-    found = walk(QModelIndex())
-    assert found is not None, f"в дереве нет строки вида {kind}"
-    return found
+    return _find_index(
+        view,
+        lambda i: i.data(KIND_ROLE) == kind.value,
+        f"в дереве нет строки вида {kind}",
+    )
 
 
 # Задача 20: `_BasesTree.dropEvent` теперь читает `event.mimeData()` (проверка
@@ -2054,22 +2031,8 @@ def _visible_rect_of_key(view: BasesView, key: str) -> QRect:
     в свёрнутой ветке, и `center()` указал бы совсем на другую строку.
     """  # noqa: RUF002
     view._tree.expandAll()
-    model = view.model()
-
-    def walk(parent: QModelIndex) -> QModelIndex | None:
-        for row in range(model.rowCount(parent)):
-            index = model.index(row, 0, parent)
-            if index.data(KEY_ROLE) == key:
-                return index
-            found = walk(index)
-            if found is not None:
-                return found
-        return None
-
-    index = walk(QModelIndex())
-    assert index is not None, f"строка с ключом {key!r} не найдена в дереве"  # noqa: RUF001
-    rect = view._tree.visualRect(index)
-    assert not rect.isEmpty(), f"строка {key!r} не видима — прямоугольник пуст"  # noqa: RUF001, RUF100
+    rect = view._tree.visualRect(_index_of_key(view, key))
+    assert not rect.isEmpty(), f"строка {key!r} не видима — прямоугольник пуст"
     return rect
 
 
@@ -2372,7 +2335,7 @@ def test_alt_up_and_alt_down_shortcuts_are_registered_on_view(
 ) -> None:
     """Подстраховка отдельно от поведения — тот же приём, что у F3/F4/Ctrl+N."""  # noqa: RUF002
     workspace, _calls, _opened = workspace_factory()
-    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[])
+    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[], recent_limit=lambda: 10)
     qtbot.addWidget(view)
 
     sequences = {shortcut.key().toString() for shortcut in view.findChildren(QShortcut)}
