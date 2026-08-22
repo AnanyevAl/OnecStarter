@@ -216,7 +216,11 @@ def _winreg_stub(
     и тот же объект — а обращение через чужой модуль `mypy` в strict-режиме
     справедливо не пропускает.
     """  # noqa: RUF002
-    def open_key(root: object, path: str, *_args: object) -> _FakeKey:
+    opened: list[int] = []
+
+    def open_key(
+        root: object, path: str, _reserved: int = 0, access: int = winreg.KEY_READ
+    ) -> _FakeKey:
         # Куст и путь проверяются здесь, а не «где-нибудь»: подделка, молча  # noqa: RUF003
         # принимающая любой аргумент, пропустила бы чтение из HKLM — там наше
         # значение чужое, а запись потребовала бы прав администратора, чего  # noqa: RUF003
@@ -225,6 +229,7 @@ def _winreg_stub(
         assert path == RUN_KEY
         if not key_exists:
             raise FileNotFoundError(2, "нет ключа")
+        opened.append(access)
         return _FakeKey(values)
 
     def query(key: _FakeKey, name: str) -> tuple[object, int]:
@@ -232,9 +237,13 @@ def _winreg_stub(
             raise FileNotFoundError(2, "нет значения")
         return key.store[name], 1
 
-    def create_key(root: object, path: str, *_args: object) -> _FakeKey:
+    def create_key(root: object, path: str, _reserved: int = 0, access: int = 0) -> _FakeKey:
         assert root == winreg.HKEY_CURRENT_USER, "автозапуск живёт в HKCU"
         assert path == RUN_KEY
+        # Флаг доступа — не украшение: с KEY_READ живой реестр отдал бы  # noqa: RUF003
+        # PermissionError при первом же включении тумблера, а подделка,  # noqa: RUF003
+        # принимающая любой `*args`, этого не замечала (находка 22.08.2026).
+        assert access & winreg.KEY_SET_VALUE, "запись требует KEY_SET_VALUE"
         return _FakeKey(values)
 
     def set_value(key: _FakeKey, name: str, _r: int, kind: int, data: str) -> None:
@@ -250,12 +259,25 @@ def _winreg_stub(
             raise FileNotFoundError(2, "нет значения")
         del key.store[name]
 
+    # Остальные функции модуля запираются: мутация, позвавшая неперехваченную
+    # (`DeleteKey` разрушителен), ушла бы в живой HKCU машины разработчика.
+    for name in ("DeleteKey", "DeleteKeyEx", "SetValue", "EnumValue", "EnumKey"):
+        if hasattr(winreg, name):
+            monkeypatch.setattr(winreg, name, _forbidden(name))
+
     monkeypatch.setattr(winreg, "OpenKey", open_key)
     monkeypatch.setattr(winreg, "QueryValueEx", query)
     monkeypatch.setattr(winreg, "CreateKeyEx", create_key)
     monkeypatch.setattr(winreg, "SetValueEx", set_value)
     monkeypatch.setattr(winreg, "DeleteValue", delete_value)
     return values
+
+
+def _forbidden(name: str) -> object:
+    def guard(*_args: object, **_kwargs: object) -> object:
+        raise AssertionError(f"тест полез в живой реестр: {name}")
+
+    return guard
 
 
 def test_windows_registry_reads_string_value(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -360,3 +382,34 @@ def test_windows_registry_delete_does_not_swallow_other_errors(
     monkeypatch.setattr(winreg, "OpenKey", denied)
     with pytest.raises(PermissionError):
         WindowsRegistry().delete(VALUE_NAME)
+
+
+def test_windows_registry_opens_the_key_for_writing_when_deleting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Удаление открывает ключ на запись, а не на чтение.
+
+    Мутация `KEY_SET_VALUE` → `KEY_READ` в `delete` переживала набор: подделка
+    принимала любой флаг доступа молча. На живом реестре это `PermissionError`
+    при первом же выключении тумблера — то есть отказ там, где спека обещает
+    тихий успех.
+    """  # noqa: RUF002
+    seen: list[int] = []
+
+    class _Key:
+        def __enter__(self) -> "_Key":
+            return self
+
+        def __exit__(self, *_exc: object) -> None:
+            return None
+
+    def open_key(_root: object, _path: str, _reserved: int = 0, access: int = 0) -> _Key:
+        seen.append(access)
+        return _Key()
+
+    monkeypatch.setattr(winreg, "OpenKey", open_key)
+    monkeypatch.setattr(winreg, "DeleteValue", lambda _key, _name: None)
+
+    WindowsRegistry().delete(VALUE_NAME)
+
+    assert seen and seen[0] & winreg.KEY_SET_VALUE

@@ -1510,6 +1510,27 @@ def test_busy_hotkey_with_tray_leaves_the_section_alone(
     assert isinstance(window.current_section(), BasesView)
 
 
+def test_free_hotkey_without_tray_keeps_the_bases_section(
+    qapp: Any, tmp_path: Any, monkeypatch: Any
+) -> None:
+    """Раздел переключается ТОЛЬКО из-за занятого сочетания (долг №10).
+
+    Без трея и без проблемы программа обязана открыться на «Базах», как
+    и всегда. Мутация «открывать «Настройки» всякий раз, когда трея нет»
+    держалась только побочным утверждением внутри чужого теста про проводку
+    фоновых задач — опора случайная: перепишут тот тест, и регрессия пройдёт
+    незамеченной.
+    """
+    window = _window_with_settings(
+        qapp,
+        tmp_path,
+        monkeypatch,
+        tray_available=False,
+        register_result=1,
+    )
+    assert isinstance(window.current_section(), BasesView)
+
+
 def test_window_with_settings_balances_native_filter_install_and_remove(
     qapp: Any, tmp_path: Any, monkeypatch: Any
 ) -> None:
@@ -1681,6 +1702,48 @@ def test_run_smoke_never_reaches_the_windows_registry(
 
     assert code == 0
     assert touched == []
+
+
+def test_settings_view_reads_the_registry_when_frozen(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any, workspace_factory: Any
+) -> None:
+    """Позитивный контроль к тесту выше: в сборке реестр читается по-настоящему.
+
+    Без этого теста предыдущий доказывает не то, что кажется. Мутационная
+    проверка показала: если `_build_main_window` передаст `SettingsView`
+    жёсткий `frozen=False`, тумблер автозапуска в собранном exe умрёт
+    навсегда — и `touched == []` в соседнем тесте станет тавтологией,
+    потому что до реестра не доходит вообще ничего.
+
+    Здесь `sys.frozen` включён, реестр НЕ подменён на заглушку, и обращение
+    к `winreg` обязано состояться. Пара тестов вместе утверждает то, что
+    нужно: в сборке реестр читается, а самопроверка сборки — нет.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    workspace, _calls, _opened = workspace_factory()
+    runtime = app_module.Runtime(
+        workspace=workspace,
+        cfg_rules=[],
+        conventions=[],
+        settings=tmp_path / "settings.json",
+    )
+    touched: list[str] = []
+
+    def spy_open(*_args: Any, **_kwargs: Any) -> Any:
+        touched.append("OpenKey")
+        raise FileNotFoundError(2, "нет ключа")
+
+    monkeypatch.setattr(winreg, "OpenKey", spy_open)
+
+    application = QApplication.instance()
+    assert isinstance(application, QApplication)
+    window, _tasks = app_module._build_main_window(
+        application, runtime, {"APPDATA": str(tmp_path / "appdata")}
+    )
+    window.close()
+
+    assert touched == ["OpenKey"], "в сборке раздел обязан читать настоящий реестр"
 
 
 def test_run_smoke_times_out_without_background(
