@@ -77,6 +77,7 @@ class SettingsView(QWidget):
         self._on_hotkey = on_hotkey
         self._buttons: list[QPushButton] = []
         self._group_labels: list[str] = []
+        self._row_notes: dict[str, QLabel] = {}
 
         header = QLabel("Настройки")
         header_font = header.font()
@@ -173,6 +174,7 @@ class SettingsView(QWidget):
         row_note = QLabel(note)
         row_note.setObjectName("SettingsNote")
         row_note.setWordWrap(True)
+        self._row_notes[title] = row_note
 
         body = QVBoxLayout()
         body.setSpacing(1)
@@ -232,6 +234,17 @@ class SettingsView(QWidget):
 
     def autostart_note(self) -> str:
         return self._autostart_note.text()
+
+    def row_note(self, title: str) -> QLabel:
+        """Подпись строки по её заголовку — тестам, проверяющим место подсказки.
+
+        Аксессор, а не обход раскладки в тесте: обход зашил бы внутреннее
+        устройство `_add_row` и сломался бы от любой законной перекомпоновки.
+        Нужен, потому что проверки «текст есть на экране» мало: подсказку можно
+        повесить под соседнюю настройку, и она начнёт врать увереннее, чем
+        её отсутствие (находка мутационной проверки 21.08.2026).
+        """  # noqa: RUF002
+        return self._row_notes[title]
 
     def hotkey_note(self) -> str:
         return self._hotkey_note.text()

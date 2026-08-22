@@ -85,7 +85,14 @@ def test_empty_value_is_not_autostart(data: str) -> None:
     Пробельные строки здесь не педантизм: `write` принимает что угодно, а чужой
     установщик или ручная правка реестра могут оставить и такое.
     """  # noqa: RUF002
-    assert is_enabled(FakeRegistry({VALUE_NAME: data})) is False
+    registry = FakeRegistry({VALUE_NAME: data})
+    assert is_enabled(registry) is False
+    # Чтение не смеет чинить реестр: «самолечение» пустого значения превратило
+    # бы показ состояния в запись в HKCU при каждом открытии раздела, которой
+    # пользователь не просил. Мутация с таким удалением переживала набор  # noqa: RUF003
+    # (разбор 21.08.2026), пока эта строка не появилась.
+    assert registry.values == {VALUE_NAME: data}
+    assert registry.deleted == []
 
 
 @pytest.mark.parametrize(

@@ -4,7 +4,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from PySide6.QtWidgets import QApplication, QLabel
+from PySide6.QtWidgets import QApplication
 
 from onecstarter.services.autostart import VALUE_NAME, autostart_command
 from onecstarter.services.settings import Settings, ThemeMode, save_settings
@@ -356,16 +356,19 @@ def test_autostart_row_warns_about_task_manager(
     `Run`, а метку не трогает (проверено 21.08.2026 на живой машине).
 
     Раз состояние не в наших силах, честный минимум — сказать, где включать.
-    Проверяется именно текст на экране, а не константа: константа, которую
-    забыли отдать в раскладку, никого ни о чём не предупредит.
+    Проверяется подпись ИМЕННО ЭТОЙ строки, а не наличие текста где-нибудь
+    в разделе. Константа, которую забыли отдать в раскладку, никого ни о чём
+    не предупредит; подсказка, повешенная под соседнюю настройку, врёт
+    увереннее, чем её отсутствие — обе мутации набор пережил, пока проверка
+    шла по `findChildren` (разбор 21.08.2026).
     """  # noqa: RUF002
     view, _store = _view(application, tmp_path)
-    notes = [label for label in view.findChildren(QLabel) if label.text() == AUTOSTART_ROW_NOTE]
-    assert notes, "подсказка не отдана в раскладку"
+    note = view.row_note("Запускать при входе в Windows")
+    assert note.text() == AUTOSTART_ROW_NOTE
+    assert "Диспетчер" in note.text()
     # `isHidden`, а не `isVisible`: окно раздела в тесте не показано, и  # noqa: RUF003
     # `isVisible` вернул бы False даже для нормальной метки. Находка
     # мутационной проверки 21.08.2026: без этой строки мутация
     # `row_note.setVisible(False)` переживала набор, а докстринг обещал  # noqa: RUF003
     # «видна всегда».
-    assert all(not label.isHidden() for label in notes)
-    assert any("Диспетчер" in label.text() for label in view.findChildren(QLabel))
+    assert not note.isHidden()
