@@ -1592,9 +1592,6 @@ def _capture_window(monkeypatch: Any) -> dict[str, Any]:
     def capturing(application: Any, runtime: Any, env: Any, **kwargs: Any) -> Any:
         window, tasks = real_build(application, runtime, env, **kwargs)
         captured["window"] = window
-        # Чем именно `run_smoke` попросил собрать окно — тестам видно: долг №8
-        # закрыт подменой реестра, и подмену надо уметь проверить.
-        captured["kwargs"] = kwargs
         return window, tasks
 
     monkeypatch.setattr(app_module, "_build_main_window", capturing)

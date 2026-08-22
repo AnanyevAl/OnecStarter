@@ -5,6 +5,7 @@
 """  # noqa: RUF002
 
 import winreg
+from typing import NamedTuple
 
 import pytest
 
@@ -206,9 +207,17 @@ class _FakeKey:
         return None
 
 
+class _Stub(NamedTuple):
+    """Что подделка `winreg` видела: значения, флаги доступа, созданные ключи."""
+
+    values: dict[str, object]
+    opened: list[int]
+    created: list[str]
+
+
 def _winreg_stub(
     monkeypatch: pytest.MonkeyPatch, values: dict[str, object], *, key_exists: bool = True
-) -> dict[str, object]:
+) -> _Stub:
     """Подменить функции `winreg`: живой HKCU в тестах неприкосновенен.
 
     Патчится сам `winreg`, а не атрибут модуля `autostart`: тот делает
@@ -217,6 +226,7 @@ def _winreg_stub(
     справедливо не пропускает.
     """  # noqa: RUF002
     opened: list[int] = []
+    created: list[str] = []
 
     def open_key(
         root: object, path: str, _reserved: int = 0, access: int = winreg.KEY_READ
@@ -238,6 +248,10 @@ def _winreg_stub(
         return key.store[name], 1
 
     def create_key(root: object, path: str, _reserved: int = 0, access: int = 0) -> _FakeKey:
+        # `CreateKeyEx`, а не `OpenKey`: ключ `Run` есть всегда, но полагаться  # noqa: RUF003
+        # на это в коде записи незачем — подделка отражает разницу, иначе
+        # подмена одного на другое проходит незамеченной.
+        created.append(path)
         assert root == winreg.HKEY_CURRENT_USER, "автозапуск живёт в HKCU"
         assert path == RUN_KEY
         # Флаг доступа — не украшение: с KEY_READ живой реестр отдал бы  # noqa: RUF003
@@ -270,7 +284,7 @@ def _winreg_stub(
     monkeypatch.setattr(winreg, "CreateKeyEx", create_key)
     monkeypatch.setattr(winreg, "SetValueEx", set_value)
     monkeypatch.setattr(winreg, "DeleteValue", delete_value)
-    return values
+    return _Stub(values=values, opened=opened, created=created)
 
 
 def _forbidden(name: str) -> object:
@@ -321,16 +335,23 @@ def test_windows_registry_read_of_missing_value_is_quiet(
 
 
 def test_windows_registry_write_then_read(monkeypatch: pytest.MonkeyPatch) -> None:
-    values = _winreg_stub(monkeypatch, {})
+    stub = _winreg_stub(monkeypatch, {})
     WindowsRegistry().write(VALUE_NAME, "команда")
-    assert values == {VALUE_NAME: "команда"}
+    assert stub.values == {VALUE_NAME: "команда"}
     assert WindowsRegistry().read(VALUE_NAME) == "команда"
+    # Запись создаёт ключ, а не открывает существующий: `CreateKeyEx` против  # noqa: RUF003
+    # `OpenKey`. Подмена одного другим на машине без ключа `Run` дала бы
+    # FileNotFoundError при первом включении тумблера (находка ревью ветки).
+    assert stub.created == [RUN_KEY]
+    # Чтение открывает ключ без права записи — иначе на машине с урезанными  # noqa: RUF003
+    # правами показ состояния падал бы там, где достаточно посмотреть.
+    assert stub.opened and not (stub.opened[0] & winreg.KEY_SET_VALUE)
 
 
 def test_windows_registry_delete_removes_value(monkeypatch: pytest.MonkeyPatch) -> None:
-    values = _winreg_stub(monkeypatch, {VALUE_NAME: "команда"})
+    stub = _winreg_stub(monkeypatch, {VALUE_NAME: "команда"})
     WindowsRegistry().delete(VALUE_NAME)
-    assert values == {}
+    assert stub.values == {}
 
 
 @pytest.mark.parametrize("key_exists", [True, False])

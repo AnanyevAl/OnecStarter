@@ -232,7 +232,10 @@ def run_smoke(
 
     Окружение готовит вызывающий: `QT_QPA_PLATFORM=offscreen` и подменённый
     `APPDATA` — живые данные пользователя не трогаются, процессы 1С
-    не порождаются (обе фоновые задачи работают с тем, что в `env`).
+    не порождаются (обе фоновые задачи работают с тем, что в `env`). Реестр
+    самопроверка подменяет сама (`NullRegistry`, долг №8): `SettingsView`
+    читает его в конструкторе, и с настоящим `WindowsRegistry` результат
+    зависел бы от того, включён ли автозапуск на машине сборщика.
     Ярлык пишется с фактическим `frozen`: в сборке исполняется ветка
     `frozen=True` (шаг 8 задачи 17, долг №7), из исходников — `frozen=False`.
     То же значение уходит в лог явной строкой (`smoke: frozen=...`, задача 10,
@@ -321,10 +324,6 @@ def _set_tray_tooltip(
         tray.setToolTip(f"OneCStarter — {combination}")
 
 
-SETTINGS_SECTION = 1
-"""Индекс раздела «Настройки» в окне: порядок задаёт `MainWindow` ниже."""
-
-
 def _build_main_window(
     application: QApplication,
     runtime: Runtime,
@@ -371,11 +370,11 @@ def _build_main_window(
         frozen=bool(getattr(sys, "frozen", False)),
         executable=sys.executable,
     )
-    window = MainWindow(
-        [("Базы", view), ("Настройки", settings_view)], palette=controller.palette
-    )
+    sections = [("Базы", view), ("Настройки", settings_view)]
+    settings_section = next(i for i, (title, _w) in enumerate(sections) if title == "Настройки")
+    window = MainWindow(sections, palette=controller.palette)
     window.set_section_icon(0, rail_icons.bases_icon)
-    window.set_section_icon(1, rail_icons.settings_icon)
+    window.set_section_icon(settings_section, rail_icons.settings_icon)
 
     def on_theme_changed() -> None:
         # settings_view красится общим stylesheet (ThemeController._apply) —
@@ -490,7 +489,7 @@ def _build_main_window(
             # показать нечем, кроме окна, — открыть его сразу на «Настройках».  # noqa: RUF003
             # Диалога по-прежнему нет: без трея тихого старта не бывает,
             # `main` в этом случае окно показывает (спека §3.4).
-            window.show_section(SETTINGS_SECTION)
+            window.show_section(settings_section)
 
     tasks = StartupTasks(
         lambda: find_installations(env, runtime.conventions),
