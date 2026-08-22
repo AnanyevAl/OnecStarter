@@ -372,3 +372,7 @@ def test_autostart_row_warns_about_task_manager(
     # `row_note.setVisible(False)` переживала набор, а докстринг обещал  # noqa: RUF003
     # «видна всегда».
     assert not note.isHidden()
+    # Заголовок и подпись на местах, а переключатель под ними чужой — тот же  # noqa: RUF003
+    # обман, что подсказка не на своей строке: аксессоры вьюхи отдают виджеты
+    # по ссылке, поэтому без этой сверки раскладку не проверяет никто.
+    assert view.row_control("Запускать при входе в Windows") is view.autostart_checkbox()

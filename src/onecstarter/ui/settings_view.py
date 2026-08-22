@@ -78,6 +78,7 @@ class SettingsView(QWidget):
         self._buttons: list[QPushButton] = []
         self._group_labels: list[str] = []
         self._row_notes: dict[str, QLabel] = {}
+        self._row_controls: dict[str, QWidget] = {}
 
         header = QLabel("Настройки")
         header_font = header.font()
@@ -175,6 +176,7 @@ class SettingsView(QWidget):
         row_note.setObjectName("SettingsNote")
         row_note.setWordWrap(True)
         self._row_notes[title] = row_note
+        self._row_controls[title] = control
 
         body = QVBoxLayout()
         body.setSpacing(1)
@@ -245,6 +247,18 @@ class SettingsView(QWidget):
         её отсутствие (находка мутационной проверки 21.08.2026).
         """  # noqa: RUF002
         return self._row_notes[title]
+
+    def row_control(self, title: str) -> QWidget:
+        """Орган управления строки по её заголовку.
+
+        Парный к `row_note`: заголовок и подпись можно оставить на местах,
+        а под ними поставить чужой переключатель — верная подсказка над чужим
+        тумблером врёт ровно так же, как подсказка не на той строке (находка
+        мутационной проверки 21.08.2026, мутация «строка автозапуска несёт
+        чекбокс трея»). Аксессоры вьюхи возвращают виджеты по ссылке, поэтому
+        без этой связи ни один тест раскладку не проверяет.
+        """  # noqa: RUF002
+        return self._row_controls[title]
 
     def hotkey_note(self) -> str:
         return self._hotkey_note.text()

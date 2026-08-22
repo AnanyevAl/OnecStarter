@@ -21,11 +21,13 @@ class FakeRegistry:
     def __init__(self, values: dict[str, str] | None = None) -> None:
         self.values = dict(values or {})
         self.deleted: list[str] = []
+        self.written: list[tuple[str, str]] = []
 
     def read(self, name: str) -> str | None:
         return self.values.get(name)
 
     def write(self, name: str, data: str) -> None:
+        self.written.append((name, data))
         self.values[name] = data
 
     def delete(self, name: str) -> None:
@@ -92,6 +94,7 @@ def test_empty_value_is_not_autostart(data: str) -> None:
     # пользователь не просил. Мутация с таким удалением переживала набор  # noqa: RUF003
     # (разбор 21.08.2026), пока эта строка не появилась.
     assert registry.values == {VALUE_NAME: data}
+    assert registry.written == []
     assert registry.deleted == []
 
 
@@ -116,7 +119,15 @@ def test_any_non_blank_value_is_autostart(data: str) -> None:
     Windows исполняет: программа стартует при входе, а тумблер показывал бы
     «выключено». Ни путь, ни флаг не сверяются намеренно (докстринг `is_enabled`).
     """  # noqa: RUF002
-    assert is_enabled(FakeRegistry({VALUE_NAME: data})) is True
+    registry = FakeRegistry({VALUE_NAME: data})
+    assert is_enabled(registry) is True
+    # Та же сверка, что в тесте отказа, и по той же причине: защита от побочных  # noqa: RUF003
+    # эффектов, поставленная только в одну ветку, оставляет открытой вторую —
+    # а именно непустая и срабатывает на живой машине при каждом открытии  # noqa: RUF003
+    # раздела (находка мутационной проверки 21.08.2026).
+    assert registry.values == {VALUE_NAME: data}
+    assert registry.written == []
+    assert registry.deleted == []
 
 
 def test_enable_writes_command_of_this_copy() -> None:
