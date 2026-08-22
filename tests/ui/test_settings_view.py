@@ -344,6 +344,28 @@ def test_sync_does_not_bounce_external_settings_changes_back_into_the_store(
     assert calls == [{"close_to_tray": new_close_to_tray, "recent_limit": 25}]
 
 
+def test_empty_registry_value_shows_autostart_off(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Пустое значение в реестре раздел показывает выключенным.
+
+    Дыра, найденная финальным ревью ветки: `is_enabled` покрыта юнит-тестами,
+    но ни один тест не подавал ПУСТОЕ значение самой вьюхе. Ревьюер доказал
+    это подменой `autostart.is_enabled` на прежнюю редакцию после импорта
+    тест-модулей — весь набор из 1253 тестов остался зелёным. То есть возврат
+    к проверке существования значения где-нибудь в `_sync_autostart` прошёл бы
+    незамеченным, и вернулся бы ровно тот симптом, ради которого заведена
+    ветка: «включено» на пустой записи, оставленной установщиком.
+
+    Заодно сторожит и отсутствие побочного эффекта: показ состояния не смеет
+    чинить реестр.
+    """  # noqa: RUF002
+    registry = FakeRegistry({VALUE_NAME: ""})
+    view, _store = _view(application, tmp_path, registry=registry)
+    assert view.autostart_checkbox().isChecked() is False
+    assert registry.values == {VALUE_NAME: ""}
+
+
 def test_autostart_row_warns_about_task_manager(
     application: QApplication, tmp_path: Path
 ) -> None:
@@ -366,6 +388,10 @@ def test_autostart_row_warns_about_task_manager(
     note = view.row_note("Запускать при входе в Windows")
     assert note.text() == AUTOSTART_ROW_NOTE
     assert "Диспетчер" in note.text()
+    # Первая половина текста — единственное место, где пользователю сообщают,
+    # что автозапуск поднимает программу в трей, а не окном. Без этой строки  # noqa: RUF003
+    # её выпиливание набор переживает (находка финального ревью ветки).
+    assert "в трей" in note.text()
     # `isHidden`, а не `isVisible`: окно раздела в тесте не показано, и  # noqa: RUF003
     # `isVisible` вернул бы False даже для нормальной метки. Находка
     # мутационной проверки 21.08.2026: без этой строки мутация

@@ -47,14 +47,22 @@ Name: "{userprograms}\OneCStarter"; Filename: "{app}\OneCStarter.exe"
 ; создавалось беспрепятственно. Цена — не мусор в реестре, а ложь о состоянии:
 ; `is_enabled` считал автозапуск включённым, раздел «Настройки» показывал
 ; тумблер включённым, а Windows при входе выполнять было нечего.
-; `dontcreatekey` оставлен: ключа Run может не быть в экзотическом окружении,
-; и создавать его ради записи, которой мы не пишем, незачем.
+; `dontcreatekey` СНЯТ 21.08.2026 по находке финального ревью ветки. Прежняя
+; редакция оставляла его «на случай, если ключа Run нет в экзотическом
+; окружении» — и это оборачивалось против самой цели записи: **[из документации
+; Inno Setup]** при отсутствующем ключе Setup пропускает строку целиком, то есть
+; не регистрирует и удаление значения при деинсталляции. Дальше приложение своим
+; `enable()` (`CreateKeyEx`) создало бы и ключ, и значение, а деинсталлятор его
+; бы не убрал — ровно тот исход, против которого секция и заведена: Windows при
+; каждом входе дёргает стёртый exe. Цена снятия нулевая: с `ValueType: none`
+; установщик в худшем случае создаст пустой ключ `Run`, который Windows создаёт
+; и сама.
 ;
 ; **[Проверено, 21.08.2026, шаг А6 ручного прогона]** `uninsdeletevalue` удаляет
 ; значение, которое установщик НЕ создавал: его записало приложение при включении
 ; тумблера, и после деинсталляции значения в Run не осталось. Прочие записи
 ; автозагрузки не тронуты, контрольный вход в систему прошёл без ошибок Windows.
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "OneCStarter"; Flags: dontcreatekey uninsdeletevalue
+Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: none; ValueName: "OneCStarter"; Flags: uninsdeletevalue
 
 [Run]
 Filename: "{app}\OneCStarter.exe"; Description: "{cm:LaunchProgram,OneCStarter}"; Flags: nowait postinstall skipifsilent
