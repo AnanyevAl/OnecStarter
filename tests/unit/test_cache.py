@@ -5,13 +5,18 @@ from pathlib import Path
 import pytest
 
 from onecstarter.services.cache import (
+    CacheEntry,
     CacheKind,
     CacheMeasure,
     ClearReport,
+    EntryKind,
+    WindowsCacheOps,
     cache_path,
+    clear,
     clear_question,
     format_size,
     is_valid_cache_id,
+    measure,
     report_text,
 )
 
@@ -119,3 +124,184 @@ class TestTexts:
     )
     def test_report_text(self, report: ClearReport, expected: str) -> None:
         assert report_text(report) == expected
+
+
+class FakeCacheOps:
+    """ФС в памяти, ведёт себя как настоящая: remove_dir отказывает непустому
+    каталогу, занятый файл — PermissionError, удаления реально убирают записи.
+
+    Богатый стимул, а не пустышка — требование мутационной проверки проекта:
+    бессильная мутация всегда означала бедный стимул, не слабое утверждение.
+    """  # noqa: RUF002
+
+    def __init__(self) -> None:
+        self.tree: dict[Path, list[CacheEntry]] = {}
+        self.busy: set[Path] = set()
+        self.unreadable: set[Path] = set()
+        self.removed_links: list[Path] = []
+        self.listed: list[Path] = []
+
+    def put_dir(self, path: Path) -> None:
+        self.tree.setdefault(path, [])
+        parent = path.parent
+        if parent in self.tree and all(e.path != path for e in self.tree[parent]):
+            self.tree[parent].append(CacheEntry(path, EntryKind.DIR, 0))
+
+    def put(self, entry: CacheEntry) -> None:
+        self.tree.setdefault(entry.path.parent, []).append(entry)
+        if entry.kind is EntryKind.DIR:
+            self.tree.setdefault(entry.path, [])
+
+    def list_dir(self, path: Path) -> list[CacheEntry]:
+        self.listed.append(path)
+        if path in self.unreadable:
+            raise PermissionError(5, "отказано в доступе")
+        return list(self.tree[path])
+
+    def is_dir(self, path: Path) -> bool:
+        return path in self.tree
+
+    def _drop(self, path: Path) -> None:
+        for entries in self.tree.values():
+            for entry in list(entries):
+                if entry.path == path:
+                    entries.remove(entry)
+
+    def remove_file(self, path: Path) -> None:
+        if path in self.busy:
+            raise PermissionError(32, "файл используется другим процессом")
+        self._drop(path)
+
+    def remove_dir(self, path: Path) -> None:
+        if self.tree.get(path):
+            raise OSError(145, "Папка не пуста")
+        self.tree.pop(path, None)
+        self._drop(path)
+
+    def remove_link(self, path: Path) -> None:
+        self.removed_links.append(path)
+        self._drop(path)
+
+
+ROOT = Path(r"C:\cache") / GUID
+
+
+def _standard_tree() -> FakeCacheOps:
+    """<ID>/{Config/{a,b}, SICache/c, top} — форма снятая с настоящего кэша."""  # noqa: RUF002
+    ops = FakeCacheOps()
+    ops.put_dir(ROOT)
+    ops.put(CacheEntry(ROOT / "Config", EntryKind.DIR, 0))
+    ops.put(CacheEntry(ROOT / "Config" / "a.bin", EntryKind.FILE, 100))
+    ops.put(CacheEntry(ROOT / "Config" / "b.bin", EntryKind.FILE, 200))
+    ops.put(CacheEntry(ROOT / "SICache", EntryKind.DIR, 0))
+    ops.put(CacheEntry(ROOT / "SICache" / "c.bin", EntryKind.FILE, 300))
+    ops.put(CacheEntry(ROOT / "top.pfl", EntryKind.FILE, 50))
+    return ops
+
+
+class TestMeasure:
+    def test_counts_files_and_bytes_recursively(self) -> None:
+        assert measure(ROOT, _standard_tree()) == CacheMeasure(files=4, total_bytes=650)
+
+    def test_unreadable_subdir_is_skipped(self) -> None:
+        """Замер — оценка для вопроса, а не отчёт: недочитанное не роняет его."""  # noqa: RUF002
+        ops = _standard_tree()
+        ops.unreadable.add(ROOT / "Config")
+        assert measure(ROOT, ops) == CacheMeasure(files=2, total_bytes=350)
+
+
+class TestClear:
+    def test_full_success_removes_everything_including_root(self) -> None:
+        ops = _standard_tree()
+        report = clear(ROOT, ops)
+        assert report == ClearReport(deleted=4, freed_bytes=650, failed=0)
+        assert ROOT not in ops.tree
+
+    def test_busy_file_does_not_stop_walk_and_secondary_is_not_counted(self) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ (спека §3.6–§3.7): обход не останавливается,
+        вторичная «Папка не пуста» не попадает в счётчик отказов.
+
+        Кандидаты мутационной проверки: остановить обход на первой ошибке
+        (b.bin и c.bin перестанут удаляться); начать считать вторичные
+        (failed станет 3: файл + Config + корень).
+        """  # noqa: RUF002
+        ops = _standard_tree()
+        ops.busy.add(ROOT / "Config" / "a.bin")
+        report = clear(ROOT, ops)
+        # b.bin идёт ПОСЛЕ занятого a.bin в том же каталоге — и удалён.
+        assert report == ClearReport(deleted=3, freed_bytes=550, failed=1)
+        # Config и корень не удалены (не пусты), но это вторичные отказы.
+        assert ROOT in ops.tree
+        assert any(e.path == ROOT / "Config" / "a.bin" for e in ops.tree[ROOT / "Config"])
+
+    def test_link_is_removed_as_link_and_never_walked(self) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ (спека §5.2): по ссылке обход не идёт.
+
+        Кандидат мутационной проверки: последовать за ссылкой (обойти её
+        содержимое как каталог) — тест обязан упасть по list_dir на ссылке.
+        """  # noqa: RUF002
+        ops = _standard_tree()
+        link = ROOT / "vrs-link"
+        ops.put(CacheEntry(link, EntryKind.LINK, 0))
+        # Цель ссылки существует как каталог с файлом — обход НЕ должен её видеть.  # noqa: RUF003
+        outside = Path(r"C:\outside")
+        ops.put_dir(outside)
+        ops.put(CacheEntry(outside / "чужое.txt", EntryKind.FILE, 999))
+        ops.tree[link] = ops.tree[outside]  # если кто-то всё же зайдёт — увидит цель
+
+        report = clear(ROOT, ops)
+        assert link in ops.removed_links
+        assert link not in ops.listed
+        assert any(e.path == outside / "чужое.txt" for e in ops.tree[outside])
+        assert report.deleted == 5  # 4 файла + ссылка
+        assert report.freed_bytes == 650  # чужие 999 байт не тронуты и не посчитаны
+
+    def test_unreadable_dir_is_one_primary_failure(self) -> None:
+        ops = _standard_tree()
+        ops.unreadable.add(ROOT / "SICache")
+        report = clear(ROOT, ops)
+        assert report.failed == 1
+        assert report.deleted == 3  # a, b, top.pfl
+        assert ROOT in ops.tree  # корень не пуст — вторичный отказ, не считан
+
+
+class TestWindowsCacheOpsIntegration:
+    """Настоящая ФС на tmp_path: живые кэши и профиль не трогаются."""
+
+    def test_measure_and_clear_real_tree(self, tmp_path: Path) -> None:
+        root = tmp_path / GUID
+        (root / "Config").mkdir(parents=True)
+        (root / "Config" / "a.bin").write_bytes(b"x" * 100)
+        (root / "top.pfl").write_bytes(b"y" * 50)
+        ops = WindowsCacheOps()
+
+        assert measure(root, ops) == CacheMeasure(files=2, total_bytes=150)
+        report = clear(root, ops)
+        assert report == ClearReport(deleted=2, freed_bytes=150, failed=0)
+        assert not root.exists()
+
+    def test_junction_is_removed_without_touching_target(self, tmp_path: Path) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ (спека §5.2) на настоящем reparse point.
+
+        Кандидат мутационной проверки: классифицировать junction каталогом
+        (убрать is_junction из list_dir) — содержимое цели будет удалено,
+        и тест обязан упасть на «чужое.txt существует».
+        """  # noqa: RUF002
+        import _winapi
+
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "чужое.txt").write_bytes(b"z" * 10)
+        root = tmp_path / GUID
+        root.mkdir()
+        (root / "своё.bin").write_bytes(b"a" * 5)
+        _winapi.CreateJunction(str(target), str(root / "junction"))
+        ops = WindowsCacheOps()
+
+        entries = {e.path.name: e.kind for e in ops.list_dir(root)}
+        assert entries["junction"] is EntryKind.LINK
+
+        report = clear(root, ops)
+        assert not root.exists()
+        assert (target / "чужое.txt").exists()  # цель не тронута
+        assert report == ClearReport(deleted=2, freed_bytes=5, failed=0)

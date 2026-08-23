@@ -23,21 +23,30 @@
 в `services/autostart.py`: тест моделирует занятый файл, не имея настоящего.
 """  # noqa: RUF002
 
+import os
 import re
+import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from typing import Protocol
 
 __all__ = [
     "CACHE_TITLES",
+    "CacheEntry",
     "CacheKind",
     "CacheMeasure",
+    "CacheOps",
     "ClearReport",
+    "EntryKind",
+    "WindowsCacheOps",
     "cache_path",
+    "clear",
     "clear_question",
     "format_size",
     "is_valid_cache_id",
+    "measure",
     "report_text",
 ]
 
@@ -160,3 +169,152 @@ def report_text(report: ClearReport) -> str:
         f"{head} Не удалось удалить {report.failed} — файлы заняты "  # noqa: RUF001
         "запущенной 1С; закройте программу и повторите."  # noqa: RUF001
     )
+
+
+class EntryKind(Enum):
+    FILE = "file"
+    DIR = "dir"
+    LINK = "link"  # symlink или junction: содержимое по ссылке не обходится
+
+
+@dataclass(frozen=True)
+class CacheEntry:
+    path: Path
+    kind: EntryKind
+    size: int  # байт; у каталогов и ссылок 0  # noqa: RUF003
+
+
+class CacheOps(Protocol):
+    """Файловые операции обхода и удаления — инъекцией, как `Registry`
+    в autostart: тест моделирует занятый файл, не имея настоящего."""
+
+    def list_dir(self, path: Path) -> list[CacheEntry]: ...
+
+    def is_dir(self, path: Path) -> bool: ...
+
+    def remove_file(self, path: Path) -> None: ...
+
+    def remove_dir(self, path: Path) -> None: ...
+
+    def remove_link(self, path: Path) -> None: ...
+
+
+class WindowsCacheOps:
+    """Настоящая файловая система. Единственное место обхода и удаления.
+
+    Ссылкой считается и symlink, и junction: junction под lstat выглядит
+    каталогом (S_IFDIR), и без отдельной проверки рекурсия ушла бы по нему
+    за пределы кэша (спека §5.2). `DirEntry.is_junction()` — Python 3.12+.
+    """
+
+    def list_dir(self, path: Path) -> list[CacheEntry]:
+        entries: list[CacheEntry] = []
+        with os.scandir(path) as scan:
+            for entry in scan:
+                if entry.is_symlink() or entry.is_junction():
+                    kind, size = EntryKind.LINK, 0
+                elif entry.is_dir(follow_symlinks=False):
+                    kind, size = EntryKind.DIR, 0
+                else:
+                    kind, size = EntryKind.FILE, entry.stat(follow_symlinks=False).st_size
+                entries.append(CacheEntry(Path(entry.path), kind, size))
+        return entries
+
+    def is_dir(self, path: Path) -> bool:
+        return path.is_dir()
+
+    def remove_file(self, path: Path) -> None:
+        path.unlink()
+
+    def remove_dir(self, path: Path) -> None:
+        path.rmdir()
+
+    def remove_link(self, path: Path) -> None:
+        # Ссылка на каталог (symlink или junction) снимается rmdir — он
+        # удаляет саму ссылку, не следуя за ней; ссылка на файл — unlink.
+        if stat.S_ISDIR(path.lstat().st_mode):
+            path.rmdir()
+        else:
+            path.unlink()
+
+
+def measure(root: Path, ops: CacheOps) -> CacheMeasure:
+    """Замер до удаления — для подтверждения с размером (спека §3.5).
+
+    Ошибки чтения не поднимаются: замер — оценка для вопроса, а не отчёт;
+    недочитанное всё равно не удалится и попадёт в отчёт удаления.
+    Ссылки считаются записями без размера, их содержимое не обходится.
+    """  # noqa: RUF002
+    files = 0
+    total = 0
+    stack = [root]
+    while stack:
+        directory = stack.pop()
+        try:
+            entries = ops.list_dir(directory)
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.kind is EntryKind.DIR:
+                stack.append(entry.path)
+            else:
+                files += 1
+                total += entry.size
+    return CacheMeasure(files=files, total_bytes=total)
+
+
+def clear(root: Path, ops: CacheOps) -> ClearReport:
+    """Удалить дерево кэша. Обход не останавливается на первой ошибке (§3.6).
+
+    Вторичный отказ — не удалившийся каталог, внутри которого остался занятый
+    файл: о файле уже сказано, второй раз о том же не говорим (§3.7). Каталог
+    с отказами внутри не пробуется вовсе — исход известен заранее. Отказ
+    rmdir на каталоге, где всё внутри удалилось, — первичный: о нём ничем
+    другим не сказано. По ссылкам не ходим — удаляем их как ссылки (§5.2).
+    """  # noqa: RUF002
+    deleted = 0
+    freed = 0
+    failed = 0
+
+    def clear_dir(directory: Path) -> bool:
+        """Удалить содержимое каталога; True — внутри не осталось ничего."""
+        nonlocal deleted, freed, failed
+        try:
+            entries = ops.list_dir(directory)
+        except OSError:
+            failed += 1
+            return False
+        ok = True
+        for entry in entries:
+            if entry.kind is EntryKind.DIR:
+                if clear_dir(entry.path):
+                    try:
+                        ops.remove_dir(entry.path)
+                    except OSError:
+                        failed += 1
+                        ok = False
+                else:
+                    ok = False  # вторичный отказ: rmdir не пробуем и не считаем
+            elif entry.kind is EntryKind.LINK:
+                try:
+                    ops.remove_link(entry.path)
+                    deleted += 1
+                except OSError:
+                    failed += 1
+                    ok = False
+            else:
+                try:
+                    ops.remove_file(entry.path)
+                    deleted += 1
+                    freed += entry.size
+                except OSError:
+                    failed += 1
+                    ok = False
+        return ok
+
+    if clear_dir(root):
+        try:
+            ops.remove_dir(root)
+        except OSError:
+            failed += 1
+    return ClearReport(deleted=deleted, freed_bytes=freed, failed=failed)
