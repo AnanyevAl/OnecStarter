@@ -35,19 +35,25 @@ from onecstarter.services.errors import (
 )
 from onecstarter.services.groups import GroupRemoval
 from onecstarter.services.launch import LaunchOutcome
-from onecstarter.services.model import InfobaseItem
+from onecstarter.services.model import InfobaseItem, InfobaseSource
 from onecstarter.services.paths import ROOT, group_path, normalize_folder, render_folder
 from onecstarter.services.settings import DEFAULT_RECENT_LIMIT
 from onecstarter.ui import theme
 from onecstarter.ui.bases.icons import placement_icon
 from onecstarter.ui.bases.tree_model import KEY_ROLE, KIND_ROLE
-from onecstarter.ui.bases.view import BasesView, DropTarget
+from onecstarter.ui.bases.view import NO_CACHE_ROOT_NOTE, BasesView, DropTarget
 from onecstarter.ui.dialogs.confirm import ask_group_removal, confirm_removal
 from onecstarter.ui.dialogs.group import GroupDialog
 from onecstarter.ui.dialogs.infobase import InfobaseDialog
 from tests.unit.test_cache import FakeCacheOps
 
-from .conftest import COMMON_BASE_KEY, COMMON_GROUP_KEY, COMMON_GROUP_NAME, INSTALLED
+from .conftest import (
+    COMMON_BASE_KEY,
+    COMMON_GROUP_KEY,
+    COMMON_GROUP_NAME,
+    INSTALLED,
+    _with_common_list,
+)
 
 
 def _view(
@@ -3251,6 +3257,85 @@ def test_group_menu_has_no_cache_submenu(qtbot, workspace_factory, tmp_path):
     assert item.is_group
     menu = view._build_group_menu(item, item.key)
     assert _cache_actions(menu) is None
+
+
+def test_cache_submenu_sits_above_removal_item(qtbot, workspace_factory, tmp_path):
+    """Долг №1 финального ревью (спека §3.2): «Очистить кэш» — выше
+    разделителя перед «Удалить из списка…», разрушительный пункт остаётся
+    один в самом низу.
+    """
+    ops = FakeCacheOps()
+    view, _calls, _errors, _opened = _cache_view(
+        qtbot, workspace_factory, tmp_path, ops,
+        f'[Кэшная]\r\nID={CACHE_GUID}\r\nConnect=File="C:\\B";\r\n',
+    )
+    item = view.workspace().items()[0]
+    actions = view._build_menu(item, item.key).actions()
+    texts = [a.text() for a in actions]
+    cache_index = texts.index("Очистить кэш")
+    removal_index = texts.index("Удалить из списка…")
+    assert cache_index < removal_index
+    # Между подменю и «Удалить…» есть разделитель — кэш не в «разрушительном» хвосте.
+    assert any(a.isSeparator() for a in actions[cache_index + 1 : removal_index])
+
+
+def test_cache_submenu_stays_enabled_for_common_entry(
+    qtbot, workspace_factory, tmp_path
+):
+    """Долг №2 финального ревью: дизейбл пунктов COMMON-записи не зацепил кэш.
+
+    Кэш локален и к источнику записи отношения не имеет — пункты подменю
+    осознанно активны, в отличие от «Свойства…» и «Удалить из списка…»,
+    которые пишут в файл списка (спека §3.2).
+    """
+    shared = tmp_path / "shared.v8i"
+    shared.write_bytes(
+        f'[Общая кэшная]\r\nID={CACHE_GUID}\r\nConnect=Srvr="s";Ref="r";\r\n'.encode()
+    )
+    cfg_paths = _with_common_list(tmp_path, shared)
+    ops = FakeCacheOps()
+    for var in ("roaming", "local"):
+        ops.tree[Path(tmp_path / var / "1C" / "1Cv8" / CACHE_GUID)] = []
+    view, _calls, _errors, _opened = _view(
+        qtbot, workspace_factory,
+        cfg_paths=cfg_paths, cache_env=_cache_env(tmp_path), cache_ops=ops,
+    )
+    item = next(
+        i for i in view.workspace().items() if i.source is InfobaseSource.COMMON
+    )
+    menu = view._build_menu(item, item.key)
+    by_text = {a.text(): a for a in menu.actions()}
+    # Сам дизейбл COMMON на месте…
+    assert not by_text["Свойства…"].isEnabled()
+    assert not by_text["Удалить из списка…"].isEnabled()
+    # …а кэш он не зацепил.  # noqa: RUF003
+    actions = _cache_actions(menu)
+    assert actions is not None
+    assert actions["Пользовательский…"].isEnabled()
+    assert actions["Программный…"].isEnabled()
+
+
+def test_cache_item_disabled_without_cache_root(qtbot, workspace_factory, tmp_path):
+    """Долг №7 финального ревью: ID валиден, но в окружении нет корня кэша
+    (LOCALAPPDATA) — пункт неактивен с подсказкой NO_CACHE_ROOT_NOTE,
+    а не CACHE_EMPTY_NOTE: причина другая, подсказка тоже другая.
+    """  # noqa: RUF002
+    ops = FakeCacheOps()
+    ops.tree[Path(tmp_path / "roaming" / "1C" / "1Cv8" / CACHE_GUID)] = []
+    (tmp_path / "ibases.v8i").write_bytes(
+        f'[Кэшная]\r\nID={CACHE_GUID}\r\nConnect=File="C:\\B";\r\n'.encode()
+    )
+    view, _calls, _errors, _opened = _view(
+        qtbot, workspace_factory,
+        cache_env={"APPDATA": str(tmp_path / "roaming")},  # LOCALAPPDATA нет
+        cache_ops=ops,
+    )
+    item = view.workspace().items()[0]
+    actions = _cache_actions(view._build_menu(item, item.key))
+    assert actions is not None
+    assert actions["Пользовательский…"].isEnabled()
+    assert not actions["Программный…"].isEnabled()
+    assert actions["Программный…"].toolTip() == NO_CACHE_ROOT_NOTE
 
 
 # -- Задача 8: сценарий очистки — замер → подтверждение → удаление → сводка --
