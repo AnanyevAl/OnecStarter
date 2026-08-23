@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QLineEdit,
     QMenu,
+    QMessageBox,
     QTreeView,
     QVBoxLayout,
     QWidget,
@@ -73,7 +74,11 @@ from onecstarter.ui import theme
 from onecstarter.ui.bases.panel import ConnectionPanel
 from onecstarter.ui.bases.tree_model import KEY_ROLE, KIND_ROLE, build_model
 from onecstarter.ui.dialogs.buttons import russian_confirm
-from onecstarter.ui.dialogs.confirm import ask_group_removal, confirm_removal
+from onecstarter.ui.dialogs.confirm import (
+    ask_group_removal,
+    confirm_cache_clear,
+    confirm_removal,
+)
 from onecstarter.ui.dialogs.group import GroupDialog
 from onecstarter.ui.dialogs.infobase import InfobaseDialog, dropped_directory
 from onecstarter.ui.theme import Palette
@@ -99,6 +104,15 @@ def browse_for_shortcut_path(parent: QWidget | None, suggested: str) -> str:
     """  # noqa: RUF002
     path, _ = QFileDialog.getSaveFileName(parent, "Создать ярлык", suggested, "Ярлык (*.lnk)")
     return path
+
+
+def show_cache_report(parent: QWidget | None, text: str) -> None:
+    """Сводка очистки кэша: два числа, без трассировок (спека §3.7).
+
+    Инъекция, а не прямой вызов в clear_cache — тот же приём, что
+    у confirm_removal: настоящий QMessageBox.exec() блокирует офскрин-тест.
+    """  # noqa: RUF002
+    QMessageBox.information(parent, "OneCStarter", text)
 
 
 class DropTarget(Enum):
@@ -307,6 +321,8 @@ class BasesView(QWidget):
         ] = browse_for_shortcut_path,
         cache_env: Mapping[str, str] | None = None,
         cache_ops: cache.CacheOps | None = None,
+        confirm_cache_clear: Callable[[QWidget | None, str], bool] = confirm_cache_clear,
+        show_cache_report: Callable[[QWidget | None, str], None] = show_cache_report,
         parent: QWidget | None = None,
         palette: Palette = theme.DARK,
     ) -> None:
@@ -343,6 +359,8 @@ class BasesView(QWidget):
         self._cache_ops: cache.CacheOps = (
             cache.WindowsCacheOps() if cache_ops is None else cache_ops
         )
+        self._confirm_cache_clear = confirm_cache_clear
+        self._show_cache_report = show_cache_report
         self._rows: list[Row] = []
         self._palette = palette
         # Развёрнутость «чистого» (нефильтрованного) дерева и признак того,
@@ -956,8 +974,27 @@ class BasesView(QWidget):
                 action.setToolTip(CACHE_EMPTY_NOTE)
 
     def clear_cache(self, key: str, kind: cache.CacheKind) -> None:
-        """Очистка кэша записи — реализуется задачей 8 плана."""
-        raise NotImplementedError
+        """Очистить кэш записи: замер → подтверждение → удаление → сводка.
+
+        Подтверждение всегда (решение заказчика 23.08.2026, спека §3.5);
+        без «Да» не удаляется ничего. Запись могла исчезнуть между
+        построением меню и кликом (внешняя правка файла и rebuild) — молча
+        выходим, тот же случай, что у remove_key/create_shortcut. Путь
+        строится заново по свежим данным записи, а не ловится при построении
+        меню: ключ и ID могли смениться.
+        """  # noqa: RUF002
+        item = next((i for i in self._workspace.items() if i.key == key), None)
+        if item is None:
+            return
+        path = cache.cache_path(self._cache_env, kind, item.section_id)
+        if path is None:
+            return
+        measured = cache.measure(path, self._cache_ops)
+        question = cache.clear_question(kind, item.name, measured)
+        if not self._confirm_cache_clear(self, question):
+            return
+        report = cache.clear(path, self._cache_ops)
+        self._show_cache_report(self, cache.report_text(report))
 
     def folder_for_dropped_directory(
         self, target_key: str | None, kind: str | None

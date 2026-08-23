@@ -23,6 +23,7 @@ from onecstarter.config.shell_link import build_shell_link, safe_file_name, shor
 from onecstarter.domain.connect import ConnectKind
 from onecstarter.domain.launch import ClientKind, LaunchCommand
 from onecstarter.domain.version import Installation
+from onecstarter.services.cache import CacheEntry, CacheKind, EntryKind
 from onecstarter.services.display import COMMON_NOTE, IMPLICIT_NOTE, RowKind
 from onecstarter.services.errors import (
     InvalidRequestError,
@@ -3248,3 +3249,139 @@ def test_group_menu_has_no_cache_submenu(qtbot, workspace_factory, tmp_path):
     assert item.is_group
     menu = view._build_group_menu(item, item.key)
     assert _cache_actions(menu) is None
+
+
+# -- Задача 8: сценарий очистки — замер → подтверждение → удаление → сводка --
+
+
+def _ops_with_program_cache(tmp_path: Path) -> tuple[FakeCacheOps, Path]:
+    """Фейк ФС с программным кэшем записи «Кэшная» + её ibases.v8i.
+
+    Файл списка пишется здесь, ДО _view: workspace_factory копирует общую
+    фикстуру, только если tmp_path/"ibases.v8i" ещё не создан.
+    """  # noqa: RUF002
+    (tmp_path / "ibases.v8i").write_bytes(
+        f'[Кэшная]\r\nID={CACHE_GUID}\r\nConnect=File="C:\\B";\r\n'.encode()
+    )
+    ops = FakeCacheOps()
+    root = Path(tmp_path / "local" / "1C" / "1Cv8" / CACHE_GUID)
+    ops.tree[root] = []
+    ops.put(CacheEntry(root / "Config", EntryKind.DIR, 0))
+    ops.put(CacheEntry(root / "Config" / "a.bin", EntryKind.FILE, 100))
+    ops.put(CacheEntry(root / "top.pfl", EntryKind.FILE, 24))
+    return ops, root
+
+
+def test_clear_cache_without_confirmation_deletes_nothing(
+    qtbot, workspace_factory, tmp_path
+):
+    """ЗАЩИТНЫЙ ТЕСТ (спека §3.5, §6): без «Да» не удаляется ничего.
+
+    Кандидат мутационной проверки: снять подтверждение (звать clear без
+    вопроса) — тест обязан упасть на «дерево изменилось».
+    """  # noqa: RUF002
+    ops, _root = _ops_with_program_cache(tmp_path)
+    before = {p: list(es) for p, es in ops.tree.items()}
+    asked: list[str] = []
+
+    def refuse(parent, question):
+        asked.append(question)
+        return False
+
+    view, _calls, _errors, _opened = _view(
+        qtbot, workspace_factory,
+        cache_env=_cache_env(tmp_path), cache_ops=ops, confirm_cache_clear=refuse,
+        show_cache_report=lambda parent, text: pytest.fail("сводка без удаления"),
+    )
+    item = view.workspace().items()[0]
+    view.clear_cache(item.key, CacheKind.PROGRAM)
+    assert ops.tree == before
+    assert len(asked) == 1
+
+
+def test_clear_cache_question_carries_name_and_size(qtbot, workspace_factory, tmp_path):
+    ops, _root = _ops_with_program_cache(tmp_path)
+    asked: list[str] = []
+
+    def refuse(parent, question):
+        asked.append(question)
+        return False
+
+    view, _calls, _errors, _opened = _view(
+        qtbot, workspace_factory,
+        cache_env=_cache_env(tmp_path), cache_ops=ops,
+        confirm_cache_clear=refuse,
+        show_cache_report=lambda parent, text: None,
+    )
+    item = view.workspace().items()[0]
+    view.clear_cache(item.key, CacheKind.PROGRAM)
+    assert "Кэшная" in asked[0]
+    assert "(124 Б)" in asked[0]  # размер посчитан ДО удаления
+
+
+def test_clear_cache_confirmed_deletes_and_reports(qtbot, workspace_factory, tmp_path):
+    ops, root = _ops_with_program_cache(tmp_path)
+    shown: list[str] = []
+    view, _calls, _errors, _opened = _view(
+        qtbot, workspace_factory,
+        cache_env=_cache_env(tmp_path), cache_ops=ops,
+        confirm_cache_clear=lambda parent, q: True,
+        show_cache_report=lambda parent, text: shown.append(text),
+    )
+    item = view.workspace().items()[0]
+    view.clear_cache(item.key, CacheKind.PROGRAM)
+    assert root not in ops.tree
+    assert shown == ["Удалено 2 файла, освобождено 124 Б."]
+
+
+def test_clear_cache_reports_busy_files_once(qtbot, workspace_factory, tmp_path):
+    """Спека §3.7: первичная ошибка в сводке, вторичная «папка не пуста» — нет."""
+    ops, root = _ops_with_program_cache(tmp_path)
+    ops.busy.add(root / "Config" / "a.bin")
+    shown: list[str] = []
+    view, _calls, _errors, _opened = _view(
+        qtbot, workspace_factory,
+        cache_env=_cache_env(tmp_path), cache_ops=ops,
+        confirm_cache_clear=lambda parent, q: True,
+        show_cache_report=lambda parent, text: shown.append(text),
+    )
+    item = view.workspace().items()[0]
+    view.clear_cache(item.key, CacheKind.PROGRAM)
+    assert shown == [
+        "Удалён 1 файл, освобождено 24 Б. Не удалось удалить 1 — "  # noqa: RUF001
+        "файлы заняты запущенной 1С; закройте программу и повторите."  # noqa: RUF001
+    ]
+
+
+def test_cache_menu_item_trigger_reaches_clear_cache_with_right_kind(
+    qtbot, workspace_factory, tmp_path
+):
+    """Клик пункта подменю доходит до сценария с правильной парой (key, kind).
+
+    Закрывает ⚠️ ревью задачи 7: раньше лямбда пункта («Программный…») ни
+    разу не выполнялась ни одним тестом — состав и подписи пунктов
+    проверялись, но не сам клик. Меню строится тем же `_build_menu`, что
+    и в проде, а не собирается вручную — иначе привязка (key, kind) внутри
+    лямбды и работоспособность параметра-заглушки `_checked=False` остались
+    бы непроверенными. `confirm_cache_clear` отказывает («Нет») — удаления
+    не происходит, сводка не должна была бы открыться.
+    """  # noqa: RUF002
+    ops, _root = _ops_with_program_cache(tmp_path)
+    asked: list[str] = []
+
+    def refuse(parent, question):
+        asked.append(question)
+        return False
+
+    view, _calls, _errors, _opened = _view(
+        qtbot, workspace_factory,
+        cache_env=_cache_env(tmp_path), cache_ops=ops,
+        confirm_cache_clear=refuse,
+        show_cache_report=lambda parent, text: pytest.fail("сводка без удаления"),
+    )
+    item = view.workspace().items()[0]
+    actions = _cache_actions(view._build_menu(item, item.key))
+    assert actions is not None
+    actions["Программный…"].trigger()
+    assert len(asked) == 1
+    assert "программный" in asked[0].casefold()
