@@ -58,6 +58,33 @@ class TestChooseClient:
         assert choice == ClientChoice(ClientKind.THIN, auto_check_mode=True)
 
 
+@pytest.mark.parametrize(
+    ("app", "default_app", "forced", "expected", "auto_mode"),
+    [
+        # настройка работает только при пустом App
+        (None, "ThickClient", None, ClientKind.THICK, True),
+        (None, "ThinClient", None, ClientKind.THIN, True),
+        # App записи бьёт настройку
+        ("ThinClient", "ThickClient", None, ClientKind.THIN, False),
+        ("ThickClient", "ThinClient", None, ClientKind.THICK, False),
+        # принудительный выбор бьёт всё
+        ("ThinClient", "ThickClient", ClientKind.DESIGNER, ClientKind.DESIGNER, False),
+        (None, "ThickClient", ClientKind.THIN, ClientKind.THIN, False),
+    ],
+)
+def test_priority_table(
+    app: str | None,
+    default_app: str | None,
+    forced: ClientKind | None,
+    expected: ClientKind,
+    auto_mode: bool,
+) -> None:
+    """Спека вехи §2.2: принудительный выбор → App записи → настройка."""
+    assert choose_client(app, default_app, forced) == ClientChoice(
+        expected, auto_check_mode=auto_mode
+    )
+
+
 class TestBuildArguments:
     def test_matches_starter_snapshot_for_auto(self) -> None:
         # [Ф] снято с реального процесса:  # noqa: RUF003

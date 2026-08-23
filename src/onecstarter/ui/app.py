@@ -1,9 +1,11 @@
 """Сборка приложения: окружение → Workspace → окно, трей, хоткей, watcher.
 
 Единственное место, где ui знает про расположение файлов и обнаружение
-платформы. default_app в v1 не читается из cfg: существование параметра App
-уровня 1cestart.cfg экспериментально не подтверждено — None, клиент
-выбирается по App секции либо тонкий ([Ф] T-02.6).
+платформы. default_app приходит из настройки «Клиент по умолчанию»
+(settings.json, DefaultClient.app_value) — существование параметра App
+уровня 1cestart.cfg по-прежнему экспериментально не подтверждено, и cfg
+на выбор клиента не влияет. Без App секции и без настройки выбирается
+тонкий клиент ([Ф] T-02.6).
 """
 
 import logging
@@ -30,6 +32,7 @@ from onecstarter.services.catalog import CommonListData, read_common_lists
 from onecstarter.services.errors import ServicesError, UserDataUnavailableError
 from onecstarter.services.hotkeys import parse_hotkey
 from onecstarter.services.model import InfobaseItem
+from onecstarter.services.settings import load_settings
 from onecstarter.services.workspace import Workspace, WorkspacePaths
 from onecstarter.ui import app_icon, rail_icons, theme
 from onecstarter.ui.background import StartupTasks
@@ -74,14 +77,15 @@ def build_runtime(env: Mapping[str, str]) -> Runtime:
         user_data=appdata / "OneCStarter" / "bases.json",
         cfg_paths=tuple(cfgs),
     )
+    settings_path = appdata / "OneCStarter" / "settings.json"
+    settings = load_settings(settings_path)
     workspace = Workspace(
         paths,
         installations=None,
         conventions=conventions,
         cfg_rules=rules,
-        default_app=None,
+        default_app=settings.default_client.app_value,
     )
-    settings_path = appdata / "OneCStarter" / "settings.json"
     return Runtime(workspace, rules, list(conventions), settings_path)
 
 

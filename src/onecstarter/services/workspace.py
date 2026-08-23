@@ -153,6 +153,20 @@ class Workspace:
         self._installations = list(installations)
 
     @property
+    def default_app(self) -> str | None:
+        """Текущий клиент по умолчанию — сборке приложения и тестам проводки."""
+        return self._default_app
+
+    def set_default_app(self, default_app: str | None) -> None:
+        """Сменить клиента по умолчанию на лету (настройка «Клиент по умолчанию»).
+
+        Влияет только на последующие запуски; `_rebuild` не зовётся — записи
+        списка от выбора клиента не зависят (тот же довод, что
+        у `set_installations`).
+        """  # noqa: RUF002
+        self._default_app = default_app
+
+    @property
     def common_lists_pending(self) -> bool:
         """`True`, пока снимок общих списков ни разу не применялся.
 

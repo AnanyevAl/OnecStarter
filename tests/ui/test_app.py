@@ -29,7 +29,13 @@ from PySide6.QtWidgets import (
 from onecstarter.domain.launch import LaunchCommand
 from onecstarter.services.catalog import EMPTY_COMMON_DATA
 from onecstarter.services.hotkeys import parse_hotkey
-from onecstarter.services.settings import DEFAULT_HOTKEY, Settings, ThemeMode, save_settings
+from onecstarter.services.settings import (
+    DEFAULT_HOTKEY,
+    DefaultClient,
+    Settings,
+    ThemeMode,
+    save_settings,
+)
 from onecstarter.services.workspace import Workspace, WorkspacePaths
 from onecstarter.ui import app as app_module
 from onecstarter.ui import theme
@@ -81,6 +87,17 @@ def test_runtime_reads_ibases_and_cfg(tmp_path):
     runtime = build_runtime({"APPDATA": str(appdata)})
     assert [item.name for item in runtime.workspace.items()] == ["База"]
     assert len(runtime.cfg_rules) == 1
+
+
+def test_build_runtime_reads_default_client(tmp_path):
+    """Настройка доезжает и до запуска по ярлыку: build_runtime общий
+    для main() и run_launch(), поэтому читается здесь, а не только в окне."""  # noqa: RUF002
+    save_settings(
+        tmp_path / "OneCStarter" / "settings.json",
+        Settings(default_client=DefaultClient.THICK),
+    )
+    runtime = build_runtime({"APPDATA": str(tmp_path)})
+    assert runtime.workspace.default_app == "ThickClient"
 
 
 # -- задача 17: режим запуска по имени базы (--ib-name) ---------------------
