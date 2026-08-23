@@ -35,19 +35,25 @@ from onecstarter.services.errors import (
 )
 from onecstarter.services.groups import GroupRemoval
 from onecstarter.services.launch import LaunchOutcome
-from onecstarter.services.model import InfobaseItem
+from onecstarter.services.model import InfobaseItem, InfobaseSource
 from onecstarter.services.paths import ROOT, group_path, normalize_folder, render_folder
 from onecstarter.services.settings import DEFAULT_RECENT_LIMIT
 from onecstarter.ui import theme
 from onecstarter.ui.bases.icons import placement_icon
 from onecstarter.ui.bases.tree_model import KEY_ROLE, KIND_ROLE
-from onecstarter.ui.bases.view import BasesView, DropTarget
+from onecstarter.ui.bases.view import NO_CACHE_ROOT_NOTE, BasesView, DropTarget
 from onecstarter.ui.dialogs.confirm import ask_group_removal, confirm_removal
 from onecstarter.ui.dialogs.group import GroupDialog
 from onecstarter.ui.dialogs.infobase import InfobaseDialog
 from tests.unit.test_cache import FakeCacheOps
 
-from .conftest import COMMON_BASE_KEY, COMMON_GROUP_KEY, COMMON_GROUP_NAME, INSTALLED
+from .conftest import (
+    COMMON_BASE_KEY,
+    COMMON_GROUP_KEY,
+    COMMON_GROUP_NAME,
+    INSTALLED,
+    _with_common_list,
+)
 
 
 def _view(
@@ -91,10 +97,11 @@ def _view(
         kwargs["choose_shortcut_path"] = choose_shortcut_path
     if cache_env is not None:
         kwargs["cache_env"] = cache_env
-    if cache_ops is not None:
-        # Инъекция ФС кэша: настоящая WindowsCacheOps ходила бы в живые
-        # каталоги %LOCALAPPDATA% машины, на которой идёт прогон.
-        kwargs["cache_ops"] = cache_ops
+    # Инъекция ФС кэша: настоящая WindowsCacheOps ходила бы в живые каталоги
+    # %LOCALAPPDATA% машины, на которой идёт прогон. Фейк — по умолчанию,
+    # а не по запросу (долг №9 финального ревью): свежий экземпляр на вызов,  # noqa: RUF003
+    # общий мутировал бы состояние между тестами.
+    kwargs["cache_ops"] = cache_ops if cache_ops is not None else FakeCacheOps()
     if confirm_cache_clear is not None:
         # Тот же приём, что confirm_removal: настоящий диалог блокирует офскрин.
         kwargs["confirm_cache_clear"] = confirm_cache_clear
@@ -3253,6 +3260,85 @@ def test_group_menu_has_no_cache_submenu(qtbot, workspace_factory, tmp_path):
     assert _cache_actions(menu) is None
 
 
+def test_cache_submenu_sits_above_removal_item(qtbot, workspace_factory, tmp_path):
+    """Долг №1 финального ревью (спека §3.2): «Очистить кэш» — выше
+    разделителя перед «Удалить из списка…», разрушительный пункт остаётся
+    один в самом низу.
+    """
+    ops = FakeCacheOps()
+    view, _calls, _errors, _opened = _cache_view(
+        qtbot, workspace_factory, tmp_path, ops,
+        f'[Кэшная]\r\nID={CACHE_GUID}\r\nConnect=File="C:\\B";\r\n',
+    )
+    item = view.workspace().items()[0]
+    actions = view._build_menu(item, item.key).actions()
+    texts = [a.text() for a in actions]
+    cache_index = texts.index("Очистить кэш")
+    removal_index = texts.index("Удалить из списка…")
+    assert cache_index < removal_index
+    # Между подменю и «Удалить…» есть разделитель — кэш не в «разрушительном» хвосте.
+    assert any(a.isSeparator() for a in actions[cache_index + 1 : removal_index])
+
+
+def test_cache_submenu_stays_enabled_for_common_entry(
+    qtbot, workspace_factory, tmp_path
+):
+    """Долг №2 финального ревью: дизейбл пунктов COMMON-записи не зацепил кэш.
+
+    Кэш локален и к источнику записи отношения не имеет — пункты подменю
+    осознанно активны, в отличие от «Свойства…» и «Удалить из списка…»,
+    которые пишут в файл списка (спека §3.2).
+    """
+    shared = tmp_path / "shared.v8i"
+    shared.write_bytes(
+        f'[Общая кэшная]\r\nID={CACHE_GUID}\r\nConnect=Srvr="s";Ref="r";\r\n'.encode()
+    )
+    cfg_paths = _with_common_list(tmp_path, shared)
+    ops = FakeCacheOps()
+    for var in ("roaming", "local"):
+        ops.tree[Path(tmp_path / var / "1C" / "1Cv8" / CACHE_GUID)] = []
+    view, _calls, _errors, _opened = _view(
+        qtbot, workspace_factory,
+        cfg_paths=cfg_paths, cache_env=_cache_env(tmp_path), cache_ops=ops,
+    )
+    item = next(
+        i for i in view.workspace().items() if i.source is InfobaseSource.COMMON
+    )
+    menu = view._build_menu(item, item.key)
+    by_text = {a.text(): a for a in menu.actions()}
+    # Сам дизейбл COMMON на месте…
+    assert not by_text["Свойства…"].isEnabled()
+    assert not by_text["Удалить из списка…"].isEnabled()
+    # …а кэш он не зацепил.  # noqa: RUF003
+    actions = _cache_actions(menu)
+    assert actions is not None
+    assert actions["Пользовательский…"].isEnabled()
+    assert actions["Программный…"].isEnabled()
+
+
+def test_cache_item_disabled_without_cache_root(qtbot, workspace_factory, tmp_path):
+    """Долг №7 финального ревью: ID валиден, но в окружении нет корня кэша
+    (LOCALAPPDATA) — пункт неактивен с подсказкой NO_CACHE_ROOT_NOTE,
+    а не CACHE_EMPTY_NOTE: причина другая, подсказка тоже другая.
+    """  # noqa: RUF002
+    ops = FakeCacheOps()
+    ops.tree[Path(tmp_path / "roaming" / "1C" / "1Cv8" / CACHE_GUID)] = []
+    (tmp_path / "ibases.v8i").write_bytes(
+        f'[Кэшная]\r\nID={CACHE_GUID}\r\nConnect=File="C:\\B";\r\n'.encode()
+    )
+    view, _calls, _errors, _opened = _view(
+        qtbot, workspace_factory,
+        cache_env={"APPDATA": str(tmp_path / "roaming")},  # LOCALAPPDATA нет
+        cache_ops=ops,
+    )
+    item = view.workspace().items()[0]
+    actions = _cache_actions(view._build_menu(item, item.key))
+    assert actions is not None
+    assert actions["Пользовательский…"].isEnabled()
+    assert not actions["Программный…"].isEnabled()
+    assert actions["Программный…"].toolTip() == NO_CACHE_ROOT_NOTE
+
+
 # -- Задача 8: сценарий очистки — замер → подтверждение → удаление → сводка --
 
 
@@ -3368,12 +3454,12 @@ def test_clear_cache_silently_exits_when_directory_disappeared(
     не должны были случиться.
 
     Кандидат мутационной проверки: снять проверку `is_dir` перед замером —
-    этот тест обязан упасть (МУТАЦИЯ ПРОВЕРЕНА 23.08.2026: на `FakeCacheOps`
-    `measure` падает `KeyError` внутри `list_dir` — фейк не различает
-    «каталога нет» и «список файлов пуст», в отличие от настоящей ФС, где
-    `os.scandir` дал бы `FileNotFoundError`, `measure` его проглотил бы
-    молча, и без проверки `is_dir` дело дошло бы до `confirm_cache_clear`
-    с «(0 Б)», как описано в докстринге `clear_cache`).
+    тест обязан упасть через ЗАПЛАНИРОВАННЫЙ сигнал: `FakeCacheOps.list_dir`
+    на отсутствующем корне даёт `FileNotFoundError`, как настоящий
+    `os.scandir` (долг №8, закрыт 23.08.2026), `measure` глотает его и
+    возвращает ноль, и дело доходит до `confirm_cache_clear` с «(0 Б)» —
+    то есть до `pytest.fail`. Перепроверка мутации после правки фейка —
+    мутационная стадия пакета долга (см. tasks.md).
     """  # noqa: RUF002
     (tmp_path / "ibases.v8i").write_bytes(
         f'[Кэшная]\r\nID={CACHE_GUID}\r\nConnect=File="C:\\B";\r\n'.encode()
@@ -3387,6 +3473,91 @@ def test_clear_cache_silently_exits_when_directory_disappeared(
     )
     item = view.workspace().items()[0]
     view.clear_cache(item.key, CacheKind.PROGRAM)
+
+
+@pytest.mark.parametrize(
+    ("kind", "cleared_var", "kept_var", "title"),
+    [
+        (CacheKind.USER, "roaming", "local", "пользовательский"),
+        (CacheKind.PROGRAM, "local", "roaming", "программный"),
+    ],
+)
+def test_clear_cache_clears_exactly_requested_kind(
+    qtbot, workspace_factory, tmp_path, kind, cleared_var, kept_var, title
+):
+    """Долг №3 финального ревью: сценарий параметризован по CacheKind —
+    перепутанный вид на втором пункте ловится: удаляется ровно запрошенный
+    корень, второй не тронут, и вопрос называет правильный вид.
+    """
+    (tmp_path / "ibases.v8i").write_bytes(
+        f'[Кэшная]\r\nID={CACHE_GUID}\r\nConnect=File="C:\\B";\r\n'.encode()
+    )
+    ops = FakeCacheOps()
+    roots = {}
+    for var in ("roaming", "local"):
+        root = Path(tmp_path / var / "1C" / "1Cv8" / CACHE_GUID)
+        ops.tree[root] = []
+        ops.put(CacheEntry(root / "data.bin", EntryKind.FILE, 100))
+        roots[var] = root
+    asked: list[str] = []
+
+    def agree(parent, question):
+        asked.append(question)
+        return True
+
+    view, _calls, _errors, _opened = _view(
+        qtbot, workspace_factory,
+        cache_env=_cache_env(tmp_path), cache_ops=ops,
+        confirm_cache_clear=agree,
+        show_cache_report=lambda parent, text: None,
+    )
+    item = view.workspace().items()[0]
+    view.clear_cache(item.key, kind)
+    assert title in asked[0].casefold()
+    assert roots[cleared_var] not in ops.tree
+    assert roots[kept_var] in ops.tree
+    assert any(
+        e.path == roots[kept_var] / "data.bin" for e in ops.tree[roots[kept_var]]
+    )
+
+
+def test_clear_cache_ignores_unknown_key(qtbot, workspace_factory, tmp_path):
+    """Долг №4 финального ревью: запись исчезла между построением меню
+    и кликом (`item is None`) — молчаливый выход, как у remove_key и
+    create_shortcut: ни вопроса, ни сводки, ни ошибки, дерево не тронуто.
+    """  # noqa: RUF002
+    ops, _root = _ops_with_program_cache(tmp_path)
+    before = {p: list(es) for p, es in ops.tree.items()}
+    view, _calls, errors, _opened = _view(
+        qtbot, workspace_factory,
+        cache_env=_cache_env(tmp_path), cache_ops=ops,
+        confirm_cache_clear=lambda parent, q: pytest.fail("вопрос по пропавшей записи"),
+        show_cache_report=lambda parent, text: pytest.fail("сводка по пропавшей записи"),
+    )
+    view.clear_cache("id:00000000-0000-0000-0000-000000000000", CacheKind.PROGRAM)
+    assert ops.tree == before
+    assert errors == []
+
+
+def test_clear_cache_exits_when_address_is_gone(qtbot, workspace_factory, tmp_path):
+    """Долг №4 финального ревью: у записи нет валидного ID — `cache_path`
+    даёт `None`, сценарий молча выходит (`path is None`), не падая на
+    `is_dir(None)` и не задавая вопросов.
+    """  # noqa: RUF002
+    (tmp_path / "ibases.v8i").write_bytes(
+        '[БезID]\r\nConnect=File="C:\\B";\r\n'.encode()  # noqa: RUF001
+    )
+    ops = FakeCacheOps()
+    view, _calls, errors, _opened = _view(
+        qtbot, workspace_factory,
+        cache_env=_cache_env(tmp_path), cache_ops=ops,
+        confirm_cache_clear=lambda parent, q: pytest.fail("вопрос без адреса кэша"),
+        show_cache_report=lambda parent, text: pytest.fail("сводка без адреса кэша"),
+    )
+    item = view.workspace().items()[0]
+    view.clear_cache(item.key, CacheKind.PROGRAM)
+    assert errors == []
+    assert ops.listed == []  # до обхода ФС дело не дошло вовсе
 
 
 def test_cache_menu_item_trigger_reaches_clear_cache_with_right_kind(
