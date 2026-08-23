@@ -128,7 +128,9 @@ class TestTexts:
 
 class FakeCacheOps:
     """ФС в памяти, ведёт себя как настоящая: remove_dir отказывает непустому
-    каталогу, занятый файл — PermissionError, удаления реально убирают записи.
+    каталогу и каталогу из busy_dirs (даже пустому — имитация rmdir на чистом
+    каталоге, который всё равно отказал), занятый файл — PermissionError,
+    удаления реально убирают записи.
 
     Богатый стимул, а не пустышка — требование мутационной проверки проекта:
     бессильная мутация всегда означала бедный стимул, не слабое утверждение.
@@ -137,6 +139,7 @@ class FakeCacheOps:
     def __init__(self) -> None:
         self.tree: dict[Path, list[CacheEntry]] = {}
         self.busy: set[Path] = set()
+        self.busy_dirs: set[Path] = set()
         self.unreadable: set[Path] = set()
         self.removed_links: list[Path] = []
         self.listed: list[Path] = []
@@ -173,6 +176,8 @@ class FakeCacheOps:
         self._drop(path)
 
     def remove_dir(self, path: Path) -> None:
+        if path in self.busy_dirs:
+            raise PermissionError(5, "папка недоступна для удаления")
         if self.tree.get(path):
             raise OSError(145, "Папка не пуста")
         self.tree.pop(path, None)
@@ -263,6 +268,42 @@ class TestClear:
         assert report.failed == 1
         assert report.deleted == 3  # a, b, top.pfl
         assert ROOT in ops.tree  # корень не пуст — вторичный отказ, не считан
+
+    def test_clean_subdir_rmdir_failure_is_primary(self) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ (спека §3.7): отказ rmdir на каталоге, где всё внутри
+        уже удалилось, — первичный отказ, и его нужно посчитать.
+
+        О таком каталоге ничем другим не сказано, в отличие от «папка не
+        пуста» из-за занятого файла внутри (это вторичный отказ и не считается).
+
+        Кандидат мутационной проверки: убрать `failed += 1` из ветки
+        `except OSError` при `ops.remove_dir(entry.path)` внутри `clear_dir` —
+        этот тест обязан упасть на `report.failed == 1`.
+        """  # noqa: RUF002
+        ops = _standard_tree()
+        ops.busy_dirs.add(ROOT / "SICache")
+        report = clear(ROOT, ops)
+        assert report.failed == 1
+        assert report.deleted == 4  # a, b, c.bin, top.pfl — все файлы всё равно удалены
+        assert report.freed_bytes == 650
+        # SICache опустел (c.bin удалён), но сам каталог остался — rmdir отказал.
+        assert ops.tree[ROOT / "SICache"] == []
+        # Корень не пуст (SICache никуда не делся) — его rmdir даже не пробуется.  # noqa: RUF003
+        assert ROOT in ops.tree
+
+    def test_root_rmdir_failure_after_full_cleanup_is_primary(self) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ (спека §3.7): отказ rmdir самого корня после того,
+        как всё его содержимое удалилось без ошибок, — тоже первичный отказ.
+
+        Кандидат мутационной проверки: убрать `failed += 1` из ветки
+        `except OSError` вокруг `ops.remove_dir(root)` в `clear()` — этот
+        тест обязан упасть на `report.failed == 1`.
+        """  # noqa: RUF002
+        ops = _standard_tree()
+        ops.busy_dirs.add(ROOT)
+        report = clear(ROOT, ops)
+        assert report == ClearReport(deleted=4, freed_bytes=650, failed=1)
+        assert ROOT in ops.tree  # корень пуст изнутри, но сам rmdir отказал
 
 
 class TestWindowsCacheOpsIntegration:

@@ -1047,8 +1047,12 @@ class WindowsCacheOps:
         os.rmdir(path)
 
     def remove_link(self, path: Path) -> None:
-        # Ссылка на каталог (symlink или junction) снимается rmdir — он
-        # удаляет саму ссылку, не следуя за ней; ссылка на файл — unlink.
+        # Junction под lstat — каталог (S_IFDIR) и снимается rmdir, который
+        # удаляет саму ссылку, не следуя за ней [проверено на этой машине].
+        # Симлинк — и на файл, и на каталог — под lstat S_IFLNK и уходит
+        # в unlink; симлинк на каталог CPython на Windows удаляет внутри
+        # unlink через RemoveDirectoryW [из исходников CPython, на живой
+        # машине не проверено: создание симлинка требует привилегии].
         if stat.S_ISDIR(os.lstat(path).st_mode):
             os.rmdir(path)
         else:
