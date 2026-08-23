@@ -97,10 +97,11 @@ def _view(
         kwargs["choose_shortcut_path"] = choose_shortcut_path
     if cache_env is not None:
         kwargs["cache_env"] = cache_env
-    if cache_ops is not None:
-        # Инъекция ФС кэша: настоящая WindowsCacheOps ходила бы в живые
-        # каталоги %LOCALAPPDATA% машины, на которой идёт прогон.
-        kwargs["cache_ops"] = cache_ops
+    # Инъекция ФС кэша: настоящая WindowsCacheOps ходила бы в живые каталоги
+    # %LOCALAPPDATA% машины, на которой идёт прогон. Фейк — по умолчанию,
+    # а не по запросу (долг №9 финального ревью): свежий экземпляр на вызов,  # noqa: RUF003
+    # общий мутировал бы состояние между тестами.
+    kwargs["cache_ops"] = cache_ops if cache_ops is not None else FakeCacheOps()
     if confirm_cache_clear is not None:
         # Тот же приём, что confirm_removal: настоящий диалог блокирует офскрин.
         kwargs["confirm_cache_clear"] = confirm_cache_clear
