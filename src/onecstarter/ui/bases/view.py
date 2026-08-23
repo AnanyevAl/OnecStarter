@@ -6,8 +6,9 @@
 живут в services/display.py, здесь — только отображение и события.
 """  # noqa: RUF002
 
+import os
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -44,6 +45,7 @@ from onecstarter.domain.connect import ConnectKind
 from onecstarter.domain.default_version import DefaultVersionRule
 from onecstarter.domain.launch import ClientKind
 from onecstarter.domain.version import Installation
+from onecstarter.services import cache
 from onecstarter.services.catalog import TreeNode
 from onecstarter.services.connection import panel_card
 from onecstarter.services.display import (
@@ -79,6 +81,13 @@ from onecstarter.ui.theme import Palette
 
 def _format_stamp(stamp: datetime) -> str:
     return stamp.astimezone().strftime("%d.%m.%Y %H:%M")
+
+
+# Задача 7 (спека §3.4): подменю «Очистить кэш» показывает пункт неактивным
+# с одной из этих подсказок, а не молча — тот же приём, что у COMMON_NOTE/  # noqa: RUF003
+# IMPLICIT_NOTE в services/display.py, только текст свой для кэша.
+NO_CACHE_ID_NOTE = "У записи нет ID — каталог кэша не определить"  # noqa: RUF001
+CACHE_EMPTY_NOTE = "кэш пуст"
 
 
 def browse_for_shortcut_path(parent: QWidget | None, suggested: str) -> str:
@@ -296,6 +305,8 @@ class BasesView(QWidget):
         choose_shortcut_path: Callable[
             [QWidget | None, str], str
         ] = browse_for_shortcut_path,
+        cache_env: Mapping[str, str] | None = None,
+        cache_ops: cache.CacheOps | None = None,
         parent: QWidget | None = None,
         palette: Palette = theme.DARK,
     ) -> None:
@@ -326,6 +337,12 @@ class BasesView(QWidget):
         # Тот же приём для «Создать ярлык…» (задача 17): настоящий
         # `QFileDialog.getSaveFileName` блокирует офскрин-тест.
         self._choose_shortcut_path = choose_shortcut_path
+        # Окружение и ФС кэша — инъекцией: тесты подменяют и то и другое,
+        # живые кэши в offscreen-прогоне не трогаются.
+        self._cache_env: Mapping[str, str] = os.environ if cache_env is None else cache_env
+        self._cache_ops: cache.CacheOps = (
+            cache.WindowsCacheOps() if cache_ops is None else cache_ops
+        )
         self._rows: list[Row] = []
         self._palette = palette
         # Развёрнутость «чистого» (нефильтрованного) дерева и признак того,
@@ -879,6 +896,7 @@ class BasesView(QWidget):
         # с `--ib-name`, а та открывает браузер (services/launch.py).  # noqa: RUF003
         menu.addAction("Создать ярлык…", lambda: self.create_shortcut(key))
         properties = menu.addAction("Свойства…", lambda: self.show_properties(key))
+        self._add_cache_menu(menu, item)
         menu.addSeparator()
         star = "Убрать из избранного" if item.favorite else "В избранное"  # noqa: RUF001
         menu.addAction(f"{star}\tCtrl+D", lambda: self.toggle_favorite(key))
@@ -896,6 +914,50 @@ class BasesView(QWidget):
                 action.setEnabled(False)
                 action.setToolTip(COMMON_NOTE)
         return menu
+
+    def _add_cache_menu(self, menu: QMenu, item: InfobaseItem) -> None:
+        """Подменю «Очистить кэш» — два пункта, без сочетаний клавиш (спека §3.2).
+
+        Доступность решается по данным записи (ID-GUID) и дешёвой проверке
+        наличия каталога; замер размера здесь не выполняется — он идёт после
+        клика, перед подтверждением (спека §3.4/§4 в редакции 23.08.2026).
+        Многоточия обязательны: каждый пункт ведёт к подтверждению.
+        Подсказки неактивных пунктов требуют setToolTipsVisible — тот же
+        вывод, что у _build_disabled_group_menu.
+
+        `QMenu(title, menu)` + `menu.addMenu(submenu)`, а не однострочный
+        `menu.addMenu("Очистить кэш")`: у последнего PySide6 не всегда
+        распознаёт `menu` как владельца C++ объекта через неявный `this`
+        внутри вспомогательного метода Qt — воспроизведено экспериментом при
+        реализации задачи: тесты, читающие состав подменю после возврата
+        `_build_menu` (`action.menu()`/`submenu.actions()`), временами
+        получали «Internal C++ object already deleted». Явный конструктор
+        с `parent=menu` — тот же приём, что и `QMenu(self)` парой строк выше
+        по файлу, и PySide транзит владения через него распознаёт надёжно.
+        """  # noqa: RUF002
+        submenu = QMenu("Очистить кэш", menu)
+        menu.addMenu(submenu)
+        submenu.setToolTipsVisible(True)
+        labels = (
+            (cache.CacheKind.USER, "Пользовательский…"),
+            (cache.CacheKind.PROGRAM, "Программный…"),
+        )
+        for kind, label in labels:
+            action = submenu.addAction(
+                label,
+                lambda _checked=False, k=kind, key=item.key: self.clear_cache(key, k),
+            )
+            path = cache.cache_path(self._cache_env, kind, item.section_id)
+            if path is None:
+                action.setEnabled(False)
+                action.setToolTip(NO_CACHE_ID_NOTE)
+            elif not self._cache_ops.is_dir(path):
+                action.setEnabled(False)
+                action.setToolTip(CACHE_EMPTY_NOTE)
+
+    def clear_cache(self, key: str, kind: cache.CacheKind) -> None:
+        """Очистка кэша записи — реализуется задачей 8 плана."""
+        raise NotImplementedError
 
     def folder_for_dropped_directory(
         self, target_key: str | None, kind: str | None

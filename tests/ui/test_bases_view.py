@@ -1,5 +1,5 @@
 import sys
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -44,6 +44,7 @@ from onecstarter.ui.bases.view import BasesView, DropTarget
 from onecstarter.ui.dialogs.confirm import ask_group_removal, confirm_removal
 from onecstarter.ui.dialogs.group import GroupDialog
 from onecstarter.ui.dialogs.infobase import InfobaseDialog
+from tests.unit.test_cache import FakeCacheOps
 
 from .conftest import COMMON_BASE_KEY, COMMON_GROUP_KEY, COMMON_GROUP_NAME, INSTALLED
 
@@ -60,6 +61,10 @@ def _view(
     | None = None,
     choose_shortcut_path: Callable[[QWidget | None, str], str] | None = None,
     cfg_paths: tuple[Path, ...] = (),
+    cache_env: Mapping[str, str] | None = None,
+    cache_ops: Any | None = None,
+    confirm_cache_clear: Callable[[QWidget | None, str], bool] | None = None,
+    show_cache_report: Callable[[QWidget | None, str], None] | None = None,
 ) -> tuple[BasesView, list[LaunchCommand], list[ServicesError], list[str]]:
     # По умолчанию — INSTALLED, не None: большинство тестов файла ничего
     # не знают про фоновое обнаружение и ждут готовых версий сразу.
@@ -83,6 +88,17 @@ def _view(
         # Тот же приём для «Создать ярлык…» (задача 17): настоящий
         # `QFileDialog.getSaveFileName` в офскрин-тесте не дождётся выбора.
         kwargs["choose_shortcut_path"] = choose_shortcut_path
+    if cache_env is not None:
+        kwargs["cache_env"] = cache_env
+    if cache_ops is not None:
+        # Инъекция ФС кэша: настоящая WindowsCacheOps ходила бы в живые
+        # каталоги %LOCALAPPDATA% машины, на которой идёт прогон.
+        kwargs["cache_ops"] = cache_ops
+    if confirm_cache_clear is not None:
+        # Тот же приём, что confirm_removal: настоящий диалог блокирует офскрин.
+        kwargs["confirm_cache_clear"] = confirm_cache_clear
+    if show_cache_report is not None:
+        kwargs["show_cache_report"] = show_cache_report
     view = BasesView(
         workspace,
         installations=installations,
@@ -3125,3 +3141,110 @@ def test_create_shortcut_refuses_ambiguous_name(qtbot, workspace_factory, tmp_pa
     assert not (tmp_path / "должен был отказать.lnk").exists()
     assert len(errors) == 1
     assert "не единственное" in str(errors[0])
+
+
+# -- Задача 7: подменю «Очистить кэш» в контекстном меню записи --------------
+#
+# Доступность решается по данным записи (ID-GUID) и дешёвой проверке
+# наличия каталога кэша (спека §3.4/§4 в редакции 23.08.2026); замер размера
+# и само удаление — задача 8. FakeCacheOps — та же реализация ФС в памяти,
+# что использует собственный набор `services/cache.py` (tests/unit/test_cache.py).
+
+CACHE_GUID = "a1b2c3d4-e5f6-4a0b-8c1d-2e3f4a5b6c7d"
+
+
+def _cache_env(tmp_path: Path) -> dict[str, str]:
+    return {
+        "APPDATA": str(tmp_path / "roaming"),
+        "LOCALAPPDATA": str(tmp_path / "local"),
+    }
+
+
+def _cache_view(
+    qtbot: Any,
+    workspace_factory: Any,
+    tmp_path: Path,
+    ops: Any,
+    section_lines: str,
+) -> tuple[BasesView, list[LaunchCommand], list[ServicesError], list[str]]:
+    (tmp_path / "ibases.v8i").write_bytes(section_lines.encode())
+    return _view(
+        qtbot, workspace_factory, cache_env=_cache_env(tmp_path), cache_ops=ops
+    )
+
+
+def _cache_actions(menu: Any) -> dict[str, Any] | None:
+    submenu = next(
+        (a.menu() for a in menu.actions() if a.text() == "Очистить кэш"), None
+    )
+    if submenu is None:
+        return None
+    return {a.text(): a for a in submenu.actions()}
+
+
+def test_cache_submenu_enabled_when_id_and_dirs_exist(
+    qtbot, workspace_factory, tmp_path
+):
+    ops = FakeCacheOps()
+    for var in ("roaming", "local"):
+        ops.tree[Path(tmp_path / var / "1C" / "1Cv8" / CACHE_GUID)] = []
+    view, _calls, _errors, _opened = _cache_view(
+        qtbot, workspace_factory, tmp_path, ops,
+        f'[Кэшная]\r\nID={CACHE_GUID}\r\nConnect=File="C:\\B";\r\n',
+    )
+    item = view.workspace().items()[0]
+    actions = _cache_actions(view._build_menu(item, item.key))
+    assert actions is not None
+    assert set(actions) == {"Пользовательский…", "Программный…"}
+    assert actions["Пользовательский…"].isEnabled()
+    assert actions["Программный…"].isEnabled()
+
+
+def test_cache_items_disabled_without_id(qtbot, workspace_factory, tmp_path):
+    """Спека §3.4: нет ID — адреса не существует, оба пункта неактивны.
+
+    ЗАЩИТНЫЙ ТЕСТ пары к GUID-проверке §5.1: кандидат мутации — снять
+    проверку в cache_path, пункты станут активными и тест упадёт.
+    """  # noqa: RUF002
+    ops = FakeCacheOps()
+    view, _calls, _errors, _opened = _cache_view(
+        qtbot, workspace_factory, tmp_path, ops,
+        '[БезID]\r\nConnect=File="C:\\B";\r\n',  # noqa: RUF001
+    )
+    item = view.workspace().items()[0]
+    actions = _cache_actions(view._build_menu(item, item.key))
+    assert actions is not None
+    assert not actions["Пользовательский…"].isEnabled()
+    assert not actions["Программный…"].isEnabled()
+    assert "ID" in actions["Программный…"].toolTip()
+
+
+def test_cache_item_disabled_when_directory_missing(
+    qtbot, workspace_factory, tmp_path
+):
+    """Каталог есть только у пользовательского кэша — программный неактивен."""  # noqa: RUF002
+    ops = FakeCacheOps()
+    ops.tree[Path(tmp_path / "roaming" / "1C" / "1Cv8" / CACHE_GUID)] = []
+    view, _calls, _errors, _opened = _cache_view(
+        qtbot, workspace_factory, tmp_path, ops,
+        f'[Кэшная]\r\nID={CACHE_GUID}\r\nConnect=File="C:\\B";\r\n',
+    )
+    item = view.workspace().items()[0]
+    actions = _cache_actions(view._build_menu(item, item.key))
+    assert actions is not None
+    assert actions["Пользовательский…"].isEnabled()
+    assert not actions["Программный…"].isEnabled()
+    assert actions["Программный…"].toolTip() == "кэш пуст"
+
+
+def test_group_menu_has_no_cache_submenu(qtbot, workspace_factory, tmp_path):
+    """Спека §3.4: у строки-группы подменю не показывается вовсе."""  # noqa: RUF002
+    ops = FakeCacheOps()
+    view, _calls, _errors, _opened = _cache_view(
+        qtbot, workspace_factory, tmp_path, ops,
+        f"[Группа]\r\nID={CACHE_GUID}\r\nOrderInList=-1\r\nFolder=/\r\n",
+    )
+    item = view.workspace().items()[0]
+    assert item.is_group
+    menu = view._build_group_menu(item, item.key)
+    assert _cache_actions(menu) is None

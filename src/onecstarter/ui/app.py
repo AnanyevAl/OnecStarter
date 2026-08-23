@@ -364,6 +364,7 @@ def _build_main_window(
         cfg_rules=runtime.cfg_rules,
         recent_limit=lambda: store.settings.recent_limit,
         palette=controller.palette,
+        cache_env=env,
     )
     settings_view = SettingsView(
         controller,
