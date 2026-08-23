@@ -173,6 +173,11 @@ class FakeCacheOps:
         self.listed.append(path)
         if path in self.unreadable:
             raise PermissionError(5, "отказано в доступе")
+        if path not in self.tree:
+            # Как os.scandir на отсутствующем каталоге (долг №8 финального
+            # ревью: KeyError фейка расходился с настоящей ФС, и защитный  # noqa: RUF003
+            # тест гонки убивал мутацию незапланированным сигналом).
+            raise FileNotFoundError(2, "системе не удаётся найти указанный путь")
         return list(self.tree[path])
 
     def is_dir(self, path: Path) -> bool:

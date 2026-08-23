@@ -3368,12 +3368,12 @@ def test_clear_cache_silently_exits_when_directory_disappeared(
     не должны были случиться.
 
     Кандидат мутационной проверки: снять проверку `is_dir` перед замером —
-    этот тест обязан упасть (МУТАЦИЯ ПРОВЕРЕНА 23.08.2026: на `FakeCacheOps`
-    `measure` падает `KeyError` внутри `list_dir` — фейк не различает
-    «каталога нет» и «список файлов пуст», в отличие от настоящей ФС, где
-    `os.scandir` дал бы `FileNotFoundError`, `measure` его проглотил бы
-    молча, и без проверки `is_dir` дело дошло бы до `confirm_cache_clear`
-    с «(0 Б)», как описано в докстринге `clear_cache`).
+    тест обязан упасть через ЗАПЛАНИРОВАННЫЙ сигнал: `FakeCacheOps.list_dir`
+    на отсутствующем корне даёт `FileNotFoundError`, как настоящий
+    `os.scandir` (долг №8, закрыт 23.08.2026), `measure` глотает его и
+    возвращает ноль, и дело доходит до `confirm_cache_clear` с «(0 Б)» —
+    то есть до `pytest.fail`. Перепроверка мутации после правки фейка —
+    мутационная стадия пакета долга (см. tasks.md).
     """  # noqa: RUF002
     (tmp_path / "ibases.v8i").write_bytes(
         f'[Кэшная]\r\nID={CACHE_GUID}\r\nConnect=File="C:\\B";\r\n'.encode()
