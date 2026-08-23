@@ -1,9 +1,11 @@
 """Сборка приложения: окружение → Workspace → окно, трей, хоткей, watcher.
 
 Единственное место, где ui знает про расположение файлов и обнаружение
-платформы. default_app в v1 не читается из cfg: существование параметра App
-уровня 1cestart.cfg экспериментально не подтверждено — None, клиент
-выбирается по App секции либо тонкий ([Ф] T-02.6).
+платформы. default_app приходит из настройки «Клиент по умолчанию»
+(settings.json, DefaultClient.default_app) — существование параметра App
+уровня 1cestart.cfg по-прежнему экспериментально не подтверждено, и cfg
+на выбор клиента не влияет. Без App секции и без настройки выбирается
+тонкий клиент ([Ф] T-02.6).
 """
 
 import logging
@@ -30,6 +32,7 @@ from onecstarter.services.catalog import CommonListData, read_common_lists
 from onecstarter.services.errors import ServicesError, UserDataUnavailableError
 from onecstarter.services.hotkeys import parse_hotkey
 from onecstarter.services.model import InfobaseItem
+from onecstarter.services.settings import load_settings
 from onecstarter.services.workspace import Workspace, WorkspacePaths
 from onecstarter.ui import app_icon, rail_icons, theme
 from onecstarter.ui.background import StartupTasks
@@ -74,14 +77,15 @@ def build_runtime(env: Mapping[str, str]) -> Runtime:
         user_data=appdata / "OneCStarter" / "bases.json",
         cfg_paths=tuple(cfgs),
     )
+    settings_path = appdata / "OneCStarter" / "settings.json"
+    settings = load_settings(settings_path)
     workspace = Workspace(
         paths,
         installations=None,
         conventions=conventions,
         cfg_rules=rules,
-        default_app=None,
+        default_app=settings.default_client.default_app,
     )
-    settings_path = appdata / "OneCStarter" / "settings.json"
     return Runtime(workspace, rules, list(conventions), settings_path)
 
 
@@ -232,7 +236,10 @@ def run_smoke(
 
     Окружение готовит вызывающий: `QT_QPA_PLATFORM=offscreen` и подменённый
     `APPDATA` — живые данные пользователя не трогаются, процессы 1С
-    не порождаются (обе фоновые задачи работают с тем, что в `env`).
+    не порождаются (обе фоновые задачи работают с тем, что в `env`). Реестр
+    самопроверка подменяет сама (`NullRegistry`, долг №8): `SettingsView`
+    читает его в конструкторе, и с настоящим `WindowsRegistry` результат
+    зависел бы от того, включён ли автозапуск на машине сборщика.
     Ярлык пишется с фактическим `frozen`: в сборке исполняется ветка
     `frozen=True` (шаг 8 задачи 17, долг №7), из исходников — `frozen=False`.
     То же значение уходит в лог явной строкой (`smoke: frozen=...`, задача 10,
@@ -251,7 +258,12 @@ def run_smoke(
     except (UserDataUnavailableError, OSError):
         _log.exception("smoke: рантайм не собрался")
         return 1
-    window, built_tasks = _build_main_window(application, runtime, env)
+    # Реестр — заглушка, а не настоящий HKCU (долг №8): `SettingsView` читает  # noqa: RUF003
+    # его прямо в конструкторе, и самопроверка собранного экземпляра иначе  # noqa: RUF003
+    # зависела бы от того, включён ли автозапуск на машине сборщика.
+    window, built_tasks = _build_main_window(
+        application, runtime, env, autostart_registry=autostart.NullRegistry()
+    )
     try:
         tasks = built_tasks if make_tasks is None else make_tasks()
         pending = {"installations": True, "common": True}
@@ -317,7 +329,11 @@ def _set_tray_tooltip(
 
 
 def _build_main_window(
-    application: QApplication, runtime: Runtime, env: Mapping[str, str]
+    application: QApplication,
+    runtime: Runtime,
+    env: Mapping[str, str],
+    *,
+    autostart_registry: autostart.Registry | None = None,
 ) -> tuple[MainWindow, StartupTasks]:
     """Собрать окно, трей, хоткей, watcher и фоновые задачи, не запуская их.
 
@@ -348,19 +364,26 @@ def _build_main_window(
         cfg_rules=runtime.cfg_rules,
         recent_limit=lambda: store.settings.recent_limit,
         palette=controller.palette,
+        cache_env=env,
     )
     settings_view = SettingsView(
         controller,
         store,
-        autostart_registry=autostart.WindowsRegistry(),
+        autostart_registry=(
+            autostart_registry if autostart_registry is not None else autostart.WindowsRegistry()
+        ),
         frozen=bool(getattr(sys, "frozen", False)),
         executable=sys.executable,
     )
-    window = MainWindow(
-        [("Базы", view), ("Настройки", settings_view)], palette=controller.palette
-    )
-    window.set_section_icon(0, rail_icons.bases_icon)
-    window.set_section_icon(1, rail_icons.settings_icon)
+    sections = [("Базы", view), ("Настройки", settings_view)]
+    # Ключ — сам объект вьюхи, а не подпись: подпись показывается пользователю  # noqa: RUF003
+    # и однажды может быть переименована, и тогда поиск по ней уронил бы старт
+    # `StopIteration` ещё до создания окна (находка ревью ветки 22.08.2026).
+    bases_section = next(i for i, (_t, w) in enumerate(sections) if w is view)
+    settings_section = next(i for i, (_t, w) in enumerate(sections) if w is settings_view)
+    window = MainWindow(sections, palette=controller.palette)
+    window.set_section_icon(bases_section, rail_icons.bases_icon)
+    window.set_section_icon(settings_section, rail_icons.settings_icon)
 
     def on_theme_changed() -> None:
         # settings_view красится общим stylesheet (ThemeController._apply) —
@@ -455,8 +478,13 @@ def _build_main_window(
         recent_limit_seen = current
         view.rebuild()
 
+    def apply_default_client() -> None:
+        runtime.workspace.set_default_app(store.settings.default_client.default_app)
+
     apply_close_to_tray()
+    apply_default_client()
     store.changed.connect(apply_close_to_tray)
+    store.changed.connect(apply_default_client)
     store.changed.connect(rebuild_if_recent_limit_changed)
     settings_view.set_hotkey_handler(apply_hotkey)
 
@@ -468,6 +496,14 @@ def _build_main_window(
             # встречал бы пользователя при каждом входе в систему
             # (спека §4.3). **[Проверено, 19.08.2026, эксперимент §7]**
             tray.showMessage("OneCStarter", problem, QSystemTrayIcon.MessageIcon.Warning, 7000)
+        else:
+            # Трея нет — два канала из трёх (балун и тултип) вырождаются,
+            # а третий, строка у поля, лежит в разделе, который пользователь  # noqa: RUF003
+            # не открывал: программа стартует на «Базах» (долг №10). Раз
+            # показать нечем, кроме окна, — открыть его сразу на «Настройках».  # noqa: RUF003
+            # Диалога по-прежнему нет: без трея тихого старта не бывает,
+            # `main` в этом случае окно показывает (спека §3.4).
+            window.show_section(settings_section)
 
     tasks = StartupTasks(
         lambda: find_installations(env, runtime.conventions),

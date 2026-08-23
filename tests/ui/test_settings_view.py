@@ -4,10 +4,10 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QPushButton
 
 from onecstarter.services.autostart import VALUE_NAME, autostart_command
-from onecstarter.services.settings import Settings, ThemeMode, save_settings
+from onecstarter.services.settings import DefaultClient, Settings, ThemeMode, save_settings
 from onecstarter.ui.hotkey_edit import HotkeyEdit
 from onecstarter.ui.settings_store import SettingsStore
 from onecstarter.ui.settings_view import AUTOSTART_ROW_NOTE, SettingsView
@@ -142,6 +142,37 @@ def test_tray_toggle_starts_from_file(application: QApplication, tmp_path: Path)
     save_settings(tmp_path / "settings.json", Settings(close_to_tray=False))
     view, _ = _view(application, tmp_path)
     assert view.tray_checkbox().isChecked() is False
+
+
+def test_client_choices_with_thin_selected(
+    application: QApplication, tmp_path: Path
+) -> None:
+    view, _ = _view(application, tmp_path)
+    assert [b.text() for b in view.client_buttons()] == ["Тонкий", "Толстый"]
+    assert view.client_buttons()[0].isChecked()
+
+
+def test_client_row_is_registered(application: QApplication, tmp_path: Path) -> None:
+    """Сегмент привязан к своей строке — не к чужой (урок мутаций 22.08.2026)."""
+    view, _ = _view(application, tmp_path)
+    control = view.row_control("Клиент по умолчанию")
+    assert all(b in control.findChildren(QPushButton) for b in view.client_buttons())
+
+
+def test_choice_updates_store(application: QApplication, tmp_path: Path) -> None:
+    view, store = _view(application, tmp_path)
+    view.client_buttons()[1].click()
+    assert store.settings.default_client is DefaultClient.THICK
+
+
+def test_external_change_syncs_buttons(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Смена через store (другой владелец) приводит сегмент к факту."""
+    view, store = _view(application, tmp_path)
+    store.update(default_client=DefaultClient.THICK)
+    assert view.client_buttons()[1].isChecked()
+    assert not view.client_buttons()[0].isChecked()
 
 
 def test_autostart_disabled_when_not_frozen(

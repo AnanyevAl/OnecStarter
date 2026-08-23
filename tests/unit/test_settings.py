@@ -9,6 +9,7 @@ from onecstarter.services.settings import (
     DEFAULT_HOTKEY,
     DEFAULT_RECENT_LIMIT,
     SCHEMA_VERSION,
+    DefaultClient,
     Settings,
     ThemeMode,
     load_settings,
@@ -27,6 +28,13 @@ def test_round_trip(tmp_path: Path) -> None:
 
 
 def test_schema_is_written(tmp_path: Path) -> None:
+    """Файл несёт все шесть ключей, включая номер схемы.
+
+    Долг №3 вехи закрыт здесь: соседний `test_all_fields_are_written` проверял
+    ровно то же самое на дефолтных настройках и удалён. Разница была
+    в единственном поле темы, а утверждение — одно и то же: `save_settings`
+    пишет полный состав, а не только изменённое.
+    """  # noqa: RUF002
     path = tmp_path / "settings.json"
     save_settings(path, Settings(theme=ThemeMode.DARK))
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -36,6 +44,7 @@ def test_schema_is_written(tmp_path: Path) -> None:
         "close_to_tray": True,
         "hotkey": "Ctrl+Alt+B",
         "recent_limit": 10,
+        "default_client": "thin",
     }
 
 
@@ -132,19 +141,6 @@ def test_round_trip_keeps_all_fields(tmp_path: Path) -> None:
     assert load_settings(path) == settings
 
 
-def test_all_fields_are_written(tmp_path: Path) -> None:
-    path = tmp_path / "settings.json"
-    save_settings(path, Settings())
-    payload = json.loads(path.read_text(encoding="utf-8"))
-    assert payload == {
-        "schema": SCHEMA_VERSION,
-        "theme": "auto",
-        "close_to_tray": True,
-        "hotkey": "Ctrl+Alt+B",
-        "recent_limit": 10,
-    }
-
-
 @pytest.mark.parametrize("value", ["да", 1, None, [], {}])
 def test_broken_close_to_tray_falls_back(tmp_path: Path, value: object) -> None:
     path = tmp_path / "settings.json"
@@ -193,3 +189,36 @@ def test_recent_limit_is_clamped(tmp_path: Path, value: object, expected: int) -
     path = tmp_path / "settings.json"
     path.write_text(json.dumps({"schema": 1, "recent_limit": value}), encoding="utf-8")
     assert load_settings(path).recent_limit == expected
+
+
+class TestDefaultClient:
+    def test_round_trip(self, tmp_path: Path) -> None:
+        path = tmp_path / "settings.json"
+        save_settings(path, Settings(default_client=DefaultClient.THICK))
+        assert load_settings(path).default_client is DefaultClient.THICK
+
+    def test_missing_key_is_thin(self, tmp_path: Path) -> None:
+        """Старый файл без ключа читается без миграции (докстринг модуля)."""
+        path = tmp_path / "settings.json"
+        path.write_text('{"schema": 1}', encoding="utf-8")
+        assert load_settings(path).default_client is DefaultClient.THIN
+
+    def test_unknown_value_is_thin(self, tmp_path: Path) -> None:
+        """Незнакомое значение — не порча: дефолт поля, как у режима темы."""  # noqa: RUF002
+        path = tmp_path / "settings.json"
+        path.write_text('{"schema": 1, "default_client": "designer"}', encoding="utf-8")
+        assert load_settings(path).default_client is DefaultClient.THIN
+
+    def test_default_app_none_for_thin_means_no_default(self) -> None:
+        """Тонкий — «умолчания нет»: проводка передаёт None, поведение как до вехи.
+
+        Явное значение здесь дало бы choose_client третий аргумент, и клиент
+        из настройки пошёл бы БЕЗ /AppAutoCheckMode (решение заказчика
+        23.08.2026, спека §2.2) — для тонкого-по-умолчанию это изменило бы
+        поведение существующих установок, чего спека §2.1 запрещает.
+        """
+        assert DefaultClient.THIN.default_app is None
+
+    def test_default_app_thick_matches_v8i_app_key(self) -> None:
+        """Толстый — явное значение в формате ключа `App`, его ждёт `choose_client`."""  # noqa: RUF002
+        assert DefaultClient.THICK.default_app == "ThickClient"

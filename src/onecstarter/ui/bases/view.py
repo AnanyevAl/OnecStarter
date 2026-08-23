@@ -6,8 +6,9 @@
 живут в services/display.py, здесь — только отображение и события.
 """  # noqa: RUF002
 
+import os
 import sys
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QLineEdit,
     QMenu,
+    QMessageBox,
     QTreeView,
     QVBoxLayout,
     QWidget,
@@ -44,6 +46,7 @@ from onecstarter.domain.connect import ConnectKind
 from onecstarter.domain.default_version import DefaultVersionRule
 from onecstarter.domain.launch import ClientKind
 from onecstarter.domain.version import Installation
+from onecstarter.services import cache
 from onecstarter.services.catalog import TreeNode
 from onecstarter.services.connection import panel_card
 from onecstarter.services.display import (
@@ -71,7 +74,11 @@ from onecstarter.ui import theme
 from onecstarter.ui.bases.panel import ConnectionPanel
 from onecstarter.ui.bases.tree_model import KEY_ROLE, KIND_ROLE, build_model
 from onecstarter.ui.dialogs.buttons import russian_confirm
-from onecstarter.ui.dialogs.confirm import ask_group_removal, confirm_removal
+from onecstarter.ui.dialogs.confirm import (
+    ask_group_removal,
+    confirm_cache_clear,
+    confirm_removal,
+)
 from onecstarter.ui.dialogs.group import GroupDialog
 from onecstarter.ui.dialogs.infobase import InfobaseDialog, dropped_directory
 from onecstarter.ui.theme import Palette
@@ -79,6 +86,17 @@ from onecstarter.ui.theme import Palette
 
 def _format_stamp(stamp: datetime) -> str:
     return stamp.astimezone().strftime("%d.%m.%Y %H:%M")
+
+
+# Задача 7 (спека §3.4): подменю «Очистить кэш» показывает пункт неактивным
+# с одной из этих подсказок, а не молча — тот же приём, что у COMMON_NOTE/  # noqa: RUF003
+# IMPLICIT_NOTE в services/display.py, только текст свой для кэша.
+NO_CACHE_ID_NOTE = "У записи нет ID — каталог кэша не определить"  # noqa: RUF001
+# Отдельно от NO_CACHE_ID_NOTE (находка финального ревью): невалидный ID
+# записи и отсутствие корня в окружении (APPDATA/LOCALAPPDATA) — разные
+# причины, и подсказка не должна путать одну с другой.  # noqa: RUF003
+NO_CACHE_ROOT_NOTE = "В окружении нет корня кэша (APPDATA/LOCALAPPDATA)"  # noqa: RUF001
+CACHE_EMPTY_NOTE = "кэш пуст"
 
 
 def browse_for_shortcut_path(parent: QWidget | None, suggested: str) -> str:
@@ -90,6 +108,15 @@ def browse_for_shortcut_path(parent: QWidget | None, suggested: str) -> str:
     """  # noqa: RUF002
     path, _ = QFileDialog.getSaveFileName(parent, "Создать ярлык", suggested, "Ярлык (*.lnk)")
     return path
+
+
+def show_cache_report(parent: QWidget | None, text: str) -> None:
+    """Сводка очистки кэша: два числа, без трассировок (спека §3.7).
+
+    Инъекция, а не прямой вызов в clear_cache — тот же приём, что
+    у confirm_removal: настоящий QMessageBox.exec() блокирует офскрин-тест.
+    """  # noqa: RUF002
+    QMessageBox.information(parent, "OneCStarter", text)
 
 
 class DropTarget(Enum):
@@ -296,6 +323,10 @@ class BasesView(QWidget):
         choose_shortcut_path: Callable[
             [QWidget | None, str], str
         ] = browse_for_shortcut_path,
+        cache_env: Mapping[str, str] | None = None,
+        cache_ops: cache.CacheOps | None = None,
+        confirm_cache_clear: Callable[[QWidget | None, str], bool] = confirm_cache_clear,
+        show_cache_report: Callable[[QWidget | None, str], None] = show_cache_report,
         parent: QWidget | None = None,
         palette: Palette = theme.DARK,
     ) -> None:
@@ -326,6 +357,14 @@ class BasesView(QWidget):
         # Тот же приём для «Создать ярлык…» (задача 17): настоящий
         # `QFileDialog.getSaveFileName` блокирует офскрин-тест.
         self._choose_shortcut_path = choose_shortcut_path
+        # Окружение и ФС кэша — инъекцией: тесты подменяют и то и другое,
+        # живые кэши в offscreen-прогоне не трогаются.
+        self._cache_env: Mapping[str, str] = os.environ if cache_env is None else cache_env
+        self._cache_ops: cache.CacheOps = (
+            cache.WindowsCacheOps() if cache_ops is None else cache_ops
+        )
+        self._confirm_cache_clear = confirm_cache_clear
+        self._show_cache_report = show_cache_report
         self._rows: list[Row] = []
         self._palette = palette
         # Развёрнутость «чистого» (нефильтрованного) дерева и признак того,
@@ -879,6 +918,7 @@ class BasesView(QWidget):
         # с `--ib-name`, а та открывает браузер (services/launch.py).  # noqa: RUF003
         menu.addAction("Создать ярлык…", lambda: self.create_shortcut(key))
         properties = menu.addAction("Свойства…", lambda: self.show_properties(key))
+        self._add_cache_menu(menu, item)
         menu.addSeparator()
         star = "Убрать из избранного" if item.favorite else "В избранное"  # noqa: RUF001
         menu.addAction(f"{star}\tCtrl+D", lambda: self.toggle_favorite(key))
@@ -896,6 +936,88 @@ class BasesView(QWidget):
                 action.setEnabled(False)
                 action.setToolTip(COMMON_NOTE)
         return menu
+
+    def _add_cache_menu(self, menu: QMenu, item: InfobaseItem) -> None:
+        """Подменю «Очистить кэш» — два пункта, без сочетаний клавиш (спека §3.2).
+
+        Доступность решается по данным записи (ID-GUID) и дешёвой проверке
+        наличия каталога; замер размера здесь не выполняется — он идёт после
+        клика, перед подтверждением (спека §3.4/§4 в редакции 23.08.2026).
+        Многоточия обязательны: каждый пункт ведёт к подтверждению.
+        Подсказки неактивных пунктов требуют setToolTipsVisible — тот же
+        вывод, что у _build_disabled_group_menu.
+
+        `QMenu(title, menu)` + `menu.addMenu(submenu)`, а не однострочный
+        `menu.addMenu("Очистить кэш")`: у последнего наблюдалось «Internal
+        C++ object already deleted» (воспроизведено изолированным прогоном
+        при реализации задачи — тесты, читающие состав подменю после
+        возврата `_build_menu` (`action.menu()`/`submenu.actions()`),
+        временами падали с этой ошибкой). Причина не установлена — версия
+        про то, что PySide6 не всегда распознаёт владельца через неявный
+        `this` внутри вспомогательного метода Qt, была бы догадкой, а не
+        фактом. Обход — явный `parent=menu` при создании `QMenu`, тот же
+        приём, что и `QMenu(self)` парой строк выше по файлу; с ним ошибка
+        не воспроизводится.
+        """  # noqa: RUF002
+        submenu = QMenu("Очистить кэш", menu)
+        menu.addMenu(submenu)
+        submenu.setToolTipsVisible(True)
+        labels = (
+            (cache.CacheKind.USER, "Пользовательский…"),
+            (cache.CacheKind.PROGRAM, "Программный…"),
+        )
+        for kind, label in labels:
+            action = submenu.addAction(
+                label,
+                lambda _checked=False, k=kind, key=item.key: self.clear_cache(key, k),
+            )
+            if not cache.is_valid_cache_id(item.section_id):
+                action.setEnabled(False)
+                action.setToolTip(NO_CACHE_ID_NOTE)
+                continue
+            path = cache.cache_path(self._cache_env, kind, item.section_id)
+            if path is None:
+                # ID валиден, но окружение не даёт корня (нет APPDATA/
+                # LOCALAPPDATA) — причина другая, подсказка тоже другая.
+                action.setEnabled(False)
+                action.setToolTip(NO_CACHE_ROOT_NOTE)
+            elif not self._cache_ops.is_dir(path):
+                action.setEnabled(False)
+                action.setToolTip(CACHE_EMPTY_NOTE)
+
+    def clear_cache(self, key: str, kind: cache.CacheKind) -> None:
+        """Очистить кэш записи: замер → подтверждение → удаление → сводка.
+
+        Подтверждение всегда (решение заказчика 23.08.2026, спека §3.5);
+        без «Да» не удаляется ничего. Запись могла исчезнуть между
+        построением меню и кликом (внешняя правка файла и rebuild) — молча
+        выходим, тот же случай, что у remove_key/create_shortcut. Путь
+        строится заново по свежим данным записи, а не ловится при построении
+        меню: ключ и ID могли смениться.
+
+        Тем же приёмом накрыт и сам каталог кэша (находка финального
+        ревью): он тоже мог исчезнуть между построением меню и кликом.
+        Без перепроверки `measure` тихо вернул бы ноль (её ошибки чтения
+        не поднимаются — см. докстринг), вопрос подтверждения обещал бы
+        «(0 Б)», а `clear` дал бы `failed=1` — и сводка после «Да» лживо
+        сообщила бы «файлы заняты запущенной 1С», хотя каталога уже нет.
+        """  # noqa: RUF002
+        item = next((i for i in self._workspace.items() if i.key == key), None)
+        if item is None:
+            return
+        path = cache.cache_path(self._cache_env, kind, item.section_id)
+        if path is None:
+            return
+        if not self._cache_ops.is_dir(path):
+            # Каталог исчез между построением меню и кликом — тот же случай,
+            # что пропавшая запись: молча выходим, удалять нечего.
+            return
+        measured = cache.measure(path, self._cache_ops)
+        question = cache.clear_question(kind, item.name, measured)
+        if not self._confirm_cache_clear(self, question):
+            return
+        report = cache.clear(path, self._cache_ops)
+        self._show_cache_report(self, cache.report_text(report))
 
     def folder_for_dropped_directory(
         self, target_key: str | None, kind: str | None

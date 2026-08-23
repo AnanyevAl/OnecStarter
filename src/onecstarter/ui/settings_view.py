@@ -2,7 +2,10 @@
 
 Порядок групп — мокапа: ВНЕШНИЙ ВИД, ОКНО И ЗАПУСК, ГОРЯЧИЕ КЛАВИШИ,
 СПИСОК БАЗ. Собственных запечённых цветов нет, красит общий stylesheet
-(#ThemeSeg, #SettingsGroupLabel, #SettingsNote).
+(#ThemeSeg, #SettingsGroupLabel, #SettingsNote). Шестая настройка группы
+«ОКНО И ЗАПУСК» — «Клиент по умолчанию» (спека вехи «Завершение v1», §2):
+сегмент того же вида, что тема, только выбор идёт в `store`, а не в
+`ThemeController`.
 
 Раздел не знает ни о `GlobalHotkey`, ни о том, как поднято окно: сочетание
 уходит наружу через `on_hotkey`, а обратно приходит текст отказа либо `None`.
@@ -28,7 +31,7 @@ from PySide6.QtWidgets import (
 )
 
 from onecstarter.services import autostart
-from onecstarter.services.settings import RECENT_MAX, RECENT_MIN, ThemeMode
+from onecstarter.services.settings import RECENT_MAX, RECENT_MIN, DefaultClient, ThemeMode
 from onecstarter.ui.hotkey_edit import HotkeyEdit
 from onecstarter.ui.settings_store import SettingsStore
 from onecstarter.ui.theme_controller import ThemeController
@@ -37,6 +40,11 @@ CHOICES = (
     (ThemeMode.AUTO, "Авто"),
     (ThemeMode.LIGHT, "Светлая"),
     (ThemeMode.DARK, "Тёмная"),
+)
+
+CLIENT_CHOICES = (
+    (DefaultClient.THIN, "Тонкий"),
+    (DefaultClient.THICK, "Толстый"),
 )
 
 NOT_FROZEN_NOTE = "Доступно в установленной версии — из исходников ссылка в реестре протухнет"
@@ -76,6 +84,7 @@ class SettingsView(QWidget):
         self._executable = executable
         self._on_hotkey = on_hotkey
         self._buttons: list[QPushButton] = []
+        self._client_buttons: list[QPushButton] = []
         self._group_labels: list[str] = []
         self._row_notes: dict[str, QLabel] = {}
         self._row_controls: dict[str, QWidget] = {}
@@ -128,6 +137,13 @@ class SettingsView(QWidget):
         )
         self._sync_autostart()
         self._autostart.toggled.connect(self._choose_autostart)
+
+        self._add_row(
+            "Клиент по умолчанию",
+            "Чем запускать базу, где клиент не указан. Выбор в записи (App) "
+            "и Ctrl+1/Ctrl+2 главнее",
+            self._build_client_segment(),
+        )
 
         self._add_group("ГОРЯЧИЕ КЛАВИШИ")
         self._hotkey = HotkeyEdit()
@@ -208,6 +224,24 @@ class SettingsView(QWidget):
             self._buttons.append(button)
         return seg
 
+    def _build_client_segment(self) -> QWidget:
+        seg = QWidget()
+        seg.setObjectName("ThemeSeg")
+        seg_layout = QHBoxLayout(seg)
+        seg_layout.setContentsMargins(0, 0, 0, 0)
+        seg_layout.setSpacing(0)
+        buttons = QButtonGroup(self)
+        buttons.setExclusive(True)
+        for client, label in CLIENT_CHOICES:
+            button = QPushButton(label)
+            button.setCheckable(True)
+            button.setChecked(client is self._store.settings.default_client)
+            button.clicked.connect(lambda _checked=False, c=client: self._choose_client(c))
+            buttons.addButton(button)
+            seg_layout.addWidget(button)
+            self._client_buttons.append(button)
+        return seg
+
     # --- доступ для тестов ------------------------------------------------
 
     def group_labels(self) -> list[str]:
@@ -215,6 +249,9 @@ class SettingsView(QWidget):
 
     def theme_buttons(self) -> list[QPushButton]:
         return list(self._buttons)
+
+    def client_buttons(self) -> list[QPushButton]:
+        return list(self._client_buttons)
 
     def tray_checkbox(self) -> QCheckBox:
         return self._tray
@@ -286,6 +323,9 @@ class SettingsView(QWidget):
 
     def _choose_theme(self, mode: ThemeMode) -> None:
         self._controller.set_mode(mode)
+
+    def _choose_client(self, client: DefaultClient) -> None:
+        self._store.update(default_client=client)
 
     def _choose_tray(self, checked: bool) -> None:
         self._store.update(close_to_tray=checked)
@@ -378,6 +418,11 @@ class SettingsView(QWidget):
         for button, (mode, _label) in zip(self._buttons, CHOICES, strict=True):
             button.setChecked(mode is self._controller.mode)
         settings = self._store.settings
+
+        for button, (client, _label) in zip(
+            self._client_buttons, CLIENT_CHOICES, strict=True
+        ):
+            button.setChecked(client is settings.default_client)
 
         blocked = self._tray.blockSignals(True)
         self._tray.setChecked(settings.close_to_tray)

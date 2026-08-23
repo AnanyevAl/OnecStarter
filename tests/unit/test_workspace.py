@@ -229,6 +229,28 @@ def test_update_of_section_without_id_rekeys_user_data(tmp_path: Path) -> None:
     assert item.favorite
 
 
+def test_set_default_app_reaches_launch(tmp_path: Path) -> None:
+    """Смена клиента по умолчанию влияет на следующий запуск — без пересборки.
+
+    Проверяется поведение (какой exe в команде), а не хранимое поле:
+    правило «тест проверяет поведение, а не намерение».
+    """  # noqa: RUF002
+    (tmp_path / "ibases.v8i").write_bytes(
+        '[БезКлиента]\r\nConnect=File="C:\\B";\r\n'.encode()
+    )
+    calls: list[LaunchCommand] = []
+    workspace = _raw_workspace(tmp_path, calls)
+    key = workspace.items()[0].key
+
+    workspace.launch(key)
+    assert calls[-1].executable.name == "1cv8c.exe"  # тонкий — как и раньше
+
+    workspace.set_default_app("ThickClient")
+    workspace.launch(key)
+    assert calls[-1].executable.name == "1cv8.exe"  # настройка доехала
+    assert workspace.default_app == "ThickClient"
+
+
 def test_launch_records_history(tmp_path: Path) -> None:
     calls: list[LaunchCommand] = []
     workspace = _workspace(tmp_path, calls)

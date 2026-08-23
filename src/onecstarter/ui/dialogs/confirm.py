@@ -175,3 +175,29 @@ def ask_group_removal(
     box = build_group_removal_box(parent, label, names, bases, groups)
     box.exec()
     return read_group_removal(box)
+
+
+# -- Веха «Завершение v1»: очистка кэша --------------------------------------  # noqa: RUF003
+
+
+def build_cache_confirm_box(parent: QWidget | None, question: str) -> QMessageBox:
+    """Собрать подтверждение очистки кэша без показа — для тестов и confirm_cache_clear.
+
+    Текст вопроса готовит `services/cache.py::clear_question` — с именем базы
+    и размером, посчитанным до удаления (спека §3.5). Кнопка по умолчанию —
+    «Нет»: очистка необратима, случайный Enter не должен её запустить
+    (тот же довод, что у удаления записи).
+    """  # noqa: RUF002
+    box = build_confirm_box(parent, "OneCStarter", question)
+    no_button = cast(
+        QPushButton, next(button for button in box.buttons() if button.text() == "Нет")
+    )
+    box.setDefaultButton(no_button)
+    return box
+
+
+def confirm_cache_clear(parent: QWidget | None, question: str) -> bool:
+    """Спросить подтверждение очистки кэша. `True` — ответили «Да»."""
+    box = build_cache_confirm_box(parent, question)
+    box.exec()
+    return is_confirmed(box)

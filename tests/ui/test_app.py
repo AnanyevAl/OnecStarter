@@ -1,5 +1,7 @@
 import logging
 import shutil
+import sys
+import winreg
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
@@ -27,7 +29,13 @@ from PySide6.QtWidgets import (
 from onecstarter.domain.launch import LaunchCommand
 from onecstarter.services.catalog import EMPTY_COMMON_DATA
 from onecstarter.services.hotkeys import parse_hotkey
-from onecstarter.services.settings import DEFAULT_HOTKEY, Settings, ThemeMode, save_settings
+from onecstarter.services.settings import (
+    DEFAULT_HOTKEY,
+    DefaultClient,
+    Settings,
+    ThemeMode,
+    save_settings,
+)
 from onecstarter.services.workspace import Workspace, WorkspacePaths
 from onecstarter.ui import app as app_module
 from onecstarter.ui import theme
@@ -36,6 +44,7 @@ from onecstarter.ui.background import StartupTasks
 from onecstarter.ui.bases.view import BasesView
 from onecstarter.ui.hotkey import GlobalHotkey
 from onecstarter.ui.settings_store import SettingsStore
+from onecstarter.ui.settings_view import SettingsView
 from onecstarter.ui.shell import MainWindow
 from onecstarter.ui.theme_controller import ThemeController
 from onecstarter.ui.watcher import FileWatcher
@@ -78,6 +87,28 @@ def test_runtime_reads_ibases_and_cfg(tmp_path):
     runtime = build_runtime({"APPDATA": str(appdata)})
     assert [item.name for item in runtime.workspace.items()] == ["База"]
     assert len(runtime.cfg_rules) == 1
+
+
+def test_build_runtime_reads_default_client(tmp_path):
+    """Настройка доезжает и до запуска по ярлыку: build_runtime общий
+    для main() и run_launch(), поэтому читается здесь, а не только в окне."""  # noqa: RUF002
+    save_settings(
+        tmp_path / "OneCStarter" / "settings.json",
+        Settings(default_client=DefaultClient.THICK),
+    )
+    runtime = build_runtime({"APPDATA": str(tmp_path)})
+    assert runtime.workspace.default_app == "ThickClient"
+
+
+def test_build_runtime_default_client_thin_means_no_default(tmp_path):
+    """Без файла настроек умолчание — тонкий, и проводка не задаёт App вовсе.
+
+    None, а не "ThinClient": тонкий — поведение по умолчанию (спека §2.1),
+    и передача явного значения включила бы явный выбор без /AppAutoCheckMode
+    (§2.2) там, где у существующих установок ничего не должно меняться.
+    """  # noqa: RUF002
+    runtime = build_runtime({"APPDATA": str(tmp_path)})
+    assert runtime.workspace.default_app is None
 
 
 # -- задача 17: режим запуска по имени базы (--ib-name) ---------------------
@@ -1161,6 +1192,38 @@ def test_startup_log_has_no_connect_strings(
     assert "File=" not in caplog.text
 
 
+def test_default_client_change_reaches_workspace_without_rebuild(
+    qtbot, monkeypatch, qapp, workspace_factory, tmp_path
+):
+    """store.changed → set_default_app: следующий запуск идёт толстым клиентом.
+
+    Проверка поведением — какой exe в команде запуска, — а не полем.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    (tmp_path / "ibases.v8i").write_bytes(
+        '[БезКлиента]\r\nConnect=File="C:\\B";\r\n'.encode()
+    )
+    workspace, calls, _opened = workspace_factory()
+    runtime = app_module.Runtime(
+        workspace=workspace, cfg_rules=[], conventions=[],
+        settings=tmp_path / "settings.json",
+    )
+    window, _tasks = _build_main_window(qapp, runtime, {"APPDATA": str(tmp_path)})
+    qtbot.addWidget(window)
+    key = workspace.items()[0].key
+
+    workspace.launch(key)
+    assert calls[-1].executable.name == "1cv8c.exe"
+
+    # `settings_store` объявлено в `shell.py` как `object | None` (окну не
+    # положено знать настоящий тип) — та же причина, что у `Any`-возврата  # noqa: RUF003
+    # `_window_with_settings` ниже по файлу.
+    store: Any = window.settings_store
+    store.update(default_client=DefaultClient.THICK)
+    workspace.launch(key)
+    assert calls[-1].executable.name == "1cv8.exe"
+
+
 def test_build_main_window_installs_the_hotkey_native_filter(
     qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
 ) -> None:
@@ -1451,6 +1514,83 @@ def test_busy_hotkey_shows_balloon_and_tooltip(qapp: Any, tmp_path: Any, monkeyp
     assert window.global_hotkey.registered is False
 
 
+def test_busy_hotkey_without_tray_opens_the_settings_section(
+    qapp: Any, tmp_path: Any, monkeypatch: Any
+) -> None:
+    """Без трея занятое сочетание видно хотя бы разделом (долг №10).
+
+    Спека §4.3 перечисляет три канала: балун, тултип трея и строка у поля
+    в «Настройках». Без трея первые два вырождаются, а третий пользователь
+    не видит — программа открывается на «Базах», и о том, что глобальный
+    вызов не работает, узнать неоткуда. Раз показать нечем, кроме окна,
+    оно и открывается на нужном разделе.
+
+    Проверяется состояние окна, а не значение аксессора: мутационная проверка
+    показала, что `current_section_index()`, заглушённый константой, делал
+    первую редакцию теста вакуумно зелёной. `current_section()` и
+    `section_buttons()` закреплены отдельно в `test_shell.py`, подменить их
+    молча не выйдет.
+
+    Последнее утверждение — про полезную нагрузку: раздел без строки отказа
+    оставляет пользователя ровно там, где он был. Мутация «снять
+    `report_hotkey_problem`» переживала набор, пока эта строка не появилась.
+    """  # noqa: RUF002
+    window = _window_with_settings(
+        qapp,
+        tmp_path,
+        monkeypatch,
+        tray_available=False,
+        register_result=0,
+    )
+    section = window.current_section()
+    assert isinstance(section, SettingsView)
+    assert [button.isChecked() for button in window.section_buttons()] == [False, True]
+    assert "занято" in section.hotkey_note()
+
+
+def test_busy_hotkey_with_tray_leaves_the_section_alone(
+    qapp: Any, tmp_path: Any, monkeypatch: Any
+) -> None:
+    """С треем раздел не дёргается: канал — балун, а не рывок интерфейса.
+
+    Обратная сторона долга №10, без неё мутация «переключать раздел всегда»
+    переживала набор. Пользователь с живым треем при каждом входе в систему
+    получал бы окно, самовольно ушедшее с «Баз» на «Настройки».
+    """  # noqa: RUF002
+    messages: list[tuple[str, str]] = []
+    window = _window_with_settings(
+        qapp,
+        tmp_path,
+        monkeypatch,
+        tray_available=True,
+        register_result=0,
+        messages=messages,
+    )
+    assert messages, "балун при живом трее обязателен"
+    assert isinstance(window.current_section(), BasesView)
+
+
+def test_free_hotkey_without_tray_keeps_the_bases_section(
+    qapp: Any, tmp_path: Any, monkeypatch: Any
+) -> None:
+    """Раздел переключается ТОЛЬКО из-за занятого сочетания (долг №10).
+
+    Без трея и без проблемы программа обязана открыться на «Базах», как
+    и всегда. Мутация «открывать «Настройки» всякий раз, когда трея нет»
+    держалась только побочным утверждением внутри чужого теста про проводку
+    фоновых задач — опора случайная: перепишут тот тест, и регрессия пройдёт
+    незамеченной.
+    """
+    window = _window_with_settings(
+        qapp,
+        tmp_path,
+        monkeypatch,
+        tray_available=False,
+        register_result=1,
+    )
+    assert isinstance(window.current_section(), BasesView)
+
+
 def test_window_with_settings_balances_native_filter_install_and_remove(
     qapp: Any, tmp_path: Any, monkeypatch: Any
 ) -> None:
@@ -1509,8 +1649,8 @@ def _capture_window(monkeypatch: Any) -> dict[str, Any]:
     captured: dict[str, Any] = {}
     real_build = app_module._build_main_window
 
-    def capturing(application: Any, runtime: Any, env: Any) -> Any:
-        window, tasks = real_build(application, runtime, env)
+    def capturing(application: Any, runtime: Any, env: Any, **kwargs: Any) -> Any:
+        window, tasks = real_build(application, runtime, env, **kwargs)
         captured["window"] = window
         return window, tasks
 
@@ -1580,6 +1720,87 @@ def test_run_smoke_disposes_the_hotkey_before_returning(
     assert window.global_hotkey.disposed is True
     assert window.global_hotkey in removed
     qtbot.addWidget(window)
+
+
+def test_run_smoke_never_reaches_the_windows_registry(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any
+) -> None:
+    """Самопроверка сборки не обращается к реестру вовсе (долг №8).
+
+    Первая редакция теста смотрела, ЧТО `run_smoke` передал в
+    `_build_main_window`, — то есть намерение вызывающего, а не поведение
+    системы. Мутационная проверка показала цену: `_build_main_window`,
+    игнорирующая переданный реестр и всегда берущая настоящий, переживала
+    весь набор из 1275 тестов. Долг откатывался бесшумно.
+
+    Здесь проверяется факт: `winreg` подменён запрещающими заглушками ДО
+    вызова, и ни одна из них не сработала. `sys.frozen` включается намеренно —
+    без него `_sync_autostart` уходит по короткой ветке «из исходников
+    тумблер заблокирован» и до реестра не доходит вообще, так что настоящий
+    и поддельный реестр были бы наблюдаемо неотличимы.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    touched: list[str] = []
+
+    def forbid(name: str) -> Any:
+        def guard(*_args: Any, **_kwargs: Any) -> Any:
+            touched.append(name)
+            raise AssertionError(f"самопроверка полезла в реестр: {name}")
+
+        return guard
+
+    for fn in ("OpenKey", "CreateKeyEx", "QueryValueEx", "SetValueEx", "DeleteValue"):
+        monkeypatch.setattr(winreg, fn, forbid(fn))
+    target = tmp_path / "out"
+    target.mkdir()
+
+    code = app_module.run_smoke(str(target), {"APPDATA": str(tmp_path / "appdata")})
+
+    assert code == 0
+    assert touched == []
+
+
+def test_settings_view_reads_the_registry_when_frozen(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any, workspace_factory: Any
+) -> None:
+    """Позитивный контроль к тесту выше: в сборке реестр читается по-настоящему.
+
+    Без этого теста предыдущий доказывает не то, что кажется. Мутационная
+    проверка показала: если `_build_main_window` передаст `SettingsView`
+    жёсткий `frozen=False`, тумблер автозапуска в собранном exe умрёт
+    навсегда — и `touched == []` в соседнем тесте станет тавтологией,
+    потому что до реестра не доходит вообще ничего.
+
+    Здесь `sys.frozen` включён, реестр НЕ подменён на заглушку, и обращение
+    к `winreg` обязано состояться. Пара тестов вместе утверждает то, что
+    нужно: в сборке реестр читается, а самопроверка сборки — нет.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    workspace, _calls, _opened = workspace_factory()
+    runtime = app_module.Runtime(
+        workspace=workspace,
+        cfg_rules=[],
+        conventions=[],
+        settings=tmp_path / "settings.json",
+    )
+    touched: list[str] = []
+
+    def spy_open(*_args: Any, **_kwargs: Any) -> Any:
+        touched.append("OpenKey")
+        raise FileNotFoundError(2, "нет ключа")
+
+    monkeypatch.setattr(winreg, "OpenKey", spy_open)
+
+    application = QApplication.instance()
+    assert isinstance(application, QApplication)
+    window, _tasks = app_module._build_main_window(
+        application, runtime, {"APPDATA": str(tmp_path / "appdata")}
+    )
+    window.close()
+
+    assert touched == ["OpenKey"], "в сборке раздел обязан читать настоящий реестр"
 
 
 def test_run_smoke_times_out_without_background(

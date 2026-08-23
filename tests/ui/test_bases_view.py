@@ -1,5 +1,5 @@
 import sys
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -23,6 +23,7 @@ from onecstarter.config.shell_link import build_shell_link, safe_file_name, shor
 from onecstarter.domain.connect import ConnectKind
 from onecstarter.domain.launch import ClientKind, LaunchCommand
 from onecstarter.domain.version import Installation
+from onecstarter.services.cache import CacheEntry, CacheKind, EntryKind
 from onecstarter.services.display import COMMON_NOTE, IMPLICIT_NOTE, RowKind
 from onecstarter.services.errors import (
     InvalidRequestError,
@@ -36,6 +37,7 @@ from onecstarter.services.groups import GroupRemoval
 from onecstarter.services.launch import LaunchOutcome
 from onecstarter.services.model import InfobaseItem
 from onecstarter.services.paths import ROOT, group_path, normalize_folder, render_folder
+from onecstarter.services.settings import DEFAULT_RECENT_LIMIT
 from onecstarter.ui import theme
 from onecstarter.ui.bases.icons import placement_icon
 from onecstarter.ui.bases.tree_model import KEY_ROLE, KIND_ROLE
@@ -43,6 +45,7 @@ from onecstarter.ui.bases.view import BasesView, DropTarget
 from onecstarter.ui.dialogs.confirm import ask_group_removal, confirm_removal
 from onecstarter.ui.dialogs.group import GroupDialog
 from onecstarter.ui.dialogs.infobase import InfobaseDialog
+from tests.unit.test_cache import FakeCacheOps
 
 from .conftest import COMMON_BASE_KEY, COMMON_GROUP_KEY, COMMON_GROUP_NAME, INSTALLED
 
@@ -59,6 +62,10 @@ def _view(
     | None = None,
     choose_shortcut_path: Callable[[QWidget | None, str], str] | None = None,
     cfg_paths: tuple[Path, ...] = (),
+    cache_env: Mapping[str, str] | None = None,
+    cache_ops: Any | None = None,
+    confirm_cache_clear: Callable[[QWidget | None, str], bool] | None = None,
+    show_cache_report: Callable[[QWidget | None, str], None] | None = None,
 ) -> tuple[BasesView, list[LaunchCommand], list[ServicesError], list[str]]:
     # По умолчанию — INSTALLED, не None: большинство тестов файла ничего
     # не знают про фоновое обнаружение и ждут готовых версий сразу.
@@ -82,11 +89,22 @@ def _view(
         # Тот же приём для «Создать ярлык…» (задача 17): настоящий
         # `QFileDialog.getSaveFileName` в офскрин-тесте не дождётся выбора.
         kwargs["choose_shortcut_path"] = choose_shortcut_path
+    if cache_env is not None:
+        kwargs["cache_env"] = cache_env
+    if cache_ops is not None:
+        # Инъекция ФС кэша: настоящая WindowsCacheOps ходила бы в живые
+        # каталоги %LOCALAPPDATA% машины, на которой идёт прогон.
+        kwargs["cache_ops"] = cache_ops
+    if confirm_cache_clear is not None:
+        # Тот же приём, что confirm_removal: настоящий диалог блокирует офскрин.
+        kwargs["confirm_cache_clear"] = confirm_cache_clear
+    if show_cache_report is not None:
+        kwargs["show_cache_report"] = show_cache_report
     view = BasesView(
         workspace,
         installations=installations,
         cfg_rules=[],
-        recent_limit=lambda: 10,
+        recent_limit=lambda: DEFAULT_RECENT_LIMIT,
         on_error=recorded.append,
         **kwargs,
     )
@@ -789,7 +807,12 @@ def test_ctrl_1_on_web_base_does_nothing(qtbot, workspace_factory):
 
 def test_panel_follows_selection(qtbot, workspace_factory):
     workspace, _calls, _opened = workspace_factory()
-    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[], recent_limit=lambda: 10)
+    view = BasesView(
+        workspace,
+        installations=INSTALLED,
+        cfg_rules=[],
+        recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+    )
     qtbot.addWidget(view)
     index = _first_base_index(view)
     view._tree.setCurrentIndex(index)
@@ -941,7 +964,12 @@ def test_f3_launches_in_default_mode(qtbot: Any, workspace_factory: Any) -> None
     поэтому forced_client не передаётся — как у Enter.
     """  # noqa: RUF002
     workspace, calls, _opened = workspace_factory()
-    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[], recent_limit=lambda: 10)
+    view = BasesView(
+        workspace,
+        installations=INSTALLED,
+        cfg_rules=[],
+        recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+    )
     qtbot.addWidget(view)
     _show_exposed(qtbot, view)
     _select_first_file_base(view)
@@ -954,7 +982,12 @@ def test_f3_launches_in_default_mode(qtbot: Any, workspace_factory: Any) -> None
 
 def test_f4_launches_designer(qtbot: Any, workspace_factory: Any) -> None:
     workspace, calls, _opened = workspace_factory()
-    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[], recent_limit=lambda: 10)
+    view = BasesView(
+        workspace,
+        installations=INSTALLED,
+        cfg_rules=[],
+        recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+    )
     qtbot.addWidget(view)
     _show_exposed(qtbot, view)
     _select_first_file_base(view)
@@ -973,7 +1006,12 @@ def test_f4_does_nothing_for_web_base(qtbot: Any, workspace_factory: Any) -> Non
     задача 8 плана 4a уже закрыла для Ctrl+1/2/3 — здесь он не должен вернуться.
     """
     workspace, calls, opened = workspace_factory()
-    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[], recent_limit=lambda: 10)
+    view = BasesView(
+        workspace,
+        installations=INSTALLED,
+        cfg_rules=[],
+        recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+    )
     qtbot.addWidget(view)
     _show_exposed(qtbot, view)
     _select_first_web_base(view)
@@ -986,7 +1024,12 @@ def test_f4_does_nothing_for_web_base(qtbot: Any, workspace_factory: Any) -> Non
 
 def test_f3_opens_browser_for_web_base(qtbot: Any, workspace_factory: Any) -> None:
     workspace, _calls, opened = workspace_factory()
-    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[], recent_limit=lambda: 10)
+    view = BasesView(
+        workspace,
+        installations=INSTALLED,
+        cfg_rules=[],
+        recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+    )
     qtbot.addWidget(view)
     _show_exposed(qtbot, view)
     _select_first_web_base(view)
@@ -1007,7 +1050,12 @@ def test_f3_and_f4_shortcuts_are_registered_on_view(qtbot: Any, workspace_factor
     даже если окружение теста изменится.
     """
     workspace, _calls, _opened = workspace_factory()
-    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[], recent_limit=lambda: 10)
+    view = BasesView(
+        workspace,
+        installations=INSTALLED,
+        cfg_rules=[],
+        recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+    )
     qtbot.addWidget(view)
 
     sequences = {shortcut.key().toString() for shortcut in view.findChildren(QShortcut)}
@@ -1055,7 +1103,7 @@ def test_theme_switch_leaves_no_stale_colours(qtbot: Any, workspace_factory: Any
         workspace,
         installations=INSTALLED,
         cfg_rules=[],
-        recent_limit=lambda: 10,
+        recent_limit=lambda: DEFAULT_RECENT_LIMIT,
         palette=theme.DARK,
     )
     qtbot.addWidget(view)
@@ -1084,7 +1132,12 @@ def test_ctrl_n_shortcut_is_registered_on_view(qtbot: Any, workspace_factory: An
     в офскрин-тесте без монопатча — здесь достаточно проверить саму привязку.
     """  # noqa: RUF002
     workspace, _calls, _opened = workspace_factory()
-    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[], recent_limit=lambda: 10)
+    view = BasesView(
+        workspace,
+        installations=INSTALLED,
+        cfg_rules=[],
+        recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+    )
     qtbot.addWidget(view)
 
     sequences = {shortcut.key().toString() for shortcut in view.findChildren(QShortcut)}
@@ -2335,7 +2388,12 @@ def test_alt_up_and_alt_down_shortcuts_are_registered_on_view(
 ) -> None:
     """Подстраховка отдельно от поведения — тот же приём, что у F3/F4/Ctrl+N."""  # noqa: RUF002
     workspace, _calls, _opened = workspace_factory()
-    view = BasesView(workspace, installations=INSTALLED, cfg_rules=[], recent_limit=lambda: 10)
+    view = BasesView(
+        workspace,
+        installations=INSTALLED,
+        cfg_rules=[],
+        recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+    )
     qtbot.addWidget(view)
 
     sequences = {shortcut.key().toString() for shortcut in view.findChildren(QShortcut)}
@@ -3084,3 +3142,282 @@ def test_create_shortcut_refuses_ambiguous_name(qtbot, workspace_factory, tmp_pa
     assert not (tmp_path / "должен был отказать.lnk").exists()
     assert len(errors) == 1
     assert "не единственное" in str(errors[0])
+
+
+# -- Задача 7: подменю «Очистить кэш» в контекстном меню записи --------------
+#
+# Доступность решается по данным записи (ID-GUID) и дешёвой проверке
+# наличия каталога кэша (спека §3.4/§4 в редакции 23.08.2026); замер размера
+# и само удаление — задача 8. FakeCacheOps — та же реализация ФС в памяти,
+# что использует собственный набор `services/cache.py` (tests/unit/test_cache.py).
+
+CACHE_GUID = "a1b2c3d4-e5f6-4a0b-8c1d-2e3f4a5b6c7d"
+
+
+def _cache_env(tmp_path: Path) -> dict[str, str]:
+    return {
+        "APPDATA": str(tmp_path / "roaming"),
+        "LOCALAPPDATA": str(tmp_path / "local"),
+    }
+
+
+def _cache_view(
+    qtbot: Any,
+    workspace_factory: Any,
+    tmp_path: Path,
+    ops: Any,
+    section_lines: str,
+) -> tuple[BasesView, list[LaunchCommand], list[ServicesError], list[str]]:
+    (tmp_path / "ibases.v8i").write_bytes(section_lines.encode())
+    return _view(
+        qtbot, workspace_factory, cache_env=_cache_env(tmp_path), cache_ops=ops
+    )
+
+
+def _cache_actions(menu: Any) -> dict[str, Any] | None:
+    submenu = next(
+        (a.menu() for a in menu.actions() if a.text() == "Очистить кэш"), None
+    )
+    if submenu is None:
+        return None
+    return {a.text(): a for a in submenu.actions()}
+
+
+def test_cache_submenu_enabled_when_id_and_dirs_exist(
+    qtbot, workspace_factory, tmp_path
+):
+    ops = FakeCacheOps()
+    for var in ("roaming", "local"):
+        ops.tree[Path(tmp_path / var / "1C" / "1Cv8" / CACHE_GUID)] = []
+    view, _calls, _errors, _opened = _cache_view(
+        qtbot, workspace_factory, tmp_path, ops,
+        f'[Кэшная]\r\nID={CACHE_GUID}\r\nConnect=File="C:\\B";\r\n',
+    )
+    item = view.workspace().items()[0]
+    actions = _cache_actions(view._build_menu(item, item.key))
+    assert actions is not None
+    assert set(actions) == {"Пользовательский…", "Программный…"}
+    assert actions["Пользовательский…"].isEnabled()
+    assert actions["Программный…"].isEnabled()
+    # §4: построение меню не обходит дерево — только is_dir.
+    assert ops.listed == []
+
+
+def test_cache_items_disabled_without_id(qtbot, workspace_factory, tmp_path):
+    """Спека §3.4: нет ID — адреса не существует, оба пункта неактивны.
+
+    ЗАЩИТНЫЙ ТЕСТ пары к GUID-проверке §5.1: кандидат мутации — снять
+    проверку в cache_path, пункты станут активными и тест упадёт.
+    """  # noqa: RUF002
+    ops = FakeCacheOps()
+    view, _calls, _errors, _opened = _cache_view(
+        qtbot, workspace_factory, tmp_path, ops,
+        '[БезID]\r\nConnect=File="C:\\B";\r\n',  # noqa: RUF001
+    )
+    item = view.workspace().items()[0]
+    actions = _cache_actions(view._build_menu(item, item.key))
+    assert actions is not None
+    assert not actions["Пользовательский…"].isEnabled()
+    assert not actions["Программный…"].isEnabled()
+    assert "ID" in actions["Программный…"].toolTip()
+
+
+def test_cache_item_disabled_when_directory_missing(
+    qtbot, workspace_factory, tmp_path
+):
+    """Каталог есть только у пользовательского кэша — программный неактивен."""  # noqa: RUF002
+    ops = FakeCacheOps()
+    ops.tree[Path(tmp_path / "roaming" / "1C" / "1Cv8" / CACHE_GUID)] = []
+    view, _calls, _errors, _opened = _cache_view(
+        qtbot, workspace_factory, tmp_path, ops,
+        f'[Кэшная]\r\nID={CACHE_GUID}\r\nConnect=File="C:\\B";\r\n',
+    )
+    item = view.workspace().items()[0]
+    actions = _cache_actions(view._build_menu(item, item.key))
+    assert actions is not None
+    assert actions["Пользовательский…"].isEnabled()
+    assert not actions["Программный…"].isEnabled()
+    assert actions["Программный…"].toolTip() == "кэш пуст"
+
+
+def test_group_menu_has_no_cache_submenu(qtbot, workspace_factory, tmp_path):
+    """Спека §3.4: у строки-группы подменю не показывается вовсе."""  # noqa: RUF002
+    ops = FakeCacheOps()
+    view, _calls, _errors, _opened = _cache_view(
+        qtbot, workspace_factory, tmp_path, ops,
+        f"[Группа]\r\nID={CACHE_GUID}\r\nOrderInList=-1\r\nFolder=/\r\n",
+    )
+    item = view.workspace().items()[0]
+    assert item.is_group
+    menu = view._build_group_menu(item, item.key)
+    assert _cache_actions(menu) is None
+
+
+# -- Задача 8: сценарий очистки — замер → подтверждение → удаление → сводка --
+
+
+def _ops_with_program_cache(tmp_path: Path) -> tuple[FakeCacheOps, Path]:
+    """Фейк ФС с программным кэшем записи «Кэшная» + её ibases.v8i.
+
+    Файл списка пишется здесь, ДО _view: workspace_factory копирует общую
+    фикстуру, только если tmp_path/"ibases.v8i" ещё не создан.
+    """  # noqa: RUF002
+    (tmp_path / "ibases.v8i").write_bytes(
+        f'[Кэшная]\r\nID={CACHE_GUID}\r\nConnect=File="C:\\B";\r\n'.encode()
+    )
+    ops = FakeCacheOps()
+    root = Path(tmp_path / "local" / "1C" / "1Cv8" / CACHE_GUID)
+    ops.tree[root] = []
+    ops.put(CacheEntry(root / "Config", EntryKind.DIR, 0))
+    ops.put(CacheEntry(root / "Config" / "a.bin", EntryKind.FILE, 100))
+    ops.put(CacheEntry(root / "top.pfl", EntryKind.FILE, 24))
+    return ops, root
+
+
+def test_clear_cache_without_confirmation_deletes_nothing(
+    qtbot, workspace_factory, tmp_path
+):
+    """ЗАЩИТНЫЙ ТЕСТ (спека §3.5, §6): без «Да» не удаляется ничего.
+
+    Кандидат мутационной проверки: снять подтверждение (звать clear без
+    вопроса) — тест обязан упасть на «дерево изменилось».
+    """  # noqa: RUF002
+    ops, _root = _ops_with_program_cache(tmp_path)
+    before = {p: list(es) for p, es in ops.tree.items()}
+    asked: list[str] = []
+
+    def refuse(parent, question):
+        asked.append(question)
+        return False
+
+    view, _calls, _errors, _opened = _view(
+        qtbot, workspace_factory,
+        cache_env=_cache_env(tmp_path), cache_ops=ops, confirm_cache_clear=refuse,
+        show_cache_report=lambda parent, text: pytest.fail("сводка без удаления"),
+    )
+    item = view.workspace().items()[0]
+    view.clear_cache(item.key, CacheKind.PROGRAM)
+    assert ops.tree == before
+    assert len(asked) == 1
+
+
+def test_clear_cache_question_carries_name_and_size(qtbot, workspace_factory, tmp_path):
+    ops, _root = _ops_with_program_cache(tmp_path)
+    asked: list[str] = []
+
+    def refuse(parent, question):
+        asked.append(question)
+        return False
+
+    view, _calls, _errors, _opened = _view(
+        qtbot, workspace_factory,
+        cache_env=_cache_env(tmp_path), cache_ops=ops,
+        confirm_cache_clear=refuse,
+        show_cache_report=lambda parent, text: None,
+    )
+    item = view.workspace().items()[0]
+    view.clear_cache(item.key, CacheKind.PROGRAM)
+    assert "Кэшная" in asked[0]
+    assert "(124 Б)" in asked[0]  # размер посчитан ДО удаления
+
+
+def test_clear_cache_confirmed_deletes_and_reports(qtbot, workspace_factory, tmp_path):
+    ops, root = _ops_with_program_cache(tmp_path)
+    shown: list[str] = []
+    view, _calls, _errors, _opened = _view(
+        qtbot, workspace_factory,
+        cache_env=_cache_env(tmp_path), cache_ops=ops,
+        confirm_cache_clear=lambda parent, q: True,
+        show_cache_report=lambda parent, text: shown.append(text),
+    )
+    item = view.workspace().items()[0]
+    view.clear_cache(item.key, CacheKind.PROGRAM)
+    assert root not in ops.tree
+    assert shown == ["Удалено 2 файла, освобождено 124 Б."]
+
+
+def test_clear_cache_reports_busy_files_once(qtbot, workspace_factory, tmp_path):
+    """Спека §3.7: первичная ошибка в сводке, вторичная «папка не пуста» — нет."""
+    ops, root = _ops_with_program_cache(tmp_path)
+    ops.busy.add(root / "Config" / "a.bin")
+    shown: list[str] = []
+    view, _calls, _errors, _opened = _view(
+        qtbot, workspace_factory,
+        cache_env=_cache_env(tmp_path), cache_ops=ops,
+        confirm_cache_clear=lambda parent, q: True,
+        show_cache_report=lambda parent, text: shown.append(text),
+    )
+    item = view.workspace().items()[0]
+    view.clear_cache(item.key, CacheKind.PROGRAM)
+    assert shown == [
+        "Удалён 1 файл, освобождено 24 Б. Не удалось удалить 1 — "  # noqa: RUF001
+        "файлы заняты запущенной 1С; закройте программу и повторите."  # noqa: RUF001
+    ]
+
+
+def test_clear_cache_silently_exits_when_directory_disappeared(
+    qtbot, workspace_factory, tmp_path
+):
+    """ЗАЩИТНЫЙ ТЕСТ (находка финального ревью): каталог кэша исчез между
+    построением меню и кликом — тот же случай, что пропавшая запись.
+
+    Без перепроверки `is_dir` перед замером `measure` тихо вернул бы ноль,
+    вопрос подтверждения обещал бы «(0 Б)», а после «Да» `clear` дал бы
+    `failed=1` — ложная сводка «файлы заняты запущенной 1С», хотя каталога
+    нет вовсе. Оба колбэка подменены на `pytest.fail`: ни вопрос, ни сводка
+    не должны были случиться.
+
+    Кандидат мутационной проверки: снять проверку `is_dir` перед замером —
+    этот тест обязан упасть (МУТАЦИЯ ПРОВЕРЕНА 23.08.2026: на `FakeCacheOps`
+    `measure` падает `KeyError` внутри `list_dir` — фейк не различает
+    «каталога нет» и «список файлов пуст», в отличие от настоящей ФС, где
+    `os.scandir` дал бы `FileNotFoundError`, `measure` его проглотил бы
+    молча, и без проверки `is_dir` дело дошло бы до `confirm_cache_clear`
+    с «(0 Б)», как описано в докстринге `clear_cache`).
+    """  # noqa: RUF002
+    (tmp_path / "ibases.v8i").write_bytes(
+        f'[Кэшная]\r\nID={CACHE_GUID}\r\nConnect=File="C:\\B";\r\n'.encode()
+    )
+    ops = FakeCacheOps()  # каталог кэша не заведён в дереве — is_dir(path) лжив
+    view, _calls, _errors, _opened = _view(
+        qtbot, workspace_factory,
+        cache_env=_cache_env(tmp_path), cache_ops=ops,
+        confirm_cache_clear=lambda parent, q: pytest.fail("вопрос не должен был задаваться"),
+        show_cache_report=lambda parent, text: pytest.fail("сводка без каталога"),
+    )
+    item = view.workspace().items()[0]
+    view.clear_cache(item.key, CacheKind.PROGRAM)
+
+
+def test_cache_menu_item_trigger_reaches_clear_cache_with_right_kind(
+    qtbot, workspace_factory, tmp_path
+):
+    """Клик пункта подменю доходит до сценария с правильной парой (key, kind).
+
+    Закрывает ⚠️ ревью задачи 7: раньше лямбда пункта («Программный…») ни
+    разу не выполнялась ни одним тестом — состав и подписи пунктов
+    проверялись, но не сам клик. Меню строится тем же `_build_menu`, что
+    и в проде, а не собирается вручную — иначе привязка (key, kind) внутри
+    лямбды и работоспособность параметра-заглушки `_checked=False` остались
+    бы непроверенными. `confirm_cache_clear` отказывает («Нет») — удаления
+    не происходит, сводка не должна была бы открыться.
+    """  # noqa: RUF002
+    ops, _root = _ops_with_program_cache(tmp_path)
+    asked: list[str] = []
+
+    def refuse(parent, question):
+        asked.append(question)
+        return False
+
+    view, _calls, _errors, _opened = _view(
+        qtbot, workspace_factory,
+        cache_env=_cache_env(tmp_path), cache_ops=ops,
+        confirm_cache_clear=refuse,
+        show_cache_report=lambda parent, text: pytest.fail("сводка без удаления"),
+    )
+    item = view.workspace().items()[0]
+    actions = _cache_actions(view._build_menu(item, item.key))
+    assert actions is not None
+    actions["Программный…"].trigger()
+    assert len(asked) == 1
+    assert "программный" in asked[0].casefold()

@@ -62,8 +62,15 @@ def choose_client(
     if explicit is not None:
         # [Ф] T-02.6: при явном App стартер не передаёт /AppAutoCheckMode.
         return ClientChoice(explicit, auto_check_mode=False)
-    fallback = _client_from_app(default_app) or ClientKind.THIN
-    return ClientChoice(fallback, auto_check_mode=True)
+    from_default = _client_from_app(default_app)
+    if from_default is not None:
+        # Решение заказчика 23.08.2026 (smoke T-04.8, шаг А3, спека §2.2):  # noqa: RUF003
+        # клиент из настройки — явный выбор, как App записи, без
+        # /AppAutoCheckMode: с ним платформа перезапускает толстого под  # noqa: RUF003
+        # режим базы, и настройка не имеет видимого эффекта ([Ф] замер
+        # А3/А5 протокола t04-8-smoke-protocol.md).  # noqa: RUF003
+        return ClientChoice(from_default, auto_check_mode=False)
+    return ClientChoice(ClientKind.THIN, auto_check_mode=True)
 
 
 def is_web_client_app(app: str | None) -> bool:

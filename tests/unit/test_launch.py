@@ -33,8 +33,11 @@ class TestChooseClient:
         assert choose_client("Auto", None) == ClientChoice(ClientKind.THIN, auto_check_mode=True)
 
     def test_auto_uses_default_app(self) -> None:
+        # Решение заказчика 23.08.2026 (smoke T-04.8, шаг А3, спека §2.2):  # noqa: RUF003
+        # клиент из настройки — явный выбор, без /AppAutoCheckMode, иначе
+        # платформа перезапускает толстого тонким и настройка не работает.
         choice = choose_client("Auto", "ThickClient")
-        assert choice == ClientChoice(ClientKind.THICK, auto_check_mode=True)
+        assert choice == ClientChoice(ClientKind.THICK, auto_check_mode=False)
 
     def test_explicit_app_disables_check_mode(self) -> None:
         # [Ф] T-02.6: при явном App стартер не передаёт /AppAutoCheckMode.
@@ -56,6 +59,43 @@ class TestChooseClient:
     def test_unknown_app_value_behaves_like_auto(self) -> None:
         choice = choose_client("НечтоНовое", None)
         assert choice == ClientChoice(ClientKind.THIN, auto_check_mode=True)
+
+
+@pytest.mark.parametrize(
+    ("app", "default_app", "forced", "expected", "auto_mode"),
+    [
+        # настройка работает только при пустом App; переданное значение —
+        # явный выбор (решение заказчика 23.08.2026, smoke T-04.8 шаг А3,  # noqa: RUF003
+        # спека §2.2), auto_check_mode=False — как у явного App записи  # noqa: RUF003
+        (None, "ThickClient", None, ClientKind.THICK, False),
+        (None, "ThinClient", None, ClientKind.THIN, False),
+        # умолчания нет вовсе (третий аргумент choose_client — None) —
+        # проводка передаёт это только для тонкого (спека §2.1/§2.2),
+        # тут дефолт срабатывает как раньше, с /AppAutoCheckMode  # noqa: RUF003
+        (None, None, None, ClientKind.THIN, True),
+        # App записи бьёт настройку
+        ("ThinClient", "ThickClient", None, ClientKind.THIN, False),
+        ("ThickClient", "ThinClient", None, ClientKind.THICK, False),
+        # принудительный выбор бьёт всё
+        ("ThinClient", "ThickClient", ClientKind.DESIGNER, ClientKind.DESIGNER, False),
+        (None, "ThickClient", ClientKind.THIN, ClientKind.THIN, False),
+        # Неопознанный App ведёт себя как Auto (test_unknown_app_value_
+        # behaves_like_auto) — настройка «Толстый» участвует, и запись
+        # запускается толстым клиентом, явным выбором из настройки.
+        ("НечтоНовое", "ThickClient", None, ClientKind.THICK, False),
+    ],
+)
+def test_priority_table(
+    app: str | None,
+    default_app: str | None,
+    forced: ClientKind | None,
+    expected: ClientKind,
+    auto_mode: bool,
+) -> None:
+    """Спека вехи §2.2: принудительный выбор → App записи → настройка."""
+    assert choose_client(app, default_app, forced) == ClientChoice(
+        expected, auto_check_mode=auto_mode
+    )
 
 
 class TestBuildArguments:

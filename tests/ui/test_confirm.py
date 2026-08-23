@@ -19,6 +19,7 @@ from onecstarter.domain.connect import ConnectKind
 from onecstarter.services.groups import GroupRemoval
 from onecstarter.services.model import InfobaseItem, InfobaseSource
 from onecstarter.ui.dialogs.confirm import (
+    build_cache_confirm_box,
     build_group_removal_box,
     build_removal_confirm_box,
     group_removal_question,
@@ -152,3 +153,20 @@ def test_read_group_removal_cancel_click_is_none(qtbot: Any) -> None:
     button = next(b for b in box.buttons() if b.text() == "Отмена")
     button.click()
     assert read_group_removal(box) is None
+
+
+# -- Задача 8: подтверждение очистки кэша ------------------------------------
+#
+# Текст вопроса готовит `services/cache.py::clear_question` (имя базы + размер,
+# посчитанный до удаления) — здесь проверяется только сам диалог: состав
+# кнопок и кнопка по умолчанию, тем же приёмом «build → exec → read», что
+# и у `build_removal_confirm_box`/`confirm_removal`.  # noqa: RUF003
+
+
+def test_cache_confirm_box_has_yes_no_with_no_as_default(qtbot: Any) -> None:
+    box = build_cache_confirm_box(None, "Удалить программный кэш базы «Б» (1 КБ)?")
+    qtbot.addWidget(box)
+    labels = [button.text() for button in box.buttons()]
+    assert labels == ["Да", "Нет"]
+    assert box.defaultButton().text() == "Нет"
+    assert "Удалить программный кэш" in box.text()
