@@ -807,7 +807,9 @@ def report_text(report: ClearReport) -> str:
 - [ ] **Step 4: Зелёные, линт, типы**
 
 Run: `uv run pytest tests/unit/test_cache.py tests/unit/test_no_qt_in_core.py -q && uv run ruff check . && uv run mypy`
-Expected: PASS, коды 0 (в т.ч. сторож «без Qt в ядре» видит новый модуль).
+Expected: PASS, коды 0. Новый модуль добавляется в кортеж CORE сторожа
+`tests/unit/test_no_qt_in_core.py` (сделано fix-волной финального ревью) —
+сам по себе он в эту проверку не попадает.
 
 - [ ] **Step 5: Commit**
 
@@ -1140,6 +1142,9 @@ def clear(root: Path, ops: CacheOps) -> ClearReport:
             failed += 1
     return ClearReport(deleted=deleted, freed_bytes=freed, failed=failed)
 ```
+
+Примечание (реализация): вместо `os.*` используются pathlib-методы —
+правила ruff PTH; семантика та же.
 
 - [ ] **Step 4: Зелёные на фейке**
 
