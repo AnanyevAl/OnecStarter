@@ -70,6 +70,12 @@ class TestChooseClient:
         # принудительный выбор бьёт всё
         ("ThinClient", "ThickClient", ClientKind.DESIGNER, ClientKind.DESIGNER, False),
         (None, "ThickClient", ClientKind.THIN, ClientKind.THIN, False),
+        # Неопознанный App ведёт себя как Auto (test_unknown_app_value_
+        # behaves_like_auto) — настройка «Толстый» участвует, и запись
+        # запускается толстым клиентом. Раньше, при жёстком default_app=None,
+        # неопознанный App всегда давал тонкий; это осознанное следствие
+        # §2.2 «выбор не сделан», а не совпадение.  # noqa: RUF003
+        ("НечтоНовое", "ThickClient", None, ClientKind.THICK, True),
     ],
 )
 def test_priority_table(

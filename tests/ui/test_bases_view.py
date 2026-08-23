@@ -3199,6 +3199,8 @@ def test_cache_submenu_enabled_when_id_and_dirs_exist(
     assert set(actions) == {"Пользовательский…", "Программный…"}
     assert actions["Пользовательский…"].isEnabled()
     assert actions["Программный…"].isEnabled()
+    # §4: построение меню не обходит дерево — только is_dir.
+    assert ops.listed == []
 
 
 def test_cache_items_disabled_without_id(qtbot, workspace_factory, tmp_path):
@@ -3351,6 +3353,40 @@ def test_clear_cache_reports_busy_files_once(qtbot, workspace_factory, tmp_path)
         "Удалён 1 файл, освобождено 24 Б. Не удалось удалить 1 — "  # noqa: RUF001
         "файлы заняты запущенной 1С; закройте программу и повторите."  # noqa: RUF001
     ]
+
+
+def test_clear_cache_silently_exits_when_directory_disappeared(
+    qtbot, workspace_factory, tmp_path
+):
+    """ЗАЩИТНЫЙ ТЕСТ (находка финального ревью): каталог кэша исчез между
+    построением меню и кликом — тот же случай, что пропавшая запись.
+
+    Без перепроверки `is_dir` перед замером `measure` тихо вернул бы ноль,
+    вопрос подтверждения обещал бы «(0 Б)», а после «Да» `clear` дал бы
+    `failed=1` — ложная сводка «файлы заняты запущенной 1С», хотя каталога
+    нет вовсе. Оба колбэка подменены на `pytest.fail`: ни вопрос, ни сводка
+    не должны были случиться.
+
+    Кандидат мутационной проверки: снять проверку `is_dir` перед замером —
+    этот тест обязан упасть (МУТАЦИЯ ПРОВЕРЕНА 23.08.2026: на `FakeCacheOps`
+    `measure` падает `KeyError` внутри `list_dir` — фейк не различает
+    «каталога нет» и «список файлов пуст», в отличие от настоящей ФС, где
+    `os.scandir` дал бы `FileNotFoundError`, `measure` его проглотил бы
+    молча, и без проверки `is_dir` дело дошло бы до `confirm_cache_clear`
+    с «(0 Б)», как описано в докстринге `clear_cache`).
+    """  # noqa: RUF002
+    (tmp_path / "ibases.v8i").write_bytes(
+        f'[Кэшная]\r\nID={CACHE_GUID}\r\nConnect=File="C:\\B";\r\n'.encode()
+    )
+    ops = FakeCacheOps()  # каталог кэша не заведён в дереве — is_dir(path) лжив
+    view, _calls, _errors, _opened = _view(
+        qtbot, workspace_factory,
+        cache_env=_cache_env(tmp_path), cache_ops=ops,
+        confirm_cache_clear=lambda parent, q: pytest.fail("вопрос не должен был задаваться"),
+        show_cache_report=lambda parent, text: pytest.fail("сводка без каталога"),
+    )
+    item = view.workspace().items()[0]
+    view.clear_cache(item.key, CacheKind.PROGRAM)
 
 
 def test_cache_menu_item_trigger_reaches_clear_cache_with_right_kind(

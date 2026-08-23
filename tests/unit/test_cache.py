@@ -43,6 +43,13 @@ class TestCachePath:
             f"{GUID} ",
             GUID.replace("-", ""),   # 32 hex без дефисов — не форма ID
             GUID[:-1],               # обрезанный
+            # Из файла .v8i недостижим — парсер режет по строкам, значение
+            # с переводом строки в ID не попадёт. Но это единственный случай  # noqa: RUF003
+            # в наборе, отличающий `fullmatch` от `match(...) + "$"` (`$`
+            # у необёрнутого regex совпадает и перед завершающим `\n`) —  # noqa: RUF003
+            # страхует будущий рефакторинг регэкспа, который заменил бы
+            # fullmatch на match+$ по невнимательности.
+            f"{GUID}\n",
         ],
     )
     def test_invalid_id_gives_no_address(self, section_id: str | None) -> None:
@@ -102,6 +109,10 @@ class TestTexts:
         assert "настройки форм" in text
         assert "история ввода" in text
         assert "словар" in text
+        # Спека §3.5: последствия удаления пользовательского кэша не
+        # проверены (в отличие от программного) — вопрос не вправе обещать
+        # безобидность.
+        assert "создаст заново" not in text
 
     @pytest.mark.parametrize(
         ("report", "expected"),

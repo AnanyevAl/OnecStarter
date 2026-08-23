@@ -92,6 +92,10 @@ def _format_stamp(stamp: datetime) -> str:
 # с одной из этих подсказок, а не молча — тот же приём, что у COMMON_NOTE/  # noqa: RUF003
 # IMPLICIT_NOTE в services/display.py, только текст свой для кэша.
 NO_CACHE_ID_NOTE = "У записи нет ID — каталог кэша не определить"  # noqa: RUF001
+# Отдельно от NO_CACHE_ID_NOTE (находка финального ревью): невалидный ID
+# записи и отсутствие корня в окружении (APPDATA/LOCALAPPDATA) — разные
+# причины, и подсказка не должна путать одну с другой.  # noqa: RUF003
+NO_CACHE_ROOT_NOTE = "В окружении нет корня кэша (APPDATA/LOCALAPPDATA)"  # noqa: RUF001
 CACHE_EMPTY_NOTE = "кэш пуст"
 
 
@@ -944,14 +948,16 @@ class BasesView(QWidget):
         вывод, что у _build_disabled_group_menu.
 
         `QMenu(title, menu)` + `menu.addMenu(submenu)`, а не однострочный
-        `menu.addMenu("Очистить кэш")`: у последнего PySide6 не всегда
-        распознаёт `menu` как владельца C++ объекта через неявный `this`
-        внутри вспомогательного метода Qt — воспроизведено экспериментом при
-        реализации задачи: тесты, читающие состав подменю после возврата
-        `_build_menu` (`action.menu()`/`submenu.actions()`), временами
-        получали «Internal C++ object already deleted». Явный конструктор
-        с `parent=menu` — тот же приём, что и `QMenu(self)` парой строк выше
-        по файлу, и PySide транзит владения через него распознаёт надёжно.
+        `menu.addMenu("Очистить кэш")`: у последнего наблюдалось «Internal
+        C++ object already deleted» (воспроизведено изолированным прогоном
+        при реализации задачи — тесты, читающие состав подменю после
+        возврата `_build_menu` (`action.menu()`/`submenu.actions()`),
+        временами падали с этой ошибкой). Причина не установлена — версия
+        про то, что PySide6 не всегда распознаёт владельца через неявный
+        `this` внутри вспомогательного метода Qt, была бы догадкой, а не
+        фактом. Обход — явный `parent=menu` при создании `QMenu`, тот же
+        приём, что и `QMenu(self)` парой строк выше по файлу; с ним ошибка
+        не воспроизводится.
         """  # noqa: RUF002
         submenu = QMenu("Очистить кэш", menu)
         menu.addMenu(submenu)
@@ -965,10 +971,16 @@ class BasesView(QWidget):
                 label,
                 lambda _checked=False, k=kind, key=item.key: self.clear_cache(key, k),
             )
-            path = cache.cache_path(self._cache_env, kind, item.section_id)
-            if path is None:
+            if not cache.is_valid_cache_id(item.section_id):
                 action.setEnabled(False)
                 action.setToolTip(NO_CACHE_ID_NOTE)
+                continue
+            path = cache.cache_path(self._cache_env, kind, item.section_id)
+            if path is None:
+                # ID валиден, но окружение не даёт корня (нет APPDATA/
+                # LOCALAPPDATA) — причина другая, подсказка тоже другая.
+                action.setEnabled(False)
+                action.setToolTip(NO_CACHE_ROOT_NOTE)
             elif not self._cache_ops.is_dir(path):
                 action.setEnabled(False)
                 action.setToolTip(CACHE_EMPTY_NOTE)
@@ -982,12 +994,23 @@ class BasesView(QWidget):
         выходим, тот же случай, что у remove_key/create_shortcut. Путь
         строится заново по свежим данным записи, а не ловится при построении
         меню: ключ и ID могли смениться.
+
+        Тем же приёмом накрыт и сам каталог кэша (находка финального
+        ревью): он тоже мог исчезнуть между построением меню и кликом.
+        Без перепроверки `measure` тихо вернул бы ноль (её ошибки чтения
+        не поднимаются — см. докстринг), вопрос подтверждения обещал бы
+        «(0 Б)», а `clear` дал бы `failed=1` — и сводка после «Да» лживо
+        сообщила бы «файлы заняты запущенной 1С», хотя каталога уже нет.
         """  # noqa: RUF002
         item = next((i for i in self._workspace.items() if i.key == key), None)
         if item is None:
             return
         path = cache.cache_path(self._cache_env, kind, item.section_id)
         if path is None:
+            return
+        if not self._cache_ops.is_dir(path):
+            # Каталог исчез между построением меню и кликом — тот же случай,
+            # что пропавшая запись: молча выходим, удалять нечего.
             return
         measured = cache.measure(path, self._cache_ops)
         question = cache.clear_question(kind, item.name, measured)
