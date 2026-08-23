@@ -914,6 +914,82 @@ Windows считает автозапуск включённым по **паре
 имя на выходе таблицы безопасно, его добивает `parse_hotkey`; подстановка годного
 имени превращает промах в чужое рабочее сочетание, и остановить это уже некому.
 
+### Мутационные проверки вехи «Завершение v1» (23.08.2026)
+
+Правило проекта (`CLAUDE.md`): тест, зелёный на пустышке, хуже отсутствующего — он
+создаёт ложную уверенность; мутацию ставит **не автор теста**. Ветка
+`feat/2026-08-23-v1-completion` (настройка «Клиент по умолчанию» и очистка кэша,
+спека [2026-08-23-v1-completion-design.md](superpowers/specs/2026-08-23-v1-completion-design.md),
+план [2026-08-23-v1-completion.md](superpowers/plans/2026-08-23-v1-completion.md)),
+семь мутаций из плана по защитным тестам `services/cache.py` и
+`ui/bases/view.py::clear_cache` (одна — №6 — в двух вариантах, адаптер `WindowsCacheOps`
+и обходчик `clear`, итого восемь применений). Мутация ставлена независимым агентом,
+результат воспроизведён, мутация откачена; дерево после каждой возвращено в чистое
+состояние (`git status --short` пуст), полный прогон снова зелёный (1342 passed).
+Подробный лог с диффами каждой мутации — леджерный документ
+`.superpowers/sdd/2026-08-23-v1-completion/mutation-report.md` (в репозиторий не идёт).
+
+| № | Тест | Мутация | Кто ставил | Результат дословно |
+| --- | --- | --- | --- | --- |
+| 1 | `tests/unit/test_cache.py::TestCachePath::test_invalid_id_gives_no_address` | `cache_path`: снята проверка `is_valid_cache_id`, `section_id=None` → `""` (код исполняется, а не выходит) | независимый агент мутационной стадии (не автор тестов) | «8 failed, 1 passed» — упали все 8 параметризованных случаев, включая ГЛАВНЫЙ РИСК §5.1 (пустой ID): `AssertionError: assert WindowsPath('...Roaming/1C/1Cv8/a1b2c3d4-...') is None`. Откат чист |
+| 1 (UI) | `tests/ui/test_bases_view.py::test_cache_items_disabled_without_id` | та же мутация | тот же | **ПЕРЕЖИЛА** — «1 passed». См. разбор ниже |
+| 2 | `tests/unit/test_cache.py::TestCachePath::test_invalid_id_gives_no_address` | `is_valid_cache_id`: `_GUID.fullmatch(section_id)` → `re.match(_GUID.pattern + "$", section_id)` | независимый агент мутационной стадии (не автор тестов) | «1 failed, 7 passed» — падает ровно кейс `GUID+"\n"`, предсказанный докстрингом теста ($ пропускает завершающий перевод строки). Откат чист |
+| 3 | `tests/ui/test_bases_view.py::test_clear_cache_without_confirmation_deletes_nothing` | `clear_cache`: подтверждение больше не гейтит удаление (`confirm_cache_clear` вызывается, но результат игнорируется) | независимый агент мутационной стадии (не автор тестов) | «1 failed» — `Failed: сводка без удаления` (`show_cache_report` вызван вопреки отказу пользователя). Откат чист |
+| 4 | `tests/unit/test_cache.py::TestClear::test_busy_file_does_not_stop_walk_and_secondary_is_not_counted` + `tests/ui/test_bases_view.py::test_clear_cache_reports_busy_files_once` | `clear`: вторичный отказ (ветка `else` при незавершённом каталоге) тоже увеличивает `failed` | независимый агент мутационной стадии (не автор тестов) | «2 failed» — unit: `failed: 2 != 1`; UI-сводка: «Не удалось удалить 2» вместо «1». Откат чист |
+| 5 | `tests/unit/test_cache.py::TestClear::test_busy_file_does_not_stop_walk_and_secondary_is_not_counted` | `clear_dir`: после первого `failed += 1` на файле — `return False` (обход прерывается) | независимый агент мутационной стадии (не автор тестов) | «1 failed, 5 passed» — `deleted: 2 != 3` (`b.bin`, идущий после занятого `a.bin`, не удалён). Откат чист |
+| 6а | `tests/unit/test_cache.py::TestWindowsCacheOpsIntegration::test_junction_is_removed_without_touching_target` | `WindowsCacheOps.list_dir`: снята проверка `entry.is_symlink() or entry.is_junction()` (junction классифицируется по `lstat` как обычный каталог) | независимый агент мутационной стадии (не автор тестов) | «1 failed» на настоящем reparse point (`tmp_path`, `_winapi.CreateJunction`) — падает РАНЬШЕ, чем предсказывал план: `assert entries["junction"] is EntryKind.LINK` → `EntryKind.DIR`, ещё до попытки удаления цели. Откат чист |
+| 6б | `tests/unit/test_cache.py::TestClear::test_link_is_removed_as_link_and_never_walked` | `clear`/`clear_dir`: ссылка (`EntryKind.LINK`) обрабатывается как каталог — рекурсия вместо `remove_link` | независимый агент мутационной стадии (не автор тестов) | «1 failed» — падает на первой же проверке: `assert link in ops.removed_links` → `[]` (ссылка ушла через `remove_dir`, не `remove_link`). Откат чист |
+| 7 | `tests/ui/test_bases_view.py::test_clear_cache_silently_exits_when_directory_disappeared` | `clear_cache`: снята перепроверка `self._cache_ops.is_dir(path)` перед `measure` | независимый агент мутационной стадии (не автор тестов) | «1 failed» — воспроизведено дословно по докстрингу теста: `KeyError` внутри `FakeCacheOps.list_dir` (вызван из `measure`), а не `pytest.fail`; обе заглушки-ловушки (`confirm_cache_clear`, `show_cache_report`) не вызваны. Откат чист |
+
+Оговорки к мутациям 6а и 6б: точка падения в обоих случаях раньше, чем называл план
+(«чужое.txt существует» и «`list_dir` на ссылке» соответственно) — тесты ловят
+дефект на первой же относящейся к делу проверке, а не на последней. Сигнал сильнее
+предсказанного, не слабее; отклонение от плана записано ради точности, а не потому
+что это находка.
+
+Финальная проверка после отката всех восьми мутаций: `uv run pytest -q` — 1342 passed;
+`uv run ruff check .` — код 0; `uv run mypy` — код 0, «Success: no issues found in
+132 source files».
+
+**Пережившая мутация (находка) — мутация 1 против UI-теста.**
+`test_cache_items_disabled_without_id` не поймал снятие GUID-проверки в `cache_path`,
+хотя план это предписывал. Причина — не слабый `assert`, а структура кода:
+`_add_cache_menu` (`ui/bases/view.py`) проверяет `cache.is_valid_cache_id(item.section_id)`
+и делает `continue` (пункт неактивен) **раньше**, чем вызывает `cache.cache_path(...)`:
+
+```python
+if not cache.is_valid_cache_id(item.section_id):
+    action.setEnabled(False)
+    action.setToolTip(NO_CACHE_ID_NOTE)
+    continue
+path = cache.cache_path(self._cache_env, kind, item.section_id)
+```
+
+`is_valid_cache_id` мутацией не тронута. Для записи без `ID` UI никогда не доходит
+до мутированной ветки `cache_path` — решение «неактивно» принимается раньше и
+независимо от того, что делает `cache_path` при `None`/пустом значении. Это
+защита-в-глубину (defense in depth), а не дыра: сам риск §5.1 (пустой `ID` → адрес
+корня кэша) закрыт **полностью и независимо** unit-тестом `test_invalid_id_gives_no_address`
+(мутация 1, unit — «8 failed», включая случай `""`). UI-тест проверяет другой,
+тоже настоящий инвариант (пункт меню неактивен без `ID`) через `is_valid_cache_id`,
+а не через `cache_path`.
+
+Чем усилить (без правки самого теста, только описание стимула): независимая проверка
+UI-слоя именно для GUID-барьера `cache_path` структурно недостижима, пока
+`_add_cache_menu` держит собственный ранний барьер `is_valid_cache_id` — тест не может
+подать в `cache_path` значение, которое пройдёт мимо `is_valid_cache_id`, но упадёт
+внутри `cache_path` (это буквально одна и та же проверка). Единственный стимул,
+который сделал бы UI-тест независимо чувствительным к контракту самой `cache_path`, —
+тест, вызывающий `cache.cache_path` напрямую в обход `_add_cache_menu` (что и делает
+`test_invalid_id_gives_no_address`) или, при рефакторинге, снятие дублирующей проверки
+из `_add_cache_menu` в пользу единственного источника истины — `cache_path`
+(изменение продуктового кода, не только теста, и с потерей защиты-в-глубину — решение
+не мутационной стадии). Правка предписания плана: докстринг
+`test_cache_items_disabled_without_id` («ЗАЩИТНЫЙ ТЕСТ пары к GUID-проверке §5.1»,
+`tests/ui/test_bases_view.py`) стоит уточнить — он не является независимой парой
+именно к GUID-проверке `cache_path` из-за раннего барьера `is_valid_cache_id`; тест
+защищает свой собственный, соседний инвариант.
+
 ---
 
 ## T-05. Эксперименты на платформе, сессия 2 — `WIP` (блок В не проводился; T-05.12/13 → v2, добавлен T-05.14)
