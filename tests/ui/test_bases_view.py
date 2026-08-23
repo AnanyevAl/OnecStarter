@@ -3557,6 +3557,7 @@ def test_clear_cache_exits_when_address_is_gone(qtbot, workspace_factory, tmp_pa
     item = view.workspace().items()[0]
     view.clear_cache(item.key, CacheKind.PROGRAM)
     assert errors == []
+    assert ops.listed == []  # до обхода ФС дело не дошло вовсе
 
 
 def test_cache_menu_item_trigger_reaches_clear_cache_with_right_kind(
