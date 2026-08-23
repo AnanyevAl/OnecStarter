@@ -84,6 +84,9 @@ class TestFormatSize:
             (9728, "9,5 КБ"),                # 9.5 КБ — один знак, запятая
             (217055232, "207 МБ"),           # пример спеки §3.5
             (3113851290, "2,9 ГБ"),          # стиль протокола T-05.10
+            (217_000_000, "207 МБ"),         # 206,95 МБ: округляет, не усекает
+            (10_694_058_443, "10 ГБ"),       # 9,96 ГБ: граница, округляется до целого
+            (1_048_400, "1 МБ"),             # 1023,8 КБ: округление → перенос единицы
         ],
     )
     def test_table(self, size: int, expected: str) -> None:
@@ -224,6 +227,23 @@ class TestMeasure:
         ops = _standard_tree()
         ops.unreadable.add(ROOT / "Config")
         assert measure(ROOT, ops) == CacheMeasure(files=2, total_bytes=350)
+
+    def test_link_counts_as_entry_without_size_and_is_not_walked(self) -> None:
+        """Долг №5 финального ревью: «ссылка = запись без размера» — как в clear.
+
+        Ссылка входит в счётчик записей (files), размера не добавляет,
+        и measure не обходит её содержимое (спека §5.2).
+        """
+        ops = _standard_tree()
+        link = ROOT / "vrs-link"
+        ops.put(CacheEntry(link, EntryKind.LINK, 0))
+        outside = Path(r"C:\outside")
+        ops.put_dir(outside)
+        ops.put(CacheEntry(outside / "чужое.txt", EntryKind.FILE, 999))
+        ops.tree[link] = ops.tree[outside]  # если кто-то всё же зайдёт — увидит цель
+
+        assert measure(ROOT, ops) == CacheMeasure(files=5, total_bytes=650)
+        assert link not in ops.listed
 
 
 class TestClear:

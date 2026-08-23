@@ -112,16 +112,23 @@ _UNITS = ("Б", "КБ", "МБ", "ГБ", "ТБ")
 def format_size(size: int) -> str:
     """«207 МБ», «2,9 ГБ» — стиль протокола T-05.10: запятая и один знак
     после неё, только когда значение меньше десяти и дробь не нулевая.
+    Округление арифметическое в обеих ветках (долг №6 финального ревью:
+    целая ветка усекала — 206,94 МБ показывалось «206 МБ», хотя 9,96 ГБ
+    округлялось до «10 ГБ»).
     """
     value = float(size)
     index = 0
     while value >= 1024 and index < len(_UNITS) - 1:
         value /= 1024
         index += 1
+    if round(value) >= 1024 and index < len(_UNITS) - 1:
+        # Округление добежало до следующей единицы: 1023,6 КБ — это «1 МБ».
+        value /= 1024
+        index += 1
     if index > 0 and value < 10:
         text = f"{value:.1f}".replace(".", ",").removesuffix(",0")
     else:
-        text = str(int(value))
+        text = str(round(value))
     return f"{text} {_UNITS[index]}"
 
 
