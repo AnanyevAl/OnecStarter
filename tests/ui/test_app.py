@@ -100,6 +100,17 @@ def test_build_runtime_reads_default_client(tmp_path):
     assert runtime.workspace.default_app == "ThickClient"
 
 
+def test_build_runtime_default_client_thin_means_no_default(tmp_path):
+    """Без файла настроек умолчание — тонкий, и проводка не задаёт App вовсе.
+
+    None, а не "ThinClient": тонкий — поведение по умолчанию (спека §2.1),
+    и передача явного значения включила бы явный выбор без /AppAutoCheckMode
+    (§2.2) там, где у существующих установок ничего не должно меняться.
+    """  # noqa: RUF002
+    runtime = build_runtime({"APPDATA": str(tmp_path)})
+    assert runtime.workspace.default_app is None
+
+
 # -- задача 17: режим запуска по имени базы (--ib-name) ---------------------
 #
 # build_runtime подменяется во всех этих тестах намеренно. Настоящий

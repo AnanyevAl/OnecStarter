@@ -2,7 +2,7 @@
 
 Единственное место, где ui знает про расположение файлов и обнаружение
 платформы. default_app приходит из настройки «Клиент по умолчанию»
-(settings.json, DefaultClient.app_value) — существование параметра App
+(settings.json, DefaultClient.default_app) — существование параметра App
 уровня 1cestart.cfg по-прежнему экспериментально не подтверждено, и cfg
 на выбор клиента не влияет. Без App секции и без настройки выбирается
 тонкий клиент ([Ф] T-02.6).
@@ -84,7 +84,7 @@ def build_runtime(env: Mapping[str, str]) -> Runtime:
         installations=None,
         conventions=conventions,
         cfg_rules=rules,
-        default_app=settings.default_client.app_value,
+        default_app=settings.default_client.default_app,
     )
     return Runtime(workspace, rules, list(conventions), settings_path)
 
@@ -479,7 +479,7 @@ def _build_main_window(
         view.rebuild()
 
     def apply_default_client() -> None:
-        runtime.workspace.set_default_app(store.settings.default_client.app_value)
+        runtime.workspace.set_default_app(store.settings.default_client.default_app)
 
     apply_close_to_tray()
     apply_default_client()

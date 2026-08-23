@@ -68,12 +68,19 @@ class DefaultClient(Enum):
     THICK = "thick"
 
     @property
-    def app_value(self) -> str:
-        """Значение в формате ключа `App` секции `.v8i` — то, что ждёт `choose_client`."""
-        return _APP_VALUES[self]
+    def default_app(self) -> str | None:
+        """Что передать проводке в `Workspace.set_default_app`/`build_runtime`.
+
+        `None` для тонкого: тонкий и есть поведение по умолчанию — запуск
+        с /AppAutoCheckMode, как до вехи (спека §2.1, у существующих
+        установок ничего не меняется). Для толстого — явное значение
+        формата ключа `App`: такой клиент передаётся без /AppAutoCheckMode
+        (решение заказчика 23.08.2026, спека §2.2).
+        """  # noqa: RUF002
+        return _APP_VALUES.get(self)
 
 
-_APP_VALUES = {DefaultClient.THIN: "ThinClient", DefaultClient.THICK: "ThickClient"}
+_APP_VALUES = {DefaultClient.THICK: "ThickClient"}
 
 
 @dataclass(frozen=True)

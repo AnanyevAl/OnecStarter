@@ -209,7 +209,16 @@ class TestDefaultClient:
         path.write_text('{"schema": 1, "default_client": "designer"}', encoding="utf-8")
         assert load_settings(path).default_client is DefaultClient.THIN
 
-    def test_app_values_match_v8i_app_key(self) -> None:
-        """Значения — формат ключа `App` секции: их ждёт `choose_client`."""
-        assert DefaultClient.THIN.app_value == "ThinClient"
-        assert DefaultClient.THICK.app_value == "ThickClient"
+    def test_default_app_none_for_thin_means_no_default(self) -> None:
+        """Тонкий — «умолчания нет»: проводка передаёт None, поведение как до вехи.
+
+        Явное значение здесь дало бы choose_client третий аргумент, и клиент
+        из настройки пошёл бы БЕЗ /AppAutoCheckMode (решение заказчика
+        23.08.2026, спека §2.2) — для тонкого-по-умолчанию это изменило бы
+        поведение существующих установок, чего спека §2.1 запрещает.
+        """
+        assert DefaultClient.THIN.default_app is None
+
+    def test_default_app_thick_matches_v8i_app_key(self) -> None:
+        """Толстый — явное значение в формате ключа `App`, его ждёт `choose_client`."""  # noqa: RUF002
+        assert DefaultClient.THICK.default_app == "ThickClient"
