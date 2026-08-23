@@ -1181,6 +1181,38 @@ def test_startup_log_has_no_connect_strings(
     assert "File=" not in caplog.text
 
 
+def test_default_client_change_reaches_workspace_without_rebuild(
+    qtbot, monkeypatch, qapp, workspace_factory, tmp_path
+):
+    """store.changed → set_default_app: следующий запуск идёт толстым клиентом.
+
+    Проверка поведением — какой exe в команде запуска, — а не полем.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    (tmp_path / "ibases.v8i").write_bytes(
+        '[БезКлиента]\r\nConnect=File="C:\\B";\r\n'.encode()
+    )
+    workspace, calls, _opened = workspace_factory()
+    runtime = app_module.Runtime(
+        workspace=workspace, cfg_rules=[], conventions=[],
+        settings=tmp_path / "settings.json",
+    )
+    window, _tasks = _build_main_window(qapp, runtime, {"APPDATA": str(tmp_path)})
+    qtbot.addWidget(window)
+    key = workspace.items()[0].key
+
+    workspace.launch(key)
+    assert calls[-1].executable.name == "1cv8c.exe"
+
+    # `settings_store` объявлено в `shell.py` как `object | None` (окну не
+    # положено знать настоящий тип) — та же причина, что у `Any`-возврата  # noqa: RUF003
+    # `_window_with_settings` ниже по файлу.
+    store: Any = window.settings_store
+    store.update(default_client=DefaultClient.THICK)
+    workspace.launch(key)
+    assert calls[-1].executable.name == "1cv8.exe"
+
+
 def test_build_main_window_installs_the_hotkey_native_filter(
     qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
 ) -> None:

@@ -477,8 +477,13 @@ def _build_main_window(
         recent_limit_seen = current
         view.rebuild()
 
+    def apply_default_client() -> None:
+        runtime.workspace.set_default_app(store.settings.default_client.app_value)
+
     apply_close_to_tray()
+    apply_default_client()
     store.changed.connect(apply_close_to_tray)
+    store.changed.connect(apply_default_client)
     store.changed.connect(rebuild_if_recent_limit_changed)
     settings_view.set_hotkey_handler(apply_hotkey)
 
