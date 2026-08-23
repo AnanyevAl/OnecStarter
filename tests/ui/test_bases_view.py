@@ -3474,6 +3474,90 @@ def test_clear_cache_silently_exits_when_directory_disappeared(
     view.clear_cache(item.key, CacheKind.PROGRAM)
 
 
+@pytest.mark.parametrize(
+    ("kind", "cleared_var", "kept_var", "title"),
+    [
+        (CacheKind.USER, "roaming", "local", "пользовательский"),
+        (CacheKind.PROGRAM, "local", "roaming", "программный"),
+    ],
+)
+def test_clear_cache_clears_exactly_requested_kind(
+    qtbot, workspace_factory, tmp_path, kind, cleared_var, kept_var, title
+):
+    """Долг №3 финального ревью: сценарий параметризован по CacheKind —
+    перепутанный вид на втором пункте ловится: удаляется ровно запрошенный
+    корень, второй не тронут, и вопрос называет правильный вид.
+    """
+    (tmp_path / "ibases.v8i").write_bytes(
+        f'[Кэшная]\r\nID={CACHE_GUID}\r\nConnect=File="C:\\B";\r\n'.encode()
+    )
+    ops = FakeCacheOps()
+    roots = {}
+    for var in ("roaming", "local"):
+        root = Path(tmp_path / var / "1C" / "1Cv8" / CACHE_GUID)
+        ops.tree[root] = []
+        ops.put(CacheEntry(root / "data.bin", EntryKind.FILE, 100))
+        roots[var] = root
+    asked: list[str] = []
+
+    def agree(parent, question):
+        asked.append(question)
+        return True
+
+    view, _calls, _errors, _opened = _view(
+        qtbot, workspace_factory,
+        cache_env=_cache_env(tmp_path), cache_ops=ops,
+        confirm_cache_clear=agree,
+        show_cache_report=lambda parent, text: None,
+    )
+    item = view.workspace().items()[0]
+    view.clear_cache(item.key, kind)
+    assert title in asked[0].casefold()
+    assert roots[cleared_var] not in ops.tree
+    assert roots[kept_var] in ops.tree
+    assert any(
+        e.path == roots[kept_var] / "data.bin" for e in ops.tree[roots[kept_var]]
+    )
+
+
+def test_clear_cache_ignores_unknown_key(qtbot, workspace_factory, tmp_path):
+    """Долг №4 финального ревью: запись исчезла между построением меню
+    и кликом (`item is None`) — молчаливый выход, как у remove_key и
+    create_shortcut: ни вопроса, ни сводки, ни ошибки, дерево не тронуто.
+    """  # noqa: RUF002
+    ops, _root = _ops_with_program_cache(tmp_path)
+    before = {p: list(es) for p, es in ops.tree.items()}
+    view, _calls, errors, _opened = _view(
+        qtbot, workspace_factory,
+        cache_env=_cache_env(tmp_path), cache_ops=ops,
+        confirm_cache_clear=lambda parent, q: pytest.fail("вопрос по пропавшей записи"),
+        show_cache_report=lambda parent, text: pytest.fail("сводка по пропавшей записи"),
+    )
+    view.clear_cache("id:00000000-0000-0000-0000-000000000000", CacheKind.PROGRAM)
+    assert ops.tree == before
+    assert errors == []
+
+
+def test_clear_cache_exits_when_address_is_gone(qtbot, workspace_factory, tmp_path):
+    """Долг №4 финального ревью: у записи нет валидного ID — `cache_path`
+    даёт `None`, сценарий молча выходит (`path is None`), не падая на
+    `is_dir(None)` и не задавая вопросов.
+    """  # noqa: RUF002
+    (tmp_path / "ibases.v8i").write_bytes(
+        '[БезID]\r\nConnect=File="C:\\B";\r\n'.encode()  # noqa: RUF001
+    )
+    ops = FakeCacheOps()
+    view, _calls, errors, _opened = _view(
+        qtbot, workspace_factory,
+        cache_env=_cache_env(tmp_path), cache_ops=ops,
+        confirm_cache_clear=lambda parent, q: pytest.fail("вопрос без адреса кэша"),
+        show_cache_report=lambda parent, text: pytest.fail("сводка без адреса кэша"),
+    )
+    item = view.workspace().items()[0]
+    view.clear_cache(item.key, CacheKind.PROGRAM)
+    assert errors == []
+
+
 def test_cache_menu_item_trigger_reaches_clear_cache_with_right_kind(
     qtbot, workspace_factory, tmp_path
 ):
