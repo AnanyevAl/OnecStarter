@@ -42,6 +42,7 @@ __all__ = [
     "RECENT_MAX",
     "RECENT_MIN",
     "SCHEMA_VERSION",
+    "DefaultClient",
     "Settings",
     "ThemeMode",
     "load_settings",
@@ -55,12 +56,33 @@ class ThemeMode(Enum):
     DARK = "dark"
 
 
+class DefaultClient(Enum):
+    """Чем запускать базу, когда клиент не указан в её записи (спека вехи §2).
+
+    «Конфигуратора» и «Авто» здесь нет намеренно (спека §2.4): конфигуратор
+    нельзя задать умолчанием, а «Авто» платформа отрабатывает сама через
+    /AppAutoCheckMode, когда выбор не сделан явно ([Ф] T-02.6).
+    """  # noqa: RUF002
+
+    THIN = "thin"
+    THICK = "thick"
+
+    @property
+    def app_value(self) -> str:
+        """Значение в формате ключа `App` секции `.v8i` — то, что ждёт `choose_client`."""
+        return _APP_VALUES[self]
+
+
+_APP_VALUES = {DefaultClient.THIN: "ThinClient", DefaultClient.THICK: "ThickClient"}
+
+
 @dataclass(frozen=True)
 class Settings:
     theme: ThemeMode = ThemeMode.AUTO
     close_to_tray: bool = True
     hotkey: str = DEFAULT_HOTKEY
     recent_limit: int = DEFAULT_RECENT_LIMIT
+    default_client: DefaultClient = DefaultClient.THIN
 
 
 def load_settings(path: Path) -> Settings:
@@ -85,6 +107,7 @@ def load_settings(path: Path) -> Settings:
         close_to_tray=_bool_of(payload.get("close_to_tray")),
         hotkey=_hotkey_of(payload.get("hotkey")),
         recent_limit=_recent_of(payload.get("recent_limit")),
+        default_client=_client_of(payload.get("default_client")),
     )
 
 
@@ -97,6 +120,7 @@ def save_settings(path: Path, settings: Settings) -> None:
         "close_to_tray": settings.close_to_tray,
         "hotkey": settings.hotkey,
         "recent_limit": settings.recent_limit,
+        "default_client": settings.default_client.value,
     }
     text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
     atomic_write(path, text.encode("utf-8"))
@@ -108,6 +132,14 @@ def _theme_of(value: Any) -> ThemeMode:
         return ThemeMode(value)
     except ValueError:
         return ThemeMode.AUTO
+
+
+def _client_of(value: Any) -> DefaultClient:
+    """Незнакомое значение — не порча: более новая версия могла записать своё."""
+    try:
+        return DefaultClient(value)
+    except ValueError:
+        return DefaultClient.THIN
 
 
 def _bool_of(value: Any) -> bool:

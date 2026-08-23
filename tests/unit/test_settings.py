@@ -9,6 +9,7 @@ from onecstarter.services.settings import (
     DEFAULT_HOTKEY,
     DEFAULT_RECENT_LIMIT,
     SCHEMA_VERSION,
+    DefaultClient,
     Settings,
     ThemeMode,
     load_settings,
@@ -27,7 +28,7 @@ def test_round_trip(tmp_path: Path) -> None:
 
 
 def test_schema_is_written(tmp_path: Path) -> None:
-    """Файл несёт все пять ключей, включая номер схемы.
+    """Файл несёт все шесть ключей, включая номер схемы.
 
     Долг №3 вехи закрыт здесь: соседний `test_all_fields_are_written` проверял
     ровно то же самое на дефолтных настройках и удалён. Разница была
@@ -43,6 +44,7 @@ def test_schema_is_written(tmp_path: Path) -> None:
         "close_to_tray": True,
         "hotkey": "Ctrl+Alt+B",
         "recent_limit": 10,
+        "default_client": "thin",
     }
 
 
@@ -187,3 +189,27 @@ def test_recent_limit_is_clamped(tmp_path: Path, value: object, expected: int) -
     path = tmp_path / "settings.json"
     path.write_text(json.dumps({"schema": 1, "recent_limit": value}), encoding="utf-8")
     assert load_settings(path).recent_limit == expected
+
+
+class TestDefaultClient:
+    def test_round_trip(self, tmp_path: Path) -> None:
+        path = tmp_path / "settings.json"
+        save_settings(path, Settings(default_client=DefaultClient.THICK))
+        assert load_settings(path).default_client is DefaultClient.THICK
+
+    def test_missing_key_is_thin(self, tmp_path: Path) -> None:
+        """Старый файл без ключа читается без миграции (докстринг модуля)."""
+        path = tmp_path / "settings.json"
+        path.write_text('{"schema": 1}', encoding="utf-8")
+        assert load_settings(path).default_client is DefaultClient.THIN
+
+    def test_unknown_value_is_thin(self, tmp_path: Path) -> None:
+        """Незнакомое значение — не порча: дефолт поля, как у режима темы."""  # noqa: RUF002
+        path = tmp_path / "settings.json"
+        path.write_text('{"schema": 1, "default_client": "designer"}', encoding="utf-8")
+        assert load_settings(path).default_client is DefaultClient.THIN
+
+    def test_app_values_match_v8i_app_key(self) -> None:
+        """Значения — формат ключа `App` секции: их ждёт `choose_client`."""
+        assert DefaultClient.THIN.app_value == "ThinClient"
+        assert DefaultClient.THICK.app_value == "ThickClient"
