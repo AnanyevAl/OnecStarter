@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OneCStarter v2 — раздел «Серверы», мокап</title>
+<style>
+  :root { --page:#eceef1; --ink:#14171a; --muted:#5a6169; --line:#d3d7dd; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:34px 24px 72px; background:var(--page); color:var(--ink);
+         font:15px/1.55 "Segoe UI", system-ui, sans-serif; }
+  .wrap { max-width:1260px; margin:0 auto; }
+  h1 { font-size:26px; margin:0 0 6px; letter-spacing:-.015em; }
+  .lede { color:var(--muted); margin:0 0 8px; max-width:80ch; }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted);
+       margin:38px 0 6px; font-weight:600; }
+  h2 + p { margin:0 0 14px; color:var(--muted); font-size:13.5px; max-width:80ch; }
+  .pair { display:grid; grid-template-columns:1fr 1fr; gap:18px; }
+  @media (max-width:960px){ .pair { grid-template-columns:1fr; } }
+  .frame { border:1px solid var(--line); border-radius:10px; overflow:hidden; background:#fff; }
+  .frame > .cap { padding:8px 13px; font-size:11.5px; font-weight:600; letter-spacing:.05em;
+                  text-transform:uppercase; color:var(--muted); border-bottom:1px solid var(--line);
+                  background:#f7f8fa; }
+  code { font:12.5px/1.4 Consolas, "Cascadia Mono", monospace; background:#eef0f3;
+         padding:1px 5px; border-radius:3px; }
+
+  /* ============ окно приложения (палитра рестайла T-06, без новых цветов) ============ */
+  .app { font:13px/1.4 "Segoe UI", system-ui, sans-serif; display:flex; height:470px;
+         background:var(--bg); color:var(--text); position:relative; }
+  .app.light {
+    --bg:#fafafa; --surface:#f0f1f3; --raised:#ffffff; --border:#d8dbe0;
+    --text:#1a1a1a; --dim:#5c5c5c; --acc-text:#8a6600; --acc-fill:#f2d54c;
+    --problem:#c62828; --sel:#fdf3cf; --sel-text:#1a1a1a;
+  }
+  .app.dark {
+    --bg:#161616; --surface:#1e1e1e; --raised:#262626; --border:#333333;
+    --text:#e8e8e8; --dim:#9a9a9a; --acc-text:#f2d54c; --acc-fill:#f2d54c;
+    --problem:#e57373; --sel:#262626; --sel-text:#e8e8e8;
+  }
+  .rail { width:76px; flex:none; background:var(--surface); border-right:1px solid var(--border);
+          display:flex; flex-direction:column; padding:8px 0; gap:2px; }
+  .rail .item { font-size:11px; padding:8px 4px; text-align:center; color:var(--dim);
+                cursor:default; }
+  .rail .item .ico { display:block; font-size:16px; margin-bottom:2px; line-height:1.1; }
+  .rail .item.on { color:var(--acc-text); box-shadow:inset 2px 0 0 var(--acc-fill);
+                   background:var(--raised); }
+  .pane { flex:1; min-width:0; overflow:auto; padding:16px 20px; }
+  .pane h3 { margin:0 0 3px; font-size:17px; }
+  .pane .sub { margin:0 0 14px; color:var(--dim); font-size:12px; }
+  .glabel { font-size:11px; text-transform:uppercase; letter-spacing:.07em;
+            color:var(--acc-text); font-weight:700; margin:18px 0 6px; }
+  .btn { border:1px solid var(--border); background:var(--raised); border-radius:4px;
+         padding:2px 9px; font-size:11.5px; color:var(--text); white-space:nowrap; }
+  .btn.off { color:var(--dim); opacity:.55; }
+  .btn.acc { border-color:var(--acc-fill); }
+  .dim { color:var(--dim); } .prob { color:var(--problem); }
+  .mono { font:12px/1.45 Consolas, "Cascadia Mono", monospace; }
+  .headrow { display:flex; align-items:flex-start; gap:8px; }
+  .headrow h3 { flex:1; }
+
+  /* профиль сервера */
+  .srv { display:flex; align-items:flex-start; gap:12px; padding:9px 0;
+         border-top:1px solid var(--border); }
+  .srv:first-of-type { border-top:none; }
+  .srv .body { flex:1; min-width:0; }
+  .srv .t { font-size:13px; font-weight:600; display:flex; align-items:center; gap:9px;
+            flex-wrap:wrap; }
+  .srv .d { font-size:11.5px; color:var(--dim); margin-top:2px; }
+  .srv .ctl { flex:none; padding-top:2px; display:flex; gap:6px; }
+  .st { font-size:11px; font-weight:400; border:1px solid var(--border); border-radius:99px;
+        padding:1px 8px; color:var(--dim); white-space:nowrap; }
+  .st.on { color:var(--acc-text); border-color:var(--acc-fill); }
+  .st.bad { color:var(--problem); border-color:var(--problem); }
+
+  /* другие серверы */
+  .other { padding:4px 0; font-size:12px; color:var(--dim); display:flex; gap:8px;
+           align-items:baseline; border-top:1px solid var(--border); }
+  .other:first-of-type { border-top:none; }
+  .other .mono { font-size:11.5px; }
+
+  /* диалоги */
+  .dlg { background:var(--raised); border:1px solid var(--border); border-radius:8px;
+         box-shadow:0 8px 22px rgba(0,0,0,.28); padding:13px 15px; font-size:12.5px;
+         color:var(--text); max-width:430px; }
+  .dlg .dt { font-weight:600; font-size:13px; margin-bottom:8px; }
+  .dlg .dtext { margin:0 0 10px; color:var(--text); }
+  .dlg .dnote { color:var(--dim); font-size:11.5px; margin-top:6px; }
+  .dlg .acts { display:flex; gap:6px; justify-content:flex-end; margin-top:10px; }
+  .field { display:flex; align-items:center; gap:10px; margin:7px 0; }
+  .field .fl { width:128px; flex:none; color:var(--dim); font-size:12px; }
+  .in { border:1px solid var(--border); border-radius:4px; background:var(--bg);
+        padding:3px 8px; font-size:12px; color:var(--text); min-width:60px;
+        display:inline-block; }
+  .in.mono { font-size:11.5px; }
+  .in.sel-like::after { content:" ▾"; color:var(--dim); }
+  .sw { width:34px; height:19px; border-radius:99px; background:var(--border);
+        position:relative; display:inline-block; flex:none; }
+  .sw.on { background:var(--acc-fill); }
+  .sw::after { content:""; position:absolute; top:2px; left:2px; width:15px; height:15px;
+               border-radius:50%; background:var(--raised); }
+  .sw.on::after { left:auto; right:2px; background:#fff; }
+  .dlgfloat { padding:20px; display:flex; gap:22px; align-items:flex-start; flex-wrap:wrap; }
+  .dlgfloat.light { background:#fafafa; } .dlgfloat.dark { background:#161616; }
+
+  /* выбор версии консоли */
+  .vrow { display:flex; align-items:center; gap:9px; padding:5px 4px;
+          border-top:1px solid var(--border); font-size:12.5px; }
+  .vrow:first-of-type { border-top:none; }
+  .vrow .vnum { font-variant-numeric:tabular-nums; flex:1; }
+  .vrow .cur { font-size:11px; color:var(--acc-text); border:1px solid var(--acc-fill);
+               border-radius:99px; padding:0 7px; }
+
+  .final { background:#fff; border:1px solid var(--line); border-left:3px solid #8a6600;
+           border-radius:6px; padding:14px 17px; margin-top:30px; }
+  .final ul { margin:8px 0 0; padding-left:20px; } .final li { margin:3px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>OneCStarter v2 — раздел «Серверы»</h1>
+<p class="lede">Мокап к спеке
+<code>2026-08-26-v2-servers-design.md</code>. Имена профилей, пути и PID вымышленные.
+Палитра — рестайла T-06 без новых цветов: «работает» — акцент, беда — problem,
+зелёного в палитре нет и не появляется. Значок раздела в рельсе здесь условный —
+настоящий будет рисованным, как остальные.</p>
+
+<h2>Раздел «Серверы»</h2>
+<p>Список профилей со статусом по живым процессам. Четыре состояния строки: работает
+(остановить можно), остановлен (запустить можно), работает как служба (остановка
+неактивна с объяснением), версия не установлена (запуск неактивен, подсветка как
+у баз). Ниже — справочный блок «Другие серверы на машине»: без кнопок, отвечает
+на вопрос «почему порт занят».</p>
+<div class="pair">
+
+  <div class="frame"><div class="cap">Светлая</div>
+  <div class="app light">
+    <div class="rail">
+      <div class="item"><span class="ico">▤</span>Базы</div>
+      <div class="item on"><span class="ico">⛁</span>Серверы</div>
+      <div class="item"><span class="ico">⚙</span>Настройки</div>
+    </div>
+    <div class="pane">
+      <div class="headrow">
+        <h3>Серверы</h3>
+        <span class="btn">Консоль администрирования…</span>
+        <span class="btn acc">+ Профиль</span>
+      </div>
+      <p class="sub">%APPDATA%\OneCStarter\servers.json · статус — по живым процессам · консоль: 8.3.25.1633</p>
+
+      <div class="srv">
+        <div class="body">
+          <div class="t">8.3.25 отладка <span class="st on">● работает · PID 18244</span></div>
+          <div class="d mono">8.3.25 → 8.3.25.1633 · порты 1540 / 1541 / 1560–1591 · -debug -http</div>
+          <div class="d mono">E:\srv\srv_8.3.25.1633</div>
+        </div>
+        <div class="ctl"><span class="btn">Остановить</span></div>
+      </div>
+
+      <div class="srv">
+        <div class="body">
+          <div class="t">8.3.27 эксперименты <span class="st">○ остановлен</span></div>
+          <div class="d mono">8.3.27 → 8.3.27.2214 · порты 1640 / 1641 / 1660–1691 · -debug -http</div>
+          <div class="d mono">E:\srv\srv_8.3.27.2214</div>
+        </div>
+        <div class="ctl"><span class="btn">Запустить</span></div>
+      </div>
+
+      <div class="srv">
+        <div class="body">
+          <div class="t">Общий стенд <span class="st on">● работает · служба</span></div>
+          <div class="d mono">8.3.22 → 8.3.22.1923 · порты 1740 / 1741 / 1760–1791</div>
+          <div class="d mono">D:\clusters\stand</div>
+          <div class="d">Запущен как служба Windows — остановка службами не управляется отсюда</div>
+        </div>
+        <div class="ctl"><span class="btn off">Остановить</span></div>
+      </div>
+
+      <div class="srv">
+        <div class="body">
+          <div class="t">8.5.1 будущее <span class="st bad">версия не установлена</span></div>
+          <div class="d mono"><span class="prob">8.5.1 → ?</span> · порты 1840 / 1841 / 1860–1891</div>
+          <div class="d mono">E:\srv\srv_8.5.1</div>
+        </div>
+        <div class="ctl"><span class="btn off">Запустить</span></div>
+      </div>
+
+      <div class="glabel">Другие серверы на машине</div>
+      <div class="other"><span class="mono">PID 4120</span><span class="mono">8.3.22.1923</span><span class="mono">порты 2040 / 2041</span><span class="mono">D:\clusters\prod</span><span>служба</span></div>
+      <div class="other"><span class="mono">PID 9377</span><span class="mono">8.3.25.1633</span><span class="mono">порты 3540 / 3541</span><span class="mono">C:\Temp\srv-test</span></div>
+    </div>
+  </div></div>
+
+  <div class="frame"><div class="cap">Тёмная</div>
+  <div class="app dark">
+    <div class="rail">
+      <div class="item"><span class="ico">▤</span>Базы</div>
+      <div class="item on"><span class="ico">⛁</span>Серверы</div>
+      <div class="item"><span class="ico">⚙</span>Настройки</div>
+    </div>
+    <div class="pane">
+      <div class="headrow">
+        <h3>Серверы</h3>
+        <span class="btn">Консоль администрирования…</span>
+        <span class="btn acc">+ Профиль</span>
+      </div>
+      <p class="sub">%APPDATA%\OneCStarter\servers.json · статус — по живым процессам · консоль: 8.3.25.1633</p>
+
+      <div class="srv">
+        <div class="body">
+          <div class="t">8.3.25 отладка <span class="st on">● работает · PID 18244</span></div>
+          <div class="d mono">8.3.25 → 8.3.25.1633 · порты 1540 / 1541 / 1560–1591 · -debug -http</div>
+          <div class="d mono">E:\srv\srv_8.3.25.1633</div>
+        </div>
+        <div class="ctl"><span class="btn">Остановить</span></div>
+      </div>
+
+      <div class="srv">
+        <div class="body">
+          <div class="t">8.3.27 эксперименты <span class="st">○ остановлен</span></div>
+          <div class="d mono">8.3.27 → 8.3.27.2214 · порты 1640 / 1641 / 1660–1691 · -debug -http</div>
+          <div class="d mono">E:\srv\srv_8.3.27.2214</div>
+        </div>
+        <div class="ctl"><span class="btn">Запустить</span></div>
+      </div>
+
+      <div class="srv">
+        <div class="body">
+          <div class="t">Общий стенд <span class="st on">● работает · служба</span></div>
+          <div class="d mono">8.3.22 → 8.3.22.1923 · порты 1740 / 1741 / 1760–1791</div>
+          <div class="d mono">D:\clusters\stand</div>
+          <div class="d">Запущен как служба Windows — остановка службами не управляется отсюда</div>
+        </div>
+        <div class="ctl"><span class="btn off">Остановить</span></div>
+      </div>
+
+      <div class="srv">
+        <div class="body">
+          <div class="t">8.5.1 будущее <span class="st bad">версия не установлена</span></div>
+          <div class="d mono"><span class="prob">8.5.1 → ?</span> · порты 1840 / 1841 / 1860–1891</div>
+          <div class="d mono">E:\srv\srv_8.5.1</div>
+        </div>
+        <div class="ctl"><span class="btn off">Запустить</span></div>
+      </div>
+
+      <div class="glabel">Другие серверы на машине</div>
+      <div class="other"><span class="mono">PID 4120</span><span class="mono">8.3.22.1923</span><span class="mono">порты 2040 / 2041</span><span class="mono">D:\clusters\prod</span><span>служба</span></div>
+      <div class="other"><span class="mono">PID 9377</span><span class="mono">8.3.25.1633</span><span class="mono">порты 3540 / 3541</span><span class="mono">C:\Temp\srv-test</span></div>
+    </div>
+  </div></div>
+
+</div>
+
+<h2>Диалог профиля</h2>
+<p>Создание и правка. Версию можно задать маской — рядом сразу видно, во что она
+разрешается на этой машине. Каталог кластера подставляется от «Корня каталогов
+серверов» из «Настроек» и разрешённой версии; валидация не пускает пересечение
+портов и дубль каталога с другими профилями. Справа — тот же диалог с ошибкой:
+«ОК» неактивен, причина названа.</p>
+<div class="pair">
+
+  <div class="frame"><div class="cap">Светлая · корректное состояние</div>
+    <div class="dlgfloat light">
+      <div class="app light" style="height:auto;display:block;background:none">
+        <div class="dlg">
+          <div class="dt">Профиль сервера</div>
+          <div class="field"><span class="fl">Имя</span><span class="in" style="flex:1">8.3.27 эксперименты</span></div>
+          <div class="field"><span class="fl">Версия</span><span class="in sel-like">8.3.27</span><span class="dim mono">→ 8.3.27.2214</span></div>
+          <div class="field"><span class="fl">Порт</span><span class="in mono">1640</span><span class="fl" style="width:auto">регистрации</span><span class="in mono">1641</span></div>
+          <div class="field"><span class="fl">Диапазон</span><span class="in mono">1660:1691</span></div>
+          <div class="field"><span class="fl">Каталог кластера</span><span class="in mono" style="flex:1">E:\srv\srv_8.3.27.2214</span><span class="btn">Обзор…</span></div>
+          <div class="field"><span class="fl">Отладка (-debug)</span><span class="sw on"></span></div>
+          <div class="field"><span class="fl">HTTP (-http)</span><span class="sw on"></span></div>
+          <div class="field"><span class="fl">Доп. аргументы</span><span class="in mono" style="flex:1">&nbsp;</span></div>
+          <div class="dnote">Каталог подставлен от разрешённой версии и после этого не пересчитывается —
+            новый патч платформы не «переедет» профиль на пустой кластер</div>
+          <div class="acts"><span class="btn acc">ОК</span><span class="btn">Отмена</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="frame"><div class="cap">Тёмная · ошибка валидации</div>
+    <div class="dlgfloat dark">
+      <div class="app dark" style="height:auto;display:block;background:none">
+        <div class="dlg">
+          <div class="dt">Профиль сервера</div>
+          <div class="field"><span class="fl">Имя</span><span class="in" style="flex:1">Дубль отладки</span></div>
+          <div class="field"><span class="fl">Версия</span><span class="in sel-like">8.3.25</span><span class="dim mono">→ 8.3.25.1633</span></div>
+          <div class="field"><span class="fl">Порт</span><span class="in mono prob">1540</span><span class="fl" style="width:auto">регистрации</span><span class="in mono">2541</span></div>
+          <div class="field"><span class="fl">Диапазон</span><span class="in mono">2560:2591</span></div>
+          <div class="field"><span class="fl">Каталог кластера</span><span class="in mono" style="flex:1">E:\srv\srv2</span><span class="btn">Обзор…</span></div>
+          <div class="field"><span class="fl">Отладка (-debug)</span><span class="sw on"></span></div>
+          <div class="field"><span class="fl">HTTP (-http)</span><span class="sw"></span></div>
+          <div class="dnote prob">Порт 1540 уже занят профилем «8.3.25 отладка»</div>
+          <div class="acts"><span class="btn off">ОК</span><span class="btn">Отмена</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<h2>Смена версии консоли администрирования</h2>
+<p>По кнопке «Консоль администрирования…». Список — только версии с
+<code>radmin.dll</code>; текущая зарегистрированная помечена (если её удалось
+определить — вопрос T-07.9, иначе пометки нет и строка статуса говорит
+«неизвестно»). Одно действие — перерегистрация и запуск консоли; UAC назван
+до нажатия, отказ в UAC — штатный исход.</p>
+<div class="pair">
+
+  <div class="frame"><div class="cap">Светлая</div>
+    <div class="dlgfloat light">
+      <div class="app light" style="height:auto;display:block;background:none">
+        <div class="dlg" style="min-width:330px">
+          <div class="dt">Консоль администрирования</div>
+          <div class="vrow"><span class="vnum">8.3.22.1923</span></div>
+          <div class="vrow"><span class="vnum">8.3.25.1633</span><span class="cur">текущая</span></div>
+          <div class="vrow"><span class="vnum">8.3.27.2214</span></div>
+          <div class="dnote">Смена версии перерегистрирует radmin.dll — Windows спросит
+            подтверждение администратора (UAC)</div>
+          <div class="acts"><span class="btn acc">Сделать текущей и открыть</span><span class="btn">Открыть</span><span class="btn">Отмена</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="frame"><div class="cap">Тёмная</div>
+    <div class="dlgfloat dark">
+      <div class="app dark" style="height:auto;display:block;background:none">
+        <div class="dlg" style="min-width:330px">
+          <div class="dt">Консоль администрирования</div>
+          <div class="vrow"><span class="vnum">8.3.22.1923</span></div>
+          <div class="vrow"><span class="vnum">8.3.25.1633</span><span class="cur">текущая</span></div>
+          <div class="vrow"><span class="vnum">8.3.27.2214</span></div>
+          <div class="dnote">Смена версии перерегистрирует radmin.dll — Windows спросит
+            подтверждение администратора (UAC)</div>
+          <div class="acts"><span class="btn acc">Сделать текущей и открыть</span><span class="btn">Открыть</span><span class="btn">Отмена</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<h2>Краевые состояния</h2>
+<p>Три сообщения, тексты которых стоит утвердить сейчас. Удаление работающего
+профиля не убивает сервер (решение 8) — и диалог обязан это сказать; дефолт —
+«Отмена», как у очистки кэша. Отказ в UAC — не ошибка программы. «Запустился
+и сразу умер» — подтверждающий скан после старта; точная отсылка к логу ragent
+появится по итогам T-07.11.</p>
+<div class="pair">
+
+  <div class="frame"><div class="cap">Светлая</div>
+    <div class="dlgfloat light">
+      <div class="app light" style="height:auto;display:block;background:none">
+        <div class="dlg">
+          <div class="dt">Удалить профиль «8.3.25 отладка»?</div>
+          <p class="dtext">Сервер сейчас работает (PID 18244). Он продолжит работать
+            и перейдёт в «Другие серверы на машине» — остановить его отсюда станет нельзя.</p>
+          <div class="acts"><span class="btn">Удалить</span><span class="btn acc">Отмена</span></div>
+        </div>
+      </div>
+      <div class="app light" style="height:auto;display:block;background:none">
+        <div class="dlg">
+          <div class="dt">Версия консоли не изменена</div>
+          <p class="dtext">Запрос прав администратора отклонён. Регистрация не выполнялась,
+            текущей осталась 8.3.25.1633.</p>
+          <div class="acts"><span class="btn acc">Закрыть</span></div>
+        </div>
+      </div>
+      <div class="app light" style="height:auto;display:block;background:none">
+        <div class="dlg">
+          <div class="dt">Сервер не запустился</div>
+          <p class="dtext">«8.3.27 эксперименты» завершился сразу после запуска.
+            Частая причина — занятый порт (1640). Подробности — в логе сервера.</p>
+          <div class="acts"><span class="btn acc">Закрыть</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="frame"><div class="cap">Тёмная</div>
+    <div class="dlgfloat dark">
+      <div class="app dark" style="height:auto;display:block;background:none">
+        <div class="dlg">
+          <div class="dt">Удалить профиль «8.3.25 отладка»?</div>
+          <p class="dtext">Сервер сейчас работает (PID 18244). Он продолжит работать
+            и перейдёт в «Другие серверы на машине» — остановить его отсюда станет нельзя.</p>
+          <div class="acts"><span class="btn">Удалить</span><span class="btn acc">Отмена</span></div>
+        </div>
+      </div>
+      <div class="app dark" style="height:auto;display:block;background:none">
+        <div class="dlg">
+          <div class="dt">Версия консоли не изменена</div>
+          <p class="dtext">Запрос прав администратора отклонён. Регистрация не выполнялась,
+            текущей осталась 8.3.25.1633.</p>
+          <div class="acts"><span class="btn acc">Закрыть</span></div>
+        </div>
+      </div>
+      <div class="app dark" style="height:auto;display:block;background:none">
+        <div class="dlg">
+          <div class="dt">Сервер не запустился</div>
+          <p class="dtext">«8.3.27 эксперименты» завершился сразу после запуска.
+            Частая причина — занятый порт (1640). Подробности — в логе сервера.</p>
+          <div class="acts"><span class="btn acc">Закрыть</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="final">
+  <b>Чего в разделе нет — сознательно (спека §11)</b>
+  <ul>
+    <li>Установки/снятия <code>ragent</code> как службы и управления службами —
+      совпавшая служба только показывается.</li>
+    <li>Собственной консоли администрирования (rac/ras) — консоль остаётся штатной MMC.</li>
+    <li><code>rphost</code>/<code>rmngr</code> — внутренности кластера смотрят в MMC.</li>
+    <li>Паролей кластера — не хранятся и не спрашиваются.</li>
+    <li>Автостарта серверов при входе в Windows — профиль запускается руками.</li>
+  </ul>
+</div>
+
+</div>
+</body>
+</html>
