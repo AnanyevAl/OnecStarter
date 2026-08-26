@@ -31,3 +31,4 @@ temp/
 
 # Настройки IDE — у каждого свои
 .vscode/
+graphify-out/*
