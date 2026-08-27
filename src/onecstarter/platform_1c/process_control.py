@@ -61,7 +61,12 @@ class PsutilControl:
         for child in children:
             try:
                 info = child.as_dict(attrs=["pid", "name", "cmdline", "exe", "create_time"])
-            except (psutil.AccessDenied, psutil.NoSuchProcess):
+            except psutil.NoSuchProcess:
+                # Гонка: ребёнок умер между .children() и .as_dict() — пропускаем
+                # только его. AccessDenied здесь не ловим: as_dict гасит его сам  # noqa: RUF003
+                # на каждом поле по отдельности, подставляя None (см. исходник
+                # psutil.Process.as_dict — except (AccessDenied, ZombieProcess):
+                # ret = ad_value) — до этого except он никогда не долетает.
                 continue
             cmdline = info.get("cmdline")
             exe = info.get("exe")
