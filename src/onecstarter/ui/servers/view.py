@@ -39,9 +39,20 @@ assets/2026-08-26-v2-servers-mockup.html), секция «Раздел „Сер
 Удаление вынесено в контекстное меню карточки, а не в кнопку (круг правок 1
 ревью задачи 14, решение контроллера): эталон мокапа несёт на карточке
 ровно одну кнопку, а паттерн проекта для разрушительных действий —
-контекстное меню (`BasesView._build_menu`/`_show_menu`). Тот же приём
-разделения: `_build_card_menu` собирает `QMenu` без показа (тестам и
-показу), `customContextMenuRequested` карточки его же и `exec()`-ит.
+контекстное меню (`BasesView._build_menu`/`_show_menu`).
+
+`_build_card_menu` строит `QMenu` ЛЕНИВО — по факту правого клика внутри
+обработчика `customContextMenuRequested`, тот же приём, что и
+`BasesView._show_menu` (не в `_build_menu` заранее для всех строк). Между
+`rebuild()` в `self` не хранится ни одного `QMenu` — только пара
+`(profile_id, running)` на карточку (круг правок 2 ревью задачи 14, находка
+подтверждена эмпирически): жадная сборка меню на каждый `rebuild()`
+плодила осиротевший `QMenu`+`QAction` на профиль на каждый тик, потому что
+`_clear()` убивает только карточки, а меню с родителем `self` переживают
+любое число `rebuild()` вплоть до смерти самой вьюхи — и будут дёргаться
+периодическим сканом (задача 16) на каждое обновление списка процессов,
+а не на реальный клик пользователя. Тестовый аксессор `profile_menu(index)`
+строит меню тем же ленивым билдером по требованию — не читает список.
 """  # noqa: RUF002
 
 from collections.abc import Callable, Sequence
@@ -209,7 +220,10 @@ class ServersView(QWidget):
         self._profile_rows: list[ProfileRow] = []
         self._profile_status_labels: list[QLabel] = []
         self._profile_buttons: list[QPushButton] = []
-        self._profile_menus: list[QMenu] = []
+        # (profile_id, running) на карточку — не QMenu (круг правок 2 ревью
+        # задачи 14): меню строится лениво по клику/по требованию теста,
+        # см. `_build_card_menu`/`profile_menu` и докстринг модуля.
+        self._profile_menu_args: list[tuple[str, bool]] = []
         self._profile_warning_texts: list[list[str]] = []
         self._profile_extinguish_buttons: list[QPushButton | None] = []
         self._foreign_row_texts: list[str] = []
@@ -273,7 +287,7 @@ class ServersView(QWidget):
         self._profile_rows = []
         self._profile_status_labels = []
         self._profile_buttons = []
-        self._profile_menus = []
+        self._profile_menu_args = []
         self._profile_warning_texts = []
         self._profile_extinguish_buttons = []
         self._foreign_row_texts = []
@@ -359,13 +373,15 @@ class ServersView(QWidget):
         # Удаление — контекстным меню карточки, не кнопкой (круг правок 1
         # ревью задачи 14): эталон мокапа несёт одну кнопку на карточку,
         # разрушительное действие — тем же паттерном, что и у BasesView  # noqa: RUF003
-        # (_build_menu/_show_menu): собрать меню без показа отдельным
-        # методом (тестам и показу), сам показ — через
-        # customContextMenuRequested и exec() по глобальной позиции клика.
-        menu = self._build_card_menu(profile.id, running)
+        # (_build_menu/_show_menu). Меню строится ЛЕНИВО внутри обработчика —
+        # круг правок 2: жадная сборка на каждый rebuild() плодила
+        # осиротевший QMenu на профиль на каждый тик периодического скана
+        # (см. докстринг модуля); здесь сохраняются только (id, running).
         card.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         card.customContextMenuRequested.connect(
-            lambda position, w=card, m=menu: m.exec(w.mapToGlobal(position))
+            lambda position, w=card, pid=profile.id, r=running: (
+                self._build_card_menu(pid, r).exec(w.mapToGlobal(position))
+            )
         )
 
         warnings: list[str] = []
@@ -412,17 +428,20 @@ class ServersView(QWidget):
         )
         self._profile_status_labels.append(status_label)
         self._profile_buttons.append(toggle_button)
-        self._profile_menus.append(menu)
+        self._profile_menu_args.append((profile.id, running))
         self._profile_warning_texts.append(warnings)
         self._profile_extinguish_buttons.append(extinguish_button)
 
     def _build_card_menu(self, profile_id: str, running: bool) -> QMenu:
-        """Контекстное меню карточки без показа — тестам и показу (см. докстринг модуля).
+        """Собрать контекстное меню карточки без показа — по требованию, не заранее.
 
-        Один пункт сегодня («Удалить профиль…»); отдельный метод — тот же
-        приём, что `BasesView._build_menu`, а не однострочный `QMenu` внутри
-        `_build_card`: состав пунктов проверяется на настоящем виджете без
-        блокирующего `exec()`.
+        Вызывается лениво: из обработчика `customContextMenuRequested`
+        (реальный клик) и из `profile_menu` (тестовый аксессор) — никогда
+        из `_build_card`/`rebuild()` (круг правок 2 ревью задачи 14, см.
+        докстринг модуля). Отдельный метод, а не однострочный `QMenu` внутри
+        вызывающих — тот же приём, что `BasesView._build_menu`: состав
+        пунктов проверяется на настоящем виджете без блокирующего `exec()`.
+        Один пункт сегодня — «Удалить профиль…».
         """  # noqa: RUF002
         menu = QMenu(self)
         menu.addAction(
@@ -531,11 +550,14 @@ class ServersView(QWidget):
     def profile_menu(self, index: int) -> QMenu:
         """Контекстное меню карточки — тестам, без показа (по образцу `BasesView`).
 
-        Меню собирается один раз при `rebuild()` (`_build_card_menu`) и это
-        оно же несёт `customContextMenuRequested` — тестируется прямым
+        Строит СВЕЖИЙ `QMenu` тем же ленивым билдером (`_build_card_menu`),
+        что и реальный клик — не читает предсозданный список (круг правок 2
+        ревью задачи 14: между `rebuild()` в `self` не хранится ни одного
+        `QMenu`, только пара `(profile_id, running)`). Тестируется прямым
         `trigger()` пункта, не открытием настоящего `QMenu.exec()`.
         """
-        return self._profile_menus[index]
+        profile_id, running = self._profile_menu_args[index]
+        return self._build_card_menu(profile_id, running)
 
     def profile_warnings(self, index: int) -> list[str]:
         return list(self._profile_warning_texts[index])
