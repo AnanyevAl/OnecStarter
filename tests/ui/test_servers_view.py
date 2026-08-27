@@ -505,6 +505,139 @@ def test_stop_failure_is_shown_via_show_error(application: QApplication, tmp_pat
     assert "PID 100" in errors[0]
 
 
+# -- задача 16, §8: подтверждающий скан после «Запустить» --------------------
+#
+# `workspace.start()` не трогает снимок процессов сам (спека T-08.12): сразу
+# после успешного запуска `statuses()` всё ещё отдаёт «остановлен» по
+# СТАРОМУ снимку — свежих данных ждать неоткуда до следующего `apply_scan`.  # noqa: RUF003
+# Поэтому `rebuild()`, вызванный ВНУТРИ `_toggle` сразу после `start()`,
+# не может быть тем самым «следующим rebuild()», который проверяет §8: он
+# использует тот же снимок, что и до запуска, и ложно репортовал бы «умер»
+# на КАЖДЫЙ успешный запуск. `ServersView._toggle` поэтому запоминает
+# профиль как «ожидает подтверждения» ПОСЛЕ этого немедленного rebuild(),
+# а не до — так проверка достаётся ровно следующему вызову `rebuild()`,  # noqa: RUF003
+# отражающему уже НОВЫЙ снимок (в приложении — из `monitor.snapshot_ready`,
+# здесь — из явного `workspace.apply_scan(...)` + `view.rebuild()`).
+
+
+def test_start_that_dies_silently_is_reported(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ, [Ф] А3: смерть ragent молчалива, в лог ничего не пишется —
+
+    единственный канал, которым пользователь может об этом узнать, это
+    `show_error` из `ServersView` сама по себе. Мутация «не проверять
+    подтверждающий скан» (или «проверять его на том же rebuild(), что и сам
+    клик») обязана уронить этот тест.
+    """  # noqa: RUF002
+    profile = _profile()
+    workspace = _workspace(tmp_path, (profile,))
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+    errors: list[str] = []
+
+    view = ServersView(
+        workspace,
+        installed=lambda: [_installation()],
+        palette=theme.DARK,
+        show_error=lambda message: errors.append(message),
+    )
+
+    view.profile_button(0).click()
+    assert errors == [], "на самом клике репорта быть не должно — снимок ещё старый"
+
+    # Подтверждающий скан: ragent так и не появился в списке процессов —
+    # тот же исход, что и «умер сразу после старта, порт занят».
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+    view.rebuild()
+
+    assert errors
+    assert profile.name in errors[0]
+    assert str(profile.port) in errors[0]
+
+
+def test_start_confirmed_running_reports_nothing(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Обратная сторона защитного теста: подтверждающий скан нашёл процесс —
+
+    никакого сообщения, профиль просто жив.
+    """
+    profile = _profile()
+    workspace = _workspace(tmp_path, (profile,))
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+    errors: list[str] = []
+
+    view = ServersView(
+        workspace,
+        installed=lambda: [_installation()],
+        palette=theme.DARK,
+        show_error=lambda message: errors.append(message),
+    )
+
+    view.profile_button(0).click()
+    workspace.apply_scan(ScanSnapshot(agents=(_agent(100, profile.cluster_dir),), managers=()))
+    view.rebuild()
+
+    assert errors == []
+
+
+def test_confirmation_check_fires_only_once(application: QApplication, tmp_path: Path) -> None:
+    """Один факт постановки в ожидание — не более одного сообщения.
+
+    Второй и следующие `rebuild()` после уже проверенного запуска не должны
+    повторять предупреждение — иначе, например, смена темы (`apply_palette`
+    зовёт `rebuild()`) заново показывала бы уже прочитанное сообщение.
+    """
+    profile = _profile()
+    workspace = _workspace(tmp_path, (profile,))
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+    errors: list[str] = []
+
+    view = ServersView(
+        workspace,
+        installed=lambda: [_installation()],
+        palette=theme.DARK,
+        show_error=lambda message: errors.append(message),
+    )
+
+    view.profile_button(0).click()
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+    view.rebuild()
+    assert len(errors) == 1
+
+    view.rebuild()
+    view.rebuild()
+
+    assert len(errors) == 1
+
+
+def test_stop_does_not_arm_the_confirmation_check(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """§8 — только про «Запустить»: остановка не должна ставить профиль
+
+    в ожидание подтверждения (он и так только что остановлен намеренно).
+    """
+    profile = _profile()
+    control = FakeControl()
+    workspace = _workspace(tmp_path, (profile,), control=control)
+    workspace.apply_scan(ScanSnapshot(agents=(_agent(100, profile.cluster_dir),), managers=()))
+    errors: list[str] = []
+
+    view = ServersView(
+        workspace,
+        installed=lambda: [_installation()],
+        palette=theme.DARK,
+        show_error=lambda message: errors.append(message),
+    )
+
+    view.profile_button(0).click()  # «Остановить»
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+    view.rebuild()
+
+    assert errors == []
+
+
 # -- предупреждения под карточкой: dir_mismatch и сироты ---------------------
 
 

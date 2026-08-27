@@ -259,6 +259,10 @@ class ServersView(QWidget):
         self._foreign_row_texts: list[str] = []
         self._foreign_row_widgets: list[QWidget] = []
         self._console_note_text = ""
+        # Задача 16, §8: профиль, только что запущенный «Запустить» —
+        # проверяется на СЛЕДУЮЩЕМ rebuild(), не на этом же (см. _toggle
+        # и _check_pending_confirmation).
+        self._pending_confirmation: str | None = None
 
         header = QLabel("Серверы")
         header_font = header.font()
@@ -325,7 +329,8 @@ class ServersView(QWidget):
 
         server_installations = self._installed()
         installed_versions = [si.installation.version for si in server_installations]
-        for status in self._workspace.statuses(installed_versions):
+        statuses = self._workspace.statuses(installed_versions)
+        for status in statuses:
             self._build_card(status, server_installations)
         for entry in self._workspace.foreign_servers():
             self._build_foreign_row(entry)
@@ -334,6 +339,34 @@ class ServersView(QWidget):
         self._path_label.setText(
             f"{self._workspace.store_path} · статус — по живым процессам · "
             f"консоль: {self._console_note_text}"
+        )
+        self._check_pending_confirmation(statuses)
+
+    def _check_pending_confirmation(self, statuses: Sequence[ServerStatus]) -> None:
+        """§8 мокапа, [Ф] А3/А4: смерть ragent молчалива, в лог ничего не пишется.
+
+        `_toggle` запоминает профиль как «ожидает подтверждения» ПОСЛЕ своего
+        собственного немедленного `rebuild()` (см. её докстринг) — сюда попадает
+        ровно СЛЕДУЮЩИЙ вызов `rebuild()`, отражающий уже новый снимок процессов
+        (`request_scan()` → в приложении `ServerMonitor.snapshot_ready` →
+        `workspace.apply_scan` → `rebuild()`). Профиль всё ещё без процессов —
+        типичная причина, которую видит пользователь, — порт уже занят другим
+        сервером, поднявшимся раньше. Срабатывает не более одного раза на
+        каждую постановку в ожидание — успешный запуск сбрасывает флаг молча,
+        а `rebuild()` без ожидающего профиля (например, от смены темы) вообще
+        сюда не заходит.
+        """  # noqa: RUF002
+        profile_id = self._pending_confirmation
+        if profile_id is None:
+            return
+        self._pending_confirmation = None
+        status = next((s for s in statuses if s.profile.id == profile_id), None)
+        if status is None or status.processes:
+            return
+        profile = status.profile
+        self._show_error(
+            f"Сервер «{profile.name}» завершился сразу после запуска. "
+            f"Частая причина — занятый порт ({profile.port})."
         )
 
     @staticmethod
@@ -500,15 +533,25 @@ class ServersView(QWidget):
     def _toggle(
         self, profile_id: str, server_installations: Sequence[ServerInstallation], running: bool
     ) -> None:
+        started = False
         try:
             if running:
                 self._workspace.stop(profile_id)
             else:
                 self._workspace.start(profile_id, server_installations)
+                started = True
         except ServicesError as error:
             self._show_error(str(error))
         self._request_scan()
         self.rebuild()
+        if started:
+            # Задача 16, §8: запомнить профиль ПОСЛЕ этого rebuild(), не до —
+            # этот вызов ещё использует снимок процессов ДО запуска (сканы
+            # асинхронны, `request_scan()` только просит новый, не ждёт его),  # noqa: RUF003
+            # и немедленная проверка на нём ложно репортовала бы «умер сразу»
+            # на каждый успешный запуск. Только «Запустить» ставит в ожидание —
+            # у остановки нечего подтверждать (см. `_check_pending_confirmation`).  # noqa: RUF003
+            self._pending_confirmation = profile_id
 
     def _remove(self, profile_id: str, running: bool) -> None:
         profile = next((p for p in self._workspace.profiles() if p.id == profile_id), None)

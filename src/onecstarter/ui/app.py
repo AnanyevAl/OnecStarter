@@ -11,33 +11,54 @@
 import logging
 import os
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QApplication, QMessageBox, QProgressDialog, QSystemTrayIcon
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QMessageBox,
+    QProgressDialog,
+    QSystemTrayIcon,
+    QWidget,
+)
 
 from onecstarter.config.atomic import atomic_write
 from onecstarter.config.cestart_cfg import parse_cestart_cfg
 from onecstarter.config.shell_link import build_shell_link, shortcut_command
 from onecstarter.domain.default_version import DefaultVersionRule, default_version_rules
 from onecstarter.domain.launch import ClientConvention
-from onecstarter.domain.version import Installation
+from onecstarter.domain.server import ServerConvention
+from onecstarter.domain.version import Installation, VersionNumber
+from onecstarter.platform_1c import console
 from onecstarter.platform_1c.discovery import cfg_paths, find_installations
-from onecstarter.platform_1c.registry import load_conventions
+from onecstarter.platform_1c.process_control import NullControl, ProcessControl, PsutilControl
+from onecstarter.platform_1c.process_scan import NullScanner, ProcessScanner, PsutilScanner
+from onecstarter.platform_1c.registry import load_conventions, load_server_conventions
+from onecstarter.platform_1c.server_discovery import ServerInstallation, server_installations
 from onecstarter.services import autostart
 from onecstarter.services.catalog import CommonListData, read_common_lists
-from onecstarter.services.errors import ServicesError, UserDataUnavailableError
+from onecstarter.services.errors import (
+    ConsoleRegistrationDeclinedError,
+    ServicesError,
+    UserDataUnavailableError,
+)
 from onecstarter.services.hotkeys import parse_hotkey
 from onecstarter.services.model import InfobaseItem
+from onecstarter.services.servers import ScanSnapshot, ServersWorkspace
 from onecstarter.services.settings import load_settings
 from onecstarter.services.workspace import Workspace, WorkspacePaths
 from onecstarter.ui import app_icon, rail_icons, theme
 from onecstarter.ui.background import StartupTasks
 from onecstarter.ui.bases.view import BasesView
 from onecstarter.ui.hotkey import GlobalHotkey
+from onecstarter.ui.servers.dialog import ConsoleDialog
+from onecstarter.ui.servers.monitor import ServerMonitor
+from onecstarter.ui.servers.view import ServersView
 from onecstarter.ui.settings_store import SettingsStore
 from onecstarter.ui.settings_view import SettingsView
 from onecstarter.ui.shell import MainWindow
@@ -54,6 +75,7 @@ class Runtime:
     cfg_rules: list[DefaultVersionRule]
     conventions: list[ClientConvention]
     settings: Path
+    servers: Path
 
 
 def build_runtime(env: Mapping[str, str]) -> Runtime:
@@ -86,7 +108,8 @@ def build_runtime(env: Mapping[str, str]) -> Runtime:
         cfg_rules=rules,
         default_app=settings.default_client.default_app,
     )
-    return Runtime(workspace, rules, list(conventions), settings_path)
+    servers_path = appdata / "OneCStarter" / "servers.json"
+    return Runtime(workspace, rules, list(conventions), settings_path, servers_path)
 
 
 def _complain(message: str) -> int:
@@ -261,8 +284,20 @@ def run_smoke(
     # Реестр — заглушка, а не настоящий HKCU (долг №8): `SettingsView` читает  # noqa: RUF003
     # его прямо в конструкторе, и самопроверка собранного экземпляра иначе  # noqa: RUF003
     # зависела бы от того, включён ли автозапуск на машине сборщика.
-    window, built_tasks = _build_main_window(
-        application, runtime, env, autostart_registry=autostart.NullRegistry()
+    # `NullScanner`/`NullControl` — тот же довод для раздела «Серверы»
+    # (T-08, задача 16): самопроверка не должна сканировать и трогать
+    # процессы серверов 1С на машине сборщика. `registered_radmin` —  # noqa: RUF003
+    # рядом: `ServersView.__init__` безусловно читает HKLM через
+    # `current_console_version()` уже при сборке окна (см. докстринг
+    # `_build_main_window`), самопроверка отвечает «не зарегистрирована».
+    window, built_tasks, _monitor = _build_main_window(
+        application,
+        runtime,
+        env,
+        autostart_registry=autostart.NullRegistry(),
+        process_scanner=NullScanner(),
+        process_control=NullControl(),
+        registered_radmin=lambda: None,
     )
     try:
         tasks = built_tasks if make_tasks is None else make_tasks()
@@ -328,21 +363,135 @@ def _set_tray_tooltip(
         tray.setToolTip(f"OneCStarter — {combination}")
 
 
+class _ConsoleWorkspace(Protocol):
+    """Часть `ServersWorkspace`, которую действительно использует `_console_flow`.
+
+    Протокол, а не сам `ServersWorkspace` — тот же довод, что у
+    `ProcessScanner`/`ProcessControl` (`platform_1c/process_scan.py`,
+    `process_control.py`): узкая структурная зависимость вместо конкретного
+    класса делает функцию тестируемой фейком без наследования от реального
+    `ServersWorkspace` (у него собственный конструктор с эффектами) и без
+    `# type: ignore` на границе теста.
+    """  # noqa: RUF002
+
+    def current_console_version(self) -> VersionNumber | None: ...
+
+    def register_console(self, target: ServerInstallation) -> None: ...
+
+    def open_console(self, root: Path, convention: ServerConvention) -> None: ...
+
+
+def _console_flow(
+    workspace: _ConsoleWorkspace,
+    installed: Sequence[ServerInstallation],
+    running_versions: Sequence[VersionNumber],
+    convention: ServerConvention,
+    *,
+    show_error: Callable[[str], None],
+    show_info: Callable[[str], None],
+    run_dialog: Callable[[ConsoleDialog], int] = lambda dialog: dialog.exec(),
+    parent: QWidget | None = None,
+) -> None:
+    """Проводка диалога «Консоль администрирования…» (T-08, задача 16, §7 спеки).
+
+    Вынесена из `on_console` (`_build_main_window`) в функцию уровня модуля
+    ради инъекции `run_dialog` — исполнителя диалога: настоящая реализация
+    зовёт блокирующий `QDialog.exec()`, тестовая — программно кликает по
+    нужной кнопке (`register_button()`/`open_button()`) и отдаёт
+    `dialog.result()`, ни разу не поднимая модальный цикл событий (тот же
+    приём, что `_accept`/`_reject` в тестах `ServerProfileDialog`,
+    `tests/ui/test_servers_view.py`).
+
+    `ConsoleDialog.register_button()`/`open_button()` сами диалог не закрывают
+    (задача 15, докстринг `ui/servers/dialog.py`: обработчики клика — забота
+    вызывающего кода этой задачи) — здесь они подключаются к `accept()` с
+    запоминанием, какая кнопка привела к принятию, чтобы отличить «Сделать
+    текущей и открыть» от простого «Открыть».
+
+    Отказ пользователя в UAC (`ConsoleRegistrationDeclinedError`) — штатный
+    исход §7 спеки, не ошибка программы: `show_info`, не `show_error`.
+    Перехватывается ДО общего `ServicesError` — `ConsoleRegistrationDeclinedError`
+    сама наследует `ServerError`/`ServicesError` (`services/errors.py`), и общий
+    перехват первым замаскировал бы штатный исход под отказ.
+    """  # noqa: RUF002
+    current = workspace.current_console_version()
+    dialog = ConsoleDialog.build(installed, current, running_versions, parent)
+    action: list[str] = []
+
+    def register() -> None:
+        action.append("register")
+        dialog.accept()
+
+    def open_current() -> None:
+        action.append("open")
+        dialog.accept()
+
+    dialog.register_button().clicked.connect(register)
+    dialog.open_button().clicked.connect(open_current)
+
+    if run_dialog(dialog) != QDialog.DialogCode.Accepted or not action:
+        return
+
+    if action[-1] == "register":
+        selected = dialog.selected_installation()
+        if selected is None:
+            return
+        try:
+            workspace.register_console(selected)
+        except ConsoleRegistrationDeclinedError as error:
+            show_info(str(error))
+            return
+        except ServicesError as error:
+            show_error(str(error))
+            return
+        root = selected.installation.path.parent
+    else:
+        match = next((si for si in installed if si.installation.version == current), None)
+        if match is None:
+            return
+        root = match.installation.path.parent
+
+    workspace.open_console(root, convention)
+
+
 def _build_main_window(
     application: QApplication,
     runtime: Runtime,
     env: Mapping[str, str],
     *,
     autostart_registry: autostart.Registry | None = None,
-) -> tuple[MainWindow, StartupTasks]:
+    process_scanner: ProcessScanner | None = None,
+    process_control: ProcessControl | None = None,
+    registered_radmin: Callable[[], Path | None] | None = None,
+) -> tuple[MainWindow, StartupTasks, ServerMonitor]:
     """Собрать окно, трей, хоткей, watcher и фоновые задачи, не запуская их.
 
     Вынесено из `main()` (спека T-04.6, §3.2): окно обязано появиться
     раньше, чем обнаружение платформ и чтение общих списков закончатся —
     обе задачи могут висеть минутами (антивирус, сетевые шары). `main()`
-    показывает окно и только затем зовёт `tasks.start()` — здесь задачи
-    только собираются и подключаются к `Workspace`/`BasesView`, `start()`
-    не вызывается ни разу.
+    показывает окно и только затем зовёт `tasks.start()`/`monitor.start()` —
+    здесь задачи и монитор серверов только собираются и подключаются
+    к `Workspace`/`BasesView`/`ServersWorkspace`/`ServersView`, `start()`
+    не вызывается ни разу («собрать, не запуская», T-08, задача 16).
+
+    `process_scanner`/`process_control` — та же инъекция для `run_smoke`,
+    что и `autostart_registry`: `None` собирает настоящие `PsutilScanner`/
+    `PsutilControl`, а самопроверка сборки подставляет `NullScanner`/
+    `NullControl` — она поднимает настоящее окно и не должна сканировать
+    процессы машины сборщика (тот же довод, что у долга №8 T-04.7).
+
+    `registered_radmin` — та же инъекция, но для ЧТЕНИЯ HKLM: находка этой
+    задачи (не входила в план дословно) — `ServersView.__init__` зовёт
+    `rebuild()` уже в конструкторе, а тот безусловно читает
+    `ServersWorkspace.current_console_version()`, то есть настоящий HKLM
+    ([Ф] Г2, `platform_1c/console.py::registered_radmin_path`) при КАЖДОЙ
+    сборке окна, не только по явному действию пользователя над консолью —
+    в отличие от процессов серверов, этого чтения не избежать инъекцией
+    `process_scanner`/`process_control` в `ServersWorkspace`. `None` —
+    настоящий `console.registered_radmin_path`, самопроверка сборки
+    подставляет `lambda: None` (тот же довод, что у `NullScanner`/
+    `NullControl` — долг №8: чтение HKLM машины сборщика не должно решать,
+    что покажет self-test).
 
     Значок приложения ставится здесь же, до создания трея (замечание
     заказчика на контрольной точке 16.08.2026): `setWindowIcon` до этой
@@ -375,22 +524,104 @@ def _build_main_window(
         frozen=bool(getattr(sys, "frozen", False)),
         executable=sys.executable,
     )
-    sections = [("Базы", view), ("Настройки", settings_view)]
+    # Раздел «Серверы» (T-08, задача 16). `servers_workspace`/`server_installed`
+    # (холдер — сеттера у ServersView нет, тот же приём, что `recent_limit=  # noqa: RUF003
+    # lambda:` у BasesView) собраны раньше самого раздела: конструктору  # noqa: RUF003
+    # ServersView нужны и воркспейс, и живой снимок установок сразу.
+    servers_workspace = ServersWorkspace(
+        runtime.servers,
+        control=process_control if process_control is not None else PsutilControl(),
+        registered_radmin=(
+            registered_radmin if registered_radmin is not None else console.registered_radmin_path
+        ),
+    )
+    server_installed: list[ServerInstallation] = []
+
+    # Манера показа — та же, что `ServersView._default_show_error`/
+    # `_default_confirm_removal`: `QMessageBox` с иконкой, заголовком  # noqa: RUF003
+    # «OneCStarter» и `parent=servers_view`. Определены здесь (не внутри
+    # ServersView), потому что `_console_flow` — снаружи вьюхи и своего
+    # способа показать ошибку/информацию не имеет.
+    def _show_servers_error(message: str) -> None:
+        box = QMessageBox(servers_view)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("OneCStarter")
+        box.setText(message)
+        box.exec()
+
+    def _show_servers_info(message: str) -> None:
+        box = QMessageBox(servers_view)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle("OneCStarter")
+        box.setText(message)
+        box.exec()
+
+    def on_console() -> None:
+        installed_versions = [si.installation.version for si in server_installed]
+        # [Ф] Г3: консоль требует точного совпадения сборки с сервером —  # noqa: RUF003
+        # версии профилей, у которых сейчас есть живой процесс, идут  # noqa: RUF003
+        # в ConsoleDialog как «работает» (её докстринг, ui/servers/dialog.py).
+        running_versions = [
+            status.resolved
+            for status in servers_workspace.statuses(installed_versions)
+            if status.processes and status.resolved is not None
+        ]
+        convention = load_server_conventions()[0]
+        _console_flow(
+            servers_workspace,
+            list(server_installed),
+            running_versions,
+            convention,
+            show_error=_show_servers_error,
+            show_info=_show_servers_info,
+            parent=servers_view,
+        )
+
+    # `request_scan`/`monitor` — взаимная вперёдссылка внутри одной функции:
+    # `monitor` собирается ниже (ему нужен уже построенный `window` как
+    # родитель), а `servers_view` нужен `monitor.scan_now` уже сейчас.  # noqa: RUF003
+    # Обе лямбды не читают имя до первого настоящего вызова (клик/сигнал,  # noqa: RUF003
+    # много позже возврата из этой функции), поэтому порядок безопасен —
+    # тот же приём, что и у остальных обработчиков ниже (`tray`, `hotkey`).  # noqa: RUF003
+    servers_view = ServersView(
+        servers_workspace,
+        installed=lambda: list(server_installed),
+        palette=controller.palette,
+        request_scan=lambda: monitor.scan_now(),
+        show_error=_show_servers_error,
+        on_console=on_console,
+    )
+
+    sections = [("Базы", view), ("Серверы", servers_view), ("Настройки", settings_view)]
     # Ключ — сам объект вьюхи, а не подпись: подпись показывается пользователю  # noqa: RUF003
     # и однажды может быть переименована, и тогда поиск по ней уронил бы старт
     # `StopIteration` ещё до создания окна (находка ревью ветки 22.08.2026).
     bases_section = next(i for i, (_t, w) in enumerate(sections) if w is view)
+    servers_section = next(i for i, (_t, w) in enumerate(sections) if w is servers_view)
     settings_section = next(i for i, (_t, w) in enumerate(sections) if w is settings_view)
     window = MainWindow(sections, palette=controller.palette)
     window.set_section_icon(bases_section, rail_icons.bases_icon)
+    window.set_section_icon(servers_section, rail_icons.servers_icon)
     window.set_section_icon(settings_section, rail_icons.settings_icon)
+
+    monitor = ServerMonitor(
+        process_scanner if process_scanner is not None else PsutilScanner(), parent=window
+    )
+
+    def on_scan(snapshot: ScanSnapshot) -> None:
+        servers_workspace.apply_scan(snapshot)
+        servers_view.rebuild()
+
+    monitor.snapshot_ready.connect(on_scan)
 
     def on_theme_changed() -> None:
         # settings_view красится общим stylesheet (ThemeController._apply) —
         # у неё нет запечённых цветов и метода apply_palette. BasesView  # noqa: RUF003
-        # перекрашивать обязаны явно: цвета запечены в QBrush и в значки.
-        # И рельсу тоже: значки разделов — пара пиксмапов из палитры.
+        # и ServersView перекрашивать обязаны явно: цвета запечены в QBrush,
+        # в стили карточек и в значки. И рельсу тоже: значки разделов —
+        # пара пиксмапов из палитры.
         view.apply_palette(controller.palette)
+        servers_view.apply_palette(controller.palette)
         window.apply_palette(controller.palette)
 
     controller.changed.connect(on_theme_changed)
@@ -514,6 +745,11 @@ def _build_main_window(
     def on_installations(found: list[Installation]) -> None:
         runtime.workspace.set_installations(found)
         view.apply_installations(found)
+        # Серверные установки — фильтр найденных версий (server_installations),
+        # не отдельное обнаружение: и ragent.exe, и radmin.dll должны реально
+        # лежать на диске (докстринг platform_1c/server_discovery.py).
+        server_installed[:] = server_installations(found, load_server_conventions())
+        servers_view.rebuild()
 
     def on_common(data: CommonListData) -> None:
         runtime.workspace.apply_common_lists(data)
@@ -522,7 +758,7 @@ def _build_main_window(
     tasks.installations_ready.connect(on_installations)
     tasks.common_lists_ready.connect(on_common)
 
-    return window, tasks
+    return window, tasks, monitor
 
 
 def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
@@ -557,11 +793,16 @@ def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
         )
         return 1
 
-    window, tasks = _build_main_window(application, runtime, os.environ)
+    window, tasks, monitor = _build_main_window(application, runtime, os.environ)
     if start_hidden and window.tray_available:
         _log.info("тихий старт: окно скрыто, программа в трее")
     else:
         window.show()
         _log.info("окно показано")
     tasks.start()
+    # Монитор серверов — рядом с tasks.start(), не внутри _build_main_window  # noqa: RUF003
+    # (её докстринг, «собрать, не запуская»): периодический скан обязан
+    # начаться только после того, как окно решило, показываться ему сразу
+    # или остаться скрытым в трее.
+    monitor.start()
     return application.exec()
