@@ -1,11 +1,17 @@
-"""Раздел «Настройки»: четыре группы утверждённого мокапа.
+"""Раздел «Настройки»: четыре группы утверждённого мокапа v1 плюс СЕРВЕРЫ (v2).
 
-Порядок групп — мокапа: ВНЕШНИЙ ВИД, ОКНО И ЗАПУСК, ГОРЯЧИЕ КЛАВИШИ,
+Порядок групп v1-мокапа: ВНЕШНИЙ ВИД, ОКНО И ЗАПУСК, ГОРЯЧИЕ КЛАВИШИ,
 СПИСОК БАЗ. Собственных запечённых цветов нет, красит общий stylesheet
 (#ThemeSeg, #SettingsGroupLabel, #SettingsNote). Шестая настройка группы
 «ОКНО И ЗАПУСК» — «Клиент по умолчанию» (спека вехи «Завершение v1», §2):
 сегмент того же вида, что тема, только выбор идёт в `store`, а не в
 `ThemeController`.
+
+Пятая группа, СЕРВЕРЫ (спека §3.5, T-08 задача 7), — за пределами утверждённого
+мокапа v1, добавлена последней: «Корень каталогов серверов», от которого
+новый профиль сервера предлагает `<корень>\\srv_<версия>`. Поле пути + кнопка
+«Обзор…» — тем же приёмом инъекции диалога (`choose_directory`), что
+и `InfobaseDialog` в `dialogs/infobase.py`.
 
 Раздел не знает ни о `GlobalHotkey`, ни о том, как поднято окно: сочетание
 уходит наружу через `on_hotkey`, а обратно приходит текст отказа либо `None`.
@@ -22,8 +28,10 @@ from PySide6.QtGui import QShowEvent
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -63,6 +71,18 @@ AUTOSTART_ROW_NOTE = (
     "Отключённый в «Диспетчере задач» автозапуск включается только там же"
 )
 
+SERVERS_ROOT_ROW_NOTE = "Новые профили серверов предлагают каталог <корень>\\srv_<версия>"
+
+
+def browse_for_servers_root() -> str:
+    """Системный диалог выбора корня каталогов серверов. Пустая строка — отмена.
+
+    Инъекция, а не вызов модульного имени напрямую — тот же приём, что
+    у `browse_for_directory` в `dialogs/infobase.py`: настоящий `QFileDialog`
+    в офскрин-тесте не дождётся выбора каталога.
+    """  # noqa: RUF002
+    return QFileDialog.getExistingDirectory()
+
 
 class SettingsView(QWidget):
     def __init__(
@@ -74,6 +94,7 @@ class SettingsView(QWidget):
         frozen: bool = False,
         executable: str = "",
         on_hotkey: Callable[[str], str | None] | None = None,
+        choose_directory: Callable[[], str] = browse_for_servers_root,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -83,6 +104,7 @@ class SettingsView(QWidget):
         self._frozen = frozen
         self._executable = executable
         self._on_hotkey = on_hotkey
+        self._choose_directory = choose_directory
         self._buttons: list[QPushButton] = []
         self._client_buttons: list[QPushButton] = []
         self._group_labels: list[str] = []
@@ -170,6 +192,13 @@ class SettingsView(QWidget):
             self._recent,
         )
 
+        self._add_group("СЕРВЕРЫ")
+        self._add_row(
+            "Корень каталогов серверов",
+            SERVERS_ROOT_ROW_NOTE,
+            self._build_servers_root_control(store.settings.servers_root),
+        )
+
         layout.addWidget(self._status)
         layout.addStretch(1)
 
@@ -242,6 +271,18 @@ class SettingsView(QWidget):
             self._client_buttons.append(button)
         return seg
 
+    def _build_servers_root_control(self, current: str) -> QWidget:
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        self._servers_root = QLineEdit(current)
+        self._servers_root.editingFinished.connect(self._choose_servers_root)
+        self._servers_root_browse = QPushButton("Обзор…")
+        self._servers_root_browse.clicked.connect(self._browse_servers_root)
+        row_layout.addWidget(self._servers_root)
+        row_layout.addWidget(self._servers_root_browse)
+        return row
+
     # --- доступ для тестов ------------------------------------------------
 
     def group_labels(self) -> list[str]:
@@ -264,6 +305,12 @@ class SettingsView(QWidget):
 
     def recent_spinbox(self) -> QSpinBox:
         return self._recent
+
+    def servers_root_edit(self) -> QLineEdit:
+        return self._servers_root
+
+    def servers_root_browse_button(self) -> QPushButton:
+        return self._servers_root_browse
 
     def status_text(self) -> str:
         return self._status.text()
@@ -332,6 +379,27 @@ class SettingsView(QWidget):
 
     def _choose_recent(self, value: int) -> None:
         self._store.update(recent_limit=value)
+
+    def _choose_servers_root(self) -> None:
+        self._store.update(servers_root=self._servers_root.text())
+
+    def _browse_servers_root(self) -> None:
+        """Обработчик «Обзор…»: заполнить поле и сохранить сразу.
+
+        Пустая строка от `self._choose_directory()` — пользователь отменил
+        выбор (контракт `QFileDialog.getExistingDirectory`, см.
+        `browse_for_servers_root`, тот же приём — `dialogs.infobase.
+        browse_for_directory`): поле не трогается, store не пишется.
+        Сохранение — явным вызовом `store.update`, а не через `editingFinished`:
+        `setText` его не эмитит (сигнал только по Enter/потере фокуса),
+        а поведение поля обязано быть тем же, что и у ручного ввода —
+        применяется сразу.
+        """  # noqa: RUF002
+        path = self._choose_directory()
+        if not path:
+            return
+        self._servers_root.setText(path)
+        self._store.update(servers_root=path)
 
     def _choose_hotkey(self, text: str) -> None:
         """Сохранить выбранное и показать, что ответила система.
@@ -433,4 +501,14 @@ class SettingsView(QWidget):
         self._recent.blockSignals(blocked)
 
         self._hotkey.set_combination(settings.hotkey)
+
+        # `blockSignals`, как у `_tray`/`_recent`: `QLineEdit.setText` не эмитит  # noqa: RUF003
+        # `editingFinished` (тот срабатывает только по Enter/потере фокуса),
+        # так что здесь это защитный дубль на случай, если поле обрастёт ещё
+        # одним сигналом (`textChanged` и т. п.) — не подтверждено мутацией
+        # именно на этой паре сигналов, см. докстринг задачи.
+        blocked = self._servers_root.blockSignals(True)
+        self._servers_root.setText(settings.servers_root)
+        self._servers_root.blockSignals(blocked)
+
         self._status.setText(self._store.last_save_error or "")

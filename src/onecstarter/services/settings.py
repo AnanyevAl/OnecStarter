@@ -90,6 +90,12 @@ class Settings:
     hotkey: str = DEFAULT_HOTKEY
     recent_limit: int = DEFAULT_RECENT_LIMIT
     default_client: DefaultClient = DefaultClient.THIN
+    # Корень каталогов серверов (спека §3.5). Пустая строка — не задан; новый
+    # профиль сервера в этом случае предлагает `<корень>\srv_<версия>`,
+    # подставить которое диалогу профиля нечем. Путь не валидируется здесь —
+    # несуществующий или недоступный каталог не порча ЭТОГО файла, диалог
+    # профиля решает, что делать с плохим значением.  # noqa: RUF003
+    servers_root: str = ""
 
 
 def load_settings(path: Path) -> Settings:
@@ -115,6 +121,7 @@ def load_settings(path: Path) -> Settings:
         hotkey=_hotkey_of(payload.get("hotkey")),
         recent_limit=_recent_of(payload.get("recent_limit")),
         default_client=_client_of(payload.get("default_client")),
+        servers_root=_servers_root_of(payload.get("servers_root")),
     )
 
 
@@ -128,6 +135,7 @@ def save_settings(path: Path, settings: Settings) -> None:
         "hotkey": settings.hotkey,
         "recent_limit": settings.recent_limit,
         "default_client": settings.default_client.value,
+        "servers_root": settings.servers_root,
     }
     text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
     atomic_write(path, text.encode("utf-8"))
@@ -147,6 +155,16 @@ def _client_of(value: Any) -> DefaultClient:
         return DefaultClient(value)
     except ValueError:
         return DefaultClient.THIN
+
+
+def _servers_root_of(value: Any) -> str:
+    """Не-строка — не порча файла: дефолт «корень не задан» (спека §3.5).
+
+    Годная строка возвращается как есть, без валидации пути: проверка
+    существования или доступности каталога — дело диалога профиля сервера,
+    не этого модуля, и уж точно не повод унести settings.json в `.bad`.
+    """  # noqa: RUF002
+    return value if isinstance(value, str) else ""
 
 
 def _bool_of(value: Any) -> bool:

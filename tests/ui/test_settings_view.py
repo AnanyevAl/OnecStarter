@@ -1,16 +1,20 @@
-"""Раздел «Настройки»: четыре группы мокапа."""
+"""Раздел «Настройки»: четыре группы мокапа плюс СЕРВЕРЫ (v2, T-08 задача 7)."""
 
 from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from PySide6.QtWidgets import QApplication, QPushButton
+from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton
 
 from onecstarter.services.autostart import VALUE_NAME, autostart_command
 from onecstarter.services.settings import DefaultClient, Settings, ThemeMode, save_settings
 from onecstarter.ui.hotkey_edit import HotkeyEdit
 from onecstarter.ui.settings_store import SettingsStore
-from onecstarter.ui.settings_view import AUTOSTART_ROW_NOTE, SettingsView
+from onecstarter.ui.settings_view import (
+    AUTOSTART_ROW_NOTE,
+    SettingsView,
+    browse_for_servers_root,
+)
 from onecstarter.ui.theme_controller import ThemeController
 
 EXE = r"C:\Programs\OneCStarter\OneCStarter.exe"
@@ -54,6 +58,7 @@ def _view(
     registry: FakeRegistry | None = None,
     frozen: bool = True,
     on_hotkey: Callable[[str], str | None] | None = None,
+    choose_directory: Callable[[], str] = browse_for_servers_root,
 ) -> tuple[SettingsView, SettingsStore]:
     store = SettingsStore(tmp_path / "settings.json")
     controller = ThemeController(application, store, system_mode=lambda: ThemeMode.DARK)
@@ -64,6 +69,7 @@ def _view(
         frozen=frozen,
         executable=EXE,
         on_hotkey=on_hotkey,
+        choose_directory=choose_directory,
     )
     return view, store
 
@@ -126,6 +132,7 @@ def test_groups_are_in_mockup_order(application: QApplication, tmp_path: Path) -
         "ОКНО И ЗАПУСК",  # noqa: RUF001
         "ГОРЯЧИЕ КЛАВИШИ",
         "СПИСОК БАЗ",
+        "СЕРВЕРЫ",
     ]
 
 
@@ -508,3 +515,108 @@ def test_autostart_row_warns_about_task_manager(
     # обман, что подсказка не на своей строке: аксессоры вьюхи отдают виджеты
     # по ссылке, поэтому без этой сверки раскладку не проверяет никто.
     assert view.row_control("Запускать при входе в Windows") is view.autostart_checkbox()
+
+
+# -- группа СЕРВЕРЫ (v2, T-08 задача 7) --------------------------------------
+#
+# Настройка «Корень каталогов серверов» (спека §3.5): новый профиль сервера
+# предлагает `<корень>\srv_<версия>`, пустая строка — корень не задан.
+# Обзор каталога — тем же приёмом, что и в InfobaseDialog (`choose_directory`,
+# `dialogs/infobase.py`): состав и поведение проверяются без модального
+# `QFileDialog`.
+
+
+def test_servers_root_row_is_registered(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Поле и кнопка «Обзор…» привязаны к своей строке (урок мутаций 22.08.2026)."""
+    view, _ = _view(application, tmp_path)
+    control = view.row_control("Корень каталогов серверов")
+    assert view.servers_root_edit() in control.findChildren(QLineEdit)
+    assert view.servers_root_browse_button() in control.findChildren(QPushButton)
+
+
+def test_servers_root_row_note_explains_new_profile_default(
+    application: QApplication, tmp_path: Path
+) -> None:
+    view, _ = _view(application, tmp_path)
+    note = view.row_note("Корень каталогов серверов")
+    assert "srv_" in note.text()
+    assert not note.isHidden()
+
+
+def test_servers_root_field_shows_saved_value(
+    application: QApplication, tmp_path: Path
+) -> None:
+    save_settings(tmp_path / "settings.json", Settings(servers_root=r"E:\srv"))
+    view, _ = _view(application, tmp_path)
+    assert view.servers_root_edit().text() == r"E:\srv"
+
+
+def test_servers_root_edit_updates_store_once(
+    application: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    view, store = _view(application, tmp_path)
+    calls: list[dict[str, object]] = []
+    original_update = store.update
+
+    def spy_update(**changes: object) -> None:
+        calls.append(changes)
+        original_update(**changes)
+
+    monkeypatch.setattr(store, "update", spy_update)
+
+    view.servers_root_edit().setText(r"D:\servers")
+    view.servers_root_edit().editingFinished.emit()
+
+    assert store.settings.servers_root == r"D:\servers"
+    assert calls == [{"servers_root": r"D:\servers"}]
+
+
+def test_servers_root_browse_fills_field_and_saves(
+    application: QApplication, tmp_path: Path
+) -> None:
+    view, store = _view(application, tmp_path, choose_directory=lambda: r"D:\srv")
+
+    view.servers_root_browse_button().click()
+
+    assert view.servers_root_edit().text() == r"D:\srv"
+    assert store.settings.servers_root == r"D:\srv"
+
+
+def test_servers_root_browse_does_nothing_when_cancelled(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Пустая строка от `choose_directory` — тот же контракт, что у `QFileDialog`
+
+    (отмена выбора отдаёт пустую строку) — поле не трогается и store не пишется.
+    """  # noqa: RUF002
+    view, store = _view(application, tmp_path, choose_directory=lambda: "")
+    view.servers_root_edit().setText(r"D:\already")
+
+    view.servers_root_browse_button().click()
+
+    assert view.servers_root_edit().text() == r"D:\already"
+    assert store.settings.servers_root == ""
+
+
+def test_sync_does_not_bounce_external_servers_root_change_back_into_store(
+    application: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`_sync` глушит `_servers_root` — как `_tray`/`_recent` (урок «эха», докстринг `_sync`)."""
+    view, store = _view(application, tmp_path)
+    calls: list[dict[str, object]] = []
+    original_update = store.update
+
+    def spy_update(**changes: object) -> None:
+        calls.append(changes)
+        original_update(**changes)
+
+    monkeypatch.setattr(store, "update", spy_update)
+
+    store.update(servers_root=r"F:\srv")
+
+    assert view.servers_root_edit().text() == r"F:\srv"
+    # Единственный вызов — наш явный; без глушения `_sync` породил бы ещё один
+    # (эхо `editingFinished` от `setText` на новое значение).
+    assert calls == [{"servers_root": r"F:\srv"}]

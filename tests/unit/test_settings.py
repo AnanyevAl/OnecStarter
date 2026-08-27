@@ -28,7 +28,7 @@ def test_round_trip(tmp_path: Path) -> None:
 
 
 def test_schema_is_written(tmp_path: Path) -> None:
-    """Файл несёт все шесть ключей, включая номер схемы.
+    """Файл несёт все семь ключей, включая номер схемы.
 
     Долг №3 вехи закрыт здесь: соседний `test_all_fields_are_written` проверял
     ровно то же самое на дефолтных настройках и удалён. Разница была
@@ -45,6 +45,7 @@ def test_schema_is_written(tmp_path: Path) -> None:
         "hotkey": "Ctrl+Alt+B",
         "recent_limit": 10,
         "default_client": "thin",
+        "servers_root": "",
     }
 
 
@@ -222,3 +223,50 @@ class TestDefaultClient:
     def test_default_app_thick_matches_v8i_app_key(self) -> None:
         """Толстый — явное значение в формате ключа `App`, его ждёт `choose_client`."""  # noqa: RUF002
         assert DefaultClient.THICK.default_app == "ThickClient"
+
+
+class TestServersRoot:
+    """Настройка «Корень каталогов серверов» (спека §3.5, T-08 задача 7).
+
+    Пустая строка — «корень не задан»: диалог профиля сервера в этом случае
+    требует указать каталог явно (докстринг спеки, раздел 3.5). Путь не
+    валидируется здесь — проверка существования каталога не наше дело
+    и уж точно не повод унести файл настроек в `.bad`.
+    """
+
+    def test_default_is_empty(self) -> None:
+        assert Settings().servers_root == ""
+
+    def test_round_trip(self, tmp_path: Path) -> None:
+        path = tmp_path / "settings.json"
+        save_settings(path, Settings(servers_root=r"E:\srv"))
+        assert load_settings(path).servers_root == r"E:\srv"
+
+    def test_old_file_without_servers_root_reads_with_defaults(
+        self, tmp_path: Path
+    ) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ: файл прошлой версии без ключа `servers_root` читается с дефолтом.
+
+        Не уезжает в `.bad` (спека §6.1) — схема не меняется при добавлении
+        необязательного поля. Кандидат мутации: сделать ключ `servers_root`
+        обязательным для схемы 1 — тест обязан упасть на `settings.json.bad`,
+        появившемся из файла, который раньше читался чисто.
+        """  # noqa: RUF002
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps({"schema": 1, "theme": "light"}), encoding="utf-8")
+        assert load_settings(path) == Settings(theme=ThemeMode.LIGHT)
+        assert not path.with_name("settings.json.bad").exists()
+
+    @pytest.mark.parametrize("value", [1, 3.5, True, None, [], {}])
+    def test_non_string_falls_back_to_empty(self, tmp_path: Path, value: object) -> None:
+        """Не-строка — не порча файла: дефолт поля, как у `recent_limit`/`hotkey`.
+
+        `bool` проверяется отдельно тем же поводом, что и у `_recent_of`:
+        `True`/`False` — подклассы `int`, но не путь и не должны молча
+        превращаться в него при менее строгой проверке.
+        """  # noqa: RUF002
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps({"schema": 1, "servers_root": value}), encoding="utf-8"
+        )
+        assert load_settings(path).servers_root == ""
