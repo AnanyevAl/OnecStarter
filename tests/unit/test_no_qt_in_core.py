@@ -22,6 +22,7 @@ CORE = (
     "onecstarter.domain.launch",
     "onecstarter.domain.selection",
     "onecstarter.domain.server",
+    "onecstarter.domain.server_match",
     "onecstarter.platform_1c.discovery",
     "onecstarter.platform_1c.process",
     "onecstarter.platform_1c.registry",
