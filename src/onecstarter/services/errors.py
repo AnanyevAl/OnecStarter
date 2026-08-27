@@ -78,3 +78,23 @@ class UserDataWriteError(ServicesError):
 
 class LaunchError(ServicesError):
     """Запуск невозможен; сообщение безопасно показывать пользователю."""
+
+
+class ServerError(ServicesError):
+    """Общий корень ошибок локальных серверов 1С."""  # noqa: RUF002
+
+
+class ServersUnavailableError(ServerError):
+    """Файл профилей серверов существует, но прочитать или убрать его не удалось."""  # noqa: RUF002
+
+
+class ServerStopError(ServerError):
+    """Остановить сервер не удалось: PID переиспользован или нет прав."""
+
+
+class ConsoleRegistrationError(ServerError):
+    """Регистрация консоли администрирования серверов не удалась."""
+
+
+class ConsoleRegistrationDeclinedError(ServerError):
+    """Пользователь отклонил запрос прав администратора — штатный исход, не сбой."""
