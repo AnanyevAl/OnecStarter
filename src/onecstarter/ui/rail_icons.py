@@ -68,9 +68,33 @@ def _draw_settings(painter: QPainter) -> None:
         painter.restore()
 
 
+def _draw_servers(painter: QPainter) -> None:
+    """⛁ мокапа: две скруглённые полки-«стойки» с точкой-индикатором на каждой.
+
+    Геометрия скопирована из `bases/icons.py::_draw_server` (значок серверной
+    базы в дереве) — та же пара `drawRoundedRect`, включая сдвиг нижней полки
+    на y=9.7 вместо 9.0 из спеки (там измерено на офскрин-рендере 16×16, что
+    y=9.0 при пере 1.4 px оставляет непрозрачную пиксельную строку y=8 —
+    см. докстринг оригинала). Единственное отличие — источник цвета точки:
+    `_Draw` этого модуля колера не принимает (`_pixmap` уже настроил перо),
+    поэтому индикатор красится текущим цветом пера, а не отдельным
+    параметром, как в `bases/icons.py`.
+    """  # noqa: RUF002
+    painter.setBrush(Qt.BrushStyle.NoBrush)
+    painter.drawRoundedRect(QRectF(2.5, 3.0, 11.0, 3.4), 0.7, 0.7)
+    painter.drawRoundedRect(QRectF(2.5, 9.7, 11.0, 3.4), 0.7, 0.7)
+    painter.setBrush(painter.pen().color())
+    painter.drawEllipse(QPointF(4.6, 4.7), 0.6, 0.6)
+    painter.drawEllipse(QPointF(4.6, 11.4), 0.6, 0.6)
+
+
 def bases_icon(palette: Palette) -> QIcon:
     return _icon(palette, _draw_bases)
 
 
 def settings_icon(palette: Palette) -> QIcon:
     return _icon(palette, _draw_settings)
+
+
+def servers_icon(palette: Palette) -> QIcon:
+    return _icon(palette, _draw_servers)

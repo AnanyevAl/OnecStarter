@@ -1,0 +1,512 @@
+"""Раздел «Серверы»: список профилей и справочный блок чужих серверов машины.
+
+Мокап — [2026-08-26-v2-servers-mockup.html](../../../../docs/superpowers/specs/
+assets/2026-08-26-v2-servers-mockup.html), секция «Раздел „Серверы"». Данные —
+`ServersWorkspace` (T-08, задачи 10-13): список профилей, снимок процессов
+и производные от него `statuses`/`foreign_servers`. Эта задача (T-08,
+задача 14) — только показ и локальные действия карточки (запуск/остановка/
+удаление профиля, гашение сирот); подтверждающий скан после каждого действия
+(`request_scan`) и сами диалоги «Консоль администрирования…»/«+ Профиль»
+подключит задача 15/16 — здесь только инъекции с безопасным дефолтом
+`lambda: None`.
+
+Приём тот же, что у `SettingsView`: конструктор строит статичный каркас
+(шапка, строка пути), а содержимое, зависящее от снимка процессов
+(карточки профилей, блок чужих серверов), собирает `rebuild()` в свои
+собственные layout-контейнеры — та же деталь, что различает `_add_row`
+у настроек и здесь: карточки перестраиваются целиком на каждый `rebuild()`,
+а не правятся на месте, потому что состав профилей и число процессов
+у каждого меняются между сканами.
+
+Цвета — ТОЛЬКО из `Palette` (accent/text_dim/problem, урок T-06: зелёного
+в палитре нет и не появляется): «работает» — accent, «остановлен» — dim,
+«версия не установлена» — problem. У чужих серверов («Другие серверы на
+машине») нет ни одной кнопки вовсе (решение заказчика 5) — не «неактивная»,
+а отсутствующая как виджет: раздел справочный, отвечает на вопрос «почему
+порт занят», а не управляет чужим процессом.
+
+Удаление профиля предупреждает отдельно, если сервер запущен (решение
+заказчика 8, `_removal_question`): профиль пропадает из списка, но процесс
+`ragent`, если он жив, никто не трогает — молчание об этом стоило бы
+пользователю потерянного из виду, но работающего сервера.
+"""  # noqa: RUF002
+
+from collections.abc import Callable, Sequence
+from dataclasses import dataclass
+from typing import cast
+
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QLayout,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+from onecstarter.domain.server import ServerProfile
+from onecstarter.domain.server_match import ForeignServer
+from onecstarter.platform_1c.server_discovery import ServerInstallation
+from onecstarter.services.errors import ServicesError
+from onecstarter.services.servers import ServerStatus, ServersWorkspace
+from onecstarter.ui.dialogs.buttons import build_confirm_box, is_confirmed
+from onecstarter.ui.theme import Palette
+
+_MONO = "font-family: Consolas, 'Cascadia Mono', monospace;"
+_RANGE_DASH = "–"  # тире мокапа («1560–1591»), не дефис  # noqa: RUF001, RUF003
+
+
+@dataclass(frozen=True)
+class ProfileRow:
+    """Что видно на карточке профиля — аксессор тестам, по манере `row_note`/`row_control`
+    (`settings_view.py`): проверяют зарегистрированное состояние, а не обход layout.
+    """  # noqa: RUF002
+
+    name: str
+    status_text: str
+    button_text: str
+    button_enabled: bool
+
+
+# -- чистые функции текста: без Qt, испытаны через UI-тесты выше по слою ----
+
+
+def _status_text(status: ServerStatus) -> str:
+    if status.resolved is None:
+        return "версия не установлена"
+    processes = status.processes
+    if not processes:
+        return "остановлен"
+    pids = ", ".join(f"PID {p.pid}" for p in processes)
+    if len(processes) == 1:
+        return f"работает · {pids}"
+    return f"работает · {pids} · не выбрать, кого останавливать"
+
+
+def _status_colour(status: ServerStatus, palette: Palette) -> str:
+    if status.resolved is None:
+        return palette.problem
+    return palette.accent if status.processes else palette.text_dim
+
+
+def _button_state(status: ServerStatus) -> tuple[str, bool]:
+    if status.resolved is None:
+        return "Запустить", False
+    count = len(status.processes)
+    if count == 0:
+        return "Запустить", True
+    if count == 1:
+        return "Остановить", True
+    return "Остановить", False
+
+
+def _flags_text(profile: ServerProfile) -> str:
+    parts: list[str] = []
+    if profile.debug:
+        parts.append("-debug")
+    if profile.http:
+        parts.append("-http")
+    extra = profile.extra_args.strip()
+    if extra:
+        parts.append(extra)
+    return " ".join(parts)
+
+
+def _detail_line(status: ServerStatus) -> str:
+    profile = status.profile
+    resolved_text = str(status.resolved) if status.resolved is not None else "?"
+    ports = (
+        f"порты {profile.port} / {profile.regport} / "
+        f"{profile.range_start}{_RANGE_DASH}{profile.range_end}"
+    )
+    line = f"{profile.version} → {resolved_text} · {ports}"
+    flags = _flags_text(profile)
+    return f"{line} · {flags}" if flags else line
+
+
+def _removal_question(profile: ServerProfile, running: bool) -> str:
+    """Текст вопроса на удаление профиля — решение заказчика 8.
+
+    Запущенный профиль предупреждает отдельно: удаляется только запись
+    списка, живой `ragent` (если он есть) никто не трогает и он продолжит
+    работать, просто перестанет быть виден в разделе.
+    """
+    if running:
+        return (
+            f"Удалить профиль «{profile.name}»? Сервер сейчас работает и "
+            "продолжит работать — профиль только перестанет быть виден "
+            "в списке серверов."
+        )
+    return f"Удалить профиль «{profile.name}» из списка серверов?"
+
+
+def _foreign_text(entry: ForeignServer) -> str:
+    """Строка блока «Другие серверы на машине»: полная или ограниченная форма ([Ф] В1).
+
+    Ограниченная — когда командная строка недоступна (`params is None`,
+    чужой пользователь или служба): без портов и каталога, версия — только
+    если виден путь исполняемого файла (`executable`, доступен без
+    повышения даже для SYSTEM-процессов, см. `process_scan.py`).
+    """  # noqa: RUF002
+    if entry.params is None:
+        text = (
+            f"PID {entry.process.pid} · нет доступа к командной строке "
+            "(другой пользователь или служба)"
+        )
+        return f"{text} · {entry.version}" if entry.version is not None else text
+    version_text = str(entry.version) if entry.version is not None else "?"
+    if entry.params.port is not None and entry.params.regport is not None:
+        ports = f"порты {entry.params.port} / {entry.params.regport}"
+    else:
+        ports = "порты ?"
+    directory = entry.params.cluster_dir or "?"
+    return f"{version_text} · {ports} · {directory} · PID {entry.process.pid}"
+
+
+class ServersView(QWidget):
+    def __init__(
+        self,
+        workspace: ServersWorkspace,
+        *,
+        installed: Callable[[], list[ServerInstallation]],
+        palette: Palette,
+        confirm_removal: Callable[[str], bool] | None = None,
+        show_error: Callable[[str], None] | None = None,
+        on_console: Callable[[], None] = lambda: None,
+        on_add_profile: Callable[[], None] = lambda: None,
+        request_scan: Callable[[], None] = lambda: None,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._workspace = workspace
+        self._installed = installed
+        self._palette = palette
+        # Инъекция диалога, а не вызов модульной функции напрямую — тот же  # noqa: RUF003
+        # приём, что `confirm_removal`/`choose_directory` у `BasesView`/  # noqa: RUF003
+        # `SettingsView`: настоящий `QMessageBox.exec()` блокирует офскрин-тест.
+        self._confirm_removal = confirm_removal or self._default_confirm_removal
+        self._show_error = show_error or self._default_show_error
+        self._on_console = on_console
+        self._on_add_profile = on_add_profile
+        self._request_scan = request_scan
+
+        self._profile_rows: list[ProfileRow] = []
+        self._profile_status_labels: list[QLabel] = []
+        self._profile_buttons: list[QPushButton] = []
+        self._profile_delete_buttons: list[QPushButton] = []
+        self._profile_warning_texts: list[list[str]] = []
+        self._profile_extinguish_buttons: list[QPushButton | None] = []
+        self._foreign_row_texts: list[str] = []
+        self._foreign_row_widgets: list[QWidget] = []
+        self._console_note_text = ""
+
+        header = QLabel("Серверы")
+        header_font = header.font()
+        header_font.setPointSize(13)
+        header_font.setBold(True)
+        header.setFont(header_font)
+
+        self._console_button = QPushButton("Консоль администрирования…")
+        self._console_button.clicked.connect(lambda: self._on_console())
+        self._add_button = QPushButton("+ Профиль")
+        self._add_button.clicked.connect(lambda: self._on_add_profile())
+
+        head_row = QHBoxLayout()
+        head_row.addWidget(header)
+        head_row.addStretch(1)
+        head_row.addWidget(self._console_button)
+        head_row.addWidget(self._add_button)
+
+        self._path_label = QLabel("")
+        self._path_label.setObjectName("ServersSub")
+        self._path_label.setWordWrap(True)
+
+        self._cards_layout = QVBoxLayout()
+        self._cards_layout.setSpacing(10)
+
+        self._foreign_label = QLabel("ДРУГИЕ СЕРВЕРЫ НА МАШИНЕ")  # noqa: RUF001
+        self._foreign_label.setObjectName("ServersGroupLabel")
+        self._foreign_layout = QVBoxLayout()
+        self._foreign_layout.setSpacing(4)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(6)
+        layout.addLayout(head_row)
+        layout.addWidget(self._path_label)
+        layout.addSpacing(10)
+        layout.addLayout(self._cards_layout)
+        layout.addSpacing(14)
+        layout.addWidget(self._foreign_label)
+        layout.addLayout(self._foreign_layout)
+        layout.addStretch(1)
+
+        self.rebuild()
+
+    # -- сборка содержимого -------------------------------------------------
+
+    def rebuild(self) -> None:
+        """Перечитать `statuses`/`foreign_servers` и пересобрать карточки целиком.
+
+        Не правка на месте: число карточек и число процессов у каждой могут
+        поменяться между сканами, отслеживать разницу дороже и рискованнее,
+        чем перестроить — тот же выбор, что и у `BasesView.rebuild()`.
+        """  # noqa: RUF002
+        self._clear(self._cards_layout)
+        self._clear(self._foreign_layout)
+        self._profile_rows = []
+        self._profile_status_labels = []
+        self._profile_buttons = []
+        self._profile_delete_buttons = []
+        self._profile_warning_texts = []
+        self._profile_extinguish_buttons = []
+        self._foreign_row_texts = []
+        self._foreign_row_widgets = []
+
+        server_installations = self._installed()
+        installed_versions = [si.installation.version for si in server_installations]
+        for status in self._workspace.statuses(installed_versions):
+            self._build_card(status, server_installations)
+        for entry in self._workspace.foreign_servers():
+            self._build_foreign_row(entry)
+
+        self._console_note_text = self._read_console_note()
+        self._path_label.setText(
+            f"{self._workspace.store_path} · статус — по живым процессам · "
+            f"консоль: {self._console_note_text}"
+        )
+
+    @staticmethod
+    def _clear(layout: QLayout) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget() if item is not None else None
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+    def _read_console_note(self) -> str:
+        version = self._workspace.current_console_version()
+        return str(version) if version is not None else "не зарегистрирована"
+
+    def _build_card(
+        self, status: ServerStatus, server_installations: Sequence[ServerInstallation]
+    ) -> None:
+        profile = status.profile
+        palette = self._palette
+        button_text, button_enabled = _button_state(status)
+        running = bool(status.processes)
+
+        card = QWidget()
+        card.setObjectName("ServerCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(0, 0, 0, 0)
+        card_layout.setSpacing(2)
+
+        title_row = QHBoxLayout()
+        name_label = QLabel(profile.name)
+        name_font = name_label.font()
+        name_font.setBold(True)
+        name_label.setFont(name_font)
+        status_label = QLabel(_status_text(status))
+        status_label.setStyleSheet(f"color: {_status_colour(status, palette)};")
+        title_row.addWidget(name_label)
+        title_row.addWidget(status_label)
+        title_row.addStretch(1)
+
+        detail_label = QLabel(_detail_line(status))
+        detail_label.setStyleSheet(f"color: {palette.text_dim}; {_MONO}")
+        dir_label = QLabel(profile.cluster_dir)
+        dir_label.setStyleSheet(f"color: {palette.text_dim}; {_MONO}")
+
+        body_col = QVBoxLayout()
+        body_col.setSpacing(1)
+        body_col.addLayout(title_row)
+        body_col.addWidget(detail_label)
+        body_col.addWidget(dir_label)
+
+        toggle_button = QPushButton(button_text)
+        toggle_button.setEnabled(button_enabled)
+        toggle_button.clicked.connect(
+            lambda _checked=False, pid=profile.id, si=server_installations, r=running: (
+                self._toggle(pid, si, r)
+            )
+        )
+        delete_button = QPushButton("Удалить")
+        delete_button.clicked.connect(
+            lambda _checked=False, pid=profile.id, r=running: self._remove(pid, r)
+        )
+        control_col = QVBoxLayout()
+        control_col.addWidget(toggle_button)
+        control_col.addWidget(delete_button)
+
+        body_row = QHBoxLayout()
+        body_row.addLayout(body_col, 1)
+        body_row.addLayout(control_col)
+        card_layout.addLayout(body_row)
+
+        warnings: list[str] = []
+        if status.dir_mismatch:
+            resolved_text = str(status.resolved) if status.resolved is not None else "?"
+            text = (
+                f"Каталог кластера похож на другую версию, а разрешилась "  # noqa: RUF001
+                f"{resolved_text} — проверьте путь"
+            )
+            warnings.append(text)
+            mismatch_label = QLabel(text)
+            mismatch_label.setWordWrap(True)
+            mismatch_label.setStyleSheet(f"color: {palette.problem};")
+            card_layout.addWidget(mismatch_label)
+
+        extinguish_button: QPushButton | None = None
+        if status.orphans:
+            pids = ", ".join(str(orphan.pid) for orphan in status.orphans)
+            text = (
+                f"Осиротевшие процессы без ragent: PID {pids} — держат "
+                "порт регистрации"
+            )
+            warnings.append(text)
+            orphan_row = QHBoxLayout()
+            orphan_label = QLabel(text)
+            orphan_label.setWordWrap(True)
+            orphan_label.setStyleSheet(f"color: {palette.problem};")
+            extinguish_button = QPushButton("Погасить")
+            extinguish_button.clicked.connect(
+                lambda _checked=False, pid=profile.id: self._extinguish(pid)
+            )
+            orphan_row.addWidget(orphan_label, 1)
+            orphan_row.addWidget(extinguish_button)
+            card_layout.addLayout(orphan_row)
+
+        self._cards_layout.addWidget(card)
+        self._profile_rows.append(
+            ProfileRow(
+                name=profile.name,
+                status_text=_status_text(status),
+                button_text=button_text,
+                button_enabled=button_enabled,
+            )
+        )
+        self._profile_status_labels.append(status_label)
+        self._profile_buttons.append(toggle_button)
+        self._profile_delete_buttons.append(delete_button)
+        self._profile_warning_texts.append(warnings)
+        self._profile_extinguish_buttons.append(extinguish_button)
+
+    def _build_foreign_row(self, entry: ForeignServer) -> None:
+        text = _foreign_text(entry)
+        widget = QWidget()
+        row_layout = QHBoxLayout(widget)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        label = QLabel(text)
+        label.setStyleSheet(f"color: {self._palette.text_dim}; {_MONO}")
+        label.setWordWrap(True)
+        row_layout.addWidget(label)
+        self._foreign_layout.addWidget(widget)
+        self._foreign_row_texts.append(text)
+        self._foreign_row_widgets.append(widget)
+
+    # -- реакции --------------------------------------------------------------
+
+    def _toggle(
+        self, profile_id: str, server_installations: Sequence[ServerInstallation], running: bool
+    ) -> None:
+        try:
+            if running:
+                self._workspace.stop(profile_id)
+            else:
+                self._workspace.start(profile_id, server_installations)
+        except ServicesError as error:
+            self._show_error(str(error))
+        self._request_scan()
+        self.rebuild()
+
+    def _remove(self, profile_id: str, running: bool) -> None:
+        profile = next((p for p in self._workspace.profiles() if p.id == profile_id), None)
+        if profile is None:
+            return
+        if not self._confirm_removal(_removal_question(profile, running)):
+            return
+        try:
+            self._workspace.remove_profile(profile_id)
+        except ServicesError as error:
+            self._show_error(str(error))
+        self.rebuild()
+
+    def _extinguish(self, profile_id: str) -> None:
+        try:
+            self._workspace.stop_orphans(profile_id)
+        except ServicesError as error:
+            self._show_error(str(error))
+        self._request_scan()
+        self.rebuild()
+
+    # -- дефолты инъекций (переопределяются тестами) --------------------------
+
+    def _default_confirm_removal(self, question: str) -> bool:
+        box = build_confirm_box(self, "OneCStarter", question)
+        # box.buttons() типизирован как list[QAbstractButton] в стабах PySide6,
+        # но setDefaultButton() принимает только QPushButton — тот же приём,
+        # что и в dialogs/confirm.py::build_removal_confirm_box: фактический
+        # тип рантайма QPushButton гарантирован тем, что build_confirm_box
+        # добавляет кнопки только через addButton(text, role).
+        no_button = cast(
+            QPushButton | None, next((b for b in box.buttons() if b.text() == "Нет"), None)
+        )
+        if no_button is not None:
+            box.setDefaultButton(no_button)
+        box.exec()
+        return is_confirmed(box)
+
+    def _default_show_error(self, message: str) -> None:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("OneCStarter")
+        box.setText(message)
+        box.exec()
+
+    # -- палитра ----------------------------------------------------------------
+
+    def apply_palette(self, palette: Palette) -> None:
+        """Перекрасить перерисовкой: карточки несут цвет в запечённом `styleSheet`."""
+        self._palette = palette
+        self.rebuild()
+
+    # -- доступ для тестов --------------------------------------------------
+
+    def profile_rows(self) -> list[ProfileRow]:
+        return list(self._profile_rows)
+
+    def profile_status_label(self, index: int) -> QLabel:
+        return self._profile_status_labels[index]
+
+    def profile_button(self, index: int) -> QPushButton:
+        return self._profile_buttons[index]
+
+    def profile_delete_button(self, index: int) -> QPushButton:
+        return self._profile_delete_buttons[index]
+
+    def profile_warnings(self, index: int) -> list[str]:
+        return list(self._profile_warning_texts[index])
+
+    def profile_extinguish_button(self, index: int) -> QPushButton | None:
+        return self._profile_extinguish_buttons[index]
+
+    def foreign_rows(self) -> list[str]:
+        return list(self._foreign_row_texts)
+
+    def foreign_row_widget(self, index: int) -> QWidget:
+        return self._foreign_row_widgets[index]
+
+    def console_note(self) -> str:
+        return self._console_note_text
+
+    def path_text(self) -> str:
+        return self._path_label.text()
+
+    def console_button(self) -> QPushButton:
+        return self._console_button
+
+    def add_profile_button(self) -> QPushButton:
+        return self._add_button
