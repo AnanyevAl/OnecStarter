@@ -301,7 +301,27 @@ def test_foreign_row_limited_form_without_executable_omits_version(
     assert "нет доступа" in text
 
 
-# -- удаление профиля --------------------------------------------------------
+# -- удаление профиля (круг правок 1: контекстное меню карточки) ------------
+#
+# Решение контроллера (круг правок 1 ревью задачи 14): «Удалить» больше не
+# кнопка карточки (эталон мокапа несёт ровно одну кнопку, паттерн проекта
+# для разрушительных действий — контекстное меню, `BasesView._build_menu`).
+# `profile_menu(index)` отдаёт собранный `QMenu` без показа — тем же
+# приёмом, что `_build_menu` в `BasesView`: тесты зовут действие через
+# `QAction.trigger()`, а не через прямой вызов приватного `_remove` и не  # noqa: RUF003
+# через блокирующий `QMenu.exec()`.
+
+
+def _trigger_delete(view: ServersView, index: int) -> None:
+    """«Удалить профиль…» из контекстного меню карточки — тестовый аксессор.
+
+    `QAction.trigger()` эмитит `triggered` синхронно и зовёт подключённый
+    слот без показа настоящего меню — офскрин-тест не должен открывать
+    `QMenu.exec()`, он блокирует.
+    """
+    menu = view.profile_menu(index)
+    action = next(a for a in menu.actions() if "Удалить" in a.text())
+    action.trigger()
 
 
 def test_removal_of_running_profile_warns_it_keeps_running(
@@ -310,6 +330,8 @@ def test_removal_of_running_profile_warns_it_keeps_running(
     """ЗАЩИТНЫЙ ТЕСТ: удаление РАБОТАЮЩЕГО профиля предупреждает, что сервер
     продолжит работать (решение заказчика 8), а отказ в диалоге оставляет
     профиль на месте — сторожит от «сначала удалить, потом спросить».
+    Действие вызывается через контекстное меню карточки (`profile_menu`),
+    не через приватный `_remove` напрямую.
     """  # noqa: RUF002
     profile = _profile()
     workspace = _workspace(tmp_path, (profile,))
@@ -327,7 +349,7 @@ def test_removal_of_running_profile_warns_it_keeps_running(
         confirm_removal=refuse,
     )
 
-    view.profile_delete_button(0).click()
+    _trigger_delete(view, 0)
 
     assert questions
     assert "продолжит работать" in questions[0]
@@ -348,9 +370,36 @@ def test_removal_of_running_profile_confirmed_removes_it(
         confirm_removal=lambda _question: True,
     )
 
-    view.profile_delete_button(0).click()
+    _trigger_delete(view, 0)
 
     assert workspace.profiles() == []
+
+
+def test_removal_confirmed_triggers_rescan(application: QApplication, tmp_path: Path) -> None:
+    """НАХОДКА ревью (круг правок 1), подтверждена эмпирически: без
+    `request_scan()` после удаления РАБОТАЮЩЕГО профиля его процесс пропадал
+    из показа целиком — `foreign_servers()` отдаёт классификацию ПРЕЖНЕГО
+    снимка, где процесс ещё сопоставлен со своим (уже удалённым) профилем
+    и в «чужие» не попадает. Решение заказчика 8 требует, чтобы сервер
+    «продолжил работать» и стал виден как чужой — без пересчёта снимка
+    он не виден никак.
+    """  # noqa: RUF002
+    profile = _profile()
+    workspace = _workspace(tmp_path, (profile,))
+    workspace.apply_scan(ScanSnapshot(agents=(_agent(100, profile.cluster_dir),), managers=()))
+    rescans: list[int] = []
+
+    view = ServersView(
+        workspace,
+        installed=lambda: [_installation()],
+        palette=theme.DARK,
+        confirm_removal=lambda _question: True,
+        request_scan=lambda: rescans.append(1),
+    )
+
+    _trigger_delete(view, 0)
+
+    assert rescans == [1]
 
 
 def test_removal_of_stopped_profile_uses_plain_question(
@@ -373,7 +422,7 @@ def test_removal_of_stopped_profile_uses_plain_question(
         confirm_removal=refuse,
     )
 
-    view.profile_delete_button(0).click()
+    _trigger_delete(view, 0)
 
     assert questions
     assert "продолжит работать" not in questions[0]

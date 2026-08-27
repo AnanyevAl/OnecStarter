@@ -28,17 +28,32 @@ assets/2026-08-26-v2-servers-mockup.html), секция «Раздел „Сер
 Удаление профиля предупреждает отдельно, если сервер запущен (решение
 заказчика 8, `_removal_question`): профиль пропадает из списка, но процесс
 `ragent`, если он жив, никто не трогает — молчание об этом стоило бы
-пользователю потерянного из виду, но работающего сервера.
+пользователю потерянного из виду, но работающего сервера. После
+подтверждённого удаления карточка обязана позвать `request_scan()`, как
+и запуск/остановка (круг правок 1 ревью задачи 14): без пересчёта снимка
+процессов работающий сервер молча пропадает из показа целиком, вместо того
+чтобы перейти в «Другие серверы на машине» — `foreign_servers()` отдаёт
+классификацию ПРЕЖНЕГО снимка, где процесс ещё сопоставлен со своим (уже
+удалённым) профилем.
+
+Удаление вынесено в контекстное меню карточки, а не в кнопку (круг правок 1
+ревью задачи 14, решение контроллера): эталон мокапа несёт на карточке
+ровно одну кнопку, а паттерн проекта для разрушительных действий —
+контекстное меню (`BasesView._build_menu`/`_show_menu`). Тот же приём
+разделения: `_build_card_menu` собирает `QMenu` без показа (тестам и
+показу), `customContextMenuRequested` карточки его же и `exec()`-ит.
 """  # noqa: RUF002
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import cast
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLayout,
+    QMenu,
     QMessageBox,
     QPushButton,
     QVBoxLayout,
@@ -194,7 +209,7 @@ class ServersView(QWidget):
         self._profile_rows: list[ProfileRow] = []
         self._profile_status_labels: list[QLabel] = []
         self._profile_buttons: list[QPushButton] = []
-        self._profile_delete_buttons: list[QPushButton] = []
+        self._profile_menus: list[QMenu] = []
         self._profile_warning_texts: list[list[str]] = []
         self._profile_extinguish_buttons: list[QPushButton | None] = []
         self._foreign_row_texts: list[str] = []
@@ -258,7 +273,7 @@ class ServersView(QWidget):
         self._profile_rows = []
         self._profile_status_labels = []
         self._profile_buttons = []
-        self._profile_delete_buttons = []
+        self._profile_menus = []
         self._profile_warning_texts = []
         self._profile_extinguish_buttons = []
         self._foreign_row_texts = []
@@ -333,18 +348,25 @@ class ServersView(QWidget):
                 self._toggle(pid, si, r)
             )
         )
-        delete_button = QPushButton("Удалить")
-        delete_button.clicked.connect(
-            lambda _checked=False, pid=profile.id, r=running: self._remove(pid, r)
-        )
         control_col = QVBoxLayout()
         control_col.addWidget(toggle_button)
-        control_col.addWidget(delete_button)
 
         body_row = QHBoxLayout()
         body_row.addLayout(body_col, 1)
         body_row.addLayout(control_col)
         card_layout.addLayout(body_row)
+
+        # Удаление — контекстным меню карточки, не кнопкой (круг правок 1
+        # ревью задачи 14): эталон мокапа несёт одну кнопку на карточку,
+        # разрушительное действие — тем же паттерном, что и у BasesView  # noqa: RUF003
+        # (_build_menu/_show_menu): собрать меню без показа отдельным
+        # методом (тестам и показу), сам показ — через
+        # customContextMenuRequested и exec() по глобальной позиции клика.
+        menu = self._build_card_menu(profile.id, running)
+        card.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        card.customContextMenuRequested.connect(
+            lambda position, w=card, m=menu: m.exec(w.mapToGlobal(position))
+        )
 
         warnings: list[str] = []
         if status.dir_mismatch:
@@ -390,9 +412,23 @@ class ServersView(QWidget):
         )
         self._profile_status_labels.append(status_label)
         self._profile_buttons.append(toggle_button)
-        self._profile_delete_buttons.append(delete_button)
+        self._profile_menus.append(menu)
         self._profile_warning_texts.append(warnings)
         self._profile_extinguish_buttons.append(extinguish_button)
+
+    def _build_card_menu(self, profile_id: str, running: bool) -> QMenu:
+        """Контекстное меню карточки без показа — тестам и показу (см. докстринг модуля).
+
+        Один пункт сегодня («Удалить профиль…»); отдельный метод — тот же
+        приём, что `BasesView._build_menu`, а не однострочный `QMenu` внутри
+        `_build_card`: состав пунктов проверяется на настоящем виджете без
+        блокирующего `exec()`.
+        """  # noqa: RUF002
+        menu = QMenu(self)
+        menu.addAction(
+            "Удалить профиль…", lambda: self._remove(profile_id, running)
+        )
+        return menu
 
     def _build_foreign_row(self, entry: ForeignServer) -> None:
         text = _foreign_text(entry)
@@ -432,6 +468,14 @@ class ServersView(QWidget):
             self._workspace.remove_profile(profile_id)
         except ServicesError as error:
             self._show_error(str(error))
+        # Находка ревью задачи 14 (круг правок 1), подтверждена эмпирически:
+        # без пересчёта снимка удаление РАБОТАЮЩЕГО профиля выкидывало его  # noqa: RUF003
+        # процесс из показа целиком — `foreign_servers()` отдаёт
+        # классификацию ПРЕЖНЕГО `apply_scan`, где процесс ещё сопоставлен
+        # со своим (уже удалённым) профилем и в `foreign` не попадает.  # noqa: RUF003
+        # Решение заказчика 8 требует, чтобы сервер «продолжил работать»
+        # и стал виден как чужой — без `request_scan()` он не виден никак.
+        self._request_scan()
         self.rebuild()
 
     def _extinguish(self, profile_id: str) -> None:
@@ -484,8 +528,14 @@ class ServersView(QWidget):
     def profile_button(self, index: int) -> QPushButton:
         return self._profile_buttons[index]
 
-    def profile_delete_button(self, index: int) -> QPushButton:
-        return self._profile_delete_buttons[index]
+    def profile_menu(self, index: int) -> QMenu:
+        """Контекстное меню карточки — тестам, без показа (по образцу `BasesView`).
+
+        Меню собирается один раз при `rebuild()` (`_build_card_menu`) и это
+        оно же несёт `customContextMenuRequested` — тестируется прямым
+        `trigger()` пункта, не открытием настоящего `QMenu.exec()`.
+        """
+        return self._profile_menus[index]
 
     def profile_warnings(self, index: int) -> list[str]:
         return list(self._profile_warning_texts[index])
