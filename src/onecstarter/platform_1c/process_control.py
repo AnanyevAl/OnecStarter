@@ -27,6 +27,7 @@ from onecstarter.platform_1c.process_scan import ProcessInfo
 
 __all__ = [
     "NullControl",
+    "ProcessAccessError",
     "ProcessControl",
     "ProcessMismatchError",
     "PsutilControl",
@@ -41,6 +42,18 @@ class ProcessMismatchError(Exception):
     Означает, что PID переиспользован другим процессом с момента снимка —
     завершать его нельзя, это не тот процесс, который имелся в виду.
     """  # noqa: RUF002
+
+
+class ProcessAccessError(Exception):
+    """Нет прав на `kill()`/чтение `create_time()` данного процесса.
+
+    Находка финального ревью ветки v2-servers (CRITICAL 1b): `psutil.AccessDenied`
+    уходил из `PsutilControl.terminate` голым исключением психутила мимо всех
+    ловцов слоя `services` (`ServersWorkspace` ловит только `ProcessMismatchError`),
+    и «Остановить» на процессе другого пользователя/службы падало трассировкой
+    вместо внятного сообщения. `services/servers.py::_terminate_or_raise`
+    переводит это исключение в `ServerStopError`.
+    """
 
 
 class ProcessControl(Protocol):
@@ -94,6 +107,14 @@ class PsutilControl:
             process.kill()
         except psutil.NoSuchProcess:
             return  # уже нет — цель достигнута
+        except psutil.AccessDenied as error:
+            # Процесс другого пользователя или службы: create_time()/kill()
+            # отказывают правами, а не «процесса нет» — честный отказ слоя,  # noqa: RUF003
+            # не голый psutil.AccessDenied наружу (CRITICAL 1b, финальное
+            # ревью ветки).
+            raise ProcessAccessError(
+                f"pid {pid}: нет прав на завершение процесса"
+            ) from error
 
 
 class NullControl:

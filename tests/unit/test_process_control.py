@@ -16,6 +16,7 @@ import pytest
 
 from onecstarter.platform_1c.process_control import (
     NullControl,
+    ProcessAccessError,
     ProcessMismatchError,
     PsutilControl,
 )
@@ -86,3 +87,29 @@ class TestPsutilControlTerminate:
         popen.wait()
         # PID заведомо свободен — процесс завершён и дождан.
         PsutilControl().terminate(popen.pid, 0.0)  # не поднимает исключение
+
+    def test_access_denied_from_kill_is_translated_to_process_access_error(
+        self, fake_process: subprocess.Popen[bytes], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ.
+
+        CRITICAL 1b финального ревью: `psutil.AccessDenied` из `kill()`
+        (процесс другого пользователя или службы) уходил бы из
+        `PsutilControl.terminate` голым исключением психутила — мимо всех
+        ловцов слоя `services` (`ServersWorkspace._terminate_or_raise` ловит
+        только `ProcessMismatchError`). Настоящий `AccessDenied` трудно
+        воспроизвести без второго пользователя на машине — подменяем
+        `Process.kill`, единственное место, где отказ реально случается
+        в протоколе Б2 t07-protocol.md.
+        Мутация: убрать `except psutil.AccessDenied` из `terminate` — тест
+        обязан упасть непойманным `psutil.AccessDenied` вместо `ProcessAccessError`.
+        """  # noqa: RUF002
+        create_time = psutil.Process(fake_process.pid).create_time()
+
+        def deny(self: psutil.Process) -> None:
+            raise psutil.AccessDenied(pid=fake_process.pid)
+
+        monkeypatch.setattr(psutil.Process, "kill", deny)
+
+        with pytest.raises(ProcessAccessError):
+            PsutilControl().terminate(fake_process.pid, create_time)

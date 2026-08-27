@@ -9,7 +9,7 @@ from onecstarter.domain.launch import LaunchCommand
 from onecstarter.domain.server import ServerConvention, ServerProfile
 from onecstarter.domain.version import Arch, Installation, parse_version
 from onecstarter.platform_1c.elevation import ElevationDeclinedError
-from onecstarter.platform_1c.process_control import ProcessMismatchError
+from onecstarter.platform_1c.process_control import ProcessAccessError, ProcessMismatchError
 from onecstarter.platform_1c.process_scan import ProcessInfo
 from onecstarter.platform_1c.server_discovery import ServerInstallation, console_path
 from onecstarter.services.errors import (
@@ -32,13 +32,17 @@ class FakeControl:
     """ProcessControl с детьми по словарю `pid -> [ProcessInfo]` и журналом вызовов.
 
     `mismatched` — pid-ы, на которых `terminate` кидает `ProcessMismatchError`
-    (гонка PID, §6.2) вместо обычного успеха. Запись в `calls` для `terminate`
-    добавляется ДО проверки на несовпадение — так тест видит, что попытка
-    была (ровно одна), а не просто отсутствие последствий.
+    (гонка PID, §6.2) вместо обычного успеха. `access_denied` — pid-ы, на
+    которых `terminate` кидает `ProcessAccessError` (CRITICAL 1b, финальное
+    ревью ветки: `psutil.AccessDenied` — процесс другого пользователя или
+    службы). Запись в `calls` для `terminate` добавляется ДО проверки на
+    несовпадение/отказ прав — так тест видит, что попытка была (ровно одна),
+    а не просто отсутствие последствий.
     """  # noqa: RUF002
 
     children_map: dict[int, list[ProcessInfo]] = field(default_factory=dict)
     mismatched: frozenset[int] = field(default_factory=frozenset)
+    access_denied: frozenset[int] = field(default_factory=frozenset)
     calls: list[tuple[str, int]] = field(default_factory=list)
 
     def children(self, pid: int) -> list[ProcessInfo]:
@@ -51,17 +55,27 @@ class FakeControl:
             raise ProcessMismatchError(
                 f"pid {pid}: create_time не совпадает с ожидаемым — PID переиспользован"  # noqa: RUF001
             )
+        if pid in self.access_denied:
+            raise ProcessAccessError(f"pid {pid}: нет прав на завершение процесса")
 
 
 @dataclass
 class FakeSpawn:
-    """Журнал `LaunchCommand`, с которыми звали `spawn`; возвращает заданный `pid`."""  # noqa: RUF002
+    """Журнал `LaunchCommand`, с которыми звали `spawn`; возвращает заданный `pid`.
+
+    `error`, если задан, — исключение, которое `__call__` поднимает вместо
+    возврата `pid` (CRITICAL 1a, финальное ревью ветки: `OSError` из `spawn`
+    обязан переводиться в `ServerError`), тот же приём, что `FakeRunElevated`.
+    """  # noqa: RUF002
 
     pid: int = 4242
+    error: Exception | None = None
     calls: list[LaunchCommand] = field(default_factory=list)
 
     def __call__(self, command: LaunchCommand) -> int:
         self.calls.append(command)
+        if self.error is not None:
+            raise self.error
         return self.pid
 
 
@@ -87,12 +101,20 @@ class FakeRunElevated:
 
 @dataclass
 class FakeOpenFile:
-    """Журнал путей, с которыми звали `open_file`."""  # noqa: RUF002
+    """Журнал путей, с которыми звали `open_file`.
 
+    `error`, если задан, — исключение, которое `__call__` поднимает вместо
+    обычного успеха (CRITICAL 1c, финальное ревью ветки: `OSError` из
+    `os.startfile` обязан переводиться в `ServerError`).
+    """  # noqa: RUF002
+
+    error: Exception | None = None
     calls: list[str] = field(default_factory=list)
 
     def __call__(self, path: str) -> None:
         self.calls.append(path)
+        if self.error is not None:
+            raise self.error
 
 
 def _server_installation(
@@ -310,6 +332,57 @@ class TestUpdateProfile:
 
         after = store_path.read_bytes()
         assert before == after
+
+
+class TestRematchAfterSave:
+    def test_update_rematches_existing_snapshot_without_waiting_for_new_scan(
+        self, tmp_path: Path
+    ) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ.
+
+        IMPORTANT 6 финального ревью: правка каталога кластера профиля
+        обязана пересопоставить УЖЕ ИМЕЮЩИЙСЯ снимок процессов немедленно.
+        Без этого `statuses()` продолжал бы показывать процесс СТАРОГО
+        каталога как «работает» до следующего планового скана (до 5 с,
+        спека §4.4), хотя профиль в файле уже ссылается на другой каталог —
+        снимок живых PID не изменился, поменялся только список профилей.
+        Мутация: убрать пересопоставление в конце `ServersWorkspace._save` —
+        тест обязан упасть (старый процесс останется в `status.processes`).
+        """  # noqa: RUF002
+        store_path = tmp_path / "servers.json"
+        workspace = _workspace(store_path, new_id=lambda: "ii" * 16)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        agent = _agent(111, ("ragent.exe", "-port", "1540", "-d", profile.cluster_dir))
+        workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
+        assert workspace.statuses([parse_version("8.3.25.1633")])[0].processes != ()
+
+        updated = replace(profile, cluster_dir=r"E:\srv\new_cluster_dir")
+        workspace.update_profile(updated)
+
+        status = workspace.statuses([parse_version("8.3.25.1633")])[0]
+        assert status.processes == ()
+        # Старый процесс обязан переехать в чужие — тот же снимок, новая
+        # классификация по обновлённому списку профилей.
+        assert any(f.process.pid == 111 for f in workspace.foreign_servers())
+
+    def test_add_profile_rematches_existing_snapshot(self, tmp_path: Path) -> None:
+        """Добавление профиля тоже пересопоставляет снимок: живой процесс,
+        случайно уже стоящий на каталоге НОВОГО профиля, обязан сразу
+        показаться «работает», а не оставаться в чужих до следующего скана.
+        """  # noqa: RUF002
+        store_path = tmp_path / "servers.json"
+        workspace = _workspace(store_path, new_id=lambda: "jj" * 16)
+        foreign_dir = r"E:\srv\srv_8.3.25.1633"
+        agent = _agent(222, ("ragent.exe", "-port", "1540", "-d", foreign_dir))
+        workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
+        assert workspace.foreign_servers()  # процесс пока чужой — профиля ещё нет
+
+        workspace.add_profile(_profile(cluster_dir=foreign_dir))
+
+        status = workspace.statuses([parse_version("8.3.25.1633")])[0]
+        assert [p.pid for p in status.processes] == [222]
+        assert workspace.foreign_servers() == []
 
 
 class TestRemoveProfile:
@@ -548,6 +621,54 @@ class TestOrphanManagers:
 
         assert status.orphans == ()
 
+    def test_orphan_excluded_when_it_sits_on_a_live_foreign_agents_directory(
+        self, tmp_path: Path
+    ) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ.
+
+        IMPORTANT 5 финального ревью: rmngr на НАШЕМ `regport`, чей `-d`
+        указывает на каталог ЖИВОГО чужого ragent того же снимка, не
+        сирота — он держит порт живого чужого кластера, а не забытый порт
+        нашего профиля. Раньше `-port`-эвристика предложила бы «Погасить»
+        такой rmngr только из-за коллизии портов, убив часть чужого
+        работающего дерева.
+        Мутация: убрать проверку `live_agent_dirs` в `_orphans_for` — тест
+        обязан упасть (rmngr снова попадёт в orphans).
+        """  # noqa: RUF002
+        store_path = tmp_path / "servers.json"
+        workspace = _workspace(store_path, new_id=lambda: "gg" * 16)
+        workspace.add_profile(_profile())  # regport=1541
+        foreign_dir = r"D:\foreign\cluster"
+        foreign_agent = _agent(700, ("ragent.exe", "-port", "9999", "-d", foreign_dir))
+        candidate = _manager(701, ("rmngr.exe", "-port", "1541", "-d", foreign_dir))
+
+        workspace.apply_scan(ScanSnapshot(agents=(foreign_agent,), managers=(candidate,)))
+        status = workspace.statuses([parse_version("8.3.25.1633")])[0]
+
+        assert status.orphans == ()
+
+    def test_regression_a3_orphan_still_reported_without_live_agents(
+        self, tmp_path: Path
+    ) -> None:
+        """Регресс-контроль IMPORTANT 5: измеренный сирота А3 остаётся сиротой.
+
+        rmngr на нашем `regport`, без `-d` вовсе, и БЕЗ живых агентов
+        в снимке — сценарий А3 (t07-protocol.md): `ragent` на занятом
+        порту умер, `rmngr` остался сиротой. Новая проверка «живых
+        каталогов» не должна поглотить этот случай — при пустом
+        `self._snapshot.agents` `live_agent_dirs` пуст, и старая
+        `-port`-эвристика обязана сработать как раньше.
+        """  # noqa: RUF002
+        store_path = tmp_path / "servers.json"
+        workspace = _workspace(store_path, new_id=lambda: "hh" * 16)
+        workspace.add_profile(_profile())  # regport=1541
+        manager = _manager(702, ("rmngr.exe", "-port", "1541"))
+
+        workspace.apply_scan(ScanSnapshot(agents=(), managers=(manager,)))
+        status = workspace.statuses([parse_version("8.3.25.1633")])[0]
+
+        assert [o.pid for o in status.orphans] == [702]
+
 
 class TestDirMismatch:
     def test_true_when_leaf_dir_version_differs_from_resolved(self, tmp_path: Path) -> None:
@@ -648,6 +769,32 @@ class TestStart:
             workspace.start(profile.id, [installation])
 
         assert spawn.calls == []
+
+    def test_start_wraps_spawn_oserror_in_servererror(self, tmp_path: Path) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ.
+
+        CRITICAL 1a финального ревью: `OSError` из `self._spawn(command)`
+        уходил бы наружу голым — мимо `ServicesError`, единственного типа,
+        который ловит слой представления (UI ловит `ServicesError`, а не
+        `Exception`), и падал бы трассировкой пользователю. Тот же приём,
+        что `services/launch.py::launch_infobase` — `ServerError` с текстом
+        отказа и командной строкой (секретов в ней нет, §8 спеки).
+        Мутация: убрать `try/except OSError` вокруг `self._spawn(command)` —
+        тест обязан упасть непойманным `OSError`.
+        """  # noqa: RUF002
+        store_path = tmp_path / "servers.json"
+        spawn = FakeSpawn(error=OSError("не удалось создать процесс"))
+        workspace = _workspace(store_path, new_id=lambda: "ax" * 16, spawn=spawn)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        ragent = tmp_path / "1cv8" / "8.3.25.1633" / "bin" / "ragent.exe"
+        installation = _server_installation("8.3.25.1633", ragent)
+
+        with pytest.raises(ServerError) as excinfo:
+            workspace.start(profile.id, [installation])
+
+        assert str(ragent) in str(excinfo.value)
+        assert len(spawn.calls) == 1
 
 
 class TestStop:
@@ -770,6 +917,32 @@ class TestStop:
             ("terminate", child.pid),
         ]
 
+    def test_stop_access_denied_raises_server_stop_error(self, tmp_path: Path) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ.
+
+        CRITICAL 1b финального ревью: `ProcessAccessError` (перевод
+        `psutil.AccessDenied` из `PsutilControl.terminate`, процесс другого
+        пользователя или службы) обязан переводиться в `ServerStopError`
+        слоя `services`, а не всплывать голым исключением `platform_1c` мимо
+        `ServicesError`-ловцов UI.
+        Мутация: убрать `except ProcessAccessError` из `_terminate_or_raise` —
+        тест обязан упасть непойманным `ProcessAccessError`.
+        """  # noqa: RUF002
+        store_path = tmp_path / "servers.json"
+        agent_pid = 870
+        control = FakeControl(access_denied=frozenset({agent_pid}))
+        workspace = _workspace(store_path, new_id=lambda: "ac" * 16, control=control)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        agent = _agent(agent_pid, ("ragent.exe", "-port", "1540", "-d", profile.cluster_dir))
+        workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
+
+        with pytest.raises(ServerStopError) as excinfo:
+            workspace.stop(profile.id)
+
+        assert str(agent_pid) in str(excinfo.value)
+        assert control.calls == [("children", agent_pid), ("terminate", agent_pid)]
+
 
 class TestStopOrphans:
     def test_stop_orphans_terminates_only_this_profiles_orphans(self, tmp_path: Path) -> None:
@@ -864,6 +1037,23 @@ class TestOpenConsole:
         workspace = _workspace(tmp_path / "servers.json", open_file=open_file)
 
         workspace.open_console(tmp_path, CONV)
+
+        assert open_file.calls == [str(console_path(tmp_path, CONV))]
+
+    def test_open_console_wraps_oserror_in_servererror(self, tmp_path: Path) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ.
+
+        CRITICAL 1c финального ревью: `OSError` из `os.startfile` (файла
+        `.msc` нет, нет ассоциации) обязан переводиться в `ServerError`,
+        а не всплывать голым мимо `ServicesError`-ловцов UI.
+        Мутация: убрать `try/except OSError` вокруг `self._open_file(...)` —
+        тест обязан упасть непойманным `OSError`.
+        """  # noqa: RUF002
+        open_file = FakeOpenFile(error=OSError("файл не найден"))
+        workspace = _workspace(tmp_path / "servers.json", open_file=open_file)
+
+        with pytest.raises(ServerError):
+            workspace.open_console(tmp_path, CONV)
 
         assert open_file.calls == [str(console_path(tmp_path, CONV))]
 

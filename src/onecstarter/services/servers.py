@@ -60,7 +60,11 @@ from onecstarter.domain.server_match import (
 from onecstarter.domain.version import VersionNumber
 from onecstarter.platform_1c import console, elevation, process
 from onecstarter.platform_1c.elevation import ElevationDeclinedError
-from onecstarter.platform_1c.process_control import ProcessControl, ProcessMismatchError
+from onecstarter.platform_1c.process_control import (
+    ProcessAccessError,
+    ProcessControl,
+    ProcessMismatchError,
+)
 from onecstarter.platform_1c.process_scan import ProcessInfo, ProcessScanner
 from onecstarter.platform_1c.server_discovery import ServerInstallation, console_path
 from onecstarter.services.errors import (
@@ -105,6 +109,25 @@ class ScanSnapshot:
 
     agents: tuple[ProcessInfo, ...]
     managers: tuple[ProcessInfo, ...]
+
+
+def _snapshot_agents(snapshot: ScanSnapshot) -> tuple[RagentProcess, ...]:
+    """Сырые `ProcessInfo` снимка → `RagentProcess` для `match_profiles`.
+
+    Общий шаг `apply_scan` и `ServersWorkspace._save` (IMPORTANT 6,
+    финальное ревью ветки): конверсия чистая (без эффектов), поэтому
+    её безопасно звать и из применения нового снимка, и из пересопоставления
+    УЖЕ имеющегося снимка после правки списка профилей.
+    """
+    return tuple(
+        RagentProcess(
+            pid=info.pid,
+            executable=info.executable,
+            argv=info.argv,
+            create_time=info.create_time,
+        )
+        for info in snapshot.agents
+    )
 
 
 def scan_servers(scanner: ProcessScanner) -> ScanSnapshot:
@@ -241,16 +264,7 @@ class ServersWorkspace:
         в состоянии до следующего `apply_scan`.
         """  # noqa: RUF002
         self._snapshot = snapshot
-        agents = tuple(
-            RagentProcess(
-                pid=info.pid,
-                executable=info.executable,
-                argv=info.argv,
-                create_time=info.create_time,
-            )
-            for info in snapshot.agents
-        )
-        self._match = match_profiles(self._profiles, agents)
+        self._match = match_profiles(self._profiles, _snapshot_agents(snapshot))
 
     @property
     def scan_pending(self) -> bool:
@@ -314,6 +328,11 @@ class ServersWorkspace:
         (платформа не гарантирует безопасное поведение при этом, [Р]).
         Только когда все проверки пройдены — `spawn`. Никаких частичных
         эффектов: до `spawn` включительно исключение не оставляет следов.
+        `OSError` из `spawn` (CRITICAL 1a, финальное ревью ветки) переводится
+        в `ServerError` с командной строкой — тем же приёмом, что
+        `services/launch.py::launch_infobase`: секретов в команде запуска
+        сервера нет (кластерные пароли этой вехой не поддерживаются, §8
+        спеки), поэтому команду можно показать пользователю целиком.
         """  # noqa: RUF002
         profile = self._profile_or_raise(profile_id)
         resolved = resolve_server_version(
@@ -345,7 +364,13 @@ class ServersWorkspace:
         command = LaunchCommand(
             executable=installation.ragent, arguments=build_ragent_arguments(profile)
         )
-        return self._spawn(command)
+        try:
+            return self._spawn(command)
+        except OSError as error:
+            raise ServerError(
+                f"Не удалось запустить сервер «{profile.name}»: {error}.\n"  # noqa: RUF001
+                f"Команда: {command.command_line}"
+            ) from error
 
     def stop(self, profile_id: str) -> None:
         """Остановить дерево процессов профиля целиком: агент(ы) и их дети.
@@ -437,9 +462,16 @@ class ServersWorkspace:
         Путь строится от `root` (родитель каталогов версий) по `convention`
         (`console_path`, `platform_1c/server_discovery.py`); какая именно
         версия `radmin.dll` за ним стоит сейчас, определяет реестр, не этот
-        вызов — см. `current_console_version`/`register_console`.
+        вызов — см. `current_console_version`/`register_console`. `OSError`
+        `os.startfile` (файл `.msc` отсутствует, нет ассоциации) переводится
+        в `ServerError` (CRITICAL 1c, финальное ревью ветки) — тем же
+        приёмом, что и `start`/`_terminate_or_raise`.
         """
-        self._open_file(str(console_path(root, convention)))
+        path = console_path(root, convention)
+        try:
+            self._open_file(str(path))
+        except OSError as error:
+            raise ServerError(f"Не удалось открыть консоль: {error}") from error  # noqa: RUF001
 
     def _profile_or_raise(self, profile_id: str) -> ServerProfile:
         """Найти профиль по `id` либо поднять `UnknownItemError`.
@@ -462,11 +494,15 @@ class ServersWorkspace:
         return self._match.by_profile.get(profile.id, ()) if self._match else ()
 
     def _terminate_or_raise(self, pid: int, expected_create_time: float) -> None:
-        """`control.terminate`, переводящее гонку PID (§6.2) в честный отказ слоя.
+        """`control.terminate`, переводящее гонку PID (§6.2) и отказ прав в честный отказ слоя.
 
-        `ProcessMismatchError` — исключение слоя `platform_1c`, наружу
-        `ServersWorkspace` не выпускает его голым (тот же довод, что у
-        `errors.py`: вызывающему нечем отличить нашу диагностику от чужой).
+        `ProcessMismatchError`/`ProcessAccessError` — исключения слоя
+        `platform_1c`, наружу `ServersWorkspace` не выпускает их голыми (тот
+        же довод, что у `errors.py`: вызывающему нечем отличить нашу
+        диагностику от чужой). `ProcessAccessError` (CRITICAL 1b, финальное
+        ревью ветки) — `psutil.AccessDenied` из `PsutilControl.terminate`:
+        процесс, совпавший с профилем по каталогу кластера, но запущенный
+        другим пользователем или как служба, — нам его не завершить.
         """  # noqa: RUF002
         try:
             self._control.terminate(pid, expected_create_time)
@@ -474,6 +510,11 @@ class ServersWorkspace:
             raise ServerStopError(
                 f"PID {pid} переиспользован системой — обновите список процессов "
                 "и повторите"
+            ) from error
+        except ProcessAccessError as error:
+            raise ServerStopError(
+                f"PID {pid}: нет прав на завершение — возможно, процесс запущен "
+                "другим пользователем или службой"
             ) from error
 
     def _orphans_for(
@@ -490,20 +531,41 @@ class ServersWorkspace:
         (тот же `-d`, если он у rmngr есть). `argv=None` — процесс
         непрозрачен ([Ф] В1) и пропускается: сопоставить нечем, придумывать
         нельзя.
+
+        IMPORTANT 5 (финальное ревью ветки): кандидат исключается из сирот,
+        если его СОБСТВЕННЫЙ `-d` совпадает с каталогом ЛЮБОГО живого агента
+        текущего снимка (`self._snapshot.agents`, не только процессов ЭТОГО
+        профиля) — иначе `-port`-эвристика предлагала бы «Погасить» rmngr
+        живого ЧУЖОГО кластера только потому, что он случайно совпал
+        с нашим `regport` (коллизия портов между профилем и чужим ragent),
+        хотя rmngr принадлежит живому дереву и гасить его нельзя.
         """  # noqa: RUF002
         if self._snapshot is None or processes:
             return ()
         own_dir = normalize_cluster_dir(profile.cluster_dir)
+        live_agent_dirs: set[str] = set()
+        for agent in self._snapshot.agents:
+            if agent.argv is None:
+                continue
+            agent_dir = extract_ragent_params(agent.argv).cluster_dir
+            if agent_dir is not None:
+                live_agent_dirs.add(normalize_cluster_dir(agent_dir))
         orphans: list[ProcessInfo] = []
         for manager in self._snapshot.managers:
             if manager.argv is None:
                 continue
             params = extract_ragent_params(manager.argv)
-            port_matches = params.port == profile.regport
-            dir_matches = (
-                params.cluster_dir is not None
-                and normalize_cluster_dir(params.cluster_dir) == own_dir
+            manager_dir = (
+                normalize_cluster_dir(params.cluster_dir)
+                if params.cluster_dir is not None
+                else None
             )
+            if manager_dir is not None and manager_dir in live_agent_dirs:
+                # rmngr сидит на каталоге ЖИВОГО агента (не обязательно
+                # нашего профиля) — не сирота, даже если совпал по -port.
+                continue
+            port_matches = params.port == profile.regport
+            dir_matches = manager_dir == own_dir
             if port_matches or dir_matches:
                 orphans.append(manager)
         return tuple(orphans)
@@ -518,6 +580,16 @@ class ServersWorkspace:
 
         Тот же приём, что `Workspace._store_user`: без отката экран после
         отказа записи показал бы профиль, которого в файле нет.
+
+        IMPORTANT 6 (финальное ревью ветки): после успешной записи, если
+        снимок процессов уже есть (`self._snapshot is not None`),
+        пересопоставляем его с ОБНОВЛЁННЫМ списком профилей — тем же
+        `match_profiles`, что и `apply_scan`, через общий `_snapshot_agents`.
+        Без этого правка каталога кластера профиля продолжала бы показывать
+        процесс СТАРОГО каталога как «работает» до следующего планового
+        скана (до 5 с, спека §4.4): снимок живых PID не поменялся, поменялся
+        только список профилей, а старое сопоставление `self._match` держит
+        прежнюю привязку PID → id, пока его не пересчитать.
         """  # noqa: RUF002
         previous = self._profiles
         self._profiles = updated
@@ -528,3 +600,5 @@ class ServersWorkspace:
             raise ServerError(
                 f"Не удалось сохранить профили серверов ({self.store_path}): {error}"  # noqa: RUF001
             ) from error
+        if self._snapshot is not None:
+            self._match = match_profiles(self._profiles, _snapshot_agents(self._snapshot))
