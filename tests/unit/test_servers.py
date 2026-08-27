@@ -8,7 +8,7 @@ import pytest
 from onecstarter.domain.server import ServerProfile
 from onecstarter.domain.version import parse_version
 from onecstarter.platform_1c.process_scan import ProcessInfo
-from onecstarter.services.errors import ServerError
+from onecstarter.services.errors import ServerError, UnknownItemError
 from onecstarter.services.server_store import load_profiles
 from onecstarter.services.servers import SCAN_NAMES, ScanSnapshot, ServersWorkspace, scan_servers
 
@@ -406,6 +406,17 @@ class TestOrphanManagers:
 
         assert [o.pid for o in status.orphans] == [300]
         assert [o.pid for o in workspace.orphan_managers(profile.id)] == [300]
+
+    def test_orphan_managers_unknown_profile_raises(self, tmp_path: Path) -> None:
+        """Неизвестный `profile_id` — явный отказ, а не тихий `[]`.
+
+        Манера слоя services — `Workspace.find_by_name`/`_item`: тихая пустота
+        замаскировала бы программную ошибку вызывающего под честное «сирот
+        нет».
+        """  # noqa: RUF002
+        workspace = _workspace(tmp_path / "servers.json")
+        with pytest.raises(UnknownItemError):
+            workspace.orphan_managers("ghost" * 6)
 
     def test_orphan_manager_matched_by_cluster_dir(self, tmp_path: Path) -> None:
         store_path = tmp_path / "servers.json"

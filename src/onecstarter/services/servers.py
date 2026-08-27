@@ -43,7 +43,7 @@ from onecstarter.domain.version import VersionNumber
 from onecstarter.platform_1c import console, elevation, process
 from onecstarter.platform_1c.process_control import ProcessControl
 from onecstarter.platform_1c.process_scan import ProcessInfo, ProcessScanner
-from onecstarter.services.errors import ServerError
+from onecstarter.services.errors import ServerError, UnknownItemError
 from onecstarter.services.server_store import load_profiles, save_profiles
 
 __all__ = [
@@ -265,13 +265,18 @@ class ServersWorkspace:
     def orphan_managers(self, profile_id: str) -> list[ProcessInfo]:
         """Сироты конкретного профиля — тот же расчёт, что в `statuses`.
 
-        Неизвестный `profile_id` — `[]`, а не ошибка: это запрос, а не
-        команда, и вызывающий обычно берёт `id` из уже показанного списка
-        профилей.
-        """  # noqa: RUF002
+        Неизвестный `profile_id` — `UnknownItemError`, тем же приёмом, что
+        `Workspace.find_by_name`/`_item`: тихий `[]` замаскировал бы
+        программную ошибку вызывающего («сирот нет» вместо «профиля,
+        который спросили, больше нет») под честный «сирот нет».
+        """
         profile = next((p for p in self._profiles if p.id == profile_id), None)
         if profile is None:
-            return []
+            raise UnknownItemError(
+                f"Профиля с id «{profile_id}» нет в списке — возможно, он "  # noqa: RUF001
+                "удалён с момента последнего снимка; обновите список профилей "  # noqa: RUF001
+                "и повторите"
+            )
         processes = self._match.by_profile.get(profile.id, ()) if self._match else ()
         return list(self._orphans_for(profile, processes))
 
