@@ -7,10 +7,14 @@
 с профилями через `match_profiles`) и производные от снимка вопросы:
 `statuses` (что запущено, какая версия разрешилась, не разъехался ли
 каталог кластера с версией), `foreign_servers` (чужие ragent — [Ф] В1),
-`orphan_managers` (осиротевший rmngr без своего ragent — [Ф] А3). Остановка
-сервера, его запуск и регистрация консоли — последующие задачи; их эффекты
-(`spawn`, `run_elevated`, `open_file`, `registered_radmin`) по-прежнему
-только сохраняются в полях, здесь не вызываются.
+`orphan_managers` (осиротевший rmngr без своего ragent — [Ф] А3). Эта задача
+(T-08.12) добавляет сами эффекты запуска и остановки: `start` (§6.4 —
+второй ragent на каталоге кластера, уже занятом совпавшим процессом
+последнего снимка, не запускается нами никогда) и `stop`/`stop_orphans`
+(остановка дерева целиком, [Ф] Б2: `TerminateProcess` не убивает детей,
+поэтому список детей снимается ДО завершения родителя). Регистрация
+консоли — последующая задача; эффекты `run_elevated`/`open_file`/
+`registered_radmin` по-прежнему только сохранены в полях, здесь не зовутся.
 
 Приём инъекции эффектов и отката состояния в памяти при отказе записи —
 тот же, что в `services/workspace.py::Workspace` (см. её докстринг
@@ -30,7 +34,12 @@ from dataclasses import dataclass, replace
 from pathlib import Path, PureWindowsPath
 
 from onecstarter.domain.launch import LaunchCommand
-from onecstarter.domain.server import ServerProfile, resolve_server_version, validate_profile
+from onecstarter.domain.server import (
+    ServerProfile,
+    build_ragent_arguments,
+    resolve_server_version,
+    validate_profile,
+)
 from onecstarter.domain.server_match import (
     ForeignServer,
     MatchResult,
@@ -41,9 +50,10 @@ from onecstarter.domain.server_match import (
 )
 from onecstarter.domain.version import VersionNumber
 from onecstarter.platform_1c import console, elevation, process
-from onecstarter.platform_1c.process_control import ProcessControl
+from onecstarter.platform_1c.process_control import ProcessControl, ProcessMismatchError
 from onecstarter.platform_1c.process_scan import ProcessInfo, ProcessScanner
-from onecstarter.services.errors import ServerError, UnknownItemError
+from onecstarter.platform_1c.server_discovery import ServerInstallation
+from onecstarter.services.errors import ServerError, ServerStopError, UnknownItemError
 from onecstarter.services.server_store import load_profiles, save_profiles
 
 __all__ = [
@@ -246,7 +256,7 @@ class ServersWorkspace:
         result: list[ServerStatus] = []
         for profile in self._profiles:
             resolved = resolve_server_version(profile.version, installed)
-            processes = self._match.by_profile.get(profile.id, ()) if self._match else ()
+            processes = self._matched_processes(profile)
             result.append(
                 ServerStatus(
                     profile=profile,
@@ -265,10 +275,111 @@ class ServersWorkspace:
     def orphan_managers(self, profile_id: str) -> list[ProcessInfo]:
         """Сироты конкретного профиля — тот же расчёт, что в `statuses`.
 
-        Неизвестный `profile_id` — `UnknownItemError`, тем же приёмом, что
-        `Workspace.find_by_name`/`_item`: тихий `[]` замаскировал бы
-        программную ошибку вызывающего («сирот нет» вместо «профиля,
-        который спросили, больше нет») под честный «сирот нет».
+        Неизвестный `profile_id` — `UnknownItemError` (см. `_profile_or_raise`).
+        """
+        profile = self._profile_or_raise(profile_id)
+        processes = self._matched_processes(profile)
+        return list(self._orphans_for(profile, processes))
+
+    def start(
+        self,
+        profile_id: str,
+        server_installations: Sequence[ServerInstallation],
+    ) -> int:
+        """Запустить `ragent` профиля. Отказ — `ServerError` ДО порождения процесса.
+
+        Порядок проверок: неизвестный `profile_id` → `UnknownItemError`;
+        версия профиля (точная или маска) не разрешилась ни на одну из
+        `server_installations` → `ServerError`; §6.4 — по последнему снимку
+        у профиля уже есть совпавший процесс → `ServerError`, второй
+        `ragent` на том же каталоге кластера мы не запускаем никогда
+        (платформа не гарантирует безопасное поведение при этом, [Р]).
+        Только когда все проверки пройдены — `spawn`. Никаких частичных
+        эффектов: до `spawn` включительно исключение не оставляет следов.
+        """  # noqa: RUF002
+        profile = self._profile_or_raise(profile_id)
+        resolved = resolve_server_version(
+            profile.version, [si.installation.version for si in server_installations]
+        )
+        if resolved is None:
+            raise ServerError(
+                f"Версия «{profile.version}» профиля «{profile.name}» не установлена — "
+                "проверьте список установленных платформ"
+            )
+        installation = next(
+            (si for si in server_installations if si.installation.version == resolved),
+            None,
+        )
+        if installation is None:
+            # Недостижимо в норме: resolved получен из версий тех же
+            # server_installations. Явный отказ вместо StopIteration —
+            # слой services не выпускает наружу голых системных исключений.
+            raise ServerError(
+                f"Версия «{resolved}» разрешилась, но установка для неё не найдена"
+            )
+        processes = self._matched_processes(profile)
+        if processes:
+            pids = ", ".join(str(p.pid) for p in processes)
+            raise ServerError(
+                f"Сервер «{profile.name}» уже работает, PID {pids} — второй ragent "
+                "на этом каталоге кластера не запускается"
+            )
+        command = LaunchCommand(
+            executable=installation.ragent, arguments=build_ragent_arguments(profile)
+        )
+        return self._spawn(command)
+
+    def stop(self, profile_id: str) -> None:
+        """Остановить дерево процессов профиля целиком: агент(ы) и их дети.
+
+        [Ф] Б2, t07-protocol.md: `TerminateProcess` не убивает детей — `rmngr`
+        и `rphost` продолжают жить и держать порты после смерти `ragent`,
+        поэтому на каждый совпавший процесс список детей снимается ДО его
+        завершения (иначе можно упустить ребёнка, порождённого в интервале
+        между снимком и убийством родителя), а сами дети завершаются уже
+        после родителя. Жёсткое завершение безопасно: тот же замер показал,
+        что кластер переживает его и поднимается с тем же `clstid`.
+
+        §6.2, гонка PID: `ProcessControl.terminate` сверяет `create_time` из
+        снимка с фактическим временем создания процесса; несовпадение
+        означает, что Windows успела переиспользовать PID под другой
+        процесс, — `stop` немедленно поднимает `ServerStopError` и не идёт
+        дальше (ни к оставшимся детям того же агента, ни к следующему
+        совпавшему процессу). Процессы других профилей и чужие ragent того
+        же снимка вообще не читаются: цикл идёт только по процессам,
+        сопоставленным именно этому профилю.
+        """  # noqa: RUF002
+        profile = self._profile_or_raise(profile_id)
+        processes = self._matched_processes(profile)
+        if not processes:
+            raise ServerError(
+                f"Нечего останавливать — по последнему снимку сервер «{profile.name}» "
+                "не запущен; обновите список процессов и повторите"
+            )
+        for proc in processes:
+            kids = self._control.children(proc.pid)
+            self._terminate_or_raise(proc.pid, proc.create_time)
+            for kid in kids:
+                self._terminate_or_raise(kid.pid, kid.create_time)
+
+    def stop_orphans(self, profile_id: str) -> None:
+        """Погасить осиротевшие `rmngr` профиля ([Ф] А3) без живого `ragent`.
+
+        Пустой список сирот — не ошибка, а no-op: чаще всего сирот и не
+        было, и вызывающему не нужно проверять `orphan_managers` заранее.
+        """  # noqa: RUF002
+        profile = self._profile_or_raise(profile_id)
+        processes = self._matched_processes(profile)
+        for orphan in self._orphans_for(profile, processes):
+            self._terminate_or_raise(orphan.pid, orphan.create_time)
+
+    def _profile_or_raise(self, profile_id: str) -> ServerProfile:
+        """Найти профиль по `id` либо поднять `UnknownItemError`.
+
+        Тот же приём, что `Workspace.find_by_name`/`_item`: тихая пустота
+        замаскировала бы программную ошибку вызывающего («ничего не нашли»
+        вместо «профиля, который спросили, больше нет в списке») под
+        честный отрицательный результат операции.
         """
         profile = next((p for p in self._profiles if p.id == profile_id), None)
         if profile is None:
@@ -277,8 +388,25 @@ class ServersWorkspace:
                 "удалён с момента последнего снимка; обновите список профилей "  # noqa: RUF001
                 "и повторите"
             )
-        processes = self._match.by_profile.get(profile.id, ()) if self._match else ()
-        return list(self._orphans_for(profile, processes))
+        return profile
+
+    def _matched_processes(self, profile: ServerProfile) -> tuple[RagentProcess, ...]:
+        return self._match.by_profile.get(profile.id, ()) if self._match else ()
+
+    def _terminate_or_raise(self, pid: int, expected_create_time: float) -> None:
+        """`control.terminate`, переводящее гонку PID (§6.2) в честный отказ слоя.
+
+        `ProcessMismatchError` — исключение слоя `platform_1c`, наружу
+        `ServersWorkspace` не выпускает его голым (тот же довод, что у
+        `errors.py`: вызывающему нечем отличить нашу диагностику от чужой).
+        """  # noqa: RUF002
+        try:
+            self._control.terminate(pid, expected_create_time)
+        except ProcessMismatchError as error:
+            raise ServerStopError(
+                f"PID {pid} переиспользован системой — обновите список процессов "
+                "и повторите"
+            ) from error
 
     def _orphans_for(
         self, profile: ServerProfile, processes: tuple[RagentProcess, ...]

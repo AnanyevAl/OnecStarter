@@ -1,34 +1,68 @@
-"""ServersWorkspace: координатор профилей серверов и их хранения (T-08, задачи 10-11)."""
+"""ServersWorkspace: координатор профилей серверов и их хранения (T-08, задачи 10-12)."""
 
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import pytest
 
+from onecstarter.domain.launch import LaunchCommand
 from onecstarter.domain.server import ServerProfile
-from onecstarter.domain.version import parse_version
+from onecstarter.domain.version import Arch, Installation, parse_version
+from onecstarter.platform_1c.process_control import ProcessMismatchError
 from onecstarter.platform_1c.process_scan import ProcessInfo
-from onecstarter.services.errors import ServerError, UnknownItemError
+from onecstarter.platform_1c.server_discovery import ServerInstallation
+from onecstarter.services.errors import ServerError, ServerStopError, UnknownItemError
 from onecstarter.services.server_store import load_profiles
 from onecstarter.services.servers import SCAN_NAMES, ScanSnapshot, ServersWorkspace, scan_servers
 
 
 @dataclass
 class FakeControl:
-    """Минимальная реализация ProcessControl с журналом вызовов.
+    """ProcessControl с детьми по словарю `pid -> [ProcessInfo]` и журналом вызовов.
 
-    В этой задаче координатор сканов/остановок не делает — задел под
-    следующие задачи; журнал здесь только для проверки, что он не тронут.
+    `mismatched` — pid-ы, на которых `terminate` кидает `ProcessMismatchError`
+    (гонка PID, §6.2) вместо обычного успеха. Запись в `calls` для `terminate`
+    добавляется ДО проверки на несовпадение — так тест видит, что попытка
+    была (ровно одна), а не просто отсутствие последствий.
     """  # noqa: RUF002
 
-    calls: list[str] = field(default_factory=list)
+    children_map: dict[int, list[ProcessInfo]] = field(default_factory=dict)
+    mismatched: frozenset[int] = field(default_factory=frozenset)
+    calls: list[tuple[str, int]] = field(default_factory=list)
 
     def children(self, pid: int) -> list[ProcessInfo]:
-        self.calls.append(f"children:{pid}")
-        return []
+        self.calls.append(("children", pid))
+        return list(self.children_map.get(pid, []))
 
     def terminate(self, pid: int, expected_create_time: float) -> None:
-        self.calls.append(f"terminate:{pid}")
+        self.calls.append(("terminate", pid))
+        if pid in self.mismatched:
+            raise ProcessMismatchError(
+                f"pid {pid}: create_time не совпадает с ожидаемым — PID переиспользован"  # noqa: RUF001
+            )
+
+
+@dataclass
+class FakeSpawn:
+    """Журнал `LaunchCommand`, с которыми звали `spawn`; возвращает заданный `pid`."""  # noqa: RUF002
+
+    pid: int = 4242
+    calls: list[LaunchCommand] = field(default_factory=list)
+
+    def __call__(self, command: LaunchCommand) -> int:
+        self.calls.append(command)
+        return self.pid
+
+
+def _server_installation(
+    version: str, ragent: Path, *, arch: Arch = Arch.X64
+) -> ServerInstallation:
+    installation = Installation(
+        version=parse_version(version), path=ragent.parent.parent, arch=arch
+    )
+    return ServerInstallation(
+        installation=installation, ragent=ragent, radmin=ragent.with_name("radmin.dll")
+    )
 
 
 def _profile(**overrides: object) -> ServerProfile:
@@ -46,11 +80,17 @@ def _profile(**overrides: object) -> ServerProfile:
     return ServerProfile(**values)  # type: ignore[arg-type]
 
 
-def _workspace(store_path: Path, new_id: object = None) -> ServersWorkspace:
-    control = FakeControl()
-    kwargs: dict[str, object] = {"control": control}
+def _workspace(
+    store_path: Path,
+    new_id: object = None,
+    control: object = None,
+    spawn: object = None,
+) -> ServersWorkspace:
+    kwargs: dict[str, object] = {"control": control if control is not None else FakeControl()}
     if new_id is not None:
         kwargs["new_id"] = new_id
+    if spawn is not None:
+        kwargs["spawn"] = spawn
     return ServersWorkspace(store_path, **kwargs)  # type: ignore[arg-type]
 
 
@@ -492,3 +532,227 @@ class TestDirMismatch:
         status = workspace.statuses(installed)[0]
 
         assert status.dir_mismatch is False
+
+
+class TestStart:
+    def test_start_builds_command_byte_exact_and_spawns(self, tmp_path: Path) -> None:
+        store_path = tmp_path / "servers.json"
+        spawn = FakeSpawn(pid=4242)
+        workspace = _workspace(store_path, new_id=lambda: "u" * 32, spawn=spawn)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        ragent = tmp_path / "1cv8" / "8.3.25.1633" / "bin" / "ragent.exe"
+        installation = _server_installation("8.3.25.1633", ragent)
+
+        pid = workspace.start(profile.id, [installation])
+
+        assert pid == 4242
+        assert len(spawn.calls) == 1
+        command = spawn.calls[0]
+        assert command.executable == ragent
+        assert command.command_line == (
+            f'"{ragent}" -debug -http -port 1540 -regport 1541 '
+            r"-range 1560:1591 -d E:\srv\srv_8.3.25.1633"
+        )
+
+    def test_start_unknown_profile_raises(self, tmp_path: Path) -> None:
+        workspace = _workspace(tmp_path / "servers.json")
+        with pytest.raises(UnknownItemError):
+            workspace.start("ghost" * 6, [])
+
+    def test_start_refuses_when_version_not_installed(self, tmp_path: Path) -> None:
+        store_path = tmp_path / "servers.json"
+        spawn = FakeSpawn()
+        workspace = _workspace(store_path, new_id=lambda: "v" * 32, spawn=spawn)
+        workspace.add_profile(_profile(version="8.3.99"))
+        profile = workspace.profiles()[0]
+
+        with pytest.raises(ServerError) as excinfo:
+            workspace.start(profile.id, [])
+
+        # Сообщение обязано называть именно запрошенную версию — иначе
+        # пользователь не поймёт, что заводить установку не той версии.
+        assert "8.3.99" in str(excinfo.value)
+        assert spawn.calls == []
+
+    def test_start_refuses_when_already_running(self, tmp_path: Path) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ.
+
+        §6.4: второй `ragent` на том же каталоге кластера не запускается
+        нами никогда — платформа не гарантирует безопасное поведение при
+        двух `ragent` на одном `-d`. `FakeSpawn.calls` обязан остаться
+        пустым — отказ ДО порождения, без частичных эффектов.
+        Мутация: убрать проверку снимка перед `spawn` — тест обязан упасть.
+        """  # noqa: RUF002
+        store_path = tmp_path / "servers.json"
+        spawn = FakeSpawn()
+        workspace = _workspace(store_path, new_id=lambda: "w" * 32, spawn=spawn)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        agent = _agent(700, ("ragent.exe", "-port", "1540", "-d", profile.cluster_dir))
+        workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
+        ragent = tmp_path / "1cv8" / "8.3.25.1633" / "bin" / "ragent.exe"
+        installation = _server_installation("8.3.25.1633", ragent)
+
+        with pytest.raises(ServerError):
+            workspace.start(profile.id, [installation])
+
+        assert spawn.calls == []
+
+
+class TestStop:
+    def test_stop_unknown_profile_raises(self, tmp_path: Path) -> None:
+        workspace = _workspace(tmp_path / "servers.json")
+        with pytest.raises(UnknownItemError):
+            workspace.stop("ghost" * 6)
+
+    def test_stop_without_snapshot_raises(self, tmp_path: Path) -> None:
+        store_path = tmp_path / "servers.json"
+        workspace = _workspace(store_path, new_id=lambda: "x" * 32)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+
+        with pytest.raises(ServerError):
+            workspace.stop(profile.id)
+
+    def test_stop_without_matched_process_raises(self, tmp_path: Path) -> None:
+        store_path = tmp_path / "servers.json"
+        workspace = _workspace(store_path, new_id=lambda: "y" * 32)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+
+        with pytest.raises(ServerError):
+            workspace.stop(profile.id)
+
+    def test_stop_kills_exactly_matched_pid_and_children(self, tmp_path: Path) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ.
+
+        [Ф] Б2: `TerminateProcess` не убивает детей — дерево обязано
+        гаситься целиком. Проверяем и состав (ровно PID профиля + его
+        дети из `children()`, чужой ragent из того же снимка не тронут),
+        и порядок (снимок детей ДО убийства родителя — иначе можно
+        упустить ребёнка, порождённого между снимком и `terminate`).
+        Мутация: поменять местами вызовы `children()`/`terminate()`
+        или тронуть чужой PID — тест обязан упасть.
+        """  # noqa: RUF002
+        store_path = tmp_path / "servers.json"
+        agent_pid = 800
+        child = ProcessInfo(
+            pid=801, name="rmngr.exe", executable=None, argv=None, create_time=555.0
+        )
+        control = FakeControl(children_map={agent_pid: [child]})
+        workspace = _workspace(store_path, new_id=lambda: "z" * 32, control=control)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        agent = _agent(agent_pid, ("ragent.exe", "-port", "1540", "-d", profile.cluster_dir))
+        # Чужой ragent того же снимка — другой каталог, профилю не сопоставлен.
+        foreign = _agent(900, ("ragent.exe", "-port", "9999", "-d", r"D:\other\cluster"))
+        workspace.apply_scan(ScanSnapshot(agents=(agent, foreign), managers=()))
+
+        workspace.stop(profile.id)
+
+        assert control.calls == [
+            ("children", agent_pid),
+            ("terminate", agent_pid),
+            ("terminate", child.pid),
+        ]
+
+    def test_stop_mismatched_create_time_raises_and_kills_nobody(self, tmp_path: Path) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ.
+
+        §6.2, гонка PID: `create_time` агента разошёлся со снимком — PID
+        переиспользован системой. `ServerStopError`, не завершение чужого
+        процесса; терминация агента упала ДО детей, поэтому реальных
+        убийств — ровно 0, и журнал `terminate` содержит только одну
+        (неудавшуюся) попытку — по агенту, дети вообще не тронуты.
+        Мутация: заменить `raise` на `pass`/`continue` в обработчике
+        `ProcessMismatchError` — тест обязан упасть.
+        """  # noqa: RUF002
+        store_path = tmp_path / "servers.json"
+        agent_pid = 850
+        child = ProcessInfo(
+            pid=851, name="rmngr.exe", executable=None, argv=None, create_time=555.0
+        )
+        control = FakeControl(
+            children_map={agent_pid: [child]}, mismatched=frozenset({agent_pid})
+        )
+        workspace = _workspace(store_path, new_id=lambda: "aa" * 16, control=control)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        agent = _agent(agent_pid, ("ragent.exe", "-port", "1540", "-d", profile.cluster_dir))
+        workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
+
+        with pytest.raises(ServerStopError):
+            workspace.stop(profile.id)
+
+        assert control.calls == [("children", agent_pid), ("terminate", agent_pid)]
+
+    def test_stop_mismatched_child_also_raises_honestly(self, tmp_path: Path) -> None:
+        """Ребёнок, а не агент, попал под гонку PID — тоже честный отказ.
+
+        Спека: несовпадение `create_time` ребёнка тоже обязано дойти до
+        вызывающего как `ServerStopError`, а не проглатываться молча —
+        иначе пользователь решит, что дерево остановлено целиком, хотя
+        часть его жива.
+        """  # noqa: RUF002
+        store_path = tmp_path / "servers.json"
+        agent_pid = 860
+        child = ProcessInfo(
+            pid=861, name="rmngr.exe", executable=None, argv=None, create_time=555.0
+        )
+        control = FakeControl(
+            children_map={agent_pid: [child]}, mismatched=frozenset({child.pid})
+        )
+        workspace = _workspace(store_path, new_id=lambda: "bb" * 16, control=control)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        agent = _agent(agent_pid, ("ragent.exe", "-port", "1540", "-d", profile.cluster_dir))
+        workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
+
+        with pytest.raises(ServerStopError):
+            workspace.stop(profile.id)
+
+        # Агент успел завершиться (не в mismatched), ребёнок — нет.
+        assert control.calls == [
+            ("children", agent_pid),
+            ("terminate", agent_pid),
+            ("terminate", child.pid),
+        ]
+
+
+class TestStopOrphans:
+    def test_stop_orphans_terminates_only_this_profiles_orphans(self, tmp_path: Path) -> None:
+        store_path = tmp_path / "servers.json"
+        control = FakeControl()
+        ids = iter(["cc" * 16, "dd" * 16])
+        workspace = _workspace(store_path, new_id=lambda: next(ids), control=control)
+        workspace.add_profile(_profile())  # regport=1541
+        workspace.add_profile(
+            _profile(name="сосед", port=2540, regport=2541, cluster_dir=r"E:\srv\other")
+        )
+        profile, _other = workspace.profiles()
+        own_orphan = _manager(950, ("rmngr.exe", "-port", "1541"))
+        other_orphan = _manager(951, ("rmngr.exe", "-port", "2541"))
+        workspace.apply_scan(ScanSnapshot(agents=(), managers=(own_orphan, other_orphan)))
+
+        workspace.stop_orphans(profile.id)
+
+        assert control.calls == [("terminate", 950)]
+
+    def test_stop_orphans_empty_is_noop(self, tmp_path: Path) -> None:
+        store_path = tmp_path / "servers.json"
+        control = FakeControl()
+        workspace = _workspace(store_path, new_id=lambda: "ee" * 16, control=control)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+
+        workspace.stop_orphans(profile.id)  # без апасений — сирот нет, значит нет и вызовов
+
+        assert control.calls == []
+
+    def test_stop_orphans_unknown_profile_raises(self, tmp_path: Path) -> None:
+        workspace = _workspace(tmp_path / "servers.json")
+        with pytest.raises(UnknownItemError):
+            workspace.stop_orphans("ghost" * 6)
