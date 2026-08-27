@@ -6,14 +6,25 @@ from pathlib import Path
 import pytest
 
 from onecstarter.domain.launch import LaunchCommand
-from onecstarter.domain.server import ServerProfile
+from onecstarter.domain.server import ServerConvention, ServerProfile
 from onecstarter.domain.version import Arch, Installation, parse_version
+from onecstarter.platform_1c.elevation import ElevationDeclinedError
 from onecstarter.platform_1c.process_control import ProcessMismatchError
 from onecstarter.platform_1c.process_scan import ProcessInfo
-from onecstarter.platform_1c.server_discovery import ServerInstallation
-from onecstarter.services.errors import ServerError, ServerStopError, UnknownItemError
+from onecstarter.platform_1c.server_discovery import ServerInstallation, console_path
+from onecstarter.services.errors import (
+    ConsoleRegistrationDeclinedError,
+    ConsoleRegistrationError,
+    ServerError,
+    ServerStopError,
+    UnknownItemError,
+)
 from onecstarter.services.server_store import load_profiles
 from onecstarter.services.servers import SCAN_NAMES, ScanSnapshot, ServersWorkspace, scan_servers
+
+CONV = ServerConvention(
+    parse_version("8.2"), "bin", "ragent.exe", "radmin.dll", "common/1CV8 Servers (x86-64).msc"
+)
 
 
 @dataclass
@@ -54,6 +65,36 @@ class FakeSpawn:
         return self.pid
 
 
+@dataclass
+class FakeRunElevated:
+    """Журнал `(executable, arguments)`, с которыми звали `run_elevated`.
+
+    `exit_code` — что вернуть при успехе; `error`, если задан, — исключение,
+    которое `__call__` поднимает вместо возврата (имитация отказа UAC через
+    `ElevationDeclinedError`, тот же приём, что `FakeControl.terminate`).
+    """  # noqa: RUF002
+
+    exit_code: int = 0
+    error: Exception | None = None
+    calls: list[tuple[str, str]] = field(default_factory=list)
+
+    def __call__(self, executable: str, arguments: str) -> int:
+        self.calls.append((executable, arguments))
+        if self.error is not None:
+            raise self.error
+        return self.exit_code
+
+
+@dataclass
+class FakeOpenFile:
+    """Журнал путей, с которыми звали `open_file`."""  # noqa: RUF002
+
+    calls: list[str] = field(default_factory=list)
+
+    def __call__(self, path: str) -> None:
+        self.calls.append(path)
+
+
 def _server_installation(
     version: str, ragent: Path, *, arch: Arch = Arch.X64
 ) -> ServerInstallation:
@@ -85,12 +126,21 @@ def _workspace(
     new_id: object = None,
     control: object = None,
     spawn: object = None,
+    run_elevated: object = None,
+    open_file: object = None,
+    registered_radmin: object = None,
 ) -> ServersWorkspace:
     kwargs: dict[str, object] = {"control": control if control is not None else FakeControl()}
     if new_id is not None:
         kwargs["new_id"] = new_id
     if spawn is not None:
         kwargs["spawn"] = spawn
+    if run_elevated is not None:
+        kwargs["run_elevated"] = run_elevated
+    if open_file is not None:
+        kwargs["open_file"] = open_file
+    if registered_radmin is not None:
+        kwargs["registered_radmin"] = registered_radmin
     return ServersWorkspace(store_path, **kwargs)  # type: ignore[arg-type]
 
 
@@ -756,3 +806,94 @@ class TestStopOrphans:
         workspace = _workspace(tmp_path / "servers.json")
         with pytest.raises(UnknownItemError):
             workspace.stop_orphans("ghost" * 6)
+
+
+class TestCurrentConsoleVersion:
+    def test_none_when_console_not_registered(self, tmp_path: Path) -> None:
+        workspace = _workspace(tmp_path / "servers.json", registered_radmin=lambda: None)
+        assert workspace.current_console_version() is None
+
+    def test_version_parsed_from_registered_radmin_path(self, tmp_path: Path) -> None:
+        path = Path(r"C:\Program Files\1cv8\8.3.25.1633\bin\radmin.dll")
+        workspace = _workspace(tmp_path / "servers.json", registered_radmin=lambda: path)
+
+        assert workspace.current_console_version() == parse_version("8.3.25.1633")
+
+
+class TestRegisterConsole:
+    def test_success_calls_run_elevated_with_expected_arguments(self, tmp_path: Path) -> None:
+        ragent = tmp_path / "1cv8" / "8.3.25.1633" / "bin" / "ragent.exe"
+        target = _server_installation("8.3.25.1633", ragent)
+        run_elevated = FakeRunElevated(exit_code=0)
+        workspace = _workspace(tmp_path / "servers.json", run_elevated=run_elevated)
+
+        workspace.register_console(target)
+
+        assert run_elevated.calls == [("regsvr32", f'/s "{target.radmin}"')]
+
+    def test_nonzero_exit_code_raises_with_code_in_message(self, tmp_path: Path) -> None:
+        ragent = tmp_path / "1cv8" / "8.3.25.1633" / "bin" / "ragent.exe"
+        target = _server_installation("8.3.25.1633", ragent)
+        run_elevated = FakeRunElevated(exit_code=3)
+        workspace = _workspace(tmp_path / "servers.json", run_elevated=run_elevated)
+
+        with pytest.raises(ConsoleRegistrationError) as excinfo:
+            workspace.register_console(target)
+        assert "3" in str(excinfo.value)
+
+    def test_elevation_declined_is_reported_as_normal_outcome(self, tmp_path: Path) -> None:
+        """Отказ UAC — штатный исход §7, а не ошибка программы.
+
+        `ElevationDeclinedError` (из `platform_1c.elevation`) обязан
+        транслироваться в `ConsoleRegistrationDeclinedError`, а не всплывать
+        голым и не превращаться в `ConsoleRegistrationError`, — UI различает
+        эти два случая текстом сообщения (T-08 §7).
+        """  # noqa: RUF002
+        ragent = tmp_path / "1cv8" / "8.3.25.1633" / "bin" / "ragent.exe"
+        target = _server_installation("8.3.25.1633", ragent)
+        run_elevated = FakeRunElevated(error=ElevationDeclinedError("отказ пользователя"))
+        workspace = _workspace(tmp_path / "servers.json", run_elevated=run_elevated)
+
+        with pytest.raises(ConsoleRegistrationDeclinedError):
+            workspace.register_console(target)
+
+
+class TestOpenConsole:
+    def test_open_console_opens_msc_from_root(self, tmp_path: Path) -> None:
+        open_file = FakeOpenFile()
+        workspace = _workspace(tmp_path / "servers.json", open_file=open_file)
+
+        workspace.open_console(tmp_path, CONV)
+
+        assert open_file.calls == [str(console_path(tmp_path, CONV))]
+
+
+class TestNothingRegistersWithoutExplicitCall:
+    def test_nothing_registers_without_explicit_call(self, tmp_path: Path) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ.
+
+        §7: регистрация консоли (UAC-повышение) зовётся ТОЛЬКО из явного
+        действия пользователя в UI — конструктор, `apply_scan`, `statuses`
+        и `foreign_servers` не имеют права коснуться `run_elevated` даже
+        краем, иначе пользователь увидит диалог UAC при простом открытии
+        раздела «Серверы». Журнал фейка обязан остаться пустым после всех
+        операций, которые НЕ являются `register_console`.
+        Мутация: вызвать `run_elevated` из конструктора или `apply_scan` —
+        тест обязан упасть.
+        """  # noqa: RUF002
+        store_path = tmp_path / "servers.json"
+        run_elevated = FakeRunElevated()
+        workspace = _workspace(
+            store_path, new_id=lambda: "ff" * 16, run_elevated=run_elevated
+        )
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        agent = _agent(
+            999, ("ragent.exe", "-port", "1540", "-d", profile.cluster_dir)
+        )
+
+        workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
+        workspace.statuses([parse_version("8.3.25.1633")])
+        workspace.foreign_servers()
+
+        assert run_elevated.calls == []

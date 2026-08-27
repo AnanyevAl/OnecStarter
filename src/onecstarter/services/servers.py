@@ -12,9 +12,16 @@
 второй ragent на каталоге кластера, уже занятом совпавшим процессом
 последнего снимка, не запускается нами никогда) и `stop`/`stop_orphans`
 (остановка дерева целиком, [Ф] Б2: `TerminateProcess` не убивает детей,
-поэтому список детей снимается ДО завершения родителя). Регистрация
-консоли — последующая задача; эффекты `run_elevated`/`open_file`/
-`registered_radmin` по-прежнему только сохранены в полях, здесь не зовутся.
+поэтому список детей снимается ДО завершения родителя). Эта задача (T-08.13)
+добавляет смену версии консоли администрирования: `current_console_version`
+(чтение — версия из пути зарегистрированной `radmin.dll`, без UAC),
+`register_console` (эффект — `run_elevated("regsvr32", ...)`, §7: отказ
+пользователя в UAC-диалоге — штатный исход, транслируется в
+`ConsoleRegistrationDeclinedError`, а не в ошибку) и `open_console`
+(`open_file` на путь `.msc`). §7: регистрация зовётся ТОЛЬКО из явного
+действия UI — ни конструктор, ни `apply_scan`, ни `statuses` её не трогают
+(см. `_registered_radmin`/`_run_elevated`/`_open_file` — только сохранены
+в конструкторе, эффекты живут в методах этой задачи).
 
 Приём инъекции эффектов и отката состояния в памяти при отказе записи —
 тот же, что в `services/workspace.py::Workspace` (см. её докстринг
@@ -35,6 +42,7 @@ from pathlib import Path, PureWindowsPath
 
 from onecstarter.domain.launch import LaunchCommand
 from onecstarter.domain.server import (
+    ServerConvention,
     ServerProfile,
     build_ragent_arguments,
     resolve_server_version,
@@ -47,13 +55,21 @@ from onecstarter.domain.server_match import (
     extract_ragent_params,
     match_profiles,
     normalize_cluster_dir,
+    version_from_exe_path,
 )
 from onecstarter.domain.version import VersionNumber
 from onecstarter.platform_1c import console, elevation, process
+from onecstarter.platform_1c.elevation import ElevationDeclinedError
 from onecstarter.platform_1c.process_control import ProcessControl, ProcessMismatchError
 from onecstarter.platform_1c.process_scan import ProcessInfo, ProcessScanner
-from onecstarter.platform_1c.server_discovery import ServerInstallation
-from onecstarter.services.errors import ServerError, ServerStopError, UnknownItemError
+from onecstarter.platform_1c.server_discovery import ServerInstallation, console_path
+from onecstarter.services.errors import (
+    ConsoleRegistrationDeclinedError,
+    ConsoleRegistrationError,
+    ServerError,
+    ServerStopError,
+    UnknownItemError,
+)
 from onecstarter.services.server_store import load_profiles, save_profiles
 
 __all__ = [
@@ -157,8 +173,10 @@ class ServersWorkspace:
         new_id: Callable[[], str] = lambda: uuid.uuid4().hex,
     ) -> None:
         self.store_path = store_path
-        # Эффекты следующих задач (сканы, остановка, запуск, регистрация
-        # консоли) — только сохранены, здесь не вызываются (см. докстринг
+        # Эффекты (сканы, остановка, запуск, регистрация консоли) — только
+        # сохранены здесь; конструктор их не вызывает. `_run_elevated`
+        # зовётся только из `register_console` — по явному действию UI,
+        # никогда отсюда, из `apply_scan` или `statuses` (§7, докстринг
         # модуля).
         self._control = control
         self._spawn = spawn
@@ -372,6 +390,56 @@ class ServersWorkspace:
         processes = self._matched_processes(profile)
         for orphan in self._orphans_for(profile, processes):
             self._terminate_or_raise(orphan.pid, orphan.create_time)
+
+    def current_console_version(self) -> VersionNumber | None:
+        """Версия консоли, зарегистрированной СЕЙЧАС в реестре; `None` — не зарегистрирована.
+
+        Чтение, не эффект UAC: `_registered_radmin` читает HKLM обычным
+        пользователем ([Ф] Г2). Версия извлекается из пути `radmin.dll`
+        (`<корень>\\<версия>\\bin\\radmin.dll`) той же функцией, что и для
+        чужих ragent (`version_from_exe_path`, [Ф] В1) — путь до `radmin.dll`
+        имеет ту же форму `<версия>\\bin\\<файл>`, что и до `ragent.exe`.
+        """  # noqa: RUF002
+        path = self._registered_radmin()
+        if path is None:
+            return None
+        return version_from_exe_path(path)
+
+    def register_console(self, target: ServerInstallation) -> None:
+        """Перерегистрировать консоль на `radmin.dll` версии `target` — эффект с UAC.
+
+        [Ф] Г2: одна команда `regsvr32 /s "<dll>"` без предварительного `/u`
+        (CLSID стабильны между версиями, `register_arguments`). Отказ
+        пользователя в диалоге UAC (`ElevationDeclinedError`) — штатный исход
+        §7, не ошибка программы: транслируется в
+        `ConsoleRegistrationDeclinedError`, UI обязан показать «версия консоли
+        не изменена», а не сообщение об ошибке. Ненулевой код возврата
+        `regsvr32` — настоящий сбой регистрации, код попадает в текст
+        `ConsoleRegistrationError`, чтобы было что показать и с чем прийти
+        в поддержку. Единственная точка входа для UAC-повышения во всём
+        координаторе — см. докстринг конструктора и защитный тест
+        `test_nothing_registers_without_explicit_call`.
+        """  # noqa: RUF002
+        try:
+            exit_code = self._run_elevated("regsvr32", console.register_arguments(target.radmin))
+        except ElevationDeclinedError as error:
+            raise ConsoleRegistrationDeclinedError(
+                "Запрос прав администратора отклонён — версия консоли не изменена"
+            ) from error
+        if exit_code != 0:
+            raise ConsoleRegistrationError(
+                f"Регистрация консоли не удалась — regsvr32 вернул код {exit_code}"
+            )
+
+    def open_console(self, root: Path, convention: ServerConvention) -> None:
+        """Открыть `.msc` консоли администрирования — тот же файл для всех версий.
+
+        Путь строится от `root` (родитель каталогов версий) по `convention`
+        (`console_path`, `platform_1c/server_discovery.py`); какая именно
+        версия `radmin.dll` за ним стоит сейчас, определяет реестр, не этот
+        вызов — см. `current_console_version`/`register_console`.
+        """
+        self._open_file(str(console_path(root, convention)))
 
     def _profile_or_raise(self, profile_id: str) -> ServerProfile:
         """Найти профиль по `id` либо поднять `UnknownItemError`.
