@@ -44,6 +44,7 @@ from onecstarter.services import autostart
 from onecstarter.services.catalog import CommonListData, read_common_lists
 from onecstarter.services.errors import (
     ConsoleRegistrationDeclinedError,
+    ServerError,
     ServicesError,
     UserDataUnavailableError,
 )
@@ -290,15 +291,25 @@ def run_smoke(
     # рядом: `ServersView.__init__` безусловно читает HKLM через
     # `current_console_version()` уже при сборке окна (см. докстринг
     # `_build_main_window`), самопроверка отвечает «не зарегистрирована».
-    window, built_tasks, _monitor = _build_main_window(
-        application,
-        runtime,
-        env,
-        autostart_registry=autostart.NullRegistry(),
-        process_scanner=NullScanner(),
-        process_control=NullControl(),
-        registered_radmin=lambda: None,
-    )
+    try:
+        window, built_tasks, _monitor = _build_main_window(
+            application,
+            runtime,
+            env,
+            autostart_registry=autostart.NullRegistry(),
+            process_scanner=NullScanner(),
+            process_control=NullControl(),
+            registered_radmin=lambda: None,
+        )
+    except ServerError:
+        # CRITICAL 2, финальное ревью ветки: конструктор ServersWorkspace
+        # внутри _build_main_window (load_profiles на servers.json) не был
+        # покрыт ничьим try — отказ уходил голой трассировкой мимо
+        # UserDataUnavailableError/OSError веткой выше, которая ловит только
+        # build_runtime. Самопроверка сборки обязана сообщить и вернуть 1,
+        # не падать.
+        _log.exception("smoke: окно не собралось")
+        return 1
     try:
         tasks = built_tasks if make_tasks is None else make_tasks()
         pending = {"installations": True, "common": True}
@@ -797,7 +808,17 @@ def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
         )
         return 1
 
-    window, tasks, monitor = _build_main_window(application, runtime, os.environ)
+    try:
+        window, tasks, monitor = _build_main_window(application, runtime, os.environ)
+    except ServerError as error:
+        # CRITICAL 2, финальное ревью ветки: try вокруг build_runtime выше
+        # не покрывал конструктор ServersWorkspace внутри _build_main_window
+        # (load_profiles на servers.json) — ServersUnavailableError уходила
+        # голой трассировкой мимо обеих веток выше, которые ловят только
+        # отказ build_runtime. Тот же образец, что UserDataUnavailableError:
+        # сообщение с путём в окне, а не крах без объяснения.  # noqa: RUF003
+        QMessageBox.critical(None, "OneCStarter", str(error))
+        return 1
     if start_hidden and window.tray_available:
         _log.info("тихий старт: окно скрыто, программа в трее")
     else:

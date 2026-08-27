@@ -202,6 +202,34 @@ def test_unresolved_version_disables_start_and_uses_problem_colour(
     assert theme.DARK.problem in view.profile_status_label(0).styleSheet()
 
 
+def test_running_process_wins_over_unresolved_version(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ.
+
+    IMPORTANT 3 финального ревью, правка спеки §3.1: раньше `resolved is
+    None` проверялся первым и подавлял «работает» даже при живом совпавшем
+    процессе — карточка показывала «версия не установлена» и блокировала
+    «Остановить», хотя остановка версии не требует вовсе (`stop` работает
+    по PID снимка, не по установке). Статус процессов обязан быть главнее
+    разрешения версии — здесь версия не разрешается вовсе (`installed=[]`),
+    но процесс живой.
+    Мутация: вернуть проверку `resolved is None` в начало `_status_text`/
+    `_button_state`/`_status_colour` — тест обязан упасть.
+    """  # noqa: RUF002
+    profile = _profile()
+    workspace = _workspace(tmp_path, (profile,))
+    workspace.apply_scan(ScanSnapshot(agents=(_agent(100, profile.cluster_dir),), managers=()))
+
+    view = ServersView(workspace, installed=lambda: [], palette=theme.DARK)
+
+    row = view.profile_rows()[0]
+    assert row.status_text == "работает · PID 100"
+    assert row.button_text == "Остановить"
+    assert row.button_enabled is True
+    assert theme.DARK.accent in view.profile_status_label(0).styleSheet()
+
+
 def test_multiple_processes_disable_stop_with_explanation(
     application: QApplication, tmp_path: Path
 ) -> None:
@@ -223,6 +251,49 @@ def test_multiple_processes_disable_stop_with_explanation(
     assert "PID 100" in row.status_text
     assert "PID 200" in row.status_text
     assert "не выбрать" in row.status_text
+
+
+# -- слепое окно до первого скана (IMPORTANT 4b, финальное ревью) -----------
+
+
+def test_card_is_blind_before_first_scan(application: QApplication, tmp_path: Path) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ.
+
+    IMPORTANT 4b финального ревью, §4.4: до первого `apply_scan` состояние
+    процессов профиля неизвестно — показывать «остановлен» было бы враньём
+    (сервер мог уже работать), а активная «Запустить» рисковала бы породить
+    второй ragent поверх уже живого, ещё не увиденного скана (§6.4: клик
+    по работающему серверу до снимка не должен породить второй ragent).
+    Карточка обязана показать «…» и держать кнопку неактивной, пока снимка
+    нет вовсе (`workspace.scan_pending`).
+    Мутация: убрать проверку `pending` в `ServersView._build_card` — тест
+    обязан упасть (карточка покажет «остановлен»/активную «Запустить»).
+    """  # noqa: RUF002
+    profile = _profile()
+    workspace = _workspace(tmp_path, (profile,))
+    assert workspace.scan_pending is True
+
+    view = ServersView(workspace, installed=lambda: [_installation()], palette=theme.DARK)
+
+    row = view.profile_rows()[0]
+    assert row.status_text == "…"
+    assert row.button_enabled is False
+    assert "первый скан" in view.profile_button(0).toolTip().casefold()
+
+
+def test_card_leaves_blind_state_after_first_scan(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """После первого `apply_scan` карточка возвращается к обычной логике статуса."""
+    profile = _profile()
+    workspace = _workspace(tmp_path, (profile,))
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+
+    view = ServersView(workspace, installed=lambda: [_installation()], palette=theme.DARK)
+
+    row = view.profile_rows()[0]
+    assert row.status_text == "остановлен"
+    assert row.button_enabled is True
 
 
 # -- ЗАЩИТНЫЙ: чужие серверы не несут кнопку остановки вовсе (решение 5) -----
@@ -865,6 +936,63 @@ def test_apply_new_profile_adds_the_profile(application: QApplication, tmp_path:
 
     names = [p.name for p in workspace.profiles()]
     assert names == ["Новый профиль"]
+
+
+def test_apply_new_profile_triggers_rescan(application: QApplication, tmp_path: Path) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ.
+
+    IMPORTANT 6 финального ревью: без `request_scan()` после добавления
+    профиля список процессов не пересчитывается до следующего планового
+    скана (до 5 с, спека §4.4) — симметрично удалению/переключению
+    (`test_removal_confirmed_triggers_rescan`,
+    `test_start_button_click_spawns_and_triggers_rescan`).
+    Мутация: убрать `self._request_scan()` из `_apply_new_profile` —
+    тест обязан упасть.
+    """  # noqa: RUF002
+    workspace = _workspace(tmp_path, ())
+    rescans: list[int] = []
+    view = ServersView(
+        workspace,
+        installed=lambda: [_installation()],
+        palette=theme.DARK,
+        request_scan=lambda: rescans.append(1),
+    )
+    dialog = ServerProfileDialog.for_new([], [_installation()], "", parent=view)
+    dialog.name_edit().setText("Новый профиль")
+    dialog.version_combo().setEditText("8.3.25.1633")
+    dialog.dir_edit().setText(r"E:\srv\new")
+
+    view._apply_new_profile(dialog)
+
+    assert rescans == [1]
+
+
+def test_apply_edited_profile_triggers_rescan(application: QApplication, tmp_path: Path) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ.
+
+    IMPORTANT 6 финального ревью: симметрично добавлению/удалению — правка
+    профиля тоже обязана попросить рескан (свежие данные о версии живого
+    процесса и т.п., которых в старом снимке ещё не было). Пересопоставление
+    УЖЕ имеющегося снимка проверяет отдельный тест в `test_servers.py`
+    (`TestRematchAfterSave`) — здесь только сам факт вызова `request_scan`.
+    Мутация: убрать `self._request_scan()` из `_apply_edited_profile` —
+    тест обязан упасть.
+    """  # noqa: RUF002
+    profile = _profile()
+    workspace = _workspace(tmp_path, (profile,))
+    rescans: list[int] = []
+    view = ServersView(
+        workspace,
+        installed=lambda: [_installation()],
+        palette=theme.DARK,
+        request_scan=lambda: rescans.append(1),
+    )
+    dialog = view._build_edit_profile_dialog(profile.id)
+    assert dialog is not None
+
+    view._apply_edited_profile(dialog)
+
+    assert rescans == [1]
 
 
 def test_add_profile_button_reaches_apply_when_dialog_is_accepted(

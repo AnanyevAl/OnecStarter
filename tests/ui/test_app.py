@@ -1138,6 +1138,54 @@ def test_recent_limit_provider_is_live_from_settings(assembled: _Assembly) -> No
     assert view._recent_limit() == store.settings.recent_limit
 
 
+# -- CRITICAL 2 финального ревью: ServersWorkspace-отказ в main() -----------
+
+
+def test_main_reports_servers_workspace_unavailable_instead_of_crashing(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: Any,
+    tmp_path: Any,
+    shown_errors: list[str],
+) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ.
+
+    CRITICAL 2 финального ревью: `try` вокруг `build_runtime` в `main()`
+    не покрывал конструктор `ServersWorkspace` внутри `_build_main_window` —
+    `ServersUnavailableError` (наследник `ServerError`, поднимается
+    `load_profiles`, `services/server_store.py`) уходила бы наружу голой
+    трассировкой мимо обеих веток `except` выше (они ловят только отказ
+    самого `build_runtime`), хотя тот же класс отказов у `Workspace`
+    (`UserDataUnavailableError`) уже обработан по соседству образцовым
+    способом. Каталог на месте `servers.json` — тот же честный приём
+    падения `OSError`, что `TestFailedSaveRollsBackMemory` в
+    `test_servers.py`: `Path.read_text()` каталога отказывает без
+    подмены реального доступа к диску.
+
+    `_build_main_window` здесь настоящий, не через `_assemble` (та
+    подменяет слишком много, включая создание `_build_main_window`
+    целиком) — исключение происходит ДО `GlobalHotkey`/`create_tray`/
+    `StartupTasks`/`ServerMonitor`, конструировать их фейками незачем.
+
+    Мутация: убрать `try/except ServerError` вокруг `_build_main_window`
+    в `main()` — тест обязан упасть непойманным исключением.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "QApplication", lambda argv: qapp)
+    # Тот же приём, что `_assemble` (см. её комментарий про access violation):
+    # реальный `setStyleSheet` поверх дерева виджетов, уничтожаемого сразу
+    # после теста, оставляет следы в кэшах Qt, из-за которых падает
+    # СЛЕДУЮЩИЙ чужой вызов — здесь применение таблицы не предмет теста.
+    monkeypatch.setattr(qapp, "setStyleSheet", lambda _sheet: None)
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    servers_path = tmp_path / "OneCStarter" / "servers.json"
+    servers_path.parent.mkdir(parents=True)
+    servers_path.mkdir()  # каталог на месте файла — load_profiles упадёт OSError'ом
+
+    code = app_module.main([])
+
+    assert code == 1
+    assert shown_errors, "отказ обязан дойти до пользователя окном, не трассировкой"
+
+
 # -- _build_main_window напрямую: сборка окна отдельно от main() (T-04.6) ----
 #
 # Ниже — не через `main()`/`_assemble`: `_build_main_window` тестируется

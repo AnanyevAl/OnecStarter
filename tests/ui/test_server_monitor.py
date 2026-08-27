@@ -123,6 +123,30 @@ def test_default_spawn_uses_daemon_threads():
     assert seen == [True]
 
 
+def test_start_emits_snapshot_immediately_with_sync_spawn():
+    """ЗАЩИТНЫЙ ТЕСТ.
+
+    IMPORTANT 4a финального ревью, §4.4: первый скан обязан случиться сразу
+    при `start()`, не через первый интервал таймера (до 5 с) — иначе раздел
+    «Серверы» висел бы в «слепом окне» дольше, чем нужно. Синхронный `spawn`
+    делает доставку сигнала детерминированной без реального `QTimer`: сигнал
+    обязан прийти уже к моменту возврата из `start()`, до первого тика.
+    Мутация: убрать вызов `scan_now()` из начала `start()` — тест обязан
+    упасть (`got` останется пустым, `_timer.start()` без синхронного тика
+    сигнала не даст).
+    """  # noqa: RUF002
+    scanner = _FakeScanner([_agent(100)])
+    monitor = ServerMonitor(scanner, spawn=_SYNC)
+    got: list[ScanSnapshot] = []
+    monitor.snapshot_ready.connect(got.append)
+
+    monitor.start()
+
+    assert len(got) == 1
+    assert got[0].agents == (_agent(100),)
+    monitor._timer.stop()  # не оставлять тикающий таймер после теста
+
+
 def test_real_timer_delivers_snapshot_through_the_event_loop(qtbot):
     scanner = _FakeScanner([_agent(7)])
     monitor = ServerMonitor(scanner, interval_ms=10)

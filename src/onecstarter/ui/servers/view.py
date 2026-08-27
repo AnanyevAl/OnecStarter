@@ -117,32 +117,51 @@ class ProfileRow:
 
 
 def _status_text(status: ServerStatus) -> str:
+    """Текст статуса карточки — статус процессов главнее разрешения версии.
+
+    IMPORTANT 3 (финальное ревью ветки, правка спеки §3.1): раньше
+    `resolved is None` проверялся первым и подавлял «работает» даже при
+    живом совпавшем процессе — карточка работающего сервера с неразрешённой
+    версией (например, после удаления установки, которой он был запущен)
+    показывала «версия не установлена», хотя остановка версии не требует
+    вовсе. Порядок теперь: сначала процессы (они и есть источник истины
+    о статусе, решение заказчика 3), «версия не установлена» — только
+    для карточки БЕЗ процессов.
+    """  # noqa: RUF002
+    processes = status.processes
+    if processes:
+        pids = ", ".join(f"PID {p.pid}" for p in processes)
+        if len(processes) == 1:
+            return f"работает · {pids}"
+        return f"работает · {pids} · не выбрать, кого останавливать"
     if status.resolved is None:
         return "версия не установлена"
-    processes = status.processes
-    if not processes:
-        return "остановлен"
-    pids = ", ".join(f"PID {p.pid}" for p in processes)
-    if len(processes) == 1:
-        return f"работает · {pids}"
-    return f"работает · {pids} · не выбрать, кого останавливать"
+    return "остановлен"
 
 
 def _status_colour(status: ServerStatus, palette: Palette) -> str:
+    """Цвет статуса — тот же приоритет, что `_status_text` (IMPORTANT 3)."""
+    if status.processes:
+        return palette.accent
     if status.resolved is None:
         return palette.problem
-    return palette.accent if status.processes else palette.text_dim
+    return palette.text_dim
 
 
 def _button_state(status: ServerStatus) -> tuple[str, bool]:
-    if status.resolved is None:
-        return "Запустить", False
+    """Текст и активность кнопки — тот же приоритет, что `_status_text` (IMPORTANT 3).
+
+    Остановка не требует разрешённой версии вовсе (`stop` работает по PID
+    из снимка, не по установке) — «Остановить» активна независимо от
+    `resolved`. «Запустить» неактивна, только если процессов нет И версия
+    не разрешилась: запускать действительно нечем.
+    """
     count = len(status.processes)
-    if count == 0:
-        return "Запустить", True
     if count == 1:
         return "Остановить", True
-    return "Остановить", False
+    if count > 1:
+        return "Остановить", False
+    return "Запустить", status.resolved is not None
 
 
 def _flags_text(profile: ServerProfile) -> str:
@@ -410,7 +429,25 @@ class ServersView(QWidget):
     ) -> None:
         profile = status.profile
         palette = self._palette
-        button_text, button_enabled = _button_state(status)
+        pending = self._workspace.scan_pending
+        button_tooltip = ""
+        if pending:
+            # IMPORTANT 4b (финальное ревью ветки, §4.4): до первого снимка
+            # процессов состояние карточки неизвестно — «остановлен» было бы
+            # враньём (сервер мог уже работать), а активная «Запустить»  # noqa: RUF003
+            # рисковала бы породить второй ragent поверх уже живого, ещё
+            # не увиденного скана (§6.4). Слепое окно теперь короче:
+            # monitor.start() сам просит снимок немедленно
+            # (ui/servers/monitor.py::start), но до его прихода карточка  # noqa: RUF003
+            # обязана молчать, а не гадать по снимку из прошлого раза.  # noqa: RUF003
+            status_text = "…"
+            colour = palette.text_dim
+            button_text, button_enabled = "Запустить", False
+            button_tooltip = "Идёт первый скан процессов — подождите"
+        else:
+            status_text = _status_text(status)
+            colour = _status_colour(status, palette)
+            button_text, button_enabled = _button_state(status)
         running = bool(status.processes)
 
         card = QWidget()
@@ -424,8 +461,8 @@ class ServersView(QWidget):
         name_font = name_label.font()
         name_font.setBold(True)
         name_label.setFont(name_font)
-        status_label = QLabel(_status_text(status))
-        status_label.setStyleSheet(f"color: {_status_colour(status, palette)};")
+        status_label = QLabel(status_text)
+        status_label.setStyleSheet(f"color: {colour};")
         title_row.addWidget(name_label)
         title_row.addWidget(status_label)
         title_row.addStretch(1)
@@ -443,6 +480,8 @@ class ServersView(QWidget):
 
         toggle_button = QPushButton(button_text)
         toggle_button.setEnabled(button_enabled)
+        if button_tooltip:
+            toggle_button.setToolTip(button_tooltip)
         toggle_button.clicked.connect(
             lambda _checked=False, pid=profile.id, si=server_installations, r=running: (
                 self._toggle(pid, si, r)
@@ -507,7 +546,7 @@ class ServersView(QWidget):
         self._profile_rows.append(
             ProfileRow(
                 name=profile.name,
-                status_text=_status_text(status),
+                status_text=status_text,
                 button_text=button_text,
                 button_enabled=button_enabled,
             )
@@ -634,6 +673,14 @@ class ServersView(QWidget):
             self._workspace.add_profile(dialog.result_profile())
         except ServicesError as error:
             self._show_error(str(error))
+        # IMPORTANT 6 (финальное ревью ветки): симметрично `_remove`/`_toggle`
+        # (см. их докстринги) — без запроса рескана новый профиль мог бы
+        # совпасть с УЖЕ живым чужим процессом (переиспользованный каталог  # noqa: RUF003
+        # кластера) и не увидеть его сразу. `ServersWorkspace._save` сама  # noqa: RUF003
+        # пересопоставляет уже ИМЕЮЩИЙСЯ снимок синхронно (см. её докстринг),
+        # `request_scan()` здесь — за свежими данными, которых в старом
+        # снимке ещё не было (например, о версии из живого процесса).  # noqa: RUF003
+        self._request_scan()
         self.rebuild()
 
     def _build_edit_profile_dialog(self, profile_id: str) -> ServerProfileDialog | None:
@@ -664,6 +711,10 @@ class ServersView(QWidget):
             self._workspace.update_profile(dialog.result_profile())
         except ServicesError as error:
             self._show_error(str(error))
+        # IMPORTANT 6 (финальное ревью ветки): тот же довод, что у  # noqa: RUF003
+        # `_apply_new_profile` — правка каталога кластера профиля обязана
+        # обновить показ немедленно, а не ждать планового скана (до 5 с).  # noqa: RUF003
+        self._request_scan()
         self.rebuild()
 
     # -- дефолты инъекций (переопределяются тестами) --------------------------
