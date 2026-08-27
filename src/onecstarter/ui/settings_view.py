@@ -7,11 +7,14 @@
 сегмент того же вида, что тема, только выбор идёт в `store`, а не в
 `ThemeController`.
 
-Пятая группа, СЕРВЕРЫ (спека §3.5, T-08 задача 7), — за пределами утверждённого
-мокапа v1, добавлена последней: «Корень каталогов серверов», от которого
-новый профиль сервера предлагает `<корень>\\srv_<версия>`. Поле пути + кнопка
-«Обзор…» — тем же приёмом инъекции диалога (`choose_directory`), что
-и `InfobaseDialog` в `dialogs/infobase.py`.
+Группа СЕРВЕРЫ (спека §3.5, T-08 задача 7) — за пределами утверждённого мокапа
+v1, вставлена сразу ПОСЛЕ «ОКНО И ЗАПУСК» и перед «ГОРЯЧИЕ КЛАВИШИ»: спека §3.5
+требует соседства с существующими настройками запуска, круг исправлений 1
+ревью задачи 7 (место «последней группой» было ошибкой брифа-умолчания,
+спека главнее). Несёт «Корень каталогов серверов», от которого новый профиль
+сервера предлагает `<корень>\\srv_<версия>`. Поле пути + кнопка «Обзор…» —
+тем же приёмом инъекции диалога (`choose_directory`), что и `InfobaseDialog`
+в `dialogs/infobase.py`.
 
 Раздел не знает ни о `GlobalHotkey`, ни о том, как поднято окно: сочетание
 уходит наружу через `on_hotkey`, а обратно приходит текст отказа либо `None`.
@@ -167,6 +170,13 @@ class SettingsView(QWidget):
             self._build_client_segment(),
         )
 
+        self._add_group("СЕРВЕРЫ")
+        self._add_row(
+            "Корень каталогов серверов",
+            SERVERS_ROOT_ROW_NOTE,
+            self._build_servers_root_control(store.settings.servers_root),
+        )
+
         self._add_group("ГОРЯЧИЕ КЛАВИШИ")
         self._hotkey = HotkeyEdit()
         self._hotkey.set_combination(store.settings.hotkey)
@@ -190,13 +200,6 @@ class SettingsView(QWidget):
             "Записей в «Недавних»",
             "0 — ветка «Недавние» не показывается вовсе",
             self._recent,
-        )
-
-        self._add_group("СЕРВЕРЫ")
-        self._add_row(
-            "Корень каталогов серверов",
-            SERVERS_ROOT_ROW_NOTE,
-            self._build_servers_root_control(store.settings.servers_root),
         )
 
         layout.addWidget(self._status)
