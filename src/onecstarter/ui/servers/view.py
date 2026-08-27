@@ -259,9 +259,11 @@ class ServersView(QWidget):
         self._foreign_row_texts: list[str] = []
         self._foreign_row_widgets: list[QWidget] = []
         self._console_note_text = ""
-        # Задача 16, §8: профиль, только что запущенный «Запустить» —
-        # проверяется на СЛЕДУЮЩЕМ rebuild(), не на этом же (см. _toggle
-        # и _check_pending_confirmation).
+        # Задача 16, §8 (круг исправлений 1): профиль, только что запущенный
+        # «Запустить», — проверяется на следующем СВЕЖЕМ снимке сканера
+        # (см. on_scan_snapshot/_check_pending_confirmation), не на любом
+        # rebuild() — посторонние rebuild() (apply_palette, CRUD профиля)
+        # видят ещё старый снимок и не имеют права его потребить.  # noqa: RUF003
         self._pending_confirmation: str | None = None
 
         header = QLabel("Серверы")
@@ -340,21 +342,42 @@ class ServersView(QWidget):
             f"{self._workspace.store_path} · статус — по живым процессам · "
             f"консоль: {self._console_note_text}"
         )
-        self._check_pending_confirmation(statuses)
+
+    def on_scan_snapshot(self) -> None:
+        """Единственная точка входа §8: свежий снимок сканера уже применён.
+
+        Круг исправлений 1 (ревью задачи 16, Important): `rebuild()` дёргают
+        минимум шесть посторонних путей — `apply_palette`, `_remove`,
+        `_extinguish`, `_apply_new_profile`, `_apply_edited_profile`,
+        `on_installations` (`app.py`) — и ЛЮБОЙ из них в первые секунды после
+        «Запустить» видел бы ещё СТАРЫЙ снимок процессов: проверка §8 внутри
+        самого `rebuild()` потребляла бы ожидание на этом чужом вызове и
+        репортовала бы «умер сразу» о живом, только что запущенном сервере.
+        Поэтому проверка живёт здесь, а не в `rebuild()`, и зовётся ровно из
+        одного места проводки (`ui/app.py::_build_main_window`):
+        `ServerMonitor.snapshot_ready` → `servers_workspace.apply_scan` →
+        `servers_view.on_scan_snapshot()`. Метод сам делает `rebuild()` (тот
+        же порядок, что раньше — карточки обязаны отразить снимок ДО того,
+        как решаем, показывать ли предупреждение) и уже поверх пересчитанных
+        `statuses` проверяет ожидающий профиль.
+        """  # noqa: RUF002
+        self.rebuild()
+        server_installations = self._installed()
+        installed_versions = [si.installation.version for si in server_installations]
+        self._check_pending_confirmation(self._workspace.statuses(installed_versions))
 
     def _check_pending_confirmation(self, statuses: Sequence[ServerStatus]) -> None:
         """§8 мокапа, [Ф] А3/А4: смерть ragent молчалива, в лог ничего не пишется.
 
-        `_toggle` запоминает профиль как «ожидает подтверждения» ПОСЛЕ своего
-        собственного немедленного `rebuild()` (см. её докстринг) — сюда попадает
-        ровно СЛЕДУЮЩИЙ вызов `rebuild()`, отражающий уже новый снимок процессов
-        (`request_scan()` → в приложении `ServerMonitor.snapshot_ready` →
-        `workspace.apply_scan` → `rebuild()`). Профиль всё ещё без процессов —
-        типичная причина, которую видит пользователь, — порт уже занят другим
-        сервером, поднявшимся раньше. Срабатывает не более одного раза на
-        каждую постановку в ожидание — успешный запуск сбрасывает флаг молча,
-        а `rebuild()` без ожидающего профиля (например, от смены темы) вообще
-        сюда не заходит.
+        Зовётся ТОЛЬКО из `on_scan_snapshot()` (см. её докстринг, круг
+        исправлений 1) — не из `rebuild()`. `_toggle` запоминает профиль как
+        «ожидает подтверждения» ПОСЛЕ своего собственного немедленного
+        `rebuild()` (см. её докстринг): к моменту, когда сюда приходит
+        управление, снимок процессов уже гарантированно новый. Профиль
+        всё ещё без процессов — типичная причина, которую видит
+        пользователь, — порт уже занят другим сервером, поднявшимся раньше.
+        Срабатывает не более одного раза на каждую постановку в ожидание —
+        флаг сбрасывается здесь безусловно, до всякого решения о показе.
         """  # noqa: RUF002
         profile_id = self._pending_confirmation
         if profile_id is None:

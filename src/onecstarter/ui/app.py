@@ -609,8 +609,12 @@ def _build_main_window(
     )
 
     def on_scan(snapshot: ScanSnapshot) -> None:
+        # Единственный путь, из которого зовётся on_scan_snapshot() (не
+        # rebuild()) — круг исправлений 1, ревью задачи 16: §8 обязан видеть
+        # именно СВЕЖИЙ снимок, а не любую перестройку карточек (докстринг  # noqa: RUF003
+        # ServersView.on_scan_snapshot).
         servers_workspace.apply_scan(snapshot)
-        servers_view.rebuild()
+        servers_view.on_scan_snapshot()
 
     monitor.snapshot_ready.connect(on_scan)
 

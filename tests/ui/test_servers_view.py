@@ -511,13 +511,21 @@ def test_stop_failure_is_shown_via_show_error(application: QApplication, tmp_pat
 # после успешного запуска `statuses()` всё ещё отдаёт «остановлен» по
 # СТАРОМУ снимку — свежих данных ждать неоткуда до следующего `apply_scan`.  # noqa: RUF003
 # Поэтому `rebuild()`, вызванный ВНУТРИ `_toggle` сразу после `start()`,
-# не может быть тем самым «следующим rebuild()», который проверяет §8: он
-# использует тот же снимок, что и до запуска, и ложно репортовал бы «умер»
-# на КАЖДЫЙ успешный запуск. `ServersView._toggle` поэтому запоминает
-# профиль как «ожидает подтверждения» ПОСЛЕ этого немедленного rebuild(),
-# а не до — так проверка достаётся ровно следующему вызову `rebuild()`,  # noqa: RUF003
-# отражающему уже НОВЫЙ снимок (в приложении — из `monitor.snapshot_ready`,
-# здесь — из явного `workspace.apply_scan(...)` + `view.rebuild()`).
+# не может быть тем самым «следующим свежим снимком», который проверяет §8:
+# он использует тот же снимок, что и до запуска.
+#
+# Круг исправлений 1 (ревью задачи 16, Important-находка): проверка §8 живёт  # noqa: RUF003
+# НЕ в `rebuild()` — тот дёргают минимум шесть посторонних путей  # noqa: RUF003
+# (`apply_palette`, `_remove`, `_extinguish`, `_apply_new_profile`,
+# `_apply_edited_profile`, `on_installations` в `app.py`), и любой из них до
+# прихода настоящего свежего снимка потребил бы проверку на устаревших
+# данных. Единственная точка входа — `ServersView.on_scan_snapshot()`:
+# `_toggle` запоминает профиль как «ожидает подтверждения» ПОСЛЕ своего
+# немедленного `rebuild()` (см. её докстринг), а проверяет уже  # noqa: RUF003
+# `on_scan_snapshot()`, зовущийся ровно из одного места проводки —
+# `monitor.snapshot_ready` → `servers_workspace.apply_scan` →
+# `servers_view.on_scan_snapshot()` (в приложении) либо явного
+# `workspace.apply_scan(...)` + `view.on_scan_snapshot()` (здесь, в тестах).
 
 
 def test_start_that_dies_silently_is_reported(
@@ -526,9 +534,11 @@ def test_start_that_dies_silently_is_reported(
     """ЗАЩИТНЫЙ ТЕСТ, [Ф] А3: смерть ragent молчалива, в лог ничего не пишется —
 
     единственный канал, которым пользователь может об этом узнать, это
-    `show_error` из `ServersView` сама по себе. Мутация «не проверять
-    подтверждающий скан» (или «проверять его на том же rebuild(), что и сам
-    клик») обязана уронить этот тест.
+    `show_error` из `ServersView` сама по себе. Подтверждающий путь — ровно
+    тот, каким его зовёт `app.py` (круг исправлений 1, ревью задачи 16):
+    `workspace.apply_scan(...)` + `view.on_scan_snapshot()`, а не голый
+    `rebuild()`. Мутация «не проверять подтверждающий скан» (или «вернуть
+    проверку в `rebuild()`») обязана уронить этот тест.
     """  # noqa: RUF002
     profile = _profile()
     workspace = _workspace(tmp_path, (profile,))
@@ -548,7 +558,7 @@ def test_start_that_dies_silently_is_reported(
     # Подтверждающий скан: ragent так и не появился в списке процессов —
     # тот же исход, что и «умер сразу после старта, порт занят».
     workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
-    view.rebuild()
+    view.on_scan_snapshot()
 
     assert errors
     assert profile.name in errors[0]
@@ -576,17 +586,61 @@ def test_start_confirmed_running_reports_nothing(
 
     view.profile_button(0).click()
     workspace.apply_scan(ScanSnapshot(agents=(_agent(100, profile.cluster_dir),), managers=()))
-    view.rebuild()
+    view.on_scan_snapshot()
 
     assert errors == []
+
+
+def test_start_followed_by_unrelated_rebuild_does_not_falsely_report_death(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ (ревью задачи 16, круг исправлений 1, Important-находка):
+
+    §8 обязана срабатывать только на СВЕЖИЙ снимок (`on_scan_snapshot()`),
+    а не на любой `rebuild()`. `rebuild()` дёргают минимум шесть посторонних
+    путей (`apply_palette`, `_remove`, `_extinguish`, `_apply_new_profile`,
+    `_apply_edited_profile`, `on_installations` в `app.py`) — любой из них
+    в первые секунды после «Запустить», ДО того как монитор успел донести
+    свежий снимок, видел бы ещё СТАРЫЙ снимок процессов и потребил бы
+    ожидание §8 на нём: живой, только что запущенный сервер получил бы
+    ложное «завершился сразу после запуска». Здесь посторонний rebuild()
+    смоделирован через `apply_palette()` (тот же путь, каким смена темы
+    перестраивает карточки) — ревьюер воспроизвёл падение детерминированно
+    именно на нём. Мутация «вернуть `_check_pending_confirmation` в
+    `rebuild()`» обязана уронить этот тест на первом `assert errors == []`.
+    """  # noqa: RUF002
+    profile = _profile()
+    workspace = _workspace(tmp_path, (profile,))
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+    errors: list[str] = []
+
+    view = ServersView(
+        workspace,
+        installed=lambda: [_installation()],
+        palette=theme.DARK,
+        show_error=lambda message: errors.append(message),
+    )
+
+    view.profile_button(0).click()  # «Запустить» — ставит профиль в ожидание
+
+    # Посторонний rebuild() ДО прихода свежего снимка — снимок процессов
+    # в workspace всё ещё старый (без агента), но проверка §8 не должна
+    # его увидеть вовсе.  # noqa: RUF003
+    view.apply_palette(theme.LIGHT)
+    assert errors == [], "посторонний rebuild() не должен потреблять проверку §8"
+
+    # Свежий снимок наконец пришёл — сервер на самом деле жив.
+    workspace.apply_scan(ScanSnapshot(agents=(_agent(100, profile.cluster_dir),), managers=()))
+    view.on_scan_snapshot()
+
+    assert errors == [], "первый настоящий свежий снимок показывает живой процесс"
 
 
 def test_confirmation_check_fires_only_once(application: QApplication, tmp_path: Path) -> None:
     """Один факт постановки в ожидание — не более одного сообщения.
 
-    Второй и следующие `rebuild()` после уже проверенного запуска не должны
-    повторять предупреждение — иначе, например, смена темы (`apply_palette`
-    зовёт `rebuild()`) заново показывала бы уже прочитанное сообщение.
+    Второй и следующие `on_scan_snapshot()` после уже проверенного запуска
+    не должны повторять предупреждение.
     """
     profile = _profile()
     workspace = _workspace(tmp_path, (profile,))
@@ -602,11 +656,11 @@ def test_confirmation_check_fires_only_once(application: QApplication, tmp_path:
 
     view.profile_button(0).click()
     workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
-    view.rebuild()
+    view.on_scan_snapshot()
     assert len(errors) == 1
 
-    view.rebuild()
-    view.rebuild()
+    view.on_scan_snapshot()
+    view.on_scan_snapshot()
 
     assert len(errors) == 1
 
@@ -633,7 +687,7 @@ def test_stop_does_not_arm_the_confirmation_check(
 
     view.profile_button(0).click()  # «Остановить»
     workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
-    view.rebuild()
+    view.on_scan_snapshot()
 
     assert errors == []
 
