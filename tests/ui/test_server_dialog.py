@@ -10,6 +10,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QWidget
 from onecstarter.domain.server import ServerProfile
 from onecstarter.domain.version import Arch, Installation, parse_version
 from onecstarter.platform_1c.server_discovery import ServerInstallation
+from onecstarter.ui import theme
 from onecstarter.ui.servers.dialog import ConsoleDialog, ConsoleVersionRow, ServerProfileDialog
 
 
@@ -307,6 +308,143 @@ def test_for_edit_prefills_fields_and_keeps_the_id(application: QApplication) ->
     # нарушен молча.
     assert dialog.dir_edit().text() == r"E:\custom\mydir"
     assert dialog.result_profile() == profile
+
+
+# -- круг исправлений 1 (ревью задачи 15) ------------------------------------
+#
+# НАХОДКА 1: for_edit молча переписывал уже заданный каталог профиля на
+# смену версии — прямое нарушение спеки §3.2 («каталог хранится в профиле
+# строкой и после подстановки не пересчитывается»), ровно сценарий «переезда
+# на пустой кластер» после доустановки патча. Фикс — for_edit стартует
+# с _dir_touched=True (каталог уже существующего профиля неприкосновенен).  # noqa: RUF003
+
+
+def test_for_edit_version_change_does_not_rewrite_the_existing_directory(
+    application: QApplication,
+) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ (воспроизведён ревьюером): смена версии в for_edit не
+
+    трогает уже заданный каталог кластера, даже когда подстановка нашла бы
+    для новой версии осмысленный результат — спека §3.2 требует именно
+    это, а не «подставим то, что сейчас разрешилось».
+    """  # noqa: RUF002
+    profile = ServerProfile(
+        id="p9",
+        name="Правка",
+        version="8.3.25",
+        port=1540,
+        regport=1541,
+        range_start=1560,
+        range_end=1591,
+        cluster_dir=r"E:\srv\srv_8.3.25.1633",
+        debug=True,
+        http=True,
+        extra_args="",
+    )
+    dialog = ServerProfileDialog.for_edit(
+        profile, [], [_installation("8.3.25.1633"), _installation("8.3.25.1700")], r"E:\srv"
+    )
+
+    dialog.version_combo().setEditText("8.3.25.1700")
+
+    assert dialog.resolved_text() == "→ 8.3.25.1700"
+    assert dialog.dir_edit().text() == r"E:\srv\srv_8.3.25.1633"
+
+
+def test_for_edit_still_substitutes_when_the_directory_is_actually_empty(
+    application: QApplication,
+) -> None:
+    """Вторая половина условия «пуст ИЛИ не тронут» не зависит от режима:
+
+    профиль с пустым каталогом (гипотетический край) — не заперт навсегда,
+    подстановка всё ещё работает, когда полю реально нечего защищать.
+    """  # noqa: RUF002
+    profile = ServerProfile(
+        id="p9",
+        name="Правка",
+        version="8.3.25",
+        port=1540,
+        regport=1541,
+        range_start=1560,
+        range_end=1591,
+        cluster_dir="",
+        debug=True,
+        http=True,
+        extra_args="",
+    )
+    dialog = ServerProfileDialog.for_edit(profile, [], [_installation("8.3.25.1633")], r"E:\srv")
+
+    dialog.version_combo().setEditText("8.3.25.1633")
+
+    assert dialog.dir_edit().text() == r"E:\srv\srv_8.3.25.1633"
+
+
+def test_for_new_still_substitutes_on_version_change(application: QApplication) -> None:
+    """Регрессия: НАХОДКА 1 не должна была задеть обычную подстановку for_new."""
+    dialog = ServerProfileDialog.for_new([], [_installation("8.3.25.1633")], r"E:\srv")
+
+    dialog.version_combo().setEditText("8.3.25.1633")
+
+    assert dialog.dir_edit().text() == r"E:\srv\srv_8.3.25.1633"
+
+
+def test_dir_note_shows_the_permanent_guarantee_from_the_mockup(
+    application: QApplication,
+) -> None:
+    dialog = ServerProfileDialog.for_new([], [_installation()], r"E:\srv")
+
+    assert "не пересчитывается" in dialog.dir_note()
+    assert "переедет" in dialog.dir_note()
+
+
+def test_dir_note_is_present_and_unchanged_for_for_edit_too(application: QApplication) -> None:
+    profile = _profile()
+    dialog = ServerProfileDialog.for_edit(profile, [], [_installation()], r"E:\srv")
+    assert dialog.dir_note() != ""
+
+
+# -- круг исправлений 1 (ревью задачи 15), НАХОДКА 2: цвет предупреждения/ошибки --
+
+
+def test_without_palette_labels_stay_uncoloured(application: QApplication) -> None:
+    existing = [_profile()]
+    dialog = ServerProfileDialog.for_new(existing, [_installation()], r"E:\srv")
+    dialog.name_edit().setText("Новый")
+    dialog.version_combo().setEditText("8.3.25.1633")
+    dialog.dir_edit().setText(r"E:\srv\custom")
+
+    assert dialog.error_label_style() == ""
+    assert dialog.warning_label_style() == ""
+
+
+def test_palette_colours_persist_after_text_updates_from_live_validation(
+    application: QApplication,
+) -> None:
+    """Стиль ставится один раз в `__init__` — `setText()` из `_refresh_state`
+
+    (реальная живая валидация, не голая проверка на пустом диалоге) его
+    не сбрасывает.
+    """  # noqa: RUF002
+    palette = theme.DARK
+    dialog = ServerProfileDialog.for_edit(_profile(), [], [_installation()], "", palette=palette)
+
+    dialog.regport_edit().setText("1642")  # предупреждение, ОК остаётся активна  # noqa: RUF003
+    assert dialog.warning_text() != ""
+    assert dialog.warning_label_style() == f"color: {palette.accent};"
+
+    dialog.port_edit().setText("1642")  # тот же порт, что и regport — ошибка
+    assert dialog.error_text() != ""
+    assert dialog.error_label_style() == f"color: {palette.problem};"
+
+    assert dialog.error_label_style() != dialog.warning_label_style()
+
+
+def test_palette_is_accepted_by_for_new_too(application: QApplication) -> None:
+    palette = theme.LIGHT
+    dialog = ServerProfileDialog.for_new([], [_installation()], "", palette=palette)
+
+    assert dialog.error_label_style() == f"color: {palette.problem};"
+    assert dialog.warning_label_style() == f"color: {palette.accent};"
 
 
 # -- ConsoleDialog ------------------------------------------------------------

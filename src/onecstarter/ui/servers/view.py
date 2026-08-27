@@ -20,6 +20,12 @@ assets/2026-08-26-v2-servers-mockup.html), секция «Раздел „Сер
 решение, что и у `installed`, обнаружение платформ и настройки могут
 поменяться, пока раздел открыт.
 
+**Круг исправлений 1 (ревью задачи 15, НАХОДКА 2).** Бриф буквально требовал
+жёлтую строку у предупреждения и problem-цвет у ошибки в `ServerProfileDialog` —
+`_build_add_profile_dialog`/`_build_edit_profile_dialog` прокидывают
+`self._palette` (она у `ServersView` уже есть) в новый keyword `palette`
+диалога.
+
 Приём тот же, что у `SettingsView`: конструктор строит статичный каркас
 (шапка, строка пути), а содержимое, зависящее от снимка процессов
 (карточки профилей, блок чужих серверов), собирает `rebuild()` в свои
@@ -544,7 +550,11 @@ class ServersView(QWidget):
 
     def _build_add_profile_dialog(self) -> ServerProfileDialog:
         return ServerProfileDialog.for_new(
-            self._workspace.profiles(), self._installed(), self._servers_root(), parent=self
+            self._workspace.profiles(),
+            self._installed(),
+            self._servers_root(),
+            parent=self,
+            palette=self._palette,
         )
 
     def _default_add_profile(self) -> None:
@@ -567,7 +577,12 @@ class ServersView(QWidget):
             return None
         others = [p for p in self._workspace.profiles() if p.id != profile_id]
         return ServerProfileDialog.for_edit(
-            profile, others, self._installed(), self._servers_root(), parent=self
+            profile,
+            others,
+            self._installed(),
+            self._servers_root(),
+            parent=self,
+            palette=self._palette,
         )
 
     def _default_edit_profile(self, profile_id: str) -> None:

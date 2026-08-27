@@ -43,14 +43,36 @@ assets/2026-08-26-v2-servers-mockup.html), секции «Диалог проф�
 кнопки не эмитится (потому флаг выставляется явно в обработчике, а не
 только слушанием сигнала).
 
-**Про цвета.** Диалог, как и `InfobaseDialog`, не запекает свой `Palette` —
-классы `for_new`/`for_edit` в задаче намеренно не несут параметра палитры,
-а `InfobaseDialog._required_hint` (образец, на который ссылается бриф)
-тоже не красит строку пояснения, полагаясь на общий stylesheet приложения.
-Ошибка и предупреждение здесь — два отдельных `QLabel` (`error_text()`/
-`warning_text()`), различаемых по смыслу и по влиянию на «ОК», а не по
-запечённому HEX-цвету; сильная раскраска через `Palette` — материал для
-отдельной находки ревью, если понадобится.
+**Круг исправлений 1 (ревью задачи 15).** НАХОДКА 1: `for_edit` — смена
+версии молча переписывала уже заданный каталог существующего профиля,
+хотя `_dir_touched` изначально был `False` и в режиме правки — условие
+подстановки «пуст ИЛИ не тронут» пропускало через вторую половину. Это
+прямое нарушение спеки §3.2 («каталог хранится в профиле строкой и после
+подстановки не пересчитывается») и ровно тот сценарий «переезда на пустой
+кластер» после доустановки патча, ради которого правило и писалось. Фикс —
+`self._dir_touched = profile is not None`: каталог уже существующего
+профиля — неприкосновенное значение с открытия диалога, как если бы
+пользователь его только что вписал руками; автоподстановка при смене
+версии остаётся только для `for_new` (там `_dir_touched` по-прежнему
+стартует `False`) и для случая, когда поле фактически пусто (первая
+половина условия «ИЛИ» не зависит от флага). Рядом с полем каталога —
+постоянная dim-подпись `dir_note()` из мокапа, документирующая именно
+эту гарантию пользователю, а не только разработчику в докстринге.
+
+**Про цвета (круг исправлений 1, НАХОДКА 2).** Диалог по умолчанию не
+запекает `Palette` — как и `InfobaseDialog._required_hint`. Но бриф прямо
+требовал жёлтую строку у предупреждения и problem-цвет у ошибки; ревью
+подтвердило требование как буквальное, не как пожелание на будущее.
+Добавлен опциональный keyword `palette: Palette | None = None`
+(`__init__`/`for_new`/`for_edit`): без него оба `QLabel` остаются
+некрашеными (совместимость с уже написанными тестами и с решением
+«не запекать чужой» по умолчанию), а с ним — `error_label` красится
+`palette.problem`, `warning_label` — `palette.accent` (жёлтый акцент —
+канонический «жёлтый» проекта, T-06: своего жёлтого в палитре нет).
+Цвет ставится один раз в `__init__` через `setStyleSheet`, тем же приёмом,
+что `ServersView` красит статус карточки (`_status_colour`) — `setText`
+на уже раскрашенном `QLabel` цвет не сбрасывает. `ServersView` прокидывает
+свою палитру в диалог из `_build_add_profile_dialog`/`_build_edit_profile_dialog`.
 
 **`ConsoleDialog`.** Только собирает выбор пользователя — версии
 с `radmin.dll` (`installed`), метки «текущая» ([Ф] Г2, чтение HKLM без UAC)
@@ -97,6 +119,7 @@ from onecstarter.domain.server_match import normalize_cluster_dir
 from onecstarter.domain.version import VersionNumber
 from onecstarter.platform_1c.server_discovery import ServerInstallation
 from onecstarter.ui.dialogs.buttons import ButtonKind, russian_button_box
+from onecstarter.ui.theme import Palette
 
 _RANGE_FORMAT_ERROR = "Диапазон — два числа через двоеточие"
 _REGPORT_CHANGE_WARNING = (
@@ -105,6 +128,14 @@ _REGPORT_CHANGE_WARNING = (
 _DEFAULT_PORT = "1540"
 _DEFAULT_REGPORT = "1541"
 _DEFAULT_RANGE = "1560:1591"
+# Мокап, секция «Диалог профиля» (`dnote` под полем каталога): постоянная
+# подпись — документирует гарантию §3.2 пользователю, не только докстринг
+# разработчику (круг исправлений 1, НАХОДКА 1).
+_DIR_NOTE_TEXT = (
+    "Каталог подставлен от разрешённой версии и после этого не "
+    "пересчитывается — новый патч платформы не «переедет» профиль "
+    "на пустой кластер"
+)
 
 
 def browse_for_directory() -> str:
@@ -152,6 +183,7 @@ class ServerProfileDialog(QDialog):
         servers_root: str,
         parent: QWidget | None = None,
         choose_directory: Callable[[], str] = browse_for_directory,
+        palette: Palette | None = None,
     ) -> None:
         super().__init__(parent)
         self._profile = profile
@@ -160,10 +192,15 @@ class ServerProfileDialog(QDialog):
         self._servers_root = servers_root
         self._choose_directory = choose_directory
         # Флаг «трогал руками»: останавливает автоподстановку каталога
-        # (см. докстринг модуля). Программные setText из подстановки самой
-        # его не выставляют — только textEdited (ввод) и явная установка  # noqa: RUF003
-        # в обработчике «Обзор…» (тоже осознанный ручной выбор).
-        self._dir_touched = False
+        # (см. докстринг модуля, круг исправлений 1 — НАХОДКА 1). Каталог
+        # уже существующего профиля (`for_edit`) — неприкосновенное
+        # значение с открытия диалога, как если бы пользователь его только  # noqa: RUF003
+        # что вписал руками: `for_new` стартует непотроганным (`False`),
+        # `for_edit` — как уже потроганный (`True`). Программные setText
+        # из подстановки сам флаг не выставляют — только textEdited (ввод)
+        # и явная установка в обработчике «Обзор…» (тоже осознанный ручной
+        # выбор).
+        self._dir_touched = profile is not None
 
         self.setWindowTitle(
             f"Профиль сервера — {profile.name}" if profile is not None else "Профиль сервера"
@@ -212,6 +249,17 @@ class ServerProfileDialog(QDialog):
         dir_row_layout.addWidget(self._dir_edit, 1)
         dir_row_layout.addWidget(self._browse_button)
 
+        # Постоянная подпись из мокапа — под полем каталога, не привязана
+        # к живой валидации (круг исправлений 1, НАХОДКА 1): документирует
+        # гарантию §3.2 пользователю независимо от текущего состояния «ОК».  # noqa: RUF003
+        self._dir_note = QLabel(_DIR_NOTE_TEXT)
+        self._dir_note.setWordWrap(True)
+        dir_block = QWidget()
+        dir_block_layout = QVBoxLayout(dir_block)
+        dir_block_layout.setContentsMargins(0, 0, 0, 0)
+        dir_block_layout.addWidget(dir_row)
+        dir_block_layout.addWidget(self._dir_note)
+
         self._debug_checkbox = QCheckBox()
         self._debug_checkbox.setChecked(profile.debug if profile is not None else True)
         self._http_checkbox = QCheckBox()
@@ -223,7 +271,7 @@ class ServerProfileDialog(QDialog):
         form.addRow("Версия", version_row)
         form.addRow("Порт", port_row)
         form.addRow("Диапазон", self._range_edit)
-        form.addRow("Каталог кластера", dir_row)
+        form.addRow("Каталог кластера", dir_block)
         form.addRow("Отладка (-debug)", self._debug_checkbox)
         form.addRow("HTTP (-http)", self._http_checkbox)
         form.addRow("Доп. аргументы", self._extra_edit)
@@ -232,6 +280,14 @@ class ServerProfileDialog(QDialog):
         self._error_label.setWordWrap(True)
         self._warning_label = QLabel("")
         self._warning_label.setWordWrap(True)
+        # Круг исправлений 1, НАХОДКА 2: бриф требует problem-цвет у ошибки  # noqa: RUF003
+        # и жёлтую строку у предупреждения буквально, не как пожелание.  # noqa: RUF003
+        # `palette` — опциональна (см. докстринг модуля): без неё оба  # noqa: RUF003
+        # `QLabel` остаются некрашеными, как раньше. Цвет ставится один раз
+        # здесь — `setText()` в `_refresh_state` его не сбрасывает.  # noqa: RUF003
+        if palette is not None:
+            self._error_label.setStyleSheet(f"color: {palette.problem};")
+            self._warning_label.setStyleSheet(f"color: {palette.accent};")
 
         self._buttons = russian_button_box(ButtonKind.OK, ButtonKind.CANCEL)
         self._buttons.accepted.connect(self.accept)
@@ -278,6 +334,7 @@ class ServerProfileDialog(QDialog):
         parent: QWidget | None = None,
         *,
         choose_directory: Callable[[], str] = browse_for_directory,
+        palette: Palette | None = None,
     ) -> "ServerProfileDialog":
         return cls(
             None,
@@ -286,6 +343,7 @@ class ServerProfileDialog(QDialog):
             servers_root=servers_root,
             parent=parent,
             choose_directory=choose_directory,
+            palette=palette,
         )
 
     @classmethod
@@ -298,6 +356,7 @@ class ServerProfileDialog(QDialog):
         parent: QWidget | None = None,
         *,
         choose_directory: Callable[[], str] = browse_for_directory,
+        palette: Palette | None = None,
     ) -> "ServerProfileDialog":
         return cls(
             profile,
@@ -306,6 +365,7 @@ class ServerProfileDialog(QDialog):
             servers_root=servers_root,
             parent=parent,
             choose_directory=choose_directory,
+            palette=palette,
         )
 
     # -- подстановка каталога и живая валидация ------------------------------
@@ -407,6 +467,16 @@ class ServerProfileDialog(QDialog):
 
     def resolved_text(self) -> str:
         return self._resolved_label.text()
+
+    def dir_note(self) -> str:
+        """Постоянная подпись под каталогом кластера — гарантия §3.2, не ошибка/предупреждение."""
+        return self._dir_note.text()
+
+    def error_label_style(self) -> str:
+        return self._error_label.styleSheet()
+
+    def warning_label_style(self) -> str:
+        return self._warning_label.styleSheet()
 
     def name_edit(self) -> QLineEdit:
         return self._name_edit
