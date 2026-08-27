@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
-from PySide6.QtWidgets import QApplication, QPushButton
+from PySide6.QtWidgets import QApplication, QDialog, QPushButton
 
 from onecstarter.domain.launch import LaunchCommand
 from onecstarter.domain.server import ServerProfile
@@ -23,6 +23,7 @@ from onecstarter.platform_1c.process_scan import ProcessInfo
 from onecstarter.platform_1c.server_discovery import ServerInstallation
 from onecstarter.services.servers import ScanSnapshot, ServersWorkspace
 from onecstarter.ui import theme
+from onecstarter.ui.servers.dialog import ServerProfileDialog
 from onecstarter.ui.servers.view import ServersView
 
 RAGENT = r"C:\Program Files\1cv8\8.3.25.1633\bin\ragent.exe"
@@ -324,6 +325,13 @@ def _trigger_delete(view: ServersView, index: int) -> None:
     action.trigger()
 
 
+def _trigger_properties(view: ServersView, index: int) -> None:
+    """«Свойства…» из контекстного меню карточки (задача 15) — тот же приём."""
+    menu = view.profile_menu(index)
+    action = next(a for a in menu.actions() if "Свойства" in a.text())
+    action.trigger()
+
+
 def test_removal_of_running_profile_warns_it_keeps_running(
     application: QApplication, tmp_path: Path
 ) -> None:
@@ -609,6 +617,209 @@ def test_add_profile_button_calls_on_add_profile(
     )
     view.add_profile_button().click()
     assert calls == [1]
+
+
+# -- диалог профиля (задача 15): дефолты «+ Профиль»/«Свойства…» ------------
+#
+# Приём — тот же, что `test_bases_view.py` использует для `InfobaseDialog`
+# («build → exec → apply», `_accept`/`_reject` подменяют `exec()` класса
+# диалога, не блокируя офскрин-тест). `on_add_profile`/`on_edit_profile`
+# больше не no-op по умолчанию (см. докстринг `view.py`) — здесь проверяется
+# именно это, а не то, что уже покрыто `test_server_dialog.py` для самого  # noqa: RUF003
+# диалога.
+
+
+def _accept(monkeypatch: pytest.MonkeyPatch, dialog_class: type) -> None:
+    monkeypatch.setattr(dialog_class, "exec", lambda self: QDialog.DialogCode.Accepted)
+
+
+def _reject(monkeypatch: pytest.MonkeyPatch, dialog_class: type) -> None:
+    monkeypatch.setattr(dialog_class, "exec", lambda self: QDialog.DialogCode.Rejected)
+
+
+def test_build_add_profile_dialog_gets_existing_profiles_installed_and_root(
+    application: QApplication, tmp_path: Path
+) -> None:
+    profile = _profile()
+    workspace = _workspace(tmp_path, (profile,))
+    installation = _installation()
+    view = ServersView(
+        workspace,
+        installed=lambda: [installation],
+        palette=theme.DARK,
+        servers_root=lambda: r"E:\srv",
+    )
+
+    dialog = view._build_add_profile_dialog()
+
+    # for_new передаёт существующие профили как есть (не «без себя» — новой
+    # записи ещё нет в списке); дефолтные порты for_new (1540/1541) сразу
+    # конфликтуют с единственным existing-профилем — доказывает, что список  # noqa: RUF003
+    # действительно дошёл до диалога, а не подставлена пустота.  # noqa: RUF003
+    assert "1540" in dialog.error_text()
+    assert dialog.ok_button().isEnabled() is False
+
+
+def test_apply_new_profile_adds_the_profile(application: QApplication, tmp_path: Path) -> None:
+    """Отдельно от `exec()` (I2, тот же приём, что `_apply_new_infobase`
+
+    в `BasesView`): `dialog.result_profile()` не считается безусловно
+    валидным — тот же рубеж, `ServersWorkspace.add_profile`, что и у обычной
+    записи через контроллер, доказывается напрямую.
+    """  # noqa: RUF002
+    workspace = _workspace(tmp_path, ())
+    view = ServersView(workspace, installed=lambda: [_installation()], palette=theme.DARK)
+    dialog = ServerProfileDialog.for_new([], [_installation()], "", parent=view)
+    dialog.name_edit().setText("Новый профиль")
+    dialog.version_combo().setEditText("8.3.25.1633")
+    dialog.dir_edit().setText(r"E:\srv\new")
+
+    view._apply_new_profile(dialog)
+
+    names = [p.name for p in workspace.profiles()]
+    assert names == ["Новый профиль"]
+
+
+def test_add_profile_button_reaches_apply_when_dialog_is_accepted(
+    application: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Проводка «собрать → показать → применить» (I2 финального ревью
+
+    `BasesView`, тот же приём здесь): `_apply_new_profile` подменяется, чтобы
+    доказать саму связку `exec() == Accepted → apply`, не заново гоняя
+    валидацию `ServerProfileDialog`.
+    """
+    workspace = _workspace(tmp_path, ())
+    view = ServersView(workspace, installed=lambda: [_installation()], palette=theme.DARK)
+    applied: list[ServerProfileDialog] = []
+    monkeypatch.setattr(view, "_apply_new_profile", applied.append)
+    _accept(monkeypatch, ServerProfileDialog)
+
+    view.add_profile_button().click()
+
+    assert len(applied) == 1
+
+
+def test_default_add_profile_does_nothing_when_dialog_is_cancelled(
+    application: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _workspace(tmp_path, ())
+    view = ServersView(workspace, installed=lambda: [_installation()], palette=theme.DARK)
+    _reject(monkeypatch, ServerProfileDialog)
+
+    view.add_profile_button().click()
+
+    assert workspace.profiles() == []
+
+
+def test_default_add_profile_shows_error_when_workspace_rejects_it(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Дубль порта дошёл бы до `ok_button().isEnabled()` в диалоге — здесь
+
+    граница проверяется на уровне `_apply_new_profile`/`ServersWorkspace`
+    напрямую (тем же приёмом, что `test_stop_failure_is_shown_via_show_error`),
+    в обход живой валидации диалога.
+    """
+    profile = _profile()
+    workspace = _workspace(tmp_path, (profile,))
+    errors: list[str] = []
+    view = ServersView(
+        workspace,
+        installed=lambda: [_installation()],
+        palette=theme.DARK,
+        show_error=lambda message: errors.append(message),
+    )
+
+    dialog = ServerProfileDialog.for_new([], [_installation()], "", parent=view)
+    dialog.name_edit().setText("Дубль")
+    dialog.version_combo().setEditText("8.3.25.1633")
+    dialog.dir_edit().setText(r"E:\srv\dup")
+    # Диалог сам не пустил бы такой профиль — others у него уже включал  # noqa: RUF003
+    # existing и порт 1540 конфликтовал бы. Здесь others у диалога пуст  # noqa: RUF003
+    # (`existed=[]`), поэтому его собственная валидация зелёная, а конфликт  # noqa: RUF003
+    # ловит именно `ServersWorkspace.add_profile` — граница проверяется
+    # отдельно от диалога, как и планировалось (`_apply_new_profile`).
+
+    view._apply_new_profile(dialog)
+
+    assert errors
+    assert "1540" in errors[0]
+    assert workspace.profiles() == [profile]
+
+
+def test_properties_menu_item_present_before_delete(
+    application: QApplication, tmp_path: Path
+) -> None:
+    profile = _profile()
+    workspace = _workspace(tmp_path, (profile,))
+    view = ServersView(workspace, installed=lambda: [_installation()], palette=theme.DARK)
+
+    labels = [action.text() for action in view.profile_menu(0).actions()]
+
+    properties_index = next(i for i, label in enumerate(labels) if "Свойства" in label)
+    delete_index = next(i for i, label in enumerate(labels) if "Удалить" in label)
+    assert properties_index < delete_index
+
+
+def test_default_edit_profile_updates_on_accept(
+    application: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = _profile()
+    workspace = _workspace(tmp_path, (profile,))
+    view = ServersView(workspace, installed=lambda: [_installation()], palette=theme.DARK)
+    _accept(monkeypatch, ServerProfileDialog)
+
+    _trigger_properties(view, 0)
+
+    updated = next(p for p in workspace.profiles() if p.id == profile.id)
+    # exec() подменён на Accepted без изменения полей — диалог открылся
+    # с данными исходного профиля (for_edit), и update_profile переписал  # noqa: RUF003
+    # тот же профиль тем же значением (untouched-инвариант дошёл до записи).
+    assert updated == profile
+
+
+def test_default_edit_profile_does_nothing_when_dialog_is_cancelled(
+    application: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    profile = _profile()
+    workspace = _workspace(tmp_path, (profile,))
+    view = ServersView(workspace, installed=lambda: [_installation()], palette=theme.DARK)
+    _reject(monkeypatch, ServerProfileDialog)
+
+    _trigger_properties(view, 0)
+
+    assert workspace.profiles() == [profile]
+
+
+def test_build_edit_profile_dialog_returns_none_for_a_vanished_profile(
+    application: QApplication, tmp_path: Path
+) -> None:
+    workspace = _workspace(tmp_path, ())
+    view = ServersView(workspace, installed=lambda: [], palette=theme.DARK)
+
+    assert view._build_edit_profile_dialog("does-not-exist") is None
+
+
+def test_on_edit_profile_injection_overrides_the_default(
+    application: QApplication, tmp_path: Path
+) -> None:
+    profile = _profile()
+    workspace = _workspace(tmp_path, (profile,))
+    calls: list[str] = []
+    view = ServersView(
+        workspace,
+        installed=lambda: [_installation()],
+        palette=theme.DARK,
+        on_edit_profile=calls.append,
+    )
+
+    _trigger_properties(view, 0)
+
+    assert calls == [profile.id]
+    # Инъекция подменяет дефолт целиком — настоящий диалог не открывался,
+    # иначе тест завис бы на блокирующем exec() (в этом и смысл проверки).
+    assert workspace.profiles() == [profile]
 
 
 # -- палитра -------------------------------------------------------------------

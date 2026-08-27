@@ -3,12 +3,22 @@
 Мокап — [2026-08-26-v2-servers-mockup.html](../../../../docs/superpowers/specs/
 assets/2026-08-26-v2-servers-mockup.html), секция «Раздел „Серверы"». Данные —
 `ServersWorkspace` (T-08, задачи 10-13): список профилей, снимок процессов
-и производные от него `statuses`/`foreign_servers`. Эта задача (T-08,
-задача 14) — только показ и локальные действия карточки (запуск/остановка/
-удаление профиля, гашение сирот); подтверждающий скан после каждого действия
-(`request_scan`) и сами диалоги «Консоль администрирования…»/«+ Профиль»
-подключит задача 15/16 — здесь только инъекции с безопасным дефолтом
-`lambda: None`.
+и производные от него `statuses`/`foreign_servers`. Задача 14 добавила показ
+и локальные действия карточки (запуск/остановка/удаление профиля, гашение
+сирот) — диалоги «Консоль администрирования…»/«+ Профиль»/«Свойства…» тогда
+были инъекциями с безопасным дефолтом `lambda: None`.
+
+**Задача 15** подключает `ServerProfileDialog` (`ui/servers/dialog.py`):
+`on_add_profile`/`on_edit_profile` теперь по умолчанию открывают настоящий
+диалог (`_default_add_profile`/`_default_edit_profile`), а не молчат —
+явная инъекция в конструкторе по-прежнему может подменить поведение (тесты,
+и в будущем — другой сценарий вызова). `on_console` дефолт не меняется:
+диалог консоли администрирования подключает задача 16, кнопка карточки
+пока не связана ни с чем. `servers_root` — новая инъекция (по образцу
+`installed`): `SettingsStore.settings.servers_root` читается лениво на
+каждое открытие диалога профиля, не запоминается в конструкторе — то же
+решение, что и у `installed`, обнаружение платформ и настройки могут
+поменяться, пока раздел открыт.
 
 Приём тот же, что у `SettingsView`: конструктор строит статичный каркас
 (шапка, строка пути), а содержимое, зависящее от снимка процессов
@@ -61,6 +71,7 @@ from typing import cast
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QDialog,
     QHBoxLayout,
     QLabel,
     QLayout,
@@ -77,6 +88,7 @@ from onecstarter.platform_1c.server_discovery import ServerInstallation
 from onecstarter.services.errors import ServicesError
 from onecstarter.services.servers import ServerStatus, ServersWorkspace
 from onecstarter.ui.dialogs.buttons import build_confirm_box, is_confirmed
+from onecstarter.ui.servers.dialog import ServerProfileDialog
 from onecstarter.ui.theme import Palette
 
 _MONO = "font-family: Consolas, 'Cascadia Mono', monospace;"
@@ -197,10 +209,12 @@ class ServersView(QWidget):
         *,
         installed: Callable[[], list[ServerInstallation]],
         palette: Palette,
+        servers_root: Callable[[], str] = lambda: "",
         confirm_removal: Callable[[str], bool] | None = None,
         show_error: Callable[[str], None] | None = None,
         on_console: Callable[[], None] = lambda: None,
-        on_add_profile: Callable[[], None] = lambda: None,
+        on_add_profile: Callable[[], None] | None = None,
+        on_edit_profile: Callable[[str], None] | None = None,
         request_scan: Callable[[], None] = lambda: None,
         parent: QWidget | None = None,
     ) -> None:
@@ -208,13 +222,23 @@ class ServersView(QWidget):
         self._workspace = workspace
         self._installed = installed
         self._palette = palette
+        self._servers_root = servers_root
         # Инъекция диалога, а не вызов модульной функции напрямую — тот же  # noqa: RUF003
         # приём, что `confirm_removal`/`choose_directory` у `BasesView`/  # noqa: RUF003
         # `SettingsView`: настоящий `QMessageBox.exec()` блокирует офскрин-тест.
         self._confirm_removal = confirm_removal or self._default_confirm_removal
         self._show_error = show_error or self._default_show_error
         self._on_console = on_console
-        self._on_add_profile = on_add_profile
+        # Задача 15: дефолт больше не no-op — открывает настоящий диалог
+        # (см. докстринг модуля). `None` — сигнал «вызывающий не подменял»,
+        # а не «вызывающий явно хочет тишину»: лямбда-дефолт в сигнатуре  # noqa: RUF003
+        # не мог бы сослаться на ещё не существующий `self`.
+        self._on_add_profile = (
+            on_add_profile if on_add_profile is not None else self._default_add_profile
+        )
+        self._on_edit_profile = (
+            on_edit_profile if on_edit_profile is not None else self._default_edit_profile
+        )
         self._request_scan = request_scan
 
         self._profile_rows: list[ProfileRow] = []
@@ -441,9 +465,12 @@ class ServersView(QWidget):
         докстринг модуля). Отдельный метод, а не однострочный `QMenu` внутри
         вызывающих — тот же приём, что `BasesView._build_menu`: состав
         пунктов проверяется на настоящем виджете без блокирующего `exec()`.
-        Один пункт сегодня — «Удалить профиль…».
+        Задача 15 добавляет «Свойства…» первым пунктом (перед «Удалить
+        профиль…», по брифу) — диалог правки, тем же путём (`_on_edit_profile`)
+        через который его подменяют тесты, минуя `ServerProfileDialog.exec()`.
         """  # noqa: RUF002
         menu = QMenu(self)
+        menu.addAction("Свойства…", lambda: self._on_edit_profile(profile_id))
         menu.addAction(
             "Удалить профиль…", lambda: self._remove(profile_id, running)
         )
@@ -503,6 +530,59 @@ class ServersView(QWidget):
         except ServicesError as error:
             self._show_error(str(error))
         self._request_scan()
+        self.rebuild()
+
+    # -- диалог профиля (задача 15) --------------------------------------------
+    #
+    # Приём тот же, что у `BasesView` («build → exec → apply», задача 8):  # noqa: RUF003
+    # сборка диалога отделена от показа и от записи, чтобы каждый шаг
+    # проверялся без блокирующего `QDialog.exec()`. `_default_add_profile`/
+    # `_default_edit_profile` — единственные места, где `exec()` реально
+    # вызывается; тесты подменяют его через `monkeypatch.setattr(  # noqa: RUF003
+    # ServerProfileDialog, "exec", ...)`, как это делает `test_bases_view.py`
+    # для `InfobaseDialog`.
+
+    def _build_add_profile_dialog(self) -> ServerProfileDialog:
+        return ServerProfileDialog.for_new(
+            self._workspace.profiles(), self._installed(), self._servers_root(), parent=self
+        )
+
+    def _default_add_profile(self) -> None:
+        dialog = self._build_add_profile_dialog()
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._apply_new_profile(dialog)
+
+    def _apply_new_profile(self, dialog: ServerProfileDialog) -> None:
+        try:
+            self._workspace.add_profile(dialog.result_profile())
+        except ServicesError as error:
+            self._show_error(str(error))
+        self.rebuild()
+
+    def _build_edit_profile_dialog(self, profile_id: str) -> ServerProfileDialog | None:
+        """`None` — профиль пропал из списка между показом карточки и кликом."""
+        profile = next((p for p in self._workspace.profiles() if p.id == profile_id), None)
+        if profile is None:
+            return None
+        others = [p for p in self._workspace.profiles() if p.id != profile_id]
+        return ServerProfileDialog.for_edit(
+            profile, others, self._installed(), self._servers_root(), parent=self
+        )
+
+    def _default_edit_profile(self, profile_id: str) -> None:
+        dialog = self._build_edit_profile_dialog(profile_id)
+        if dialog is None:
+            return
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._apply_edited_profile(dialog)
+
+    def _apply_edited_profile(self, dialog: ServerProfileDialog) -> None:
+        try:
+            self._workspace.update_profile(dialog.result_profile())
+        except ServicesError as error:
+            self._show_error(str(error))
         self.rebuild()
 
     # -- дефолты инъекций (переопределяются тестами) --------------------------
