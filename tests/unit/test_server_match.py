@@ -2,8 +2,11 @@ from pathlib import Path
 
 import pytest
 
+from onecstarter.domain.server import ServerProfile
 from onecstarter.domain.server_match import (
+    RagentProcess,
     extract_ragent_params,
+    match_profiles,
     normalize_cluster_dir,
     version_from_exe_path,
 )
@@ -79,3 +82,63 @@ class TestVersionFromExePath:
 
     def test_alien_layout_is_none(self) -> None:
         assert version_from_exe_path(Path(r"C:\tools\ragent.exe")) is None
+
+
+def _profile(
+    profile_id: str = "profile1",
+    name: str = "Test Server",
+    version: str = "8.3.25.1633",
+    port: int = 1540,
+    regport: int = 1541,
+    range_start: int = 1560,
+    range_end: int = 1591,
+    cluster_dir: str = r"E:\srv\srv_8.3.25.1633",
+) -> ServerProfile:
+    return ServerProfile(
+        id=profile_id,
+        name=name,
+        version=version,
+        port=port,
+        regport=regport,
+        range_start=range_start,
+        range_end=range_end,
+        cluster_dir=cluster_dir,
+    )
+
+
+def _proc(
+    pid: int,
+    cluster: str | None,
+    *,
+    exe: str | None = r"C:\Program Files\1cv8\8.3.25.1633\bin\ragent.exe",
+) -> RagentProcess:
+    argv = None if cluster is None else ("ragent.exe", "-port", "2540", "-d", cluster)
+    return RagentProcess(
+        pid=pid, executable=Path(exe) if exe else None, argv=argv, create_time=100.0 + pid
+    )
+
+
+class TestMatchProfiles:
+    def test_match_by_normalized_dir(self) -> None:
+        profile = _profile()  # cluster_dir=E:\srv\srv_8.3.25.1633
+        result = match_profiles([profile], [_proc(1, "e:/SRV/srv_8.3.25.1633/")])
+        assert [p.pid for p in result.by_profile[profile.id]] == [1]
+        assert result.foreign == ()
+
+    def test_unmatched_goes_foreign_with_version(self) -> None:
+        result = match_profiles([_profile()], [_proc(2, r"D:\clusters\prod")])
+        assert result.by_profile[_profile().id] == ()
+        foreign = result.foreign[0]
+        assert str(foreign.version) == "8.3.25.1633" and foreign.params is not None
+
+    def test_opaque_process_is_always_foreign(self) -> None:
+        # [Ф] В1: argv чужих процессов не виден  # noqa: RUF003
+        # сопоставление невозможно в принципе
+        result = match_profiles([_profile()], [_proc(3, None, exe=None)])
+        foreign = result.foreign[0]
+        assert foreign.params is None and foreign.version is None
+
+    def test_two_processes_on_one_dir_both_match(self) -> None:
+        procs = [_proc(1, r"E:\srv\srv_8.3.25.1633"), _proc(2, r"e:\srv\srv_8.3.25.1633\\")]
+        result = match_profiles([_profile()], procs)
+        assert len(result.by_profile[_profile().id]) == 2
