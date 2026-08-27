@@ -26,6 +26,7 @@ CORE = (
     "onecstarter.domain.server_match",
     "onecstarter.platform_1c.discovery",
     "onecstarter.platform_1c.process",
+    "onecstarter.platform_1c.process_scan",
     "onecstarter.platform_1c.registry",
     "onecstarter.platform_1c.server_discovery",
     "onecstarter.security.secrets",
