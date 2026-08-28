@@ -71,12 +71,19 @@
         padding:1px 8px; color:var(--dim); white-space:nowrap; }
   .st.on { color:var(--acc-text); border-color:var(--acc-fill); }
   .st.bad { color:var(--problem); border-color:var(--problem); }
+  .srv.sel { border:2px solid var(--acc-fill); border-radius:6px; padding:8px; }
 
   /* другие серверы */
   .other { padding:4px 0; font-size:12px; color:var(--dim); display:flex; gap:8px;
            align-items:baseline; border-top:1px solid var(--border); }
   .other:first-of-type { border-top:none; }
   .other .mono { font-size:11.5px; }
+
+  /* журнал профиля (T-10) */
+  .journal { border:1px solid var(--border); border-radius:6px; background:var(--bg);
+             margin-top:8px; padding:8px 10px; }
+  .journal .jt { font-weight:600; font-size:12.5px; margin-bottom:4px; }
+  .journal .jbody { white-space:pre; overflow-x:auto; max-height:86px; overflow-y:auto; }
 
   /* диалоги */
   .dlg { background:var(--raised); border:1px solid var(--border); border-radius:8px;
@@ -130,7 +137,9 @@
 (остановить можно), остановлен (запустить можно), работает как служба (остановка
 неактивна с объяснением), версия не установлена (запуск неактивен, подсветка как
 у баз). Ниже — справочный блок «Другие серверы на машине»: без кнопок, отвечает
-на вопрос «почему порт занят».</p>
+на вопрос «почему порт занят». Клик по карточке выделяет её рамкой акцентного цвета
+и открывает журнал профиля в панели внизу — историю запуска/остановки этого профиля
+и то немногое, что удаётся поймать из вывода платформы (T-10).</p>
 <div class="pair">
 
   <div class="frame"><div class="cap">Светлая</div>
@@ -157,7 +166,7 @@
         <div class="ctl"><span class="btn">Остановить</span></div>
       </div>
 
-      <div class="srv">
+      <div class="srv sel">
         <div class="body">
           <div class="t">8.3.27 эксперименты <span class="st">○ остановлен</span></div>
           <div class="d mono">8.3.27 → 8.3.27.2214 · порты 1640 / 1641 / 1660–1691 · -debug -http</div>
@@ -188,6 +197,14 @@
       <div class="glabel">Другие серверы на машине</div>
       <div class="other"><span class="mono">PID 4120</span><span class="mono">8.3.22.1923</span><span class="mono">порты 2040 / 2041</span><span class="mono">D:\clusters\prod</span><span>служба</span></div>
       <div class="other"><span class="mono">PID 9377</span><span class="mono">8.3.25.1633</span><span class="mono">порты 3540 / 3541</span><span class="mono">C:\Temp\srv-test</span></div>
+
+      <div class="glabel">Журнал профиля</div>
+      <div class="journal">
+        <div class="jt">8.3.27 эксперименты</div>
+        <div class="jbody mono">[09:05:07] запуск: &quot;C:\Program Files\1cv8\8.3.27.2214\bin\ragent.exe&quot; -debug -http -port 1640 -regport 1641 -range 1660:1691 -d &quot;E:\srv\srv_8.3.27.2214&quot;
+dbgs: слушает порт 1660<!-- строка dbgs иллюстративная: точный вид вывода не подтверждён экспериментом ([Ф] А1 T-09 — реально в файл доходит только эта строка, баннеров rmngr/rphost там нет) -->
+[09:07:41] остановка по команде пользователя</div>
+      </div>
     </div>
   </div></div>
 
@@ -215,7 +232,7 @@
         <div class="ctl"><span class="btn">Остановить</span></div>
       </div>
 
-      <div class="srv">
+      <div class="srv sel">
         <div class="body">
           <div class="t">8.3.27 эксперименты <span class="st">○ остановлен</span></div>
           <div class="d mono">8.3.27 → 8.3.27.2214 · порты 1640 / 1641 / 1660–1691 · -debug -http</div>
@@ -246,6 +263,14 @@
       <div class="glabel">Другие серверы на машине</div>
       <div class="other"><span class="mono">PID 4120</span><span class="mono">8.3.22.1923</span><span class="mono">порты 2040 / 2041</span><span class="mono">D:\clusters\prod</span><span>служба</span></div>
       <div class="other"><span class="mono">PID 9377</span><span class="mono">8.3.25.1633</span><span class="mono">порты 3540 / 3541</span><span class="mono">C:\Temp\srv-test</span></div>
+
+      <div class="glabel">Журнал профиля</div>
+      <div class="journal">
+        <div class="jt">8.3.27 эксперименты</div>
+        <div class="jbody mono">[09:05:07] запуск: &quot;C:\Program Files\1cv8\8.3.27.2214\bin\ragent.exe&quot; -debug -http -port 1640 -regport 1641 -range 1660:1691 -d &quot;E:\srv\srv_8.3.27.2214&quot;
+dbgs: слушает порт 1660<!-- строка dbgs иллюстративная: точный вид вывода не подтверждён экспериментом ([Ф] А1 T-09 — реально в файл доходит только эта строка, баннеров rmngr/rphost там нет) -->
+[09:07:41] остановка по команде пользователя</div>
+      </div>
     </div>
   </div></div>
 
