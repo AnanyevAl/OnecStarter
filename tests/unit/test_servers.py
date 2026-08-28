@@ -1,6 +1,7 @@
-"""ServersWorkspace: координатор профилей серверов и их хранения (T-08, задачи 10-12)."""
+"""ServersWorkspace: координатор профилей серверов и их хранения (T-08, T-10)."""
 
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -9,9 +10,11 @@ from onecstarter.domain.launch import LaunchCommand
 from onecstarter.domain.server import ServerConvention, ServerProfile
 from onecstarter.domain.version import Arch, Installation, parse_version
 from onecstarter.platform_1c.elevation import ElevationDeclinedError
+from onecstarter.platform_1c.job import JobError
 from onecstarter.platform_1c.process_control import ProcessAccessError, ProcessMismatchError
 from onecstarter.platform_1c.process_scan import ProcessInfo
 from onecstarter.platform_1c.server_discovery import ServerInstallation, console_path
+from onecstarter.services import server_journal
 from onecstarter.services.errors import (
     ConsoleRegistrationDeclinedError,
     ConsoleRegistrationError,
@@ -60,20 +63,25 @@ class FakeControl:
 
 
 @dataclass
-class FakeSpawn:
-    """Журнал `LaunchCommand`, с которыми звали `spawn`; возвращает заданный `pid`.
+class FakeServerSpawn:
+    """Журнал `(command_line, log_path)`, с которыми звали `server_spawn`; отдаёт `pid`.
 
-    `error`, если задан, — исключение, которое `__call__` поднимает вместо
-    возврата `pid` (CRITICAL 1a, финальное ревью ветки: `OSError` из `spawn`
-    обязан переводиться в `ServerError`), тот же приём, что `FakeRunElevated`.
+    Сигнатура — `Callable[[LaunchCommand, Path], int]` (T-10, задача 4):
+    журнал хранит `command.command_line` (строку), а не сам `LaunchCommand`
+    — так тест сравнивает байт-в-байт собранную командную строку, не завися
+    от идентичности объекта. `error`, если задан, — исключение, которое
+    `__call__` поднимает вместо возврата `pid`: `OSError` (CRITICAL 1a,
+    финальное ревью ветки T-08 — обязан переводиться в `ServerError`) или
+    `JobError` (T-10, задача 2 — отказ `job.assign()` внутри `spawn_server`,
+    тот же перевод), тот же приём, что `FakeRunElevated`.
     """  # noqa: RUF002
 
     pid: int = 4242
     error: Exception | None = None
-    calls: list[LaunchCommand] = field(default_factory=list)
+    calls: list[tuple[str, Path]] = field(default_factory=list)
 
-    def __call__(self, command: LaunchCommand) -> int:
-        self.calls.append(command)
+    def __call__(self, command: LaunchCommand, log_path: Path) -> int:
+        self.calls.append((command.command_line, log_path))
         if self.error is not None:
             raise self.error
         return self.pid
@@ -147,22 +155,28 @@ def _workspace(
     store_path: Path,
     new_id: object = None,
     control: object = None,
-    spawn: object = None,
+    server_spawn: object = None,
+    logs_dir: object = None,
     run_elevated: object = None,
     open_file: object = None,
     registered_radmin: object = None,
+    now: object = None,
 ) -> ServersWorkspace:
-    kwargs: dict[str, object] = {"control": control if control is not None else FakeControl()}
+    kwargs: dict[str, object] = {
+        "control": control if control is not None else FakeControl(),
+        "server_spawn": server_spawn if server_spawn is not None else FakeServerSpawn(),
+        "logs_dir": logs_dir if logs_dir is not None else store_path.parent / "logs",
+    }
     if new_id is not None:
         kwargs["new_id"] = new_id
-    if spawn is not None:
-        kwargs["spawn"] = spawn
     if run_elevated is not None:
         kwargs["run_elevated"] = run_elevated
     if open_file is not None:
         kwargs["open_file"] = open_file
     if registered_radmin is not None:
         kwargs["registered_radmin"] = registered_radmin
+    if now is not None:
+        kwargs["now"] = now
     return ServersWorkspace(store_path, **kwargs)  # type: ignore[arg-type]
 
 
@@ -708,8 +722,11 @@ class TestDirMismatch:
 class TestStart:
     def test_start_builds_command_byte_exact_and_spawns(self, tmp_path: Path) -> None:
         store_path = tmp_path / "servers.json"
-        spawn = FakeSpawn(pid=4242)
-        workspace = _workspace(store_path, new_id=lambda: "u" * 32, spawn=spawn)
+        logs_dir = tmp_path / "logs"
+        spawn = FakeServerSpawn(pid=4242)
+        workspace = _workspace(
+            store_path, new_id=lambda: "u" * 32, server_spawn=spawn, logs_dir=logs_dir
+        )
         workspace.add_profile(_profile())
         profile = workspace.profiles()[0]
         ragent = tmp_path / "1cv8" / "8.3.25.1633" / "bin" / "ragent.exe"
@@ -719,12 +736,12 @@ class TestStart:
 
         assert pid == 4242
         assert len(spawn.calls) == 1
-        command = spawn.calls[0]
-        assert command.executable == ragent
-        assert command.command_line == (
+        command_line, log_path = spawn.calls[0]
+        assert command_line == (
             f'"{ragent}" -debug -http -port 1540 -regport 1541 '
             r"-range 1560:1591 -d E:\srv\srv_8.3.25.1633"
         )
+        assert log_path == server_journal.journal_path(logs_dir, profile.id)
 
     def test_start_unknown_profile_raises(self, tmp_path: Path) -> None:
         workspace = _workspace(tmp_path / "servers.json")
@@ -733,8 +750,8 @@ class TestStart:
 
     def test_start_refuses_when_version_not_installed(self, tmp_path: Path) -> None:
         store_path = tmp_path / "servers.json"
-        spawn = FakeSpawn()
-        workspace = _workspace(store_path, new_id=lambda: "v" * 32, spawn=spawn)
+        spawn = FakeServerSpawn()
+        workspace = _workspace(store_path, new_id=lambda: "v" * 32, server_spawn=spawn)
         workspace.add_profile(_profile(version="8.3.99"))
         profile = workspace.profiles()[0]
 
@@ -751,13 +768,13 @@ class TestStart:
 
         §6.4: второй `ragent` на том же каталоге кластера не запускается
         нами никогда — платформа не гарантирует безопасное поведение при
-        двух `ragent` на одном `-d`. `FakeSpawn.calls` обязан остаться
+        двух `ragent` на одном `-d`. `FakeServerSpawn.calls` обязан остаться
         пустым — отказ ДО порождения, без частичных эффектов.
         Мутация: убрать проверку снимка перед `spawn` — тест обязан упасть.
         """  # noqa: RUF002
         store_path = tmp_path / "servers.json"
-        spawn = FakeSpawn()
-        workspace = _workspace(store_path, new_id=lambda: "w" * 32, spawn=spawn)
+        spawn = FakeServerSpawn()
+        workspace = _workspace(store_path, new_id=lambda: "w" * 32, server_spawn=spawn)
         workspace.add_profile(_profile())
         profile = workspace.profiles()[0]
         agent = _agent(700, ("ragent.exe", "-port", "1540", "-d", profile.cluster_dir))
@@ -773,18 +790,18 @@ class TestStart:
     def test_start_wraps_spawn_oserror_in_servererror(self, tmp_path: Path) -> None:
         """ЗАЩИТНЫЙ ТЕСТ.
 
-        CRITICAL 1a финального ревью: `OSError` из `self._spawn(command)`
+        CRITICAL 1a финального ревью: `OSError` из `self._server_spawn(...)`
         уходил бы наружу голым — мимо `ServicesError`, единственного типа,
         который ловит слой представления (UI ловит `ServicesError`, а не
         `Exception`), и падал бы трассировкой пользователю. Тот же приём,
         что `services/launch.py::launch_infobase` — `ServerError` с текстом
         отказа и командной строкой (секретов в ней нет, §8 спеки).
-        Мутация: убрать `try/except OSError` вокруг `self._spawn(command)` —
+        Мутация: убрать `try/except OSError` вокруг `self._server_spawn(...)` —
         тест обязан упасть непойманным `OSError`.
         """  # noqa: RUF002
         store_path = tmp_path / "servers.json"
-        spawn = FakeSpawn(error=OSError("не удалось создать процесс"))
-        workspace = _workspace(store_path, new_id=lambda: "ax" * 16, spawn=spawn)
+        spawn = FakeServerSpawn(error=OSError("не удалось создать процесс"))
+        workspace = _workspace(store_path, new_id=lambda: "ax" * 16, server_spawn=spawn)
         workspace.add_profile(_profile())
         profile = workspace.profiles()[0]
         ragent = tmp_path / "1cv8" / "8.3.25.1633" / "bin" / "ragent.exe"
@@ -795,6 +812,87 @@ class TestStart:
 
         assert str(ragent) in str(excinfo.value)
         assert len(spawn.calls) == 1
+
+    def test_start_wraps_job_error_in_servererror(self, tmp_path: Path) -> None:
+        """`JobError` (T-10, задача 2 — отказ `job.assign()` внутри `spawn_server`)
+        переводится в `ServerError` тем же путём, что `OSError` (см. тест выше):
+        `services` не выпускает наружу голых исключений `platform_1c`.
+        """
+        store_path = tmp_path / "servers.json"
+        spawn = FakeServerSpawn(error=JobError("AssignProcessToJobObject отказал"))
+        workspace = _workspace(store_path, new_id=lambda: "bc" * 16, server_spawn=spawn)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        ragent = tmp_path / "1cv8" / "8.3.25.1633" / "bin" / "ragent.exe"
+        installation = _server_installation("8.3.25.1633", ragent)
+
+        with pytest.raises(ServerError) as excinfo:
+            workspace.start(profile.id, [installation])
+
+        assert "AssignProcessToJobObject" in str(excinfo.value)
+
+    def test_start_rotates_journal_and_logs_command(self, tmp_path: Path) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ.
+
+        Прошлый журнал не теряется, команда записана (T-10, задача 4, спека
+        §12.6): `start` обязан ротировать журнал профиля (текущий → `.1.log`)
+        и записать событие `запуск: <командная строка>` в НОВЫЙ текущий
+        журнал ДО вызова `server_spawn` — тем же файлом, в который
+        `spawn_server` затем перенаправит stdout дерева процессов.
+        Мутация: убрать вызов `rotate_journal`/`append_event` перед
+        `self._server_spawn(...)` в `start` — тест обязан упасть (нет
+        `.1.log` со старым содержимым, либо в новом журнале нет строки
+        запуска).
+        """  # noqa: RUF002
+        store_path = tmp_path / "servers.json"
+        logs_dir = tmp_path / "logs"
+        spawn = FakeServerSpawn(pid=4242)
+        workspace = _workspace(
+            store_path, new_id=lambda: "az" * 16, server_spawn=spawn, logs_dir=logs_dir
+        )
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        current = server_journal.journal_path(logs_dir, profile.id)
+        previous = server_journal.previous_journal_path(logs_dir, profile.id)
+        current.parent.mkdir(parents=True, exist_ok=True)
+        current.write_text("прошлый запуск\n", encoding="utf-8")
+        ragent = tmp_path / "1cv8" / "8.3.25.1633" / "bin" / "ragent.exe"
+        installation = _server_installation("8.3.25.1633", ragent)
+
+        workspace.start(profile.id, [installation])
+
+        assert previous.read_text(encoding="utf-8") == "прошлый запуск\n"
+        content = current.read_text(encoding="utf-8")
+        assert f'запуск: "{ragent}" -debug -http -port 1540' in content
+
+    def test_failed_spawn_logs_the_refusal(self, tmp_path: Path) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ.
+
+        Отказ `server_spawn` обязан попасть в журнал профиля ДО того, как
+        `ServerError` уйдёт наружу — иначе панель «Журнал профиля» (T-10,
+        задача 5) не покажет пользователю причину отказа старта.
+        Мутация: убрать запись события `отказ запуска` в обработчике
+        `except (OSError, JobError)` внутри `start` — тест обязан упасть
+        (строки «отказ запуска» в журнале не будет, хотя `ServerError`
+        всё ещё поднимется).
+        """  # noqa: RUF002
+        store_path = tmp_path / "servers.json"
+        logs_dir = tmp_path / "logs"
+        spawn = FakeServerSpawn(error=OSError("не удалось создать процесс"))
+        workspace = _workspace(
+            store_path, new_id=lambda: "ba" * 16, server_spawn=spawn, logs_dir=logs_dir
+        )
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        ragent = tmp_path / "1cv8" / "8.3.25.1633" / "bin" / "ragent.exe"
+        installation = _server_installation("8.3.25.1633", ragent)
+
+        with pytest.raises(ServerError):
+            workspace.start(profile.id, [installation])
+
+        content = server_journal.journal_path(logs_dir, profile.id).read_text(encoding="utf-8")
+        assert "отказ запуска" in content
+        assert "не удалось создать процесс" in content
 
 
 class TestStop:
@@ -943,6 +1041,44 @@ class TestStop:
         assert str(agent_pid) in str(excinfo.value)
         assert control.calls == [("children", agent_pid), ("terminate", agent_pid)]
 
+    def test_stop_success_logs_event(self, tmp_path: Path) -> None:
+        store_path = tmp_path / "servers.json"
+        logs_dir = tmp_path / "logs"
+        agent_pid = 880
+        workspace = _workspace(store_path, new_id=lambda: "ad" * 16, logs_dir=logs_dir)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        agent = _agent(agent_pid, ("ragent.exe", "-port", "1540", "-d", profile.cluster_dir))
+        workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
+
+        workspace.stop(profile.id)
+
+        content = server_journal.journal_path(logs_dir, profile.id).read_text(encoding="utf-8")
+        assert "остановка по команде пользователя" in content
+
+    def test_stop_failure_logs_refusal_before_raise(self, tmp_path: Path) -> None:
+        """Отказ остановки (гонка PID, §6.2) обязан попасть в журнал ДО
+        `raise` — иначе панель «Журнал профиля» (T-10, задача 5) не покажет
+        причину отказа."""
+        store_path = tmp_path / "servers.json"
+        logs_dir = tmp_path / "logs"
+        agent_pid = 890
+        control = FakeControl(mismatched=frozenset({agent_pid}))
+        workspace = _workspace(
+            store_path, new_id=lambda: "ae" * 16, control=control, logs_dir=logs_dir
+        )
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        agent = _agent(agent_pid, ("ragent.exe", "-port", "1540", "-d", profile.cluster_dir))
+        workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
+
+        with pytest.raises(ServerStopError):
+            workspace.stop(profile.id)
+
+        content = server_journal.journal_path(logs_dir, profile.id).read_text(encoding="utf-8")
+        assert "отказ остановки" in content
+        assert str(agent_pid) in content
+
 
 class TestStopOrphans:
     def test_stop_orphans_terminates_only_this_profiles_orphans(self, tmp_path: Path) -> None:
@@ -965,8 +1101,11 @@ class TestStopOrphans:
 
     def test_stop_orphans_empty_is_noop(self, tmp_path: Path) -> None:
         store_path = tmp_path / "servers.json"
+        logs_dir = tmp_path / "logs"
         control = FakeControl()
-        workspace = _workspace(store_path, new_id=lambda: "ee" * 16, control=control)
+        workspace = _workspace(
+            store_path, new_id=lambda: "ee" * 16, control=control, logs_dir=logs_dir
+        )
         workspace.add_profile(_profile())
         profile = workspace.profiles()[0]
         workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
@@ -974,11 +1113,112 @@ class TestStopOrphans:
         workspace.stop_orphans(profile.id)  # без апасений — сирот нет, значит нет и вызовов
 
         assert control.calls == []
+        # Гасить было нечего — событие в журнал не пишется (нет даже файла).
+        assert not server_journal.journal_path(logs_dir, profile.id).exists()
 
     def test_stop_orphans_unknown_profile_raises(self, tmp_path: Path) -> None:
         workspace = _workspace(tmp_path / "servers.json")
         with pytest.raises(UnknownItemError):
             workspace.stop_orphans("ghost" * 6)
+
+    def test_stop_orphans_success_logs_event_with_pids(self, tmp_path: Path) -> None:
+        store_path = tmp_path / "servers.json"
+        logs_dir = tmp_path / "logs"
+        workspace = _workspace(store_path, new_id=lambda: "ge" * 16, logs_dir=logs_dir)
+        workspace.add_profile(_profile())  # regport=1541
+        profile = workspace.profiles()[0]
+        orphan = _manager(960, ("rmngr.exe", "-port", "1541"))
+        workspace.apply_scan(ScanSnapshot(agents=(), managers=(orphan,)))
+
+        workspace.stop_orphans(profile.id)
+
+        content = server_journal.journal_path(logs_dir, profile.id).read_text(encoding="utf-8")
+        assert "гашение сирот: PID 960" in content
+
+
+class TestJournalPath:
+    def test_journal_path_for_known_profile(self, tmp_path: Path) -> None:
+        store_path = tmp_path / "servers.json"
+        logs_dir = tmp_path / "logs"
+        workspace = _workspace(store_path, new_id=lambda: "gj" * 16, logs_dir=logs_dir)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+
+        assert workspace.journal_path(profile.id) == logs_dir / f"{profile.id}.log"
+
+    def test_journal_path_unknown_profile_raises(self, tmp_path: Path) -> None:
+        workspace = _workspace(tmp_path / "servers.json")
+        with pytest.raises(UnknownItemError):
+            workspace.journal_path("ghost" * 6)
+
+
+class TestLogEvent:
+    def test_log_event_appends_with_timestamp(self, tmp_path: Path) -> None:
+        store_path = tmp_path / "servers.json"
+        logs_dir = tmp_path / "logs"
+        stamp = datetime.fromisoformat("2026-08-28T09:05:07")
+        workspace = _workspace(
+            store_path, new_id=lambda: "gk" * 16, logs_dir=logs_dir, now=lambda: stamp
+        )
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+
+        workspace.log_event(profile.id, "тестовое событие")
+
+        content = server_journal.journal_path(logs_dir, profile.id).read_text(encoding="utf-8")
+        assert content == "[09:05:07] тестовое событие\n"
+
+    def test_log_event_unknown_profile_raises(self, tmp_path: Path) -> None:
+        workspace = _workspace(tmp_path / "servers.json")
+        with pytest.raises(UnknownItemError):
+            workspace.log_event("ghost" * 6, "текст")
+
+    def test_log_event_swallows_oserror(self, tmp_path: Path) -> None:
+        """`OSError` из записи журнала не мешает вызывающему (T-10, задача 4):
+        единственное место в модуле, где отказ ФС не поднимает исключение.
+        Каталог на месте файла журнала — честный способ уронить `open("a")`
+        (тот же приём, что `TestFailedSaveRollsBackMemory`).
+        """
+        store_path = tmp_path / "servers.json"
+        logs_dir = tmp_path / "logs"
+        workspace = _workspace(store_path, new_id=lambda: "gl" * 16, logs_dir=logs_dir)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        journal = server_journal.journal_path(logs_dir, profile.id)
+        journal.mkdir(parents=True)
+
+        workspace.log_event(profile.id, "не должно упасть")  # не поднимает исключение
+
+
+class TestRunningCount:
+    def test_zero_before_scan(self, tmp_path: Path) -> None:
+        workspace = _workspace(tmp_path / "servers.json")
+        assert workspace.running_count() == 0
+
+    def test_counts_profiles_with_at_least_one_process(self, tmp_path: Path) -> None:
+        store_path = tmp_path / "servers.json"
+        ids = iter(["gm" * 16, "gn" * 16])
+        workspace = _workspace(store_path, new_id=lambda: next(ids))
+        workspace.add_profile(_profile())  # cluster_dir E:\srv\srv_8.3.25.1633
+        workspace.add_profile(
+            _profile(name="сосед", port=2540, regport=2541, cluster_dir=r"E:\srv\other")
+        )
+        profile, _other = workspace.profiles()
+        # Два процесса на ОДНОМ профиле считаются один раз — число профилей,
+        # не процессов; второй профиль без процессов не учитывается.
+        agent1 = _agent(970, ("ragent.exe", "-port", "1540", "-d", profile.cluster_dir))
+        agent2 = _agent(971, ("ragent.exe", "-port", "1540", "-d", profile.cluster_dir + "\\"))
+        workspace.apply_scan(ScanSnapshot(agents=(agent1, agent2), managers=()))
+
+        assert workspace.running_count() == 1
+
+    def test_zero_after_scan_with_nothing_running(self, tmp_path: Path) -> None:
+        store_path = tmp_path / "servers.json"
+        workspace = _workspace(store_path, new_id=lambda: "go" * 16)
+        workspace.add_profile(_profile())
+        workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+
+        assert workspace.running_count() == 0
 
 
 class TestCurrentConsoleVersion:

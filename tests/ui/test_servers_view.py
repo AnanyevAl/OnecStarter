@@ -52,10 +52,12 @@ class FakeControl:
 
 @dataclass
 class FakeSpawn:
+    """`server_spawn` — сигнатура `Callable[[LaunchCommand, Path], int]` (T-10, задача 4)."""
+
     pid: int = 4242
     calls: list[LaunchCommand] = field(default_factory=list)
 
-    def __call__(self, command: LaunchCommand) -> int:
+    def __call__(self, command: LaunchCommand, log_path: Path) -> int:
         self.calls.append(command)
         return self.pid
 
@@ -111,7 +113,8 @@ def _workspace(
 ) -> ServersWorkspace:
     kwargs: dict[str, object] = {
         "control": control if control is not None else FakeControl(),
-        "spawn": spawn if spawn is not None else FakeSpawn(),
+        "server_spawn": spawn if spawn is not None else FakeSpawn(),
+        "logs_dir": tmp_path / "logs",
     }
     if registered_radmin is not None:
         kwargs["registered_radmin"] = registered_radmin

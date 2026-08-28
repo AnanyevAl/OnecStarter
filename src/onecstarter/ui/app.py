@@ -8,6 +8,7 @@
 тонкий клиент ([Ф] T-02.6).
 """
 
+import functools
 import logging
 import os
 import sys
@@ -36,10 +37,12 @@ from onecstarter.domain.server import ServerConvention
 from onecstarter.domain.version import Installation, VersionNumber
 from onecstarter.platform_1c import console
 from onecstarter.platform_1c.discovery import cfg_paths, find_installations
+from onecstarter.platform_1c.job import NullJob
 from onecstarter.platform_1c.process_control import NullControl, ProcessControl, PsutilControl
 from onecstarter.platform_1c.process_scan import NullScanner, ProcessScanner, PsutilScanner
 from onecstarter.platform_1c.registry import load_conventions, load_server_conventions
 from onecstarter.platform_1c.server_discovery import ServerInstallation, server_installations
+from onecstarter.platform_1c.server_spawn import spawn_server
 from onecstarter.services import autostart
 from onecstarter.services.catalog import CommonListData, read_common_lists
 from onecstarter.services.errors import (
@@ -539,9 +542,20 @@ def _build_main_window(
     # (холдер — сеттера у ServersView нет, тот же приём, что `recent_limit=  # noqa: RUF003
     # lambda:` у BasesView) собраны раньше самого раздела: конструктору  # noqa: RUF003
     # ServersView нужны и воркспейс, и живой снимок установок сразу.
+    # T-10, задача 4: конструктор ServersWorkspace лишился дефолта у spawn —  # noqa: RUF003
+    # `server_spawn`/`logs_dir` теперь обязательны. Проводка НАСТОЯЩЕГО Job
+    # Object'а (жизнь которого обязана быть длиной с сам процесс лаунчера,  # noqa: RUF003
+    # см. `platform_1c/job.py`) — предмет задачи 7 (новый параметр
+    # `_build_main_window(..., server_job=...)`, docs/superpowers/plans/
+    # 2026-08-28-v2-servers-journal.md). До неё — `NullJob()`: как и до
+    # T-10, серверы не в Job (закрытие/крах лаунчера их не гасит), но это
+    # то же временное состояние, что было ДО всей этой ветки, а не хуже.  # noqa: RUF003
+    logs_dir = runtime.servers.parent / "logs" / "servers"
     servers_workspace = ServersWorkspace(
         runtime.servers,
         control=process_control if process_control is not None else PsutilControl(),
+        server_spawn=functools.partial(spawn_server, job=NullJob()),
+        logs_dir=logs_dir,
         registered_radmin=(
             registered_radmin if registered_radmin is not None else console.registered_radmin_path
         ),

@@ -23,6 +23,22 @@
 (см. `_registered_radmin`/`_run_elevated`/`_open_file` — только сохранены
 в конструкторе, эффекты живут в методах этой задачи).
 
+T-10 (задача 4) переводит запуск на дочерний жизненный цикл: спека §12,
+пересмотр решения 26.08.2026 — исходная редакция «отвязанный процесс,
+переживает закрытие» ДЕЙСТВОВАЛА в T-08 и БОЛЬШЕ НЕ действует. Теперь
+`start` порождает сервер через `server_spawn` (инъекция, `Callable[[LaunchCommand,
+Path], int]` — `platform_1c/server_spawn.py::spawn_server`, запечённый
+Job Object'ом в проводке `app.py`, задача 7; сам Job в `services` не
+протекает ни импортом, ни параметром) — закрытие OneCStarter (или его
+крах) гасит дерево серверов вместе с лаунчером ([Ф] Б1/Б2 T-09). Второй
+эффект задачи — журнал профиля (`services/server_journal.py`): `start`
+ротирует прошлый запуск и пишет событие `запуск: …` до порождения
+процесса, `stop`/`stop_orphans` — событие успеха или `отказ остановки: …`
+перед `ServerStopError`, `log_event` — точка входа для событий снаружи
+координатора (UI, задача 5, исход §8). `logs_dir` — новый обязательный
+параметр конструктора, каталог журналов профилей (`%APPDATA%\\OneCStarter\\
+logs\\servers`, спека §12.6, собирается в `app.py`).
+
 Приём инъекции эффектов и отката состояния в памяти при отказе записи —
 тот же, что в `services/workspace.py::Workspace` (см. её докстринг
 и `_store_user`): экран, построенный по `profiles()`, обязан показывать
@@ -33,11 +49,13 @@
 и `scan_pending` отличает это состояние от «серверов действительно нет».
 """  # noqa: RUF002
 
+import logging
 import os
 import re
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
 
 from onecstarter.domain.launch import LaunchCommand
@@ -58,8 +76,9 @@ from onecstarter.domain.server_match import (
     version_from_exe_path,
 )
 from onecstarter.domain.version import VersionNumber
-from onecstarter.platform_1c import console, elevation, process
+from onecstarter.platform_1c import console, elevation
 from onecstarter.platform_1c.elevation import ElevationDeclinedError
+from onecstarter.platform_1c.job import JobError
 from onecstarter.platform_1c.process_control import (
     ProcessAccessError,
     ProcessControl,
@@ -67,6 +86,7 @@ from onecstarter.platform_1c.process_control import (
 )
 from onecstarter.platform_1c.process_scan import ProcessInfo, ProcessScanner
 from onecstarter.platform_1c.server_discovery import ServerInstallation, console_path
+from onecstarter.services import server_journal
 from onecstarter.services.errors import (
     ConsoleRegistrationDeclinedError,
     ConsoleRegistrationError,
@@ -75,6 +95,13 @@ from onecstarter.services.errors import (
     UnknownItemError,
 )
 from onecstarter.services.server_store import load_profiles, save_profiles
+
+# services не пишет в stdout/stderr напрямую (тот же довод, что и у остальных  # noqa: RUF003
+# "тихих" отказов слоя) — единственное, что может отказать без права
+# прервать вызывающего, это запись события в журнал (`log_event`, T-10):
+# антивирус, полный диск, отвалившийся роуминг-профиль. Такой отказ уходит
+# в этот логгер, а не наружу, — см. `log_event`.  # noqa: RUF003
+_log = logging.getLogger("onecstarter.servers")
 
 __all__ = [
     "SCAN_NAMES",
@@ -189,24 +216,31 @@ class ServersWorkspace:
         store_path: Path,
         *,
         control: ProcessControl,
-        spawn: Callable[[LaunchCommand], int] = process.spawn,
+        server_spawn: Callable[[LaunchCommand, Path], int],
+        logs_dir: Path,
         run_elevated: Callable[[str, str], int] = elevation.run_elevated,
         open_file: Callable[[str], None] = os.startfile,
         registered_radmin: Callable[[], Path | None] = console.registered_radmin_path,
         new_id: Callable[[], str] = lambda: uuid.uuid4().hex,
+        now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self.store_path = store_path
         # Эффекты (сканы, остановка, запуск, регистрация консоли) — только
         # сохранены здесь; конструктор их не вызывает. `_run_elevated`
         # зовётся только из `register_console` — по явному действию UI,
         # никогда отсюда, из `apply_scan` или `statuses` (§7, докстринг
-        # модуля).
+        # модуля). `server_spawn`/`logs_dir` обязательные и без дефолта
+        # (T-10, задача 4): дефолт вида `functools.partial(spawn_server,
+        # job=...)` держал бы Job внутри services, а он запечён проводкой  # noqa: RUF003
+        # `app.py` (задача 7) — см. докстринг модуля.
         self._control = control
-        self._spawn = spawn
+        self._server_spawn = server_spawn
+        self._logs_dir = logs_dir
         self._run_elevated = run_elevated
         self._open_file = open_file
         self._registered_radmin = registered_radmin
         self._new_id = new_id
+        self._now = now
         self._profiles: list[ServerProfile] = load_profiles(store_path)
         # Снимок процессов (спека T-08.11): конструктор его не читает — сеть/  # noqa: RUF003
         # процессы недопустимы до показа окна (тот же довод, что у  # noqa: RUF003
@@ -313,12 +347,50 @@ class ServersWorkspace:
         processes = self._matched_processes(profile)
         return list(self._orphans_for(profile, processes))
 
+    def running_count(self) -> int:
+        """Число профилей с хотя бы одним живым процессом по последнему снимку.
+
+        `0` до первого `apply_scan` (см. `scan_pending`) — та же семантика,
+        что у `statuses`: «снимка ещё не было» не равно «серверов нет». Тому,
+        для кого это писалось (проводка T-10, задача 6 — подтверждение
+        выхода при работающих серверах), нужно именно число профилей,
+        а не число процессов: профиль с двумя ragent на одном каталоге
+        (§6.4 — такого мы сами не создаём, но снимок мог застать чужую
+        ситуацию) считается один раз.
+        """  # noqa: RUF002
+        if self._match is None:
+            return 0
+        return sum(1 for processes in self._match.by_profile.values() if processes)
+
+    def journal_path(self, profile_id: str) -> Path:
+        """Путь к текущему журналу профиля. Неизвестный `id` — `UnknownItemError`."""
+        self._profile_or_raise(profile_id)
+        return server_journal.journal_path(self._logs_dir, profile_id)
+
+    def log_event(self, profile_id: str, text: str) -> None:
+        """Дописать событие в журнал профиля. Неизвестный `id` — `UnknownItemError`.
+
+        `OSError` глотается (только залогирован через `_log`, не поднят) —
+        единственное место во всём модуле, где отказ ФС не мешает вызывающему:
+        журнал — вспомогательный канал наблюдения (T-10), а не условие
+        успеха операции. Везде в этом файле OSError либо переводится
+        в `ServerError`/`ServerStopError` (см. `_save`, `_terminate_or_raise`,
+        `open_console`, `start`), либо (здесь) глотается — но никогда не
+        уходит наружу голым.
+        """  # noqa: RUF002
+        self._profile_or_raise(profile_id)
+        path = server_journal.journal_path(self._logs_dir, profile_id)
+        try:
+            server_journal.append_event(path, text, self._now())
+        except OSError:
+            _log.warning("не удалось записать событие в журнал профиля %s", profile_id)
+
     def start(
         self,
         profile_id: str,
         server_installations: Sequence[ServerInstallation],
     ) -> int:
-        """Запустить `ragent` профиля. Отказ — `ServerError` ДО порождения процесса.
+        """Запустить `ragent` профиля дочерним процессом. Отказ — `ServerError` ДО порождения.
 
         Порядок проверок: неизвестный `profile_id` → `UnknownItemError`;
         версия профиля (точная или маска) не разрешилась ни на одну из
@@ -326,13 +398,33 @@ class ServersWorkspace:
         у профиля уже есть совпавший процесс → `ServerError`, второй
         `ragent` на том же каталоге кластера мы не запускаем никогда
         (платформа не гарантирует безопасное поведение при этом, [Р]).
-        Только когда все проверки пройдены — `spawn`. Никаких частичных
-        эффектов: до `spawn` включительно исключение не оставляет следов.
-        `OSError` из `spawn` (CRITICAL 1a, финальное ревью ветки) переводится
-        в `ServerError` с командной строкой — тем же приёмом, что
-        `services/launch.py::launch_infobase`: секретов в команде запуска
-        сервера нет (кластерные пароли этой вехой не поддерживаются, §8
-        спеки), поэтому команду можно показать пользователю целиком.
+        Только когда все проверки пройдены — журнал и `server_spawn`.
+
+        T-10, задача 4: сразу после проверок, ДО порождения процесса,
+        журнал профиля ротируется (`server_journal.rotate_journal` — прошлый
+        запуск сохраняется как `.1.log`, спека §12.6) и получает событие
+        `запуск: <командная строка>`; только затем зовётся `server_spawn`
+        с путём к ЭТОМУ (текущему) журналу — тем же файлом, в который
+        `spawn_server` (`platform_1c/server_spawn.py`) перенаправит stdout
+        дерева процессов (два независимых писателя одного файла, докстринг
+        `server_journal.py`). Сервер запущен дочерним — закрытие или крах
+        OneCStarter гасит его вместе с лаунчером через Job Object,
+        запечённый проводкой `app.py` (задача 7); `services` этого не видит
+        и не обязан — исходная редакция «отвязанный процесс, переживает
+        закрытие» реализовывалась T-08 и здесь больше не действует
+        (спека §12, пересмотр 28.08.2026).
+
+        `OSError` ИЛИ `JobError` из ротации/записи события/`server_spawn`
+        (CRITICAL 1a, финальное ревью ветки T-08, расширено задачей 4 T-10 —
+        `JobError` из отказа `job.assign()` внутри `spawn_server`, платформа
+        `platform_1c/job.py`) переводятся в `ServerError` с командной строкой
+        — тем же приёмом, что `services/launch.py::launch_infobase`:
+        секретов в команде запуска сервера нет (кластерные пароли этой
+        вехой не поддерживаются, §8 спеки), поэтому команду можно показать
+        пользователю целиком. Перед `raise` в журнал профиля пишется событие
+        `отказ запуска: <текст ошибки>` — через `log_event`, чтобы отказ
+        самой записи (тот же диск/антивирус) не подменил собой настоящую
+        причину отказа старта.
         """  # noqa: RUF002
         profile = self._profile_or_raise(profile_id)
         resolved = resolve_server_version(
@@ -364,9 +456,13 @@ class ServersWorkspace:
         command = LaunchCommand(
             executable=installation.ragent, arguments=build_ragent_arguments(profile)
         )
+        journal = server_journal.journal_path(self._logs_dir, profile_id)
         try:
-            return self._spawn(command)
-        except OSError as error:
+            server_journal.rotate_journal(self._logs_dir, profile_id)
+            server_journal.append_event(journal, f"запуск: {command.command_line}", self._now())
+            return self._server_spawn(command, journal)
+        except (OSError, JobError) as error:
+            self.log_event(profile_id, f"отказ запуска: {error}")
             raise ServerError(
                 f"Не удалось запустить сервер «{profile.name}»: {error}.\n"  # noqa: RUF001
                 f"Команда: {command.command_line}"
@@ -391,6 +487,10 @@ class ServersWorkspace:
         совпавшему процессу). Процессы других профилей и чужие ragent того
         же снимка вообще не читаются: цикл идёт только по процессам,
         сопоставленным именно этому профилю.
+
+        T-10, задача 4: успешная остановка пишет в журнал профиля событие
+        `остановка по команде пользователя`; отказ (`ServerStopError`) пишет
+        `отказ остановки: …` ДО `raise` — см. `_terminate_or_raise`.
         """  # noqa: RUF002
         profile = self._profile_or_raise(profile_id)
         processes = self._matched_processes(profile)
@@ -401,20 +501,29 @@ class ServersWorkspace:
             )
         for proc in processes:
             kids = self._control.children(proc.pid)
-            self._terminate_or_raise(proc.pid, proc.create_time)
+            self._terminate_or_raise(profile_id, proc.pid, proc.create_time)
             for kid in kids:
-                self._terminate_or_raise(kid.pid, kid.create_time)
+                self._terminate_or_raise(profile_id, kid.pid, kid.create_time)
+        self.log_event(profile_id, "остановка по команде пользователя")
 
     def stop_orphans(self, profile_id: str) -> None:
         """Погасить осиротевшие `rmngr` профиля ([Ф] А3) без живого `ragent`.
 
         Пустой список сирот — не ошибка, а no-op: чаще всего сирот и не
-        было, и вызывающему не нужно проверять `orphan_managers` заранее.
+        было, и вызывающему не нужно проверять `orphan_managers` заранее —
+        и событие в журнал в этом случае не пишется (гасить было нечего).
+        Успешное гашение непустого списка пишет одно событие
+        `гашение сирот: PID …` со всеми завершёнными PID; отказ —
+        `отказ остановки: …` ДО `raise`, см. `_terminate_or_raise`.
         """  # noqa: RUF002
         profile = self._profile_or_raise(profile_id)
         processes = self._matched_processes(profile)
-        for orphan in self._orphans_for(profile, processes):
-            self._terminate_or_raise(orphan.pid, orphan.create_time)
+        orphans = self._orphans_for(profile, processes)
+        for orphan in orphans:
+            self._terminate_or_raise(profile_id, orphan.pid, orphan.create_time)
+        if orphans:
+            pids = ", ".join(str(orphan.pid) for orphan in orphans)
+            self.log_event(profile_id, f"гашение сирот: PID {pids}")
 
     def current_console_version(self) -> VersionNumber | None:
         """Версия консоли, зарегистрированной СЕЙЧАС в реестре; `None` — не зарегистрирована.
@@ -493,7 +602,9 @@ class ServersWorkspace:
     def _matched_processes(self, profile: ServerProfile) -> tuple[RagentProcess, ...]:
         return self._match.by_profile.get(profile.id, ()) if self._match else ()
 
-    def _terminate_or_raise(self, pid: int, expected_create_time: float) -> None:
+    def _terminate_or_raise(
+        self, profile_id: str, pid: int, expected_create_time: float
+    ) -> None:
         """`control.terminate`, переводящее гонку PID (§6.2) и отказ прав в честный отказ слоя.
 
         `ProcessMismatchError`/`ProcessAccessError` — исключения слоя
@@ -503,19 +614,28 @@ class ServersWorkspace:
         ревью ветки) — `psutil.AccessDenied` из `PsutilControl.terminate`:
         процесс, совпавший с профилем по каталогу кластера, но запущенный
         другим пользователем или как служба, — нам его не завершить.
+
+        T-10, задача 4: перед `raise` в журнал профиля пишется событие
+        `отказ остановки: <текст ServerStopError>` — через `log_event`
+        (глотает свой собственный `OSError`, см. его докстринг), так что
+        отказ записи журнала не подменяет собой настоящий `ServerStopError`.
         """  # noqa: RUF002
         try:
             self._control.terminate(pid, expected_create_time)
         except ProcessMismatchError as error:
-            raise ServerStopError(
+            stop_error = ServerStopError(
                 f"PID {pid} переиспользован системой — обновите список процессов "
                 "и повторите"
-            ) from error
+            )
+            self.log_event(profile_id, f"отказ остановки: {stop_error}")
+            raise stop_error from error
         except ProcessAccessError as error:
-            raise ServerStopError(
+            stop_error = ServerStopError(
                 f"PID {pid}: нет прав на завершение — возможно, процесс запущен "
                 "другим пользователем или службой"
-            ) from error
+            )
+            self.log_event(profile_id, f"отказ остановки: {stop_error}")
+            raise stop_error from error
 
     def _orphans_for(
         self, profile: ServerProfile, processes: tuple[RagentProcess, ...]
