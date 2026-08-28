@@ -8,7 +8,6 @@
 тонкий клиент ([Ф] T-02.6).
 """
 
-import functools
 import logging
 import os
 import sys
@@ -37,7 +36,7 @@ from onecstarter.domain.server import ServerConvention
 from onecstarter.domain.version import Installation, VersionNumber
 from onecstarter.platform_1c import console
 from onecstarter.platform_1c.discovery import cfg_paths, find_installations
-from onecstarter.platform_1c.job import NullJob
+from onecstarter.platform_1c.job import NullJob, ServerJob
 from onecstarter.platform_1c.process_control import NullControl, ProcessControl, PsutilControl
 from onecstarter.platform_1c.process_scan import NullScanner, ProcessScanner, PsutilScanner
 from onecstarter.platform_1c.registry import load_conventions, load_server_conventions
@@ -294,6 +293,9 @@ def run_smoke(
     # рядом: `ServersView.__init__` безусловно читает HKLM через
     # `current_console_version()` уже при сборке окна (см. докстринг
     # `_build_main_window`), самопроверка отвечает «не зарегистрирована».
+    # `NullJob` — та же осторожность для Job Object'а (T-10, задача 7):  # noqa: RUF003
+    # самопроверка не запускает серверов, но и создавать kernel-объект,
+    # которого некому будет закрыть, ей ни к чему.
     try:
         window, built_tasks, _monitor = _build_main_window(
             application,
@@ -303,6 +305,7 @@ def run_smoke(
             process_scanner=NullScanner(),
             process_control=NullControl(),
             registered_radmin=lambda: None,
+            server_job=NullJob(),
         )
     except ServerError:
         # CRITICAL 2, финальное ревью ветки: конструктор ServersWorkspace
@@ -544,6 +547,7 @@ def _build_main_window(
     process_control: ProcessControl | None = None,
     registered_radmin: Callable[[], Path | None] | None = None,
     quit_dialog: Callable[[QWidget, str], bool] | None = None,
+    server_job: ServerJob | NullJob | None = None,
 ) -> tuple[MainWindow, StartupTasks, ServerMonitor]:
     """Собрать окно, трей, хоткей, watcher и фоновые задачи, не запуская их.
 
@@ -586,6 +590,15 @@ def _build_main_window(
     только `main()` (`quit_dialog=_ask_quit_confirmation`) — единственное
     место, откуда реальный диалог вообще может появиться.
 
+    `server_job` — тот же приём инъекции, что `process_scanner`/`process_control`,
+    но для Job Object'а (T-10, задача 7, `platform_1c/job.py`): `None`
+    собирает настоящий `ServerJob()` — это безопасно и для тестов, и для
+    сборки окна как таковой, потому что создание kernel-объекта в нём
+    ленивое (только при первом `assign()`, а не в конструкторе). `run_smoke`
+    всё равно подставляет `NullJob()` явной инъекцией, тем же доводом, что
+    `NullScanner`/`NullControl` (долг №8): самопроверка не должна создавать
+    Job вовсе, а не полагаться на то, что лень конструктора её не выдаст.
+
     Значок приложения ставится здесь же, до создания трея (замечание
     заказчика на контрольной точке 16.08.2026): `setWindowIcon` до этой
     задачи не вызывался нигде, и заголовок окна с Alt-Tab получали
@@ -622,18 +635,20 @@ def _build_main_window(
     # lambda:` у BasesView) собраны раньше самого раздела: конструктору  # noqa: RUF003
     # ServersView нужны и воркспейс, и живой снимок установок сразу.
     # T-10, задача 4: конструктор ServersWorkspace лишился дефолта у spawn —  # noqa: RUF003
-    # `server_spawn`/`logs_dir` теперь обязательны. Проводка НАСТОЯЩЕГО Job
-    # Object'а (жизнь которого обязана быть длиной с сам процесс лаунчера,  # noqa: RUF003
-    # см. `platform_1c/job.py`) — предмет задачи 7 (новый параметр
-    # `_build_main_window(..., server_job=...)`, docs/superpowers/plans/
-    # 2026-08-28-v2-servers-journal.md). До неё — `NullJob()`: как и до
-    # T-10, серверы не в Job (закрытие/крах лаунчера их не гасит), но это
-    # то же временное состояние, что было ДО всей этой ветки, а не хуже.  # noqa: RUF003
+    # `server_spawn`/`logs_dir` теперь обязательны. T-10, задача 7: НАСТОЯЩИЙ
+    # Job Object — `job` живёт длиной с сам процесс лаунчера (`server_job`  # noqa: RUF003
+    # параметр функции; `None` собирает `ServerJob()`, `run_smoke` подставляет
+    # `NullJob()`), `spawn_server` кладёт в него каждый запущенный сервер
+    # сразу после `Popen` (`platform_1c/server_spawn.py`). [Ф] Б2 T-09:
+    # закрытие/крах лаунчера закрывает хендл Job, и это гасит всё дерево
+    # серверов вместе с ним — явного кода остановки серверов при выходе  # noqa: RUF003
+    # приложения не требуется и здесь нет.
     logs_dir = runtime.servers.parent / "logs" / "servers"
+    job = server_job if server_job is not None else ServerJob()
     servers_workspace = ServersWorkspace(
         runtime.servers,
         control=process_control if process_control is not None else PsutilControl(),
-        server_spawn=functools.partial(spawn_server, job=NullJob()),
+        server_spawn=lambda command, log: spawn_server(command, log, job),
         logs_dir=logs_dir,
         registered_radmin=(
             registered_radmin if registered_radmin is not None else console.registered_radmin_path
@@ -777,6 +792,13 @@ def _build_main_window(
         оставить приложение работающим, не только окно видимым. Без гейта
         (`confirm_quit is None` — тесты, `run_smoke`, хотя тот трей вообще
         не собирает) выход происходит сразу, без вопроса.
+
+        Выход после подтверждения — обычный `application.quit()`, без единой
+        строки, останавливающей серверы явно: [Ф] Б2 T-09 — дерево серверов
+        гасит сама смерть процесса лаунчера, закрывающая хендл Job Object'а
+        (kill-on-close, `platform_1c/job.py`), и до неё дело здесь не доходит
+        вообще — эффект наступает уже ПОСЛЕ `application.quit()`, снаружи
+        этой функции.
         """  # noqa: RUF002
         if confirm_quit is not None and not confirm_quit():
             return

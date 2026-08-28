@@ -52,6 +52,7 @@ from onecstarter.ui.background import StartupTasks
 from onecstarter.ui.bases.view import BasesView
 from onecstarter.ui.hotkey import GlobalHotkey
 from onecstarter.ui.servers.dialog import ConsoleDialog
+from onecstarter.ui.servers.journal_panel import JournalPanel
 from onecstarter.ui.servers.monitor import ServerMonitor
 from onecstarter.ui.servers.view import ServersView
 from onecstarter.ui.settings_store import SettingsStore
@@ -1317,6 +1318,30 @@ def test_servers_section_has_an_icon(
     assert window._icon_factories[servers_index] is rail_icons.servers_icon
 
 
+def test_build_main_window_creates_servers_view_with_journal_panel(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """T-10, задача 7: раздел «Серверы» несёт панель «Журнал профиля» (задача 5).
+
+    Панель встроена ВНУТРЬ `ServersView` самой задачей 5 — `_build_main_window`
+    её отдельно не компонует. Проверка фиксирует именно это: собранное окно
+    действительно содержит `ServersView`, и её `journal_panel()` (аксессор
+    задачи 5) отдаёт настоящую `JournalPanel`, а не `None` и не заглушку.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+
+    window, _tasks, _monitor = _build_main_window(qapp, runtime, env)
+    qtbot.addWidget(window)
+
+    labels = [button.text() for button in window.section_buttons()]
+    window.show_section(labels.index("Серверы"))
+    servers_view = window.current_section()
+    assert isinstance(servers_view, ServersView)
+    assert isinstance(servers_view.journal_panel(), JournalPanel)
+
+
 def test_run_smoke_uses_null_scanner(tmp_path: Any, monkeypatch: Any, qtbot: Any) -> None:
     """ЗАЩИТНЫЙ ТЕСТ: smoke не создаёт `PsutilScanner` — не сканирует машину
 
@@ -1331,6 +1356,35 @@ def test_run_smoke_uses_null_scanner(tmp_path: Any, monkeypatch: Any, qtbot: Any
         raise AssertionError("smoke не должен создавать PsutilScanner")
 
     monkeypatch.setattr(app_module, "PsutilScanner", bomb)
+    appdata = tmp_path / "appdata"
+    target = tmp_path / "out"
+    target.mkdir()
+
+    assert run_smoke(str(target), {"APPDATA": str(appdata)}) == 0
+
+    qtbot.addWidget(captured["window"])
+
+
+def test_run_smoke_uses_null_job(tmp_path: Any, monkeypatch: Any, qtbot: Any) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ: самопроверка не создаёт kernel-объект Job и никого туда не кладёт.
+
+    `ServerJob` сам по себе ленив (`platform_1c/job.py`: kernel-объект
+    создаётся не в конструкторе, а при первом `assign()`) — сборка окна
+    настоящим `ServerJob()` безопасна и без этой инъекции. Но самопроверка
+    собранного экземпляра не должна создавать его вовсе, тем же доводом,
+    что `NullScanner`/`NullControl` (долг №8, T-04.7): `run_smoke` обязан
+    подставить `NullJob()` явной инъекцией, а не полагаться на лень
+    конструктора. Образец — `test_run_smoke_uses_null_scanner`. Мутация
+    «`run_smoke` берёт `server_job=None` (дефолтный `ServerJob()`) вместо
+    инъекции» обязана уронить этот тест.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+
+    def bomb(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("smoke не должен создавать ServerJob")
+
+    monkeypatch.setattr(app_module, "ServerJob", bomb)
     appdata = tmp_path / "appdata"
     target = tmp_path / "out"
     target.mkdir()
