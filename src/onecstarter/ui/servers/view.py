@@ -69,6 +69,23 @@ assets/2026-08-26-v2-servers-mockup.html), секция «Раздел „Сер
 периодическим сканом (задача 16) на каждое обновление списка процессов,
 а не на реальный клик пользователя. Тестовый аксессор `profile_menu(index)`
 строит меню тем же ленивым билдером по требованию — не читает список.
+
+**Задача 5 (T-10)** добавляет выделение карточки кликом и панель «Журнал
+профиля» (`ui/servers/journal_panel.py::JournalPanel`), встроенную низом
+раздела тем же приёмом, что `ConnectionPanel` у `BasesView` (добавлена
+в layout ПОСЛЕ `addStretch(1)` — карточки/список чужих серверов берут
+свободное место, панель прибита к низу). `_ProfileCard` (тонкий `QWidget`
+с переопределённым `mouseReleaseEvent`) выделяет себя кликом левой кнопкой;
+рамка выделения (`palette.accent`, `_card_border_style`) запечена в
+`styleSheet()`, как и остальные цвета карточки, — карточки строятся заново
+на каждый `rebuild()`, отдельного «снять подсветку у старой» шага не нужно.
+Выбор профиля читает и показывает СУЩЕСТВУЮЩИЙ журнал (`workspace.
+journal_path`, услуга задачи 3-4 T-10) — сама панель файл не создаёт и
+не следит за ним, только периодически перечитывает хвост, пока видима
+и путь задан (её докстринг). §8-исход (см. `_check_pending_confirmation`)
+теперь ещё и пишет то же сообщение в журнал профиля через
+`workspace.log_event` — молчание платформы ([Ф] А3/А4) не должно означать
+дыру в журнале, раз уж OneCStarter сам заметил исход.
 """  # noqa: RUF002
 
 from collections.abc import Callable, Sequence
@@ -76,6 +93,7 @@ from dataclasses import dataclass
 from typing import cast
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -95,6 +113,7 @@ from onecstarter.services.errors import ServicesError
 from onecstarter.services.servers import ServerStatus, ServersWorkspace
 from onecstarter.ui.dialogs.buttons import build_confirm_box, is_confirmed
 from onecstarter.ui.servers.dialog import ServerProfileDialog
+from onecstarter.ui.servers.journal_panel import JournalPanel
 from onecstarter.ui.theme import Palette
 
 _MONO = "font-family: Consolas, 'Cascadia Mono', monospace;"
@@ -204,6 +223,17 @@ def _removal_question(profile: ServerProfile, running: bool) -> str:
     return f"Удалить профиль «{profile.name}» из списка серверов?"
 
 
+def _card_border_style(is_selected: bool, palette: Palette) -> str:
+    """Рамка карточки — `palette.accent`, только у выделенной (задача 5, T-10).
+
+    Ширина рамки одна и та же в обоих состояниях (`transparent` у
+    невыделенной) — иначе выделение сдвигало бы содержимое карточки
+    на толщину рамки.
+    """  # noqa: RUF002
+    colour = palette.accent if is_selected else "transparent"
+    return f"QWidget#ServerCard {{ border: 2px solid {colour}; border-radius: 4px; }}"
+
+
 def _foreign_text(entry: ForeignServer) -> str:
     """Строка блока «Другие серверы на машине»: полная или ограниченная форма ([Ф] В1).
 
@@ -225,6 +255,34 @@ def _foreign_text(entry: ForeignServer) -> str:
         ports = "порты ?"
     directory = entry.params.cluster_dir or "?"
     return f"{version_text} · {ports} · {directory} · PID {entry.process.pid}"
+
+
+class _ProfileCard(QWidget):
+    """Карточка профиля: клик левой кнопкой (`mouseRelease`) выделяет её (задача 5, T-10).
+
+    `QLabel`-содержимое карточки (`_build_card`) помечено
+    `Qt.WidgetAttribute.WA_TransparentForMouseEvents` — иначе клик по имени/
+    статусу/детали доставался бы самой QLabel и никогда не долетел бы сюда:
+    Qt отдаёт событие мыши тому виджету, что оказался под курсором, а не
+    поднимает его по дереву родителей автоматически. Кнопки карточки
+    («Запустить»/«Остановить»/«Погасить») остаются как есть — их клик не
+    должен ещё и переключать выделение.
+    """  # noqa: RUF002
+
+    def __init__(
+        self,
+        profile_id: str,
+        on_clicked: Callable[[str], None],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._profile_id = profile_id
+        self._on_clicked = on_clicked
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._on_clicked(self._profile_id)
+        super().mouseReleaseEvent(event)
 
 
 class ServersView(QWidget):
@@ -275,6 +333,7 @@ class ServersView(QWidget):
         self._profile_menu_args: list[tuple[str, bool]] = []
         self._profile_warning_texts: list[list[str]] = []
         self._profile_extinguish_buttons: list[QPushButton | None] = []
+        self._profile_cards: list[QWidget] = []
         self._foreign_row_texts: list[str] = []
         self._foreign_row_widgets: list[QWidget] = []
         self._console_note_text = ""
@@ -284,6 +343,11 @@ class ServersView(QWidget):
         # rebuild() — посторонние rebuild() (apply_palette, CRUD профиля)
         # видят ещё старый снимок и не имеют права его потребить.  # noqa: RUF003
         self._pending_confirmation: str | None = None
+        # Задача 5 (T-10): выделенная кликом карточка — id профиля или None.
+        # Переживает rebuild() (список, а не виджет: карточки пересобираются  # noqa: RUF003
+        # целиком, id — нет), сбрасывается только явно (`_clear_selection`,
+        # зовётся из `_remove` для удалённого выделенного профиля).
+        self._selected_profile_id: str | None = None
 
         header = QLabel("Серверы")
         header_font = header.font()
@@ -314,6 +378,11 @@ class ServersView(QWidget):
         self._foreign_layout = QVBoxLayout()
         self._foreign_layout.setSpacing(4)
 
+        # Задача 5 (T-10): та же компоновка, что detail-панель «Баз»
+        # (`ConnectionPanel` в `BasesView` — карточки/дерево берут `stretch`,
+        # панель прибита снизу без него) — добавлена ПОСЛЕ `addStretch(1)`.
+        self._journal_panel = JournalPanel(palette=self._palette, parent=self)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(6)
@@ -325,6 +394,7 @@ class ServersView(QWidget):
         layout.addWidget(self._foreign_label)
         layout.addLayout(self._foreign_layout)
         layout.addStretch(1)
+        layout.addWidget(self._journal_panel)
 
         self.rebuild()
 
@@ -345,6 +415,7 @@ class ServersView(QWidget):
         self._profile_menu_args = []
         self._profile_warning_texts = []
         self._profile_extinguish_buttons = []
+        self._profile_cards = []
         self._foreign_row_texts = []
         self._foreign_row_widgets = []
 
@@ -386,7 +457,7 @@ class ServersView(QWidget):
         self._check_pending_confirmation(self._workspace.statuses(installed_versions))
 
     def _check_pending_confirmation(self, statuses: Sequence[ServerStatus]) -> None:
-        """§8 мокапа, [Ф] А3/А4: смерть ragent молчалива, в лог ничего не пишется.
+        """§8 мокапа, [Ф] А3/А4: платформа о смерти ragent сама ничего не пишет.
 
         Зовётся ТОЛЬКО из `on_scan_snapshot()` (см. её докстринг, круг
         исправлений 1) — не из `rebuild()`. `_toggle` запоминает профиль как
@@ -397,6 +468,12 @@ class ServersView(QWidget):
         пользователь, — порт уже занят другим сервером, поднявшимся раньше.
         Срабатывает не более одного раза на каждую постановку в ожидание —
         флаг сбрасывается здесь безусловно, до всякого решения о показе.
+
+        Задача 5 (T-10): тот же текст, что уходит в `show_error`, ЕЩЁ и
+        пишется в журнал профиля через `workspace.log_event` — платформа
+        по-прежнему молчит ([Ф] А3/А4), но раз уж OneCStarter сам заметил
+        исход, «Журнал профиля» обязан его показать, а не оставить дыру
+        между «запуск: …» и следующим событием.
         """  # noqa: RUF002
         profile_id = self._pending_confirmation
         if profile_id is None:
@@ -406,10 +483,12 @@ class ServersView(QWidget):
         if status is None or status.processes:
             return
         profile = status.profile
-        self._show_error(
+        message = (
             f"Сервер «{profile.name}» завершился сразу после запуска. "
             f"Частая причина — занятый порт ({profile.port})."
         )
+        self._workspace.log_event(profile_id, message)
+        self._show_error(message)
 
     @staticmethod
     def _clear(layout: QLayout) -> None:
@@ -450,10 +529,14 @@ class ServersView(QWidget):
             button_text, button_enabled = _button_state(status)
         running = bool(status.processes)
 
-        card = QWidget()
+        # Задача 5 (T-10): _ProfileCard — тот же QWidget, что и раньше, плюс
+        # mouseReleaseEvent, выделяющий карточку кликом (см. её докстринг).
+        card = _ProfileCard(profile.id, self._select_profile, parent=self)
         card.setObjectName("ServerCard")
+        card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        card.setStyleSheet(_card_border_style(profile.id == self._selected_profile_id, palette))
         card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(0, 0, 0, 0)
+        card_layout.setContentsMargins(6, 4, 6, 4)
         card_layout.setSpacing(2)
 
         title_row = QHBoxLayout()
@@ -471,6 +554,13 @@ class ServersView(QWidget):
         detail_label.setStyleSheet(f"color: {palette.text_dim}; {_MONO}")
         dir_label = QLabel(profile.cluster_dir)
         dir_label.setStyleSheet(f"color: {palette.text_dim}; {_MONO}")
+        # Клик по этим ярлыкам обязан выделять карточку, а не пропадать в  # noqa: RUF003
+        # них молча — Qt доставляет событие мыши тому виджету, что оказался
+        # под курсором, а не поднимает его по дереву родителей автоматически  # noqa: RUF003
+        # (см. докстринг `_ProfileCard`). WA_TransparentForMouseEvents
+        # переносит попадание на саму карточку.
+        for label in (name_label, status_label, detail_label, dir_label):
+            label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
 
         body_col = QVBoxLayout()
         body_col.setSpacing(1)
@@ -556,6 +646,7 @@ class ServersView(QWidget):
         self._profile_menu_args.append((profile.id, running))
         self._profile_warning_texts.append(warnings)
         self._profile_extinguish_buttons.append(extinguish_button)
+        self._profile_cards.append(card)
 
     def _build_card_menu(self, profile_id: str, running: bool) -> QMenu:
         """Собрать контекстное меню карточки без показа — по требованию, не заранее.
@@ -615,6 +706,28 @@ class ServersView(QWidget):
             # у остановки нечего подтверждать (см. `_check_pending_confirmation`).  # noqa: RUF003
             self._pending_confirmation = profile_id
 
+    def _select_profile(self, profile_id: str) -> None:
+        """Клик по карточке (задача 5, T-10): выделить и показать её журнал.
+
+        Профиль мог пропасть из списка между показом карточки и кликом
+        (тот же довод, что у `_build_edit_profile_dialog`) — тихий выход,
+        а не отказ: карточки, ссылающейся на несуществующий id, к моменту
+        обработки клика быть не должно, но гонка не стоит показа ошибки
+        пользователю. `rebuild()` в конце — тот же приём, что у `_toggle`/
+        `_remove`: рамка выделения запечена в `styleSheet()` карточки
+        (`_card_border_style`), а карточки строятся заново целиком.
+        """  # noqa: RUF002
+        profile = next((p for p in self._workspace.profiles() if p.id == profile_id), None)
+        if profile is None:
+            return
+        self._selected_profile_id = profile_id
+        self._journal_panel.show_journal(profile.name, self._workspace.journal_path(profile_id))
+        self.rebuild()
+
+    def _clear_selection(self) -> None:
+        self._selected_profile_id = None
+        self._journal_panel.show_journal("", None)
+
     def _remove(self, profile_id: str, running: bool) -> None:
         profile = next((p for p in self._workspace.profiles() if p.id == profile_id), None)
         if profile is None:
@@ -625,6 +738,16 @@ class ServersView(QWidget):
             self._workspace.remove_profile(profile_id)
         except ServicesError as error:
             self._show_error(str(error))
+        # Задача 5 (T-10): удаление ВЫДЕЛЕННОГО профиля сбрасывает панель
+        # в плейсхолдер — иначе «Журнал профиля» продолжал бы показывать
+        # журнал записи, которой больше нет в списке серверов. Проверка
+        # по факту (профиля больше нет среди profiles()), а не по успеху  # noqa: RUF003
+        # remove_profile() — отказ (маловероятный: id только что был в
+        # рендере карточки) обязан оставить выделение как было.
+        if self._selected_profile_id == profile_id and not any(
+            p.id == profile_id for p in self._workspace.profiles()
+        ):
+            self._clear_selection()
         # Находка ревью задачи 14 (круг правок 1), подтверждена эмпирически:
         # без пересчёта снимка удаление РАБОТАЮЩЕГО профиля выкидывало его  # noqa: RUF003
         # процесс из показа целиком — `foreign_servers()` отдаёт
@@ -746,6 +869,7 @@ class ServersView(QWidget):
     def apply_palette(self, palette: Palette) -> None:
         """Перекрасить перерисовкой: карточки несут цвет в запечённом `styleSheet`."""
         self._palette = palette
+        self._journal_panel.apply_palette(palette)
         self.rebuild()
 
     # -- доступ для тестов --------------------------------------------------
@@ -758,6 +882,15 @@ class ServersView(QWidget):
 
     def profile_button(self, index: int) -> QPushButton:
         return self._profile_buttons[index]
+
+    def profile_card(self, index: int) -> QWidget:
+        return self._profile_cards[index]
+
+    def selected_profile_id(self) -> str | None:
+        return self._selected_profile_id
+
+    def journal_panel(self) -> JournalPanel:
+        return self._journal_panel
 
     def profile_menu(self, index: int) -> QMenu:
         """Контекстное меню карточки — тестам, без показа (по образцу `BasesView`).

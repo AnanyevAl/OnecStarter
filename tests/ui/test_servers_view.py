@@ -7,12 +7,23 @@
 кладётся напрямую через `ServersWorkspace.apply_scan(ScanSnapshot(...))` —
 конструировать `ProcessScanner` ради одного снимка в каждом тесте избыточно,
 сама функция `scan_servers` уже покрыта юнит-тестами.
+
+Задача 5 (T-10) добавляет выделение карточки и панель «Журнал профиля»:
+`FakeSpawn`/`_workspace` уже несут `logs_dir` (миграция задачи 4) —
+переиспользуются как есть, отдельного фейка для журнала не нужно, тесты
+читают реальный файл, который пишет `ServersWorkspace.log_event`/`start`.
+Клик — `qtbot.mouseRelease(view.profile_card(index), Qt.MouseButton.LeftButton)`
+по образцу брифа: событие уходит напрямую в виджет карточки, а не по
+экранным координатам, так что перекрытие карточки дочерними QLabel
+(`WA_TransparentForMouseEvents`, см. `view.py`) тесту не мешает.
 """  # noqa: RUF002
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QDialog, QPushButton
 
 from onecstarter.domain.launch import LaunchCommand
@@ -1163,3 +1174,175 @@ def test_empty_workspace_has_no_profile_rows(application: QApplication, tmp_path
     view = ServersView(workspace, installed=lambda: [], palette=theme.DARK)
     assert view.profile_rows() == []
     assert view.foreign_rows() == []
+
+
+# -- выделение карточки и панель «Журнал профиля» (T-10, задача 5) ----------
+
+
+def test_journal_panel_starts_with_the_placeholder(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Ничего не выделено сразу после открытия раздела — панель в плейсхолдере."""
+    profile = _profile()
+    workspace = _workspace(tmp_path, (profile,))
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+
+    view = ServersView(workspace, installed=lambda: [_installation()], palette=theme.DARK)
+
+    assert view.selected_profile_id() is None
+    assert view.journal_panel().text() == ""
+
+
+def test_card_click_selects_it_and_shows_its_journal(
+    application: QApplication, tmp_path: Path, qtbot: Any
+) -> None:
+    """Клик по карточке (mouseRelease, как в брифе) выделяет её и показывает журнал."""
+    profile = _profile()
+    workspace = _workspace(tmp_path, (profile,))
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+    workspace.log_event(profile.id, "тестовое событие")
+
+    view = ServersView(workspace, installed=lambda: [_installation()], palette=theme.DARK)
+
+    qtbot.mouseRelease(view.profile_card(0), Qt.MouseButton.LeftButton)
+
+    assert view.selected_profile_id() == profile.id
+    assert profile.name in view.journal_panel().title_label().text()
+    assert "тестовое событие" in view.journal_panel().text()
+    # Карточка перестроена целиком (rebuild() внутри _select_profile) —
+    # обращаемся к СВЕЖЕЙ карточке по тому же индексу, старая уже мертва.
+    assert theme.DARK.accent in view.profile_card(0).styleSheet()
+
+
+def test_unselected_card_has_no_accent_border(
+    application: QApplication, tmp_path: Path
+) -> None:
+    profile = _profile()
+    workspace = _workspace(tmp_path, (profile,))
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+
+    view = ServersView(workspace, installed=lambda: [_installation()], palette=theme.DARK)
+
+    assert theme.DARK.accent not in view.profile_card(0).styleSheet()
+
+
+def test_selecting_another_card_moves_the_border(
+    application: QApplication, tmp_path: Path, qtbot: Any
+) -> None:
+    profile_a = _profile(id="a", name="A")
+    profile_b = _profile(
+        id="b",
+        name="B",
+        port=1640,
+        regport=1641,
+        range_start=1660,
+        range_end=1691,
+        cluster_dir=r"E:\srv\b",
+    )
+    workspace = _workspace(tmp_path, (profile_a, profile_b))
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+    view = ServersView(workspace, installed=lambda: [_installation()], palette=theme.DARK)
+
+    qtbot.mouseRelease(view.profile_card(0), Qt.MouseButton.LeftButton)
+    assert view.selected_profile_id() == profile_a.id
+
+    qtbot.mouseRelease(view.profile_card(1), Qt.MouseButton.LeftButton)
+
+    assert view.selected_profile_id() == profile_b.id
+    assert theme.DARK.accent in view.profile_card(1).styleSheet()
+    assert theme.DARK.accent not in view.profile_card(0).styleSheet()
+
+
+def test_deleting_the_selected_profile_resets_the_panel_to_placeholder(
+    application: QApplication, tmp_path: Path, qtbot: Any
+) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ: удаление выделенного профиля обязано сбросить панель.
+
+    Без сброса «Журнал профиля» продолжал бы показывать журнал записи,
+    которой больше нет в списке серверов, — заголовок и текст ссылались бы
+    на исчезнувший профиль. Мутация «убрать `_clear_selection()` из
+    `_remove`» обязана уронить этот тест на первом `assert` после удаления.
+    """  # noqa: RUF002
+    profile = _profile()
+    workspace = _workspace(tmp_path, (profile,))
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+    view = ServersView(
+        workspace,
+        installed=lambda: [_installation()],
+        palette=theme.DARK,
+        confirm_removal=lambda _question: True,
+    )
+    qtbot.mouseRelease(view.profile_card(0), Qt.MouseButton.LeftButton)
+    assert view.selected_profile_id() == profile.id
+
+    _trigger_delete(view, 0)
+
+    assert view.selected_profile_id() is None
+    assert view.journal_panel().text() == ""
+    assert "профиль" in view.journal_panel().placeholder().casefold()
+
+
+def test_deleting_an_unselected_profile_keeps_the_selection(
+    application: QApplication, tmp_path: Path, qtbot: Any
+) -> None:
+    """Удаление ЧУЖОЙ (не выделенной) карточки не трогает текущее выделение."""
+    profile_a = _profile(id="a", name="A")
+    profile_b = _profile(
+        id="b",
+        name="B",
+        port=1640,
+        regport=1641,
+        range_start=1660,
+        range_end=1691,
+        cluster_dir=r"E:\srv\b",
+    )
+    workspace = _workspace(tmp_path, (profile_a, profile_b))
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+    view = ServersView(
+        workspace,
+        installed=lambda: [_installation()],
+        palette=theme.DARK,
+        confirm_removal=lambda _question: True,
+    )
+    qtbot.mouseRelease(view.profile_card(0), Qt.MouseButton.LeftButton)
+    assert view.selected_profile_id() == profile_a.id
+
+    _trigger_delete(view, 1)  # удаляем B, выделен A
+
+    assert view.selected_profile_id() == profile_a.id
+    assert profile_a.name in view.journal_panel().title_label().text()
+
+
+def test_death_after_start_is_also_written_to_the_journal(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """§8: то же сообщение, что уходит в `show_error`, попадает и в журнал профиля.
+
+    Платформа сама о причине смерти не пишет ([Ф] А3/А4 T-09) — раз уж
+    OneCStarter заметил исход через подтверждающий скан, «Журнал профиля»
+    обязан его показать. Тот же путь, каким его зовёт `app.py`
+    (`workspace.apply_scan(...)` + `view.on_scan_snapshot()`), что и
+    `test_start_that_dies_silently_is_reported` выше.
+    """  # noqa: RUF002
+    profile = _profile()
+    workspace = _workspace(tmp_path, (profile,))
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+    errors: list[str] = []
+    view = ServersView(
+        workspace,
+        installed=lambda: [_installation()],
+        palette=theme.DARK,
+        # show_error подменён тем же приёмом, что и у остальных тестов §8  # noqa: RUF003
+        # (test_start_that_dies_silently_is_reported): дефолт открывает
+        # настоящий блокирующий QMessageBox.exec() — офскрин-тест иначе висит.
+        show_error=lambda message: errors.append(message),
+    )
+
+    view.profile_button(0).click()
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+    view.on_scan_snapshot()
+
+    assert errors  # доказывает, что §8 действительно сработала
+    journal_text = workspace.journal_path(profile.id).read_text(encoding="utf-8")
+    assert "завершился сразу после запуска" in journal_text
+    assert str(profile.port) in journal_text
