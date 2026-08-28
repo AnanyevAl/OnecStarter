@@ -2,7 +2,7 @@ import logging
 import shutil
 import sys
 import winreg
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QProgressDialog,
     QPushButton,
     QSystemTrayIcon,
+    QWidget,
 )
 
 from onecstarter.domain.launch import LaunchCommand
@@ -2367,3 +2368,331 @@ def test_console_flow_cancel_does_nothing(qapp: Any) -> None:
 
     assert workspace.registered == []
     assert workspace.opened == []
+
+
+# -- T-10, задача 6: подтверждение выхода при работающих серверах ------------
+#
+# `_confirm_quit_with_servers`/`_servers_word` — чистые функции уровня модуля
+# (докстрины см. `ui/app.py`), проверены табличными тестами без единого
+# показа диалога. Тесты проводки (`window.confirm_quit`, трей `request_quit`)
+# зовут настоящий `_build_main_window` с ФЕЙКОВЫМ `quit_dialog` — журналом  # noqa: RUF003
+# сообщений и управляемым ответом (`_fake_quit_dialog`), а не подменой  # noqa: RUF003
+# `QMessageBox.question`: находка координатора при мутационной проверке
+# показала, что БЕЗУСЛОВНОЕ подключение настоящего диалога внутри
+# `_build_main_window` вешает teardown любого теста с работающим сервером  # noqa: RUF003
+# на модальное ожидание под offscreen-платформой навсегда (диалог там не
+# показывается, но и не отвечает сам). `_build_main_window` теперь собирает
+# гейт, только когда `quit_dialog` передан явно (см. её докстринг,
+# `ui/app.py`) — сторож этого контракта см. ниже,
+# `test_closing_window_without_quit_dialog_never_shows_a_confirmation_dialog`.
+
+
+def _fake_quit_dialog(messages: list[str], *, answer: bool) -> Callable[[QWidget, str], bool]:
+    """Фейковый `quit_dialog`: журнал показанных сообщений и фиксированный ответ."""
+
+    def dialog(_parent: QWidget, message: str) -> bool:
+        messages.append(message)
+        return answer
+
+    return dialog
+
+
+def test_confirm_quit_with_servers_no_running_returns_true_without_asking() -> None:
+    """0 работающих серверов — тихое `True`, `ask` не вызывается вовсе."""
+    asked: list[str] = []
+
+    def ask(message: str) -> bool:
+        asked.append(message)
+        return False
+
+    result = app_module._confirm_quit_with_servers(lambda: 0, ask)
+
+    assert result is True
+    assert asked == []
+
+
+def test_confirm_quit_with_servers_asks_with_declined_word_and_count() -> None:
+    """Текст вопроса — с верным склонением «сервера» для числа 3."""  # noqa: RUF002
+    asked: list[str] = []
+
+    def ask(message: str) -> bool:
+        asked.append(message)
+        return True
+
+    result = app_module._confirm_quit_with_servers(lambda: 3, ask)
+
+    assert result is True
+    assert asked == ["Остановить 3 сервера и выйти?"]
+
+
+def test_confirm_quit_with_servers_declined_returns_false() -> None:
+    result = app_module._confirm_quit_with_servers(lambda: 2, lambda _message: False)
+
+    assert result is False
+
+
+@pytest.mark.parametrize(
+    ("n", "word"),
+    [(1, "сервер"), (2, "сервера"), (5, "серверов"), (11, "серверов"), (21, "сервер")],
+)
+def test_servers_word_declines_by_count(n: int, word: str) -> None:
+    assert app_module._servers_word(n) == word
+
+
+def test_close_without_servers_needs_no_confirmation(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """Проводка `_build_main_window`: без работающих серверов диалог не звался.
+
+    `window.confirm_quit` — настоящая проводка (не подмена): без единого
+    зарегистрированного профиля `ServersWorkspace.running_count()` — `0`,
+    и `_confirm_quit_with_servers` обязана вернуть `True`, ни разу не дойдя
+    до `quit_dialog` — иначе выход спрашивал бы всегда, даже когда гасить
+    нечего.
+    """
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    asked: list[str] = []
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+
+    window, _tasks, _monitor = _build_main_window(
+        qapp, runtime, env, quit_dialog=_fake_quit_dialog(asked, answer=False)
+    )
+    qtbot.addWidget(window)
+
+    assert window.confirm_quit is not None
+    assert window.confirm_quit() is True
+    assert asked == []
+
+
+def test_close_with_running_server_and_declined_dialog_keeps_confirm_quit_false(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """Проводка `_build_main_window` с реальным работающим сервером и отказом в диалоге.
+
+    Профиль + снимок с совпавшим `ragent` — тот же приём, что
+    `test_monitor_wires_scan_into_servers_workspace_and_view`:
+    `running_count()` обязан вернуть `1`, фейковый `quit_dialog` (отвечает
+    «Нет») обязан быть вызван ровно один раз с верным текстом, а
+    `window.confirm_quit()` — вернуть `False`.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    asked: list[str] = []
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+    window, _tasks, _monitor = _build_main_window(
+        qapp, runtime, env, quit_dialog=_fake_quit_dialog(asked, answer=False)
+    )
+    qtbot.addWidget(window)
+    labels = [button.text() for button in window.section_buttons()]
+    window.show_section(labels.index("Серверы"))
+    servers_view = window.current_section()
+    assert isinstance(servers_view, ServersView)
+    servers_view._workspace.add_profile(
+        ServerProfile(
+            id="",
+            name="Тест",
+            version="8.3.25.1633",
+            port=1540,
+            regport=1541,
+            range_start=1560,
+            range_end=1591,
+            cluster_dir=str(tmp_path / "srv"),
+        )
+    )
+    agent = ProcessInfo(
+        pid=4242,
+        name="ragent.exe",
+        executable=None,
+        argv=("ragent.exe", "-d", str(tmp_path / "srv"), "-port", "1540", "-regport", "1541"),
+        create_time=1.0,
+    )
+    servers_view._workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
+    assert servers_view._workspace.running_count() == 1
+
+    assert window.confirm_quit is not None
+    assert window.confirm_quit() is False
+    assert asked == ["Остановить 1 сервер и выйти?"]
+
+
+def test_closing_window_without_quit_dialog_never_shows_a_confirmation_dialog(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """СТОРОЖ против зависания: без `quit_dialog` гейта нет — диалог не вызывается вовсе.
+
+    Регрессия, найденная координатором при мутационной проверке: первая
+    редакция ставила `window.confirm_quit` безусловно, с настоящим
+    `QMessageBox.question` внутри замыкания — teardown ЛЮБОГО теста
+    с работающим сервером (`qtbot.addWidget` закрывает окно сам) вешался
+    на модальный диалог под offscreen-платформой навсегда: диалог там не
+    показывается, но и не отвечает сам, `QMessageBox.question` не
+    возвращается никогда. `QMessageBox.question` здесь подменена на функцию,
+    которая КИДАЕТ `AssertionError` вместо показа — попытка её позвать
+    обязана явно УПАСТЬ тестом, а не повиснуть раннером.
+    `_build_main_window` без единого `quit_dialog` (как в этом тесте, как
+    у `run_smoke`, как у остальных прямых тестов файла) обязана оставить
+    `window.confirm_quit` пустым, и `window.close()` — просто закрыть окно,
+    несмотря на работающий сервер.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+
+    def _forbidden_question(*args: object) -> QMessageBox.StandardButton:
+        raise AssertionError("диалог не должен показываться")
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(_forbidden_question))
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+    window, _tasks, _monitor = _build_main_window(qapp, runtime, env)
+    qtbot.addWidget(window)
+    labels = [button.text() for button in window.section_buttons()]
+    window.show_section(labels.index("Серверы"))
+    servers_view = window.current_section()
+    assert isinstance(servers_view, ServersView)
+    servers_view._workspace.add_profile(
+        ServerProfile(
+            id="",
+            name="Тест",
+            version="8.3.25.1633",
+            port=1540,
+            regport=1541,
+            range_start=1560,
+            range_end=1591,
+            cluster_dir=str(tmp_path / "srv"),
+        )
+    )
+    agent = ProcessInfo(
+        pid=4545,
+        name="ragent.exe",
+        executable=None,
+        argv=("ragent.exe", "-d", str(tmp_path / "srv"), "-port", "1540", "-regport", "1541"),
+        create_time=1.0,
+    )
+    servers_view._workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
+    assert servers_view._workspace.running_count() == 1
+    assert window.confirm_quit is None
+
+    assert window.close() is True
+
+
+def test_request_quit_declined_does_not_quit_the_application(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """Трей «Выход»: отказ в подтверждении не гасит приложение (журнал фейка).
+
+    Настоящий `create_tray` под offscreen-платформой отдаёт `None`
+    (`QSystemTrayIcon.isSystemTrayAvailable()` там честно `False`) — сам
+    `request_quit`, переданный в `on_quit`, достать неоткуда, кроме как
+    подменой `create_tray`, перехватывающей аргумент (тот же приём, что
+    `fake_create_tray` в `_assemble`). `qapp.quit` подменена журналом вызовов
+    (`quit_calls`) — тем же приёмом, что `stylesheets`/`exec_calls` в
+    `_assemble`: настоящий `quit()` пометил бы сессионный `qapp` как
+    завершающийся для следующих тестов. `quit_dialog` — фейковый (журнал +
+    ответ «Нет»), не подмена `QMessageBox.question`.
+    """
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    quit_calls: list[None] = []
+    monkeypatch.setattr(qapp, "quit", lambda: quit_calls.append(None))
+    captured: dict[str, Any] = {}
+
+    def fake_create_tray(
+        window: Any, favorites: Any, on_launch: Any, on_quit: Any, **kwargs: Any
+    ) -> None:
+        captured["on_quit"] = on_quit
+        return None
+
+    monkeypatch.setattr(app_module, "create_tray", fake_create_tray)
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+    window, _tasks, _monitor = _build_main_window(
+        qapp, runtime, env, quit_dialog=_fake_quit_dialog([], answer=False)
+    )
+    qtbot.addWidget(window)
+    labels = [button.text() for button in window.section_buttons()]
+    window.show_section(labels.index("Серверы"))
+    servers_view = window.current_section()
+    assert isinstance(servers_view, ServersView)
+    servers_view._workspace.add_profile(
+        ServerProfile(
+            id="",
+            name="Тест",
+            version="8.3.25.1633",
+            port=1540,
+            regport=1541,
+            range_start=1560,
+            range_end=1591,
+            cluster_dir=str(tmp_path / "srv"),
+        )
+    )
+    agent = ProcessInfo(
+        pid=4343,
+        name="ragent.exe",
+        executable=None,
+        argv=("ragent.exe", "-d", str(tmp_path / "srv"), "-port", "1540", "-regport", "1541"),
+        create_time=1.0,
+    )
+    servers_view._workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
+    assert servers_view._workspace.running_count() == 1
+
+    captured["on_quit"]()
+
+    assert quit_calls == [], "отказ в подтверждении не должен гасить приложение"
+
+
+def test_request_quit_without_quit_dialog_quits_immediately(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """Без `quit_dialog` (та же ветка, что у `run_smoke`) трей выходит сразу, без вопроса."""  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    quit_calls: list[None] = []
+    monkeypatch.setattr(qapp, "quit", lambda: quit_calls.append(None))
+    captured: dict[str, Any] = {}
+
+    def fake_create_tray(
+        window: Any, favorites: Any, on_launch: Any, on_quit: Any, **kwargs: Any
+    ) -> None:
+        captured["on_quit"] = on_quit
+        return None
+
+    monkeypatch.setattr(app_module, "create_tray", fake_create_tray)
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+    window, _tasks, _monitor = _build_main_window(qapp, runtime, env)
+    qtbot.addWidget(window)
+
+    captured["on_quit"]()
+
+    assert quit_calls == [None]
+
+
+def test_run_smoke_does_not_set_confirm_quit(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any
+) -> None:
+    """`run_smoke`: `confirm_quit` не ставится — `quit_dialog` не передаётся.
+
+    Self-test не может показать диалог и не должен пытаться: `run_smoke`
+    зовёт `_build_main_window` без `quit_dialog` (в отличие от `main()`,
+    которая передаёт `_ask_quit_confirmation`) — гейта нет вовсе, а не
+    выключен отдельным флагом.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    appdata = tmp_path / "appdata"
+    target = tmp_path / "out"
+    target.mkdir()
+
+    assert run_smoke(str(target), {"APPDATA": str(appdata)}) == 0
+
+    qtbot.addWidget(captured["window"])
+    assert captured["window"].confirm_quit is None
+
+
+def test_main_wires_the_quit_confirmation_gate(assembled: _Assembly) -> None:
+    """`main()` обязана передать `quit_dialog` — иначе прод потерял бы гейт задачи 6.
+
+    `_assemble` зовёт настоящий `main()` без подмены `_build_main_window` —
+    единственный способ потерять эту проводку незамеченным: убрать
+    `quit_dialog=_ask_quit_confirmation` из вызова внутри `main()`. Диалог
+    здесь не вызывается (`confirm_quit()` не зовём) — предмет теста
+    исключительно факт проводки, не поведение диалога (оно покрыто выше).
+    """
+    assert assembled.window.confirm_quit is not None

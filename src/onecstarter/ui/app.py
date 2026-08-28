@@ -468,6 +468,72 @@ def _console_flow(
     workspace.open_console(root, convention)
 
 
+def _servers_word(n: int) -> str:
+    """Склонение «сервер» под число `n` для вопроса гейта выхода (T-10, задача 6).
+
+    Стандартное русское правило числительных: 1 — «сервер», 2-4 — «сервера»,
+    иначе «серверов» — с исключением на 11-14 (родительный падеж множественного
+    числа даже при остатке 1-4 от деления на 10: «11 серверов», не «11 сервер»).
+    """  # noqa: RUF002
+    if 11 <= n % 100 <= 14:
+        return "серверов"
+    last_digit = n % 10
+    if last_digit == 1:
+        return "сервер"
+    if 2 <= last_digit <= 4:
+        return "сервера"
+    return "серверов"
+
+
+def _confirm_quit_with_servers(
+    running_count: Callable[[], int], ask: Callable[[str], bool]
+) -> bool:
+    """Гейт выхода: серверов нет — тихо `True`; иначе спросить пользователя (спека §12.3).
+
+    T-10, задача 4 перевела серверы на дочерний жизненный цикл: закрытие
+    (или крах) лаунчера гасит их вместе с ним через Job Object (задача 7).
+    Молчаливый выход без вопроса потерял бы работающие кластеры без
+    предупреждения, поэтому `n == 0` (`running_count` — обычно
+    `ServersWorkspace.running_count`, число профилей с живым процессом по
+    последнему снимку, `0` и до первого скана) — единственный случай, когда
+    подтверждение не нужно и `ask` не зовётся вовсе. `_servers_word` даёт
+    верное склонение числительного в тексте вопроса.
+    """  # noqa: RUF002
+    n = running_count()
+    if n == 0:
+        return True
+    return ask(f"Остановить {n} {_servers_word(n)} и выйти?")
+
+
+def _ask_quit_confirmation(parent: QWidget, message: str) -> bool:
+    """Обёртка `QMessageBox.question` для гейта выхода — дефолт «Нет» (спека §12.3).
+
+    Модульная функция, не замыкание внутри `_build_main_window` (находка
+    ревью T-10, задача 6): `_build_main_window` собирает окно и для тестов
+    (тот же приём, что `run_smoke`), и внутри тестового набора offscreen
+    `QMessageBox.question` всё равно не показывается по-настоящему, но
+    БЕЗУСЛОВНОЕ подключение настоящего диалога вешало бы teardown любого
+    теста с работающим сервером (`qtbot`/`_assemble` зовут `window.close()`)
+    в вечном модальном ожидании. Диалог поэтому передаётся СНАРУЖИ через
+    параметр `quit_dialog` — `None` (тесты, `run_smoke`) оставляет
+    `window.confirm_quit` пустым, реальным значением его наполняет только
+    `main()`.
+
+    Дефолтная кнопка `No`, а не `Yes`: диалог, спрашивающий про остановку
+    РАБОТАЮЩИХ серверов, не должен позволять случайному Enter/пробелу
+    согласиться на неё — тот же приём осторожности, что у диалогов удаления
+    (`_default_confirm_removal`, `ui/servers/view.py`).
+    """  # noqa: RUF002
+    answer = QMessageBox.question(
+        parent,
+        "OneCStarter",
+        message,
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.No,
+    )
+    return answer == QMessageBox.StandardButton.Yes
+
+
 def _build_main_window(
     application: QApplication,
     runtime: Runtime,
@@ -477,6 +543,7 @@ def _build_main_window(
     process_scanner: ProcessScanner | None = None,
     process_control: ProcessControl | None = None,
     registered_radmin: Callable[[], Path | None] | None = None,
+    quit_dialog: Callable[[QWidget, str], bool] | None = None,
 ) -> tuple[MainWindow, StartupTasks, ServerMonitor]:
     """Собрать окно, трей, хоткей, watcher и фоновые задачи, не запуская их.
 
@@ -506,6 +573,18 @@ def _build_main_window(
     подставляет `lambda: None` (тот же довод, что у `NullScanner`/
     `NullControl` — долг №8: чтение HKLM машины сборщика не должно решать,
     что покажет self-test).
+
+    `quit_dialog` — та же по духу инъекция, но найденная не при написании,
+    а при мутационной проверке (T-10, задача 6, находка координатора):
+    первая редакция ставила `window.confirm_quit` безусловно, с настоящим
+    `_ask_quit_confirmation` внутри замыкания — teardown ЛЮБОГО теста
+    с работающим сервером (`qtbot addWidget`/`_assemble` зовут
+    `window.close()`) вешался на модальный `QMessageBox.question` под
+    offscreen-платформой навсегда, потому что диалог там не показывается,
+    но и не отвечает сам. `None` (тесты этого файла, `run_smoke` — гейта
+    нет вовсе) оставляет `window.confirm_quit` пустым; значение передаёт
+    только `main()` (`quit_dialog=_ask_quit_confirmation`) — единственное
+    место, откуда реальный диалог вообще может появиться.
 
     Значок приложения ставится здесь же, до создания трея (замечание
     заказчика на контрольной точке 16.08.2026): `setWindowIcon` до этой
@@ -673,11 +752,41 @@ def _build_main_window(
             if not item.is_group and item.favorite
         ]
 
+    def _build_confirm_quit(dialog: Callable[[QWidget, str], bool]) -> Callable[[], bool]:
+        def confirm_quit() -> bool:
+            return _confirm_quit_with_servers(
+                servers_workspace.running_count, lambda message: dialog(window, message)
+            )
+
+        return confirm_quit
+
+    # T-10, задача 6 (находка координатора, см. докстринг параметра
+    # `quit_dialog` выше): гейт собирается ТОЛЬКО когда снаружи дали диалог —
+    # без него `confirm_quit` остаётся `None`, и `MainWindow.closeEvent`
+    # никогда не дойдёт до `QMessageBox.question`, даже под offscreen, даже
+    # с работающим сервером.  # noqa: RUF003
+    confirm_quit = _build_confirm_quit(quit_dialog) if quit_dialog is not None else None
+    window.confirm_quit = confirm_quit
+
+    def request_quit() -> None:
+        """Пункт «Выход» трея — тот же гейт, что закрытие окна, плюс сам выход.
+
+        Дублирует `MainWindow.closeEvent` не проводом через него (трей не
+        закрывает окно, чтобы выйти — оно может быть уже скрыто в трее),
+        а прямым вызовом того же `confirm_quit`: отказ пользователя обязан
+        оставить приложение работающим, не только окно видимым. Без гейта
+        (`confirm_quit is None` — тесты, `run_smoke`, хотя тот трей вообще
+        не собирает) выход происходит сразу, без вопроса.
+        """  # noqa: RUF002
+        if confirm_quit is not None and not confirm_quit():
+            return
+        application.quit()
+
     tray = create_tray(
         window,
         favorites,
         view.launch_key,
-        application.quit,
+        on_quit=request_quit,
         theme_mode=lambda: controller.mode,
         on_theme=controller.set_mode,
     )
@@ -823,7 +932,9 @@ def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
         return 1
 
     try:
-        window, tasks, monitor = _build_main_window(application, runtime, os.environ)
+        window, tasks, monitor = _build_main_window(
+            application, runtime, os.environ, quit_dialog=_ask_quit_confirmation
+        )
     except ServerError as error:
         # CRITICAL 2, финальное ревью ветки: try вокруг build_runtime выше
         # не покрывал конструктор ServersWorkspace внутри _build_main_window
