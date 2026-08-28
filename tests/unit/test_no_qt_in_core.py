@@ -34,6 +34,7 @@ CORE = (
     "onecstarter.platform_1c.process_scan",
     "onecstarter.platform_1c.registry",
     "onecstarter.platform_1c.server_discovery",
+    "onecstarter.platform_1c.server_spawn",
     "onecstarter.security.secrets",
 )
 
