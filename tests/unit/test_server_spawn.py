@@ -9,7 +9,7 @@ import psutil
 import pytest
 
 from onecstarter.domain.launch import LaunchCommand
-from onecstarter.platform_1c.job import NullJob, ServerJob
+from onecstarter.platform_1c.job import JobError, NullJob, ServerJob
 from onecstarter.platform_1c.server_spawn import spawn_server
 
 
@@ -23,6 +23,19 @@ def _printing_command() -> LaunchCommand:
 def _kill_if_alive(pid: int) -> None:
     if psutil.pid_exists(pid):
         psutil.Process(pid).kill()
+
+
+class _FailingJob(ServerJob):
+    """`ServerJob`, чей `assign()` всегда отказывает `JobError` (для защитного теста).
+
+    Подкласс, а не отдельный класс: сигнатура `spawn_server` — закрытая уния
+    `ServerJob | NullJob`, не протокол, и под mypy strict фейк обязан быть
+    наследником, чтобы пройти проверку типов. Реальная ctypes-механика
+    `ServerJob.assign` не вызывается — метод переопределён целиком.
+    """  # noqa: RUF002
+
+    def assign(self, process_handle: int) -> None:
+        raise JobError("подставной отказ assign для теста")
 
 
 def test_spawn_server_redirects_stdout_to_log_file(tmp_path: Path) -> None:
@@ -80,3 +93,40 @@ def test_spawn_server_missing_log_dir_raises_oserror_and_spawns_nothing(tmp_path
     for proc in spawned:
         proc.kill()
     assert not spawned, "процесс порождён, хотя открытие журнала должно было упасть раньше Popen"
+
+
+def test_spawn_server_kills_process_when_job_assign_fails(tmp_path: Path) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ: отказ job.assign() не оставляет сервер жить вне Job.
+
+    Мутация «убрать try/except вокруг assign в spawn_server» оставит уже
+    порождённый процесс сиротой без гарантии kill-on-close, ради которой
+    Job вообще существует (ревью задачи 2, круг исправлений 1, Important).
+    """  # noqa: RUF002
+    log_path = tmp_path / "j.log"
+    # Уникальный токен — чтобы найти в дереве процессов именно этот вызов,
+    # а не случайный python.exe системы (тот же приём, что в тесте 3).  # noqa: RUF003
+    token = f"onecstarter-marker-{uuid.uuid4().hex}"
+    command = LaunchCommand(
+        executable=Path(sys.executable),
+        arguments=f'-c "import time; time.sleep(30)  # {token}"',
+    )
+
+    with pytest.raises(JobError):
+        spawn_server(command, log_path, _FailingJob())
+
+    deadline = time.monotonic() + 5
+    spawned = [
+        proc
+        for proc in psutil.process_iter(["cmdline"])
+        if proc.info["cmdline"] and any(token in part for part in proc.info["cmdline"])
+    ]
+    while time.monotonic() < deadline and spawned:
+        time.sleep(0.05)
+        spawned = [
+            proc
+            for proc in psutil.process_iter(["cmdline"])
+            if proc.info["cmdline"] and any(token in part for part in proc.info["cmdline"])
+        ]
+    for proc in spawned:
+        proc.kill()
+    assert not spawned, "процесс пережил отказ job.assign() — остался жить вне Job"
