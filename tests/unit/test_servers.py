@@ -1,5 +1,7 @@
 """ServersWorkspace: координатор профилей серверов и их хранения (T-08, T-10)."""
 
+import subprocess
+import sys
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from pathlib import Path
@@ -859,11 +861,74 @@ class TestStart:
         ragent = tmp_path / "1cv8" / "8.3.25.1633" / "bin" / "ragent.exe"
         installation = _server_installation("8.3.25.1633", ragent)
 
-        workspace.start(profile.id, [installation])
+        pid = workspace.start(profile.id, [installation])
 
         assert previous.read_text(encoding="utf-8") == "прошлый запуск\n"
         content = current.read_text(encoding="utf-8")
         assert f'запуск: "{ragent}" -debug -http -port 1540' in content
+        # Important 1 финального ревью ветки T-10: событие "порождён PID"
+        # обязано появиться в журнале после успешного server_spawn — тем же
+        # приёмом, что и "запуск: …" выше.
+        assert f"порождён PID {pid}" in content
+
+    def test_start_survives_rotation_failure_when_previous_journal_is_locked(
+        self, tmp_path: Path
+    ) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ.
+
+        Important 1 финального ревью ветки T-10: `Path.replace` внутри
+        `rotate_journal` падает `PermissionError [WinError 32]`, если журнал
+        ещё держит открытым процесс прошлого запуска (`dbgs`/`rmngr`,
+        переживший `ragent`, снятый из Диспетчера задач без штатной
+        остановки) — Python `open()` не даёт `FILE_SHARE_DELETE`. Держатель
+        здесь настоящий: подставной ребёнок-python со stdout, перенаправленным
+        в ТЕКУЩИЙ журнал, — тот же честный способ занять файл на Windows, что
+        и `TestFailedSaveRollsBackMemory` использует для каталога. Раньше
+        `rotate_journal` стоял в общем `try` со spawn — любой `OSError` (в
+        том числе отсюда) переводился в «отказ запуска» и `ServerError`,
+        и профиль было не запустить, хотя причина вообще не в spawn. `start`
+        обязан продолжить как обычно: запись о неудавшейся ротации в журнал,
+        затем `запуск: …`, `server_spawn` и `порождён PID` — без исключения.
+        Мутация: вернуть `rotate_journal` внутрь общего
+        `try/except (OSError, JobError)` вместе со spawn — тест обязан
+        упасть `ServerError`.
+        """  # noqa: RUF002
+        store_path = tmp_path / "servers.json"
+        logs_dir = tmp_path / "logs"
+        spawn = FakeServerSpawn(pid=4242)
+        workspace = _workspace(
+            store_path, new_id=lambda: "bd" * 16, server_spawn=spawn, logs_dir=logs_dir
+        )
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        current = server_journal.journal_path(logs_dir, profile.id)
+        current.parent.mkdir(parents=True, exist_ok=True)
+        current.write_text("прошлый запуск\n", encoding="utf-8")
+        ragent = tmp_path / "1cv8" / "8.3.25.1633" / "bin" / "ragent.exe"
+        installation = _server_installation("8.3.25.1633", ragent)
+
+        holder_stdout = current.open("ab")
+        holder = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            stdout=holder_stdout,
+        )
+        holder_stdout.close()
+        try:
+            pid = workspace.start(profile.id, [installation])
+        finally:
+            holder.kill()
+            holder.wait()
+
+        assert pid == 4242
+        content = current.read_text(encoding="utf-8")
+        assert "прошлый запуск" in content
+        assert "ротация журнала не удалась" in content
+        assert "файл занят процессом прошлого запуска" in content
+        assert f'запуск: "{ragent}" -debug -http -port 1540' in content
+        assert f"порождён PID {pid}" in content
+        # Ротация действительно не удалась — файла .1.log нет, старое
+        # содержимое осталось в текущем файле (см. asserts выше).
+        assert not server_journal.previous_journal_path(logs_dir, profile.id).exists()
 
     def test_failed_spawn_logs_the_refusal(self, tmp_path: Path) -> None:
         """ЗАЩИТНЫЙ ТЕСТ.
