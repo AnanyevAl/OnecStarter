@@ -12,7 +12,7 @@ from onecstarter.services.server_journal import (
 
 class TestRotate:
     def test_current_becomes_previous(self, tmp_path: Path) -> None:
-        """ЗАЩИТНЫЙ ТЕСТ: ротация сохраняет прошлый запуск (спека §12.6).  # noqa: RUF002
+        """ЗАЩИТНЫЙ ТЕСТ: ротация сохраняет прошлый запуск (спека §12.6).
 
         Мутация «rotate удаляет файл вместо переноса» теряет историю.
         """  # noqa: RUF002
