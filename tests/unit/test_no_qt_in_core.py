@@ -16,6 +16,7 @@ CORE = (
     "onecstarter.services.connection",
     "onecstarter.services.cache",
     "onecstarter.services.server_store",
+    "onecstarter.services.server_journal",
     "onecstarter.services.servers",
     "onecstarter.config.v8i",
     "onecstarter.config.atomic",
