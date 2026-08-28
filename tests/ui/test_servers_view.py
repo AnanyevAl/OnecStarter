@@ -1346,3 +1346,37 @@ def test_death_after_start_is_also_written_to_the_journal(
     journal_text = workspace.journal_path(profile.id).read_text(encoding="utf-8")
     assert "завершился сразу после запуска" in journal_text
     assert str(profile.port) in journal_text
+
+
+def test_confirmed_running_is_also_written_to_the_journal(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Important 2 финального ревью ветки T-10: положительный §8-исход тоже в журнал.
+
+    Спека §12.1 обещает «PID-ы дерева по скану, итог подтверждающего
+    скана» — не только отказ. Раньше в журнал попадал только отрицательный
+    исход (`test_death_after_start_is_also_written_to_the_journal` выше),
+    и между «запуск: …» и следующим ручным действием пользователя не
+    оставалось никакого следа о том, что сервер вообще поднялся. Тот же
+    путь, каким его зовёт `app.py`, что и у теста отрицательной ветки.
+    Мутация: убрать запись `работает · PID …` из положительной ветки
+    `_check_pending_confirmation` — тест обязан упасть (строки не будет).
+    """  # noqa: RUF002
+    profile = _profile()
+    workspace = _workspace(tmp_path, (profile,))
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+    errors: list[str] = []
+    view = ServersView(
+        workspace,
+        installed=lambda: [_installation()],
+        palette=theme.DARK,
+        show_error=lambda message: errors.append(message),
+    )
+
+    view.profile_button(0).click()
+    workspace.apply_scan(ScanSnapshot(agents=(_agent(4242, profile.cluster_dir),), managers=()))
+    view.on_scan_snapshot()
+
+    assert errors == []  # положительный исход — не §8-предупреждение
+    journal_text = workspace.journal_path(profile.id).read_text(encoding="utf-8")
+    assert "работает · PID 4242" in journal_text

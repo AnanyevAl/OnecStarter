@@ -474,13 +474,25 @@ class ServersView(QWidget):
         по-прежнему молчит ([Ф] А3/А4), но раз уж OneCStarter сам заметил
         исход, «Журнал профиля» обязан его показать, а не оставить дыру
         между «запуск: …» и следующим событием.
+
+        Important 2 финального ревью ветки T-10: положительный исход того
+        же подтверждающего скана (профиль нашёлся, и у него есть живые
+        `status.processes`) тоже пишется в журнал — `работает · PID …`
+        (спека §12.1: «PID-ы дерева по скану, итог подтверждающего скана»).
+        Раньше в журнал попадал только отрицательный исход, и между
+        «запуск: …» и следующим ручным действием пользователя не
+        оставалось никакого следа о том, что сервер вообще поднялся.
         """  # noqa: RUF002
         profile_id = self._pending_confirmation
         if profile_id is None:
             return
         self._pending_confirmation = None
         status = next((s for s in statuses if s.profile.id == profile_id), None)
-        if status is None or status.processes:
+        if status is None:
+            return
+        if status.processes:
+            pids = ", ".join(str(p.pid) for p in status.processes)
+            self._workspace.log_event(profile_id, f"работает · PID {pids}")
             return
         profile = status.profile
         message = (
