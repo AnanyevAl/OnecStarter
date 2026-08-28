@@ -1313,10 +1313,16 @@ smoke собранного экземпляра — `OK` (окно офскри�
 — вес не сдвинулся от T-08 (изменения T-10 не тянут новых тяжёлых
 зависимостей).
 
-**Мутационная стадия: 6/6 предписанных мутаций убиты** независимым
-агентом (не автором тестов вехи), полный протокол (правка → целевой
-тест → дословный результат → откат → чистое дерево) — в
-`.superpowers/sdd/2026-08-28-v2-servers-journal/task-9-report.md`.
+**Мутационная стадия: 9/9 предписанных мутаций убиты** — 6/6 независимым
+агентом (не автором тестов вехи) на гейте задачи 9, полный протокол
+(правка → целевой тест → дословный результат → откат → чистое дерево) —
+в `.superpowers/sdd/2026-08-28-v2-servers-journal/task-9-report.md`;
+ещё 3/3 (строки 7–9) — отдельной волной независимого агента по трём
+защитным утверждениям, добавленным правками финального ревью ветки
+(best-effort ротация не должна прерывать запуск, событие «порождён PID»,
+событие «работает · PID» в `_check_pending_confirmation`), тот же
+протокол — в
+`.superpowers/sdd/2026-08-28-v2-servers-journal/final-mutation-report.md`.
 
 | # | Мутация | Файл | Тест | Результат |
 | --- | --- | --- | --- | --- |
@@ -1326,10 +1332,17 @@ smoke собранного экземпляра — `OK` (окно офскри�
 | 4 | `except (OSError, JobError)` в `start` не пишет «отказ запуска» | `services/servers.py` | `test_failed_spawn_logs_the_refusal` | УПАЛ — `assert "отказ запуска" in content`: строки нет, в журнале осталась только запись `запуск: …`; сам `ServerError` при этом поднимается штатно |
 | 5 | `closeEvent` игнорирует отказ `confirm_quit`, закрывает всегда | `ui/shell.py` | `test_close_with_running_servers_and_declined_confirmation_keeps_window` | УПАЛ — `assert window.isVisible()`: `AssertionError: assert False`, окно закрылось несмотря на отказ подтверждения |
 | 6 | `run_smoke` не подставляет `server_job=NullJob()` (уходит дефолтный `ServerJob()`) | `ui/app.py` | `test_run_smoke_uses_null_job` | УПАЛ — фейковый конструктор `ServerJob` (`bomb`) сработал: `AssertionError: smoke не должен создавать ServerJob` |
+| 7 | Отказ ротации журнала (`except OSError`) снова поднимает `ServerError`, прерывая запуск | `services/servers.py` | `test_start_survives_rotation_failure_when_previous_journal_is_locked` | УПАЛ — незапойманный `ServerError: Не удалось запустить сервер: [WinError 32] Процесс не может получить доступ к файлу... '...bdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbd.log' -> '...bdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbd.1.log'`; `1 failed in 0.35s` |
+| 8 | `start` не пишет событие `порождён PID <pid>` после успешного `server_spawn` | `services/servers.py` | `test_start_rotates_journal_and_logs_command`, `test_start_survives_rotation_failure_when_previous_journal_is_locked` | УПАЛИ оба — `assert f"порождён PID {pid}" in content`: строки нет ни в обычном журнале, ни в журнале после best-effort ротации; `2 failed in 0.62s` |
+| 9 | `_check_pending_confirmation` не пишет `работает · PID <pids>` при положительном исходе подтверждающего скана | `ui/servers/view.py` | `test_confirmed_running_is_also_written_to_the_journal` | УПАЛ — `assert "работает · PID 4242" in journal_text`: строки нет, в журнале только `запуск: …` и `порождён PID 4242`; `1 failed in 0.29s` |
 
 Каждая мутация внесена, прогнан только названный тест, откат
 `git checkout --`, `git status --short` пуст — протокол CLAUDE.md
-(«Мутационная проверка тестов») соблюдён по всем шести пунктам.
+(«Мутационная проверка тестов») соблюдён по всем девяти пунктам.
+Мутация 1 в новой тройке (строка 7) — держатель файла подставной
+python-процесс (`time.sleep(60)`), после прогона проверено, что он не
+остался жить (`Get-CimInstance Win32_Process | Where-Object { $_.CommandLine
+-match 'time.sleep\(60\)' }` — пусто).
 
 ### Долг вехи T-10 (не блокирует слияние)
 
