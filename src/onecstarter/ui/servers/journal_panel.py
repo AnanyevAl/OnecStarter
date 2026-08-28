@@ -2,12 +2,21 @@
 
 Файл — `services/server_journal.py`: два независимых писателя одного файла
 (наши события с временными метками и захваченный stdout дерева процессов,
-[Ф] А1 T-09, спека §12.5). Панель читает ХВОСТ файла целиком на каждый
-`refresh()` — не держит файл открытым и не подписывается на изменения ФС
-(файл дозаписывается снаружи двумя независимыми процессами, периодический
-опрос надёжнее вотчера). Кодировка платформенного вывода не снята
-([Ф] А1/А4 T-09) — декодирование `utf-8, errors="replace"` не роняет
-панель ни на каких байтах, включая произвольный мусор посреди файла.
+[Ф] А1 T-09, спека §12.5). Панель читает ХВОСТ файла на каждый `refresh()` —
+не держит файл открытым и не подписывается на изменения ФС (файл
+дозаписывается снаружи двумя независимыми процессами, периодический опрос
+надёжнее вотчера). Кодировка платформенного вывода не снята ([Ф] А1/А4
+T-09) — декодирование `utf-8, errors="replace"` не роняет панель ни на
+каких байтах, включая произвольный мусор посреди файла.
+
+**Ревью задачи 5, IMPORTANT** (исправлено 28.08.2026): `refresh()` читает
+не файл целиком, а не более `_TAIL_BYTES` (256 КиБ) с КОНЦА файла
+(`_read_tail_bytes` — `seek` от найденного смещения, без загрузки головы
+файла в память). Журнал ротируется только на `start()` (см.
+`services/server_journal.py`) — при долгой работе сервера файл растёт
+неограниченно, а `refresh()` зовётся раз в секунду синхронно в UI-потоке;
+без ограничения объёма каждый тик блокировал бы интерфейс на чтение/decode/
+splitlines всего файла целиком.
 
 `QTimer` тикает раз в секунду, но только пока панель ВИДИМА и профиль
 ВЫБРАН (путь задан) — `_sync_timer` держит `isActive()` ровно в этом
@@ -15,25 +24,68 @@
 виджета (`showEvent`/`hideEvent`). Тесты не ждут тика: `refresh()` —
 публичный метод, зовётся явно и детерминированно, таймер в них не участвует.
 
+**Ревью задачи 5, CRITICAL** (исправлено 28.08.2026): `QPlainTextEdit.
+setPlainText()` безусловно пересобирает документ и сбрасывает scrollbar
+в 0 — НЕЗАВИСИМО от того, совпадает ли новый текст со старым (измерено
+ревьюером на этом же PySide6: ручная прокрутка к середине, `setPlainText()`
+ТЕМ ЖЕ текстом — `value()` всё равно улетает в 0). Раньше `refresh()` звал
+`setPlainText()` на каждый тик безусловно, а «прокрутка не поедет» держалось
+на неверном допущении «текст не менялся → Qt сам ничего не сдвинет».
+Теперь `refresh()`: (1) не зовёт `setPlainText()` вовсе, если хвост не
+изменился (`tail == self._text.toPlainText()`); (2) если изменился и
+пользователь НЕ был у низа — явно возвращает прежнее значение scrollbar
+(`bar.setValue(previous_value)`) уже ПОСЛЕ `setPlainText()`, а не полагается
+на то, что Qt его не тронет. Прокрутка везде — через `QScrollBar`
+(`verticalScrollBar()`), единый механизм для «к низу» и «на прежнее место»
+(до правки «к низу» двигало текстовый курсор — раздвоение без причины).
+
 Приём «карточка → плейсхолдер/полоса» — тот же, что `ConnectionPanel`
 (`ui/bases/panel.py`): плейсхолдер красится через `QPalette.PlaceholderText`
 поверх стиля поля, а не через отдельный виджет-заглушку.
 """  # noqa: RUF002
 
+import os
 from pathlib import Path
 
 from PySide6.QtCore import QTimer
-from PySide6.QtGui import QColor, QHideEvent, QPalette, QShowEvent, QTextCursor
-from PySide6.QtWidgets import QLabel, QPlainTextEdit, QVBoxLayout, QWidget
+from PySide6.QtGui import QColor, QHideEvent, QPalette, QShowEvent
+from PySide6.QtWidgets import QLabel, QPlainTextEdit, QScrollBar, QVBoxLayout, QWidget
 
 from onecstarter.ui.theme import Palette
 
 _MONO = "font-family: Consolas, 'Cascadia Mono', monospace;"
 _TAIL_LINES = 500
+_TAIL_BYTES = 256 * 1024  # 256 КиБ — буфер чтения хвоста (ревью задачи 5, IMPORTANT)
 _TIMER_INTERVAL_MS = 1000
 _SCROLL_TOLERANCE = 2
 _PLACEHOLDER_TITLE = "Журнал профиля"
 _PLACEHOLDER_TEXT = "Выберите профиль слева, чтобы увидеть его журнал"  # noqa: RUF001
+
+
+def _read_tail_bytes(path: Path, max_bytes: int) -> bytes:
+    """Прочитать не более `max_bytes` байт с КОНЦА файла — без чтения файла целиком.
+
+    Отсутствующий/недоступный файл — `OSError` глотается молча (тот же
+    приём, что `ServersWorkspace.log_event`): пустой хвост неотличим от
+    только что созданного, ни разу не запускавшегося профиля.
+
+    Первая строка буфера может оказаться обрезанной посередине (байт-смещение
+    внутри файла, а не граница строки) — не страшно: `_read_tail`
+    декодирует буфер с `errors="replace"` (обрубок многобайтового UTF-8
+    символа заменяется на `�`, не падает) и берёт только последние ≤ 500
+    строк — буфер (256 КиБ) почти всегда на порядки больше 500 строк
+    журнала, так что обрезанная первая строка либо не попадает в показ
+    вовсе, либо ведёт себя как обычная «грязная» строка платформенного
+    stdout (то же допущение, что и у произвольных байт вообще).
+    """  # noqa: RUF002
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - max_bytes))
+            return handle.read()
+    except OSError:
+        return b""
 
 
 class JournalPanel(QWidget):
@@ -94,25 +146,34 @@ class JournalPanel(QWidget):
         self._sync_timer()
 
     def refresh(self) -> None:
-        """Перечитать хвост файла (последние ≤ 500 строк). No-op без выбранного профиля.
+        """Перечитать хвост файла (последние ≤ 500 строк из ≤ 256 КиБ с конца).
 
-        Отсутствующий файл (профиль ещё ни разу не запускался) — не отказ,
-        а такой же пустой хвост, как и у пустого файла: `OSError` глотается
-        молча, тем же приёмом, что `ServersWorkspace.log_event`.
+        No-op без выбранного профиля. Если хвост не изменился с прошлого
+        раза — `QPlainTextEdit` вообще не трогается (см. докстринг модуля,
+        CRITICAL): `setPlainText()` безусловно сбрасывает прокрутку в 0,
+        поэтому единственная надёжная защита — не звать его, когда текст
+        совпадает. Если хвост изменился и пользователь не был у низа —
+        прежняя позиция прокрутки восстанавливается явно ПОСЛЕ `setPlainText()`.
         """  # noqa: RUF002
         if self._path is None:
             return
-        try:
-            raw = self._path.read_bytes()
-        except OSError:
-            raw = b""
-        content = raw.decode("utf-8", errors="replace")
-        lines = content.splitlines()
-        tail = "\n".join(lines[-_TAIL_LINES:])
-        was_at_bottom = self._is_at_bottom()
+        tail = self._read_tail(self._path)
+        if tail == self._text.toPlainText():
+            return
+        bar = self._text.verticalScrollBar()
+        was_at_bottom = self._is_at_bottom(bar)
+        previous_value = bar.value()
         self._text.setPlainText(tail)
         if was_at_bottom:
-            self._scroll_to_bottom()
+            bar.setValue(bar.maximum())
+        else:
+            bar.setValue(previous_value)
+
+    def _read_tail(self, path: Path) -> str:
+        raw = _read_tail_bytes(path, _TAIL_BYTES)
+        content = raw.decode("utf-8", errors="replace")
+        lines = content.splitlines()
+        return "\n".join(lines[-_TAIL_LINES:])
 
     # -- доступ для тестов ------------------------------------------------------
 
@@ -153,15 +214,8 @@ class JournalPanel(QWidget):
 
     # -- вспомогательное ---------------------------------------------------------
 
-    def _is_at_bottom(self) -> bool:
-        bar = self._text.verticalScrollBar()
+    def _is_at_bottom(self, bar: QScrollBar) -> bool:
         return bar.value() >= bar.maximum() - _SCROLL_TOLERANCE
-
-    def _scroll_to_bottom(self) -> None:
-        cursor = self._text.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        self._text.setTextCursor(cursor)
-        self._text.ensureCursorVisible()
 
     def _apply_style(self) -> None:
         palette = self._palette
