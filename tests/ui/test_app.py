@@ -734,6 +734,22 @@ def _assemble(
     stylesheets: list[str] = []
     monkeypatch.setattr(qapp, "setStyleSheet", stylesheets.append)
 
+    # Fix-before-merge (финальное ревью ветки T-10, п.3): `main()` здесь
+    # получает настоящий `_ask_quit_confirmation` (в отличие от прямых
+    # тестов `_build_main_window`, которые его не передают вовсе) — до сих  # noqa: RUF003
+    # пор безопасно только потому, что ни один тест на этой фикстуре не
+    # поднимает `running_count() > 0` перед закрытием окна. Будущий тест
+    # с живым сервером на `_assemble` без этой страховки повиснет на  # noqa: RUF003
+    # настоящем модальном `QMessageBox.question` под offscreen-платформой
+    # (диалог не показывается, но и не отвечает сам), а не упадёт — тот же  # noqa: RUF003
+    # приём, что `test_closing_window_without_quit_dialog_never_shows_a_
+    # confirmation_dialog`: подмена кидает `AssertionError` вместо показа,
+    # так что попытка позвать диалог явно упадёт тестом.
+    def _forbidden_question(*args: object) -> QMessageBox.StandardButton:
+        raise AssertionError("диалог выхода не должен показываться в тестах")
+
+    monkeypatch.setattr(QMessageBox, "question", staticmethod(_forbidden_question))
+
     name_before = qapp.applicationName()
     try:
         code = app_module.main([], start_hidden=start_hidden)
