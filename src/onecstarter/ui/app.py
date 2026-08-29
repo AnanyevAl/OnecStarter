@@ -769,17 +769,27 @@ def _build_main_window(
 
     def _build_confirm_quit(dialog: Callable[[QWidget, str], bool]) -> Callable[[], bool]:
         def confirm_quit() -> bool:
-            return _confirm_quit_with_servers(
+            confirmed = _confirm_quit_with_servers(
                 servers_workspace.running_count, lambda message: dialog(window, message)
             )
+            if confirmed:
+                # НАХОДКА 4 ручного чек-листа T-10 (Minor): дерево гасит
+                # сама ОС (Job kill-on-close) без единой строки кода  # noqa: RUF003
+                # остановки — до этой правки конец сессии не оставлял
+                # следа в журнале работающего профиля. Один путь на оба  # noqa: RUF003
+                # вызывающих (`request_quit` и `MainWindow.closeEvent` —
+                # оба зовут именно этот `confirm_quit`), ДО `application.  # noqa: RUF003
+                # quit()`: после согласия, но раньше самого выхода.
+                servers_workspace.log_shutdown()
+            return confirmed
 
         return confirm_quit
 
     # T-10, задача 6 (находка координатора, см. докстринг параметра
     # `quit_dialog` выше): гейт собирается ТОЛЬКО когда снаружи дали диалог —
     # без него `confirm_quit` остаётся `None`, и `MainWindow.closeEvent`
-    # никогда не дойдёт до `QMessageBox.question`, даже под offscreen, даже
-    # с работающим сервером.  # noqa: RUF003
+    # никогда не дойдёт до настоящего диалога подтверждения, даже под
+    # offscreen, даже с работающим сервером.  # noqa: RUF003
     confirm_quit = _build_confirm_quit(quit_dialog) if quit_dialog is not None else None
     window.confirm_quit = confirm_quit
 

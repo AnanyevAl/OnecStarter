@@ -1293,6 +1293,69 @@ class TestLogEvent:
         workspace.log_event(profile.id, "не должно упасть")  # не поднимает исключение
 
 
+class TestLogShutdown:
+    """НАХОДКА 4 ручного чек-листа T-10 (Minor): выход не оставлял следа в
+    журнале — дерево гасит ОС (Job kill-on-close), кода остановки нет
+    (§12.4), и конец сессии читателю журнала не виден. `log_shutdown`
+    закрывает эту дыру: пишет одно событие в журнал КАЖДОГО профиля,
+    у которого по последнему снимку есть хотя бы один живой процесс.
+    """  # noqa: RUF002
+
+    def test_writes_only_to_running_profiles_and_returns_their_count(
+        self, tmp_path: Path
+    ) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ.
+
+        Два профиля, из них один работает (совпавший `ragent` в снимке) —
+        `log_shutdown` обязан дописать событие ТОЛЬКО в его журнал и
+        вернуть `1`, не создавая журнал у профиля без процессов.
+        Мутация: перебирать `self._profiles` без проверки `_matched_processes`
+        (писать всем без разбора) — тест обязан упасть на `not exists()`
+        журнала простаивающего профиля.
+        """  # noqa: RUF002
+        store_path = tmp_path / "servers.json"
+        logs_dir = tmp_path / "logs"
+        ids = iter(["ha" * 16, "hb" * 16])
+        workspace = _workspace(store_path, new_id=lambda: next(ids), logs_dir=logs_dir)
+        workspace.add_profile(_profile())  # cluster_dir E:\srv\srv_8.3.25.1633
+        workspace.add_profile(
+            _profile(name="сосед", port=2540, regport=2541, cluster_dir=r"E:\srv\other")
+        )
+        running, idle = workspace.profiles()
+        agent = _agent(981, ("ragent.exe", "-port", "1540", "-d", running.cluster_dir))
+        workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
+
+        count = workspace.log_shutdown()
+
+        assert count == 1
+        running_journal = server_journal.journal_path(logs_dir, running.id).read_text(
+            encoding="utf-8"
+        )
+        assert "выход лаунчера — сервер будет остановлен вместе с ним" in running_journal  # noqa: RUF001
+        assert not server_journal.journal_path(logs_dir, idle.id).exists()
+
+    def test_returns_zero_before_any_scan(self, tmp_path: Path) -> None:
+        """До первого `apply_scan` — та же семантика, что у `running_count`
+        (`scan_pending`): «снимка не было» не равно «серверы не работают»,
+        но и писать в журнал ДО первого снимка нечего — нет ни одного
+        подтверждённого живого процесса.
+        """  # noqa: RUF002
+        store_path = tmp_path / "servers.json"
+        workspace = _workspace(store_path, new_id=lambda: "hc" * 16)
+        workspace.add_profile(_profile())
+
+        assert workspace.log_shutdown() == 0
+
+    def test_returns_zero_after_scan_with_nothing_running(self, tmp_path: Path) -> None:
+        store_path = tmp_path / "servers.json"
+        logs_dir = tmp_path / "logs"
+        workspace = _workspace(store_path, new_id=lambda: "hd" * 16, logs_dir=logs_dir)
+        workspace.add_profile(_profile())
+        workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+
+        assert workspace.log_shutdown() == 0
+
+
 class TestRunningCount:
     def test_zero_before_scan(self, tmp_path: Path) -> None:
         workspace = _workspace(tmp_path / "servers.json")

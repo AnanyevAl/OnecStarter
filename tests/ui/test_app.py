@@ -2593,6 +2593,64 @@ def test_close_with_running_server_and_declined_dialog_keeps_confirm_quit_false(
     assert asked == ["Остановить 1 сервер и выйти?"]
 
 
+def test_confirm_quit_true_logs_shutdown_event_for_running_profile(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ: НАХОДКА 4 ручного чек-листа T-10 (Minor) — согласие
+    в диалоге выхода обязано оставить след в журнале работающего профиля
+    ДО самого выхода —
+    дерево серверов гасит сама ОС (Job kill-on-close, §12.4), кода
+    остановки нет, и без этого события конец сессии в журнале не виден.
+
+    `_build_confirm_quit` — один путь на `request_quit` и на гейт
+    `MainWindow.closeEvent` (оба зовут именно `window.confirm_quit()`),
+    поэтому проверка через `window.confirm_quit()` покрывает оба вызывающих
+    сразу.
+
+    Мутация: убрать `servers_workspace.log_shutdown()` из `_build_confirm_quit`
+    — тест обязан упасть (строки в журнале не будет).
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+    window, _tasks, _monitor = _build_main_window(
+        qapp, runtime, env, quit_dialog=_fake_quit_dialog([], answer=True)
+    )
+    qtbot.addWidget(window)
+    labels = [button.text() for button in window.section_buttons()]
+    window.show_section(labels.index("Серверы"))
+    servers_view = window.current_section()
+    assert isinstance(servers_view, ServersView)
+    servers_view._workspace.add_profile(
+        ServerProfile(
+            id="",
+            name="Тест",
+            version="8.3.25.1633",
+            port=1540,
+            regport=1541,
+            range_start=1560,
+            range_end=1591,
+            cluster_dir=str(tmp_path / "srv"),
+        )
+    )
+    profile = servers_view._workspace.profiles()[0]
+    agent = ProcessInfo(
+        pid=4646,
+        name="ragent.exe",
+        executable=None,
+        argv=("ragent.exe", "-d", str(tmp_path / "srv"), "-port", "1540", "-regport", "1541"),
+        create_time=1.0,
+    )
+    servers_view._workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
+    assert servers_view._workspace.running_count() == 1
+
+    assert window.confirm_quit is not None
+    assert window.confirm_quit() is True
+
+    journal_text = servers_view._workspace.journal_path(profile.id).read_text(encoding="utf-8")
+    assert "выход лаунчера — сервер будет остановлен вместе с ним" in journal_text  # noqa: RUF001
+
+
 def test_closing_window_without_quit_dialog_never_shows_a_confirmation_dialog(
     qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
 ) -> None:

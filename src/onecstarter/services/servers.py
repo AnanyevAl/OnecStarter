@@ -371,6 +371,35 @@ class ServersWorkspace:
             return 0
         return sum(1 for processes in self._match.by_profile.values() if processes)
 
+    def log_shutdown(self) -> int:
+        """Отметить в журнале каждого РАБОТАЮЩЕГО профиля выход лаунчера. Возвращает их число.
+
+        НАХОДКА 4 ручного чек-листа T-10 (Minor): дерево серверов гасит
+        сама ОС (Job kill-on-close, задача 7) — кода остановки при выходе
+        нет и не появится (спека §12.4, решение заказчика), поэтому
+        последняя строка журнала работающего профиля до этой правки — либо
+        баннер платформы, либо вовсе `запуск: …`; конец сессии читателю
+        журнала не виден. Зовётся из `ui/app.py` ПОСЛЕ согласия
+        пользователя (или сразу, если серверов нет и спрашивать нечего) —
+        ДО `application.quit()`, одним путём на `request_quit` и
+        `closeEvent` (`_build_confirm_quit`).
+
+        Та же семантика, что у `running_count`: профиль «работает», если
+        по ПОСЛЕДНЕМУ снимку у него есть хотя бы один живой процесс
+        (`_matched_processes`) — до первого `apply_scan` ни один профиль
+        не работает, событие не пишется никому, возвращается `0`.
+        `log_event` сам глотает `OSError` (её докстринг) — отказ записи
+        одного журнала не мешает дойти до остальных профилей.
+        """  # noqa: RUF002
+        count = 0
+        for profile in self._profiles:
+            if self._matched_processes(profile):
+                self.log_event(
+                    profile.id, "выход лаунчера — сервер будет остановлен вместе с ним"  # noqa: RUF001
+                )
+                count += 1
+        return count
+
     def journal_path(self, profile_id: str) -> Path:
         """Путь к текущему журналу профиля. Неизвестный `id` — `UnknownItemError`."""
         self._profile_or_raise(profile_id)
