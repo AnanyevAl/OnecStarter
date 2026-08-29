@@ -1316,7 +1316,7 @@ smoke собранного экземпляра — `OK` (окно офскри�
 — вес не сдвинулся от T-08 (изменения T-10 не тянут новых тяжёлых
 зависимостей).
 
-**Мутационная стадия: 9/9 предписанных мутаций убиты** — 6/6 независимым
+**Мутационная стадия: 16/16 предписанных мутаций убиты** — 6/6 независимым
 агентом (не автором тестов вехи) на гейте задачи 9, полный протокол
 (правка → целевой тест → дословный результат → откат → чистое дерево) —
 в `.superpowers/sdd/2026-08-28-v2-servers-journal/task-9-report.md`;
@@ -1325,7 +1325,13 @@ smoke собранного экземпляра — `OK` (окно офскри�
 (best-effort ротация не должна прерывать запуск, событие «порождён PID»,
 событие «работает · PID» в `_check_pending_confirmation`), тот же
 протокол — в
-`.superpowers/sdd/2026-08-28-v2-servers-journal/final-mutation-report.md`.
+`.superpowers/sdd/2026-08-28-v2-servers-journal/final-mutation-report.md`;
+ещё 7/7 (строки 10–16) — отдельным независимым агентом по находкам волны
+финального ревью ручного чек-листа T-10/T-08 (держатель хендла журнала
+ребёнка, утечка Win32-хендла, дефолт часового пояса `now`, адресность
+`log_shutdown`, событие выхода в `ui/app.py`, дефолтная кнопка диалога
+подтверждения), тот же протокол — в
+`.superpowers/sdd/2026-08-28-v2-servers-journal/checklist-mutation-report.md`.
 
 | # | Мутация | Файл | Тест | Результат |
 | --- | --- | --- | --- | --- |
@@ -1338,14 +1344,27 @@ smoke собранного экземпляра — `OK` (окно офскри�
 | 7 | Отказ ротации журнала (`except OSError`) снова поднимает `ServerError`, прерывая запуск | `services/servers.py` | `test_start_survives_rotation_failure_when_previous_journal_is_locked` | УПАЛ — незапойманный `ServerError: Не удалось запустить сервер: [WinError 32] Процесс не может получить доступ к файлу... '...bdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbd.log' -> '...bdbdbdbdbdbdbdbdbdbdbdbdbdbdbdbd.1.log'`; `1 failed in 0.35s` |
 | 8 | `start` не пишет событие `порождён PID <pid>` после успешного `server_spawn` | `services/servers.py` | `test_start_rotates_journal_and_logs_command`, `test_start_survives_rotation_failure_when_previous_journal_is_locked` | УПАЛИ оба — `assert f"порождён PID {pid}" in content`: строки нет ни в обычном журнале, ни в журнале после best-effort ротации; `2 failed in 0.62s` |
 | 9 | `_check_pending_confirmation` не пишет `работает · PID <pids>` при положительном исходе подтверждающего скана | `ui/servers/view.py` | `test_confirmed_running_is_also_written_to_the_journal` | УПАЛ — `assert "работает · PID 4242" in journal_text`: строки нет, в журнале только `запуск: …` и `порождён PID 4242`; `1 failed in 0.29s` |
+| 10 | Хендл журнала ребёнку — `GENERIC_WRITE` вместо `FILE_APPEND_DATA` (обычный указатель записи вместо атомарной дозаписи в конец) | `platform_1c/server_spawn.py` (`_open_append_shared`) | `test_parent_event_survives_child_write` | УПАЛ — `assert "событие координатора" in content`: строка родителя затёрта дочерней записью (`'xxxx…\n'`); `1 failed in 1.80s` |
+| 11 | Из режима расшаривания `CreateFileW` убран `FILE_SHARE_DELETE` | `platform_1c/server_spawn.py` (`_open_append_shared`) | `test_rotation_succeeds_while_child_holds_journal` | УПАЛ — `PermissionError: [WinError 32] Процесс не может получить доступ к файлу…` на `log_path.replace(previous)`; `1 failed in 0.20s` |
+| 12 | `CloseHandle(handle)` убран из ветки `except OSError` вокруг `open_osfhandle` | `platform_1c/server_spawn.py` (`_open_append_shared`) | `test_open_append_shared_closes_handle_when_open_osfhandle_fails` | УПАЛ — `assert after <= before`: `AssertionError: хендл журнала утёк: было 217, стало 218`; `1 failed in 0.16s` |
+| 13 | Дефолт `now` конструктора вернут на `lambda: datetime.now(UTC)` | `services/servers.py` (`ServersWorkspace.__init__`) | `TestDefaultNow::test_default_now_is_local_time` | УПАЛ — `assert actual.utcoffset() == expected_offset`: `AssertionError: assert datetime.timedelta(0) == datetime.timedelta(seconds=18000)`; `1 failed in 0.26s` |
+| 14 | `log_shutdown` пишет событие ВСЕМ профилям (снята проверка `_matched_processes`) | `services/servers.py` (`log_shutdown`) | `TestLogShutdown::test_writes_only_to_running_profiles_and_returns_their_count` | УПАЛ — `assert count == 1`: `assert 2 == 1` (записано и простаивающему профилю); `1 failed in 0.27s` |
+| 15 | `servers_workspace.log_shutdown()` убран из `_build_confirm_quit` при согласии | `ui/app.py` (`_build_confirm_quit`) | `test_confirm_quit_true_logs_shutdown_event_for_running_profile` | УПАЛ — `FileNotFoundError` на `journal_path(...).read_text(...)`: журнал профиля не создан, событие выхода не записано; `1 failed in 0.45s` |
+| 16 | Дефолтная кнопка `ask_confirmation` — «Да» вместо «Нет» | `ui/dialogs/buttons.py` (`ask_confirmation`) | `test_ask_confirmation_sets_no_as_default_button` | УПАЛ — `assert captured["default_text"] == "Нет"`: `AssertionError: assert 'Да' == 'Нет'`; `1 failed in 0.12s` |
 
 Каждая мутация внесена, прогнан только названный тест, откат
 `git checkout --`, `git status --short` пуст — протокол CLAUDE.md
-(«Мутационная проверка тестов») соблюдён по всем девяти пунктам.
+(«Мутационная проверка тестов») соблюдён по всем шестнадцати пунктам.
 Мутация 1 в новой тройке (строка 7) — держатель файла подставной
 python-процесс (`time.sleep(60)`), после прогона проверено, что он не
 остался жить (`Get-CimInstance Win32_Process | Where-Object { $_.CommandLine
--match 'time.sleep\(60\)' }` — пусто).
+-match 'time.sleep\(60\)' }` — пусто). Мутации 10 и 11 (волна ручного
+чек-листа) тоже поднимают подставные python-процессы
+(`time.sleep(1.5)`/`time.sleep(3)`) — после каждого прогона тем же
+способом подтверждено отсутствие живого держателя. Полный протокол волны
+10–16 (правка → целевой тест → дословный результат → откат → чистое
+дерево) — в
+`.superpowers/sdd/2026-08-28-v2-servers-journal/checklist-mutation-report.md`.
 
 ### Ручной чек-лист T-10/T-08 — пройден 29.08.2026, шесть находок
 
