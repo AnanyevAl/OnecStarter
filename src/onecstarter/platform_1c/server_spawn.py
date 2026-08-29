@@ -119,6 +119,20 @@ def _open_append_shared(path: Path) -> int:
     например, каталог журнала не существует. Уходит наружу как есть —
     тот же контракт, что раньше нёс `Path.open("ab")` (`OSError` слоя
     `services` переводит его в `ServerError`).
+
+    Ревью волны исправлений (29.08.2026): если `CreateFileW` УСПЕЛ (валидный
+    Win32-хендл получен), а `msvcrt.open_osfhandle` следом отказал `OSError`
+    (например, исчерпана таблица файловых дескрипторов C-рантайма) — Win32-
+    хендл САМ ПО СЕБЕ не закрывается тем, что упал `open_osfhandle`: это два
+    разных ресурса (Win32 HANDLE и CRT fd), и обвязка `open_osfhandle` не
+    берёт на себя закрытие хендла при отказе. Без явного `CloseHandle` этот
+    хендл утёк бы: журнал остался бы открыт неопределённо долго, `Path.replace`
+    в `rotate_journal` не смог бы его переименовать даже с `FILE_SHARE_DELETE`
+    (расшаривание разрешает переименование ДРУГИМ держателям, а не отменяет
+    существование этого). Поэтому `open_osfhandle` обёрнут в `try/except
+    OSError`, закрывающий хендл через `CloseHandle` (с явными `argtypes`/
+    `restype` — та же гигиена, что у `CreateFileW`) и перевызывающий
+    исключение как есть: закрытие ресурса не глушит саму ошибку.
     """  # noqa: RUF002
     k32 = ctypes.WinDLL("kernel32", use_last_error=True)
     k32.CreateFileW.restype = wintypes.HANDLE
@@ -131,6 +145,8 @@ def _open_append_shared(path: Path) -> int:
         wintypes.DWORD,
         wintypes.HANDLE,
     ]
+    k32.CloseHandle.restype = wintypes.BOOL
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
     handle = k32.CreateFileW(
         str(path),
         _FILE_APPEND_DATA | _SYNCHRONIZE,
@@ -143,7 +159,15 @@ def _open_append_shared(path: Path) -> int:
     if handle is None or handle == _INVALID_HANDLE_VALUE:
         error = ctypes.get_last_error()
         raise ctypes.WinError(error)
-    return msvcrt.open_osfhandle(handle, os.O_APPEND)
+    try:
+        return msvcrt.open_osfhandle(handle, os.O_APPEND)
+    except OSError:
+        # Ревью волны исправлений (29.08.2026): CreateFileW уже выдал
+        # валидный Win32-хендл — отказ open_osfhandle (например, исчерпана
+        # таблица CRT-дескрипторов) НЕ закрывает его сам, это утечка хендла  # noqa: RUF003
+        # без этой ветки. Закрываем и перевызываем исходную OSError как есть.
+        k32.CloseHandle(handle)
+        raise
 
 
 def spawn_server(command: LaunchCommand, log_path: Path, job: ServerJob | NullJob) -> int:

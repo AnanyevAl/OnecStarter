@@ -525,7 +525,11 @@ java из dbgs). Механизм ([Р], подтверждается экспе
    ещё и с `FILE_SHARE_DELETE` — причина пропуска ротации (Python
    `open()` не даёт `FILE_SHARE_DELETE`) устранена для НАШЕГО же
    ребёнка: `Path.replace` теперь проходит, пока дерево профиля живо
-   и держит журнал. Best-effort ветка (`services/servers.py::start`)
+   и держит журнал ([Ф] 29.08.2026, проверено
+   `tests/unit/test_server_spawn.py::
+   test_rotation_succeeds_while_child_holds_journal` — подставной
+   python-ребёнок жив и держит журнал, `Path.replace` проходит без
+   `OSError`). Best-effort ветка (`services/servers.py::start`)
    остаётся страховкой — не убрана, а сузилась: она нужна только на
    ЧУЖОГО держателя файла, открывшего его обычным `open()` без
    `FILE_SHARE_DELETE` (например, процесс прошлого запуска, снятый

@@ -1,5 +1,6 @@
 """Серверный spawn: скрытая консоль, редирект stdout в файл, Job (T-10, задача 2)."""
 
+import msvcrt
 import sys
 import time
 import uuid
@@ -9,6 +10,7 @@ import psutil
 import pytest
 
 from onecstarter.domain.launch import LaunchCommand
+from onecstarter.platform_1c import server_spawn
 from onecstarter.platform_1c.job import JobError, NullJob, ServerJob
 from onecstarter.platform_1c.server_spawn import spawn_server
 
@@ -247,3 +249,59 @@ def test_rotation_succeeds_while_child_holds_journal(tmp_path: Path) -> None:
         assert not log_path.exists(), "новый текущий файл не должен появиться сам собой"
     finally:
         _kill_if_alive(pid)
+
+
+def test_open_append_shared_closes_handle_when_open_osfhandle_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ: отказ `msvcrt.open_osfhandle` не оставляет Win32-хендл висеть.
+
+    Ревью волны исправлений (29.08.2026): `CreateFileW` и `msvcrt.
+    open_osfhandle` — два разных ресурса (Win32 HANDLE и CRT fd); если
+    `CreateFileW` успел (валидный хендл получен), а `open_osfhandle` следом
+    отказал `OSError` (например, исчерпана таблица файловых дескрипторов
+    CRT), сам этот отказ Win32-хендл не закрывает — без явного `CloseHandle`
+    в `except`-ветке `_open_append_shared` хендл утёк бы.
+
+    НЕ проверяется через `log_path.unlink()` после отказа: `CreateFileW`
+    здесь открывается с `FILE_SHARE_DELETE` (лекарство находки 1, докстринг
+    модуля) — этот флаг САМ ПО СЕБЕ разрешает удаление/переименование файла
+    ЛЮБЫМ держателем, включая посторонний, независимо от того, закрыт ли
+    именно ЭТОТ хендл. Проверено эмпирически при подготовке теста: с
+    искусственно убранным `CloseHandle` (мутация) `log_path.unlink()`
+    всё равно проходил без ошибки — `unlink()` НЕ различает «хендл закрыт»
+    и «хендл утёк, но расшарен на удаление», то есть не годится как
+    единственная проверка. Вместо этого сравнивается число открытых
+    Win32-хендлов процесса (`psutil.Process().num_handles()`) до и после
+    отказа — `CloseHandle` в `except`-ветке обязан вернуть счётчик к
+    прежнему значению.
+
+    Дёшево воспроизведено без настоящего исчерпания таблицы CRT-дескрипторов:
+    `msvcrt.open_osfhandle` подменена функцией, которая кидает `OSError`
+    сразу после того, как `CreateFileW` честно создал файл и вернул хендл.
+    Мутация: убрать `try/except OSError` (и `CloseHandle` внутри него)
+    вокруг `open_osfhandle` в `_open_append_shared` — счётчик хендлов
+    процесса ниже обязан вырасти и не вернуться к прежнему значению
+    (проверено вручную при подготовке теста).
+    """  # noqa: RUF002
+    log_path = tmp_path / "j.log"
+
+    def _failing_open_osfhandle(handle: int, flags: int) -> int:
+        raise OSError("подставной отказ open_osfhandle для теста")
+
+    # Патчим стандартный модуль `msvcrt` напрямую, не через `server_spawn.
+    # msvcrt`: `server_spawn.__all__` не экспортирует `msvcrt`, mypy strict
+    # (`--no-implicit-reexport`) не пропустит доступ к нему как к атрибуту
+    # модуля извне. Модули — синглтоны: правка атрибута здесь видна и
+    # `server_spawn.py`, который зовёт `msvcrt.open_osfhandle` тем же
+    # импортированным объектом.
+    monkeypatch.setattr(msvcrt, "open_osfhandle", _failing_open_osfhandle)
+
+    process = psutil.Process()
+    before = process.num_handles()
+
+    with pytest.raises(OSError, match="подставной отказ"):
+        server_spawn._open_append_shared(log_path)
+
+    after = process.num_handles()
+    assert after <= before, f"хендл журнала утёк: было {before}, стало {after}"
