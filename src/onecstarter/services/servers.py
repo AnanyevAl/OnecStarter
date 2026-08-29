@@ -64,7 +64,7 @@ import re
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path, PureWindowsPath
 
 from onecstarter.domain.launch import LaunchCommand
@@ -231,7 +231,7 @@ class ServersWorkspace:
         open_file: Callable[[str], None] = os.startfile,
         registered_radmin: Callable[[], Path | None] = console.registered_radmin_path,
         new_id: Callable[[], str] = lambda: uuid.uuid4().hex,
-        now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        now: Callable[[], datetime] = lambda: datetime.now().astimezone(),
     ) -> None:
         self.store_path = store_path
         # Эффекты (сканы, остановка, запуск, регистрация консоли) — только

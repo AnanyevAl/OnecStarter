@@ -3,7 +3,7 @@
 import subprocess
 import sys
 from dataclasses import dataclass, field, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -236,6 +236,34 @@ class TestConstructor:
 
         second = _workspace(store_path)
         assert [p.name for p in second.profiles()] == ["8.3.25 отладка"]
+
+
+class TestDefaultNow:
+    def test_default_now_is_local_time(self, tmp_path: Path) -> None:
+        """НАХОДКА 2 ручного чек-листа T-10 (Important): дефолт `now`
+        конструктора обязан отдавать локальное время, не UTC — журнал
+        читает человек рядом с часами Windows, а `app.py` `now` не
+        передаёт (дефолт конструктора — то, что реально идёт в прод).
+        До этой правки дефолт был `lambda: datetime.now(UTC)` (задача 4):
+        в живом прогоне `[05:30:03]` в журнале при 10:30 локальных
+        (UTC+5).
+
+        Если локальный часовой пояс машины прогона САМ является UTC,
+        разница необнаружима этим тестом — честный `pytest.skip`
+        с причиной, а не притворное прохождение.
+
+        Мутация: вернуть дефолт на `datetime.now(UTC)` — тест обязан
+        упасть (`utcoffset() == timedelta(0)` вместо локального оффсета).
+        """  # noqa: RUF002
+        expected_offset = datetime.now().astimezone().utcoffset()
+        if expected_offset == timedelta(0):
+            pytest.skip("локальный часовой пояс машины прогона — UTC, тест неразличим")
+        workspace = _workspace(tmp_path / "servers.json")
+
+        actual = workspace._now()
+
+        assert actual.utcoffset() == expected_offset
+        assert actual.utcoffset() != timedelta(0)
 
 
 class TestAddProfile:
