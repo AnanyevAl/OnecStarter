@@ -90,7 +90,6 @@ journal_path`, услуга задачи 3-4 T-10) — сама панель ф�
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import cast
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QMouseEvent
@@ -111,7 +110,7 @@ from onecstarter.domain.server_match import ForeignServer
 from onecstarter.platform_1c.server_discovery import ServerInstallation
 from onecstarter.services.errors import ServicesError
 from onecstarter.services.servers import ServerStatus, ServersWorkspace
-from onecstarter.ui.dialogs.buttons import build_confirm_box, is_confirmed
+from onecstarter.ui.dialogs.buttons import ask_confirmation
 from onecstarter.ui.servers.dialog import ServerProfileDialog
 from onecstarter.ui.servers.journal_panel import JournalPanel
 from onecstarter.ui.theme import Palette
@@ -855,19 +854,12 @@ class ServersView(QWidget):
     # -- дефолты инъекций (переопределяются тестами) --------------------------
 
     def _default_confirm_removal(self, question: str) -> bool:
-        box = build_confirm_box(self, "OneCStarter", question)
-        # box.buttons() типизирован как list[QAbstractButton] в стабах PySide6,
-        # но setDefaultButton() принимает только QPushButton — тот же приём,
-        # что и в dialogs/confirm.py::build_removal_confirm_box: фактический
-        # тип рантайма QPushButton гарантирован тем, что build_confirm_box
-        # добавляет кнопки только через addButton(text, role).
-        no_button = cast(
-            QPushButton | None, next((b for b in box.buttons() if b.text() == "Нет"), None)
-        )
-        if no_button is not None:
-            box.setDefaultButton(no_button)
-        box.exec()
-        return is_confirmed(box)
+        """Да/Нет с дефолтом «Нет» — общая сборка `ask_confirmation` (T-10, чек-лист,
+        находка 3): раньше здесь была собственная копия
+        «`build_confirm_box` → дефолт „Нет" → `exec()` → `is_confirmed`»,
+        теперь та же сборка используется и `ui/app.py::_ask_quit_confirmation`.
+        """  # noqa: RUF002
+        return ask_confirmation(self, "OneCStarter", question)
 
     def _default_show_error(self, message: str) -> None:
         box = QMessageBox(self)

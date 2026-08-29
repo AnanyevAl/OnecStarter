@@ -740,15 +740,23 @@ def _assemble(
     # пор безопасно только потому, что ни один тест на этой фикстуре не
     # поднимает `running_count() > 0` перед закрытием окна. Будущий тест
     # с живым сервером на `_assemble` без этой страховки повиснет на  # noqa: RUF003
-    # настоящем модальном `QMessageBox.question` под offscreen-платформой
-    # (диалог не показывается, но и не отвечает сам), а не упадёт — тот же  # noqa: RUF003
-    # приём, что `test_closing_window_without_quit_dialog_never_shows_a_
+    # настоящем модальном диалоге под offscreen-платформой (диалог не
+    # показывается, но и не отвечает сам), а не упадёт — тот же приём, что  # noqa: RUF003
+    # `test_closing_window_without_quit_dialog_never_shows_a_
     # confirmation_dialog`: подмена кидает `AssertionError` вместо показа,
     # так что попытка позвать диалог явно упадёт тестом.
-    def _forbidden_question(*args: object) -> QMessageBox.StandardButton:
+    #
+    # Волна исправлений по чек-листу T-10 (находка 3): `_ask_quit_confirmation`
+    # теперь зовёт `ask_confirmation` (`ui/dialogs/buttons.py`) — тот сам
+    # строит `QMessageBox` и зовёт его `exec()`, `QMessageBox.question` этим  # noqa: RUF003
+    # путём больше не вызывается вовсе. Страховка переориентирована на
+    # `QMessageBox.exec` — иначе, разойдясь с реальным путём вызова, она  # noqa: RUF003
+    # перестала бы ловить зависание (подмена `.question` осталась бы
+    # неиспользуемой, а настоящий `.exec()` вешал бы teardown, как раньше).  # noqa: RUF003
+    def _forbidden_exec(self: QMessageBox) -> int:
         raise AssertionError("диалог выхода не должен показываться в тестах")
 
-    monkeypatch.setattr(QMessageBox, "question", staticmethod(_forbidden_question))
+    monkeypatch.setattr(QMessageBox, "exec", _forbidden_exec)
 
     name_before = qapp.applicationName()
     try:
@@ -2591,14 +2599,16 @@ def test_closing_window_without_quit_dialog_never_shows_a_confirmation_dialog(
     """СТОРОЖ против зависания: без `quit_dialog` гейта нет — диалог не вызывается вовсе.
 
     Регрессия, найденная координатором при мутационной проверке: первая
-    редакция ставила `window.confirm_quit` безусловно, с настоящим
-    `QMessageBox.question` внутри замыкания — teardown ЛЮБОГО теста
-    с работающим сервером (`qtbot.addWidget` закрывает окно сам) вешался
-    на модальный диалог под offscreen-платформой навсегда: диалог там не
-    показывается, но и не отвечает сам, `QMessageBox.question` не
-    возвращается никогда. `QMessageBox.question` здесь подменена на функцию,
-    которая КИДАЕТ `AssertionError` вместо показа — попытка её позвать
-    обязана явно УПАСТЬ тестом, а не повиснуть раннером.
+    редакция ставила `window.confirm_quit` безусловно, с настоящим диалогом
+    выхода внутри замыкания — teardown ЛЮБОГО теста с работающим сервером
+    (`qtbot.addWidget` закрывает окно сам) вешался на модальный диалог под
+    offscreen-платформой навсегда: диалог там не показывается, но и не
+    отвечает сам. `QMessageBox.exec` здесь подменена на функцию, которая
+    КИДАЕТ `AssertionError` вместо показа — попытка её позвать обязана явно
+    УПАСТЬ тестом, а не повиснуть раннером (волна исправлений по чек-листу
+    T-10, находка 3: `_ask_quit_confirmation` теперь зовёт `ask_confirmation`
+    → `QMessageBox(...).exec()`, не `QMessageBox.question`, — страховка
+    переориентирована на фактический путь вызова).
     `_build_main_window` без единого `quit_dialog` (как в этом тесте, как
     у `run_smoke`, как у остальных прямых тестов файла) обязана оставить
     `window.confirm_quit` пустым, и `window.close()` — просто закрыть окно,
@@ -2606,10 +2616,10 @@ def test_closing_window_without_quit_dialog_never_shows_a_confirmation_dialog(
     """  # noqa: RUF002
     monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
 
-    def _forbidden_question(*args: object) -> QMessageBox.StandardButton:
+    def _forbidden_exec(self: QMessageBox) -> int:
         raise AssertionError("диалог не должен показываться")
 
-    monkeypatch.setattr(QMessageBox, "question", staticmethod(_forbidden_question))
+    monkeypatch.setattr(QMessageBox, "exec", _forbidden_exec)
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
     window, _tasks, _monitor = _build_main_window(qapp, runtime, env)

@@ -58,6 +58,7 @@ from onecstarter.services.workspace import Workspace, WorkspacePaths
 from onecstarter.ui import app_icon, rail_icons, theme
 from onecstarter.ui.background import StartupTasks
 from onecstarter.ui.bases.view import BasesView
+from onecstarter.ui.dialogs.buttons import ask_confirmation
 from onecstarter.ui.hotkey import GlobalHotkey
 from onecstarter.ui.servers.dialog import ConsoleDialog
 from onecstarter.ui.servers.monitor import ServerMonitor
@@ -509,32 +510,31 @@ def _confirm_quit_with_servers(
 
 
 def _ask_quit_confirmation(parent: QWidget, message: str) -> bool:
-    """Обёртка `QMessageBox.question` для гейта выхода — дефолт «Нет» (спека §12.3).
+    """Обёртка `ask_confirmation` для гейта выхода — дефолт «Нет» (спека §12.3).
 
     Модульная функция, не замыкание внутри `_build_main_window` (находка
     ревью T-10, задача 6): `_build_main_window` собирает окно и для тестов
     (тот же приём, что `run_smoke`), и внутри тестового набора offscreen
-    `QMessageBox.question` всё равно не показывается по-настоящему, но
-    БЕЗУСЛОВНОЕ подключение настоящего диалога вешало бы teardown любого
-    теста с работающим сервером (`qtbot`/`_assemble` зовут `window.close()`)
+    сам диалог всё равно не показывается по-настоящему, но БЕЗУСЛОВНОЕ
+    подключение настоящего диалога вешало бы teardown любого теста
+    с работающим сервером (`qtbot`/`_assemble` зовут `window.close()`)
     в вечном модальном ожидании. Диалог поэтому передаётся СНАРУЖИ через
     параметр `quit_dialog` — `None` (тесты, `run_smoke`) оставляет
     `window.confirm_quit` пустым, реальным значением его наполняет только
     `main()`.
 
-    Дефолтная кнопка `No`, а не `Yes`: диалог, спрашивающий про остановку
-    РАБОТАЮЩИХ серверов, не должен позволять случайному Enter/пробелу
-    согласиться на неё — тот же приём осторожности, что у диалогов удаления
-    (`_default_confirm_removal`, `ui/servers/view.py`).
+    Находка 3 ручного чек-листа T-10 (Minor, 29.08.2026): раньше здесь
+    стоял `QMessageBox.question` со стандартными кнопками — без
+    установленного `QTranslator` (`ui/dialogs/buttons.py`) они пришли
+    по-английски («Yes»/«No» на скриншоте живого прогона), хотя весь
+    остальной интерфейс русский. `ask_confirmation` — тот же приём
+    осторожности (дефолтная кнопка «Нет»: диалог, спрашивающий про
+    остановку РАБОТАЮЩИХ серверов, не должен позволять случайному
+    Enter/пробелу согласиться на неё), что у диалога удаления профиля
+    (`ServersView._default_confirm_removal`, `ui/servers/view.py`) —
+    теперь оба места зовут одну и ту же функцию (`ui/dialogs/buttons.py`).
     """  # noqa: RUF002
-    answer = QMessageBox.question(
-        parent,
-        "OneCStarter",
-        message,
-        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-        QMessageBox.StandardButton.No,
-    )
-    return answer == QMessageBox.StandardButton.Yes
+    return ask_confirmation(parent, "OneCStarter", message)
 
 
 def _build_main_window(

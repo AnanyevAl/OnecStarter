@@ -9,8 +9,11 @@
 
 from typing import Any
 
+from PySide6.QtWidgets import QMessageBox
+
 from onecstarter.ui.dialogs.buttons import (
     ButtonKind,
+    ask_confirmation,
     build_confirm_box,
     is_confirmed,
     russian_button_box,
@@ -89,3 +92,71 @@ def test_is_confirmed_false_when_no_is_clicked(qtbot: Any) -> None:
     no_button = next(b for b in box.buttons() if b.text() == "Нет")
     no_button.click()
     assert is_confirmed(box) is False
+
+
+# -- ask_confirmation (T-10, чек-лист, находка 3) --------------------------------
+#
+# Общий приём для диалогов выхода (`ui/app.py::_ask_quit_confirmation`) и
+# удаления профиля (`ui/servers/view.py::ServersView._default_confirm_removal`):
+# `build_confirm_box` + дефолтная кнопка «Нет» + `exec()` + `is_confirmed`.
+# Раньше каждое место держало собственную копию этой сборки — здесь она
+# проверяется один раз на настоящем виджете.
+
+
+def test_ask_confirmation_sets_no_as_default_button(qtbot: Any, monkeypatch: Any) -> None:
+    """Дефолтная кнопка — «Нет»: диалог с дорогими последствиями (остановка
+    работающих серверов, удаление профиля) не должен поддаваться случайному
+    Enter/пробелу. `exec()` подменён, чтобы не блокировать тест реальным
+    показом — сама подмена лишь читает `defaultButton()`, не кликает.
+    """  # noqa: RUF002
+    captured: dict[str, Any] = {}
+
+    def fake_exec(self: QMessageBox) -> int:
+        captured["default_text"] = self.defaultButton().text()
+        return 0
+
+    monkeypatch.setattr(QMessageBox, "exec", fake_exec)
+
+    ask_confirmation(None, "Заголовок", "Текст")
+
+    assert captured["default_text"] == "Нет"
+
+
+def test_ask_confirmation_returns_false_when_default_button_is_activated(
+    qtbot: Any, monkeypatch: Any
+) -> None:
+    """Подмена `exec()` кликом по дефолтной кнопке (эмуляция Enter/пробела
+    на диалоге под offscreen-платформой, где сам `exec()` не показывается)
+    обязана дать `False` — тот же исход, что явный клик «Нет».
+
+    Мутация: убрать `setDefaultButton`/вернуть `False` безусловно — тест
+    отличит подмену только вместе с тестом выше (тот проверяет САМ факт
+    установки дефолтной кнопки).
+    """  # noqa: RUF002
+
+    def fake_exec(self: QMessageBox) -> int:
+        default = self.defaultButton()
+        assert default is not None
+        default.click()
+        return 0
+
+    monkeypatch.setattr(QMessageBox, "exec", fake_exec)
+
+    result = ask_confirmation(None, "Заголовок", "Текст")
+
+    assert result is False
+
+
+def test_ask_confirmation_returns_true_when_yes_is_activated(
+    qtbot: Any, monkeypatch: Any
+) -> None:
+    def fake_exec(self: QMessageBox) -> int:
+        yes_button = next(b for b in self.buttons() if b.text() == "Да")
+        yes_button.click()
+        return 0
+
+    monkeypatch.setattr(QMessageBox, "exec", fake_exec)
+
+    result = ask_confirmation(None, "Заголовок", "Текст")
+
+    assert result is True
