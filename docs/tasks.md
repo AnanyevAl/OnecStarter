@@ -1439,9 +1439,15 @@ python-процесс (`time.sleep(60)`), после прогона провер
    слияние — волна исправлений закрыла Important 1/2 и fix-before-merge,
    подробности — `.superpowers/sdd/2026-08-28-v2-servers-journal/
    final-fix-report.md`):
-   - `FILE_SHARE_DELETE` при открытии журнала в `spawn_server`
+   - ~~`FILE_SHARE_DELETE` при открытии журнала в `spawn_server`
      (`platform_1c/server_spawn.py`) — снимает саму причину пропуска
-     ротации, а не только её best-effort обработку.
+     ротации, а не только её best-effort обработку.~~ **Закрыто волной
+     исправлений по ручному чек-листу T-10, 29.08.2026** (находка 1,
+     Critical — `.superpowers/sdd/2026-08-28-v2-servers-journal/
+     checklist-fix-report.md`): `_open_append_shared` открывает хендл
+     ребёнку с `FILE_APPEND_DATA | FILE_SHARE_DELETE`, `Path.replace`
+     теперь проходит при живом ребёнке-писателе; заодно устранена
+     причина находки 1 (затирание событий координатора).
    - `running_count()` считает и ЧУЖИЕ процессы, совпавшие с профилем
      по каталогу кластера, — вопрос подтверждения выхода «Остановить
      N серверов и выйти?» для них неверен (мы их не остановим): считать

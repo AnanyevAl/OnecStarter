@@ -39,16 +39,111 @@ Job — это сервер без гарантии kill-on-close, ради ко
 Жёсткое `process.kill()` (`TerminateProcess` под капотом) в этой ситуации
 безопасно — то же решение, что и штатное завершение через Job Object
 ([Ф] Б2 T-07: `TerminateProcess` не портит файлы кластера).
+
+НАХОДКА 1 ручного чек-листа T-10 (Critical, 29.08.2026,
+`.superpowers/sdd/2026-08-28-v2-servers-journal/manual-checklist.md`,
+раздел «Шаг 2»): до этой правки хендл журнала ребёнку открывался обычным
+`Path.open("ab")` — Windows даёт такому хендлу СВОЙ файловый указатель,
+застывающий на позиции конца файла в момент открытия. Координатор
+(`services/servers.py::log_event` → `server_journal.append_event`) пишет
+ОТДЕЛЬНЫМ хендлом (`open("a")` при каждом вызове) и честно попадает
+в фактический конец файла — но когда ребёнок затем пишет через СВОЙ,
+уже устаревший хендл, запись идёт по ЕГО указателю, поверх уже дописанной
+строки координатора: в живом прогоне так пропали события `порождён PID`
+и `работает · PID` (баннер платформы длиннее события — затирал его
+целиком, без следа). `_open_append_shared` открывает хендл ребёнку через
+`CreateFileW` с правом `FILE_APPEND_DATA` БЕЗ `FILE_WRITE_DATA` — запись
+по такому хендлу ОС атомарно направляет в фактический конец файла
+НЕЗАВИСИМО от указателя, сохранённого в самом хендле (тот же класс
+гарантии, что `O_APPEND` на POSIX, только на уровне драйвера NTFS, а не
+эмуляции рантайма) — затирание становится невозможно. Побочный эффект
+того же вызова — `FILE_SHARE_DELETE`: закрывает причину долга ротации
+(`docs/tasks.md`, долг вехи T-10, п.3) — `Path.replace` внутри
+`server_journal.rotate_journal` теперь проходит и при живом ребёнке-
+писателе; best-effort ветка `services/servers.py::start` остаётся
+страховкой ТОЛЬКО для чужих держателей, открывших файл обычным `open()`
+(`tests/unit/test_servers.py::
+test_start_survives_rotation_failure_when_previous_journal_is_locked`).
 """  # noqa: RUF002
 
+import ctypes
+import msvcrt
+import os
 import subprocess
 import warnings
+from ctypes import wintypes
 from pathlib import Path
 
 from onecstarter.domain.launch import LaunchCommand
 from onecstarter.platform_1c.job import JobError, NullJob, ServerJob
 
 __all__ = ["spawn_server"]
+
+_FILE_APPEND_DATA = 0x0004
+_SYNCHRONIZE = 0x00100000
+_FILE_SHARE_READ = 0x00000001
+_FILE_SHARE_WRITE = 0x00000002
+_FILE_SHARE_DELETE = 0x00000004
+_OPEN_ALWAYS = 4
+_FILE_ATTRIBUTE_NORMAL = 0x80
+# `c_void_p(-1).value` — то же битовое представление, что INVALID_HANDLE_VALUE
+# у CreateFileW (все биты установлены), в том виде, в каком ctypes отдаёт  # noqa: RUF003
+# результат HANDLE-возврата (см. докстринг `_open_append_shared`).
+_INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
+
+
+def _open_append_shared(path: Path) -> int:
+    """Открыть журнал хендлом, который пишет строго в конец файла — [Ф] 29.08.2026.
+
+    Лекарство находки 1 ручного чек-листа T-10 (докстринг модуля):
+    `CreateFileW` с правом `FILE_APPEND_DATA` (без `FILE_WRITE_DATA`) —
+    единственный способ на Windows получить хендл, для которого КАЖДАЯ
+    запись атомарно уходит в фактический конец файла независимо от
+    указателя, хранящегося в самом хендле; обычный `open("ab")` такой
+    гарантии не даёт (указатель хендла фиксируется в момент открытия
+    и не следует за чужими дозаписями). `FILE_SHARE_DELETE` в наборе
+    флагов расшаривания — попутное лекарство долга ротации (см. докстринг
+    модуля): `Path.replace` проходит, пока этот хендл жив.
+
+    `use_last_error=True` и явные `argtypes`/`restype` — гигиена ctypes,
+    для НОВОГО кода этой волны исправлений, в отличие от долга
+    `platform_1c/job.py` (см. `docs/tasks.md`, долг вехи T-10), не
+    повторяем. Возвращает файловый дескриптор C-рантайма
+    (`msvcrt.open_osfhandle`) — тот вид хендла, что принимает `stdout=`
+    у `subprocess.Popen`; `os.O_APPEND` на самом дескрипторе избыточен
+    поверх `FILE_APPEND_DATA`, но не вредит и оставлен для симметрии
+    с обычным файловым API.
+
+    `OSError` (через `ctypes.WinError`, несёт `GetLastError()` и текст
+    сообщения ОС) — если `CreateFileW` отказал (`INVALID_HANDLE_VALUE`):
+    например, каталог журнала не существует. Уходит наружу как есть —
+    тот же контракт, что раньше нёс `Path.open("ab")` (`OSError` слоя
+    `services` переводит его в `ServerError`).
+    """  # noqa: RUF002
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateFileW.restype = wintypes.HANDLE
+    k32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        ctypes.c_void_p,
+        wintypes.DWORD,
+        wintypes.DWORD,
+        wintypes.HANDLE,
+    ]
+    handle = k32.CreateFileW(
+        str(path),
+        _FILE_APPEND_DATA | _SYNCHRONIZE,
+        _FILE_SHARE_READ | _FILE_SHARE_WRITE | _FILE_SHARE_DELETE,
+        None,
+        _OPEN_ALWAYS,
+        _FILE_ATTRIBUTE_NORMAL,
+        None,
+    )
+    if handle is None or handle == _INVALID_HANDLE_VALUE:
+        error = ctypes.get_last_error()
+        raise ctypes.WinError(error)
+    return msvcrt.open_osfhandle(handle, os.O_APPEND)
 
 
 def spawn_server(command: LaunchCommand, log_path: Path, job: ServerJob | NullJob) -> int:
@@ -59,15 +154,26 @@ def spawn_server(command: LaunchCommand, log_path: Path, job: ServerJob | NullJo
     (`services`), контракт T-08 этот модуль не меняет. `JobError` (отказ
     `job.assign()`) тоже уходит наружу как есть, но не раньше, чем уже
     порождённый процесс будет убит — сервер без Job здесь не оставляем.
+
+    Хендл журнала ребёнку — `_open_append_shared` (находка 1 ручного
+    чек-листа T-10, см. докстринг модуля), не `Path.open("ab")`: `finally`
+    вокруг `Popen` закрывает РОДИТЕЛЬСКУЮ копию дескриптора сразу после
+    порождения процесса (успешного или нет) — тот же приём, что раньше
+    давал выход из `with`, и та же безопасность: закрытие родительской
+    стороны не трогает уже унаследованный дочерним процессом хендл
+    (`Popen` дублирует его как наследуемый перед `CreateProcess`).
     """  # noqa: RUF002
-    with log_path.open("ab") as log_file:
+    fd = _open_append_shared(log_path)
+    try:
         process = subprocess.Popen(
             command.command_line,
             creationflags=subprocess.CREATE_NO_WINDOW,
-            stdout=log_file,
+            stdout=fd,
             stderr=subprocess.STDOUT,
             close_fds=True,
         )
+    finally:
+        os.close(fd)
     # КРИТИЧНО ([Ф] находка задачи 1 T-10, см. докстринг модуля): assign
     # сразу после Popen, до того как ragent породит первого ребёнка.
     try:
