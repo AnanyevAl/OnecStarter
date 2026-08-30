@@ -96,6 +96,11 @@ class Settings:
     # несуществующий или недоступный каталог не порча ЭТОГО файла, диалог
     # профиля решает, что делать с плохим значением.  # noqa: RUF003
     servers_root: str = ""
+    # T-11, п. 9 (решение заказчика 29.08.2026): успешный запуск базы прячет
+    # окно в трей. Дефолт False — поведение существующих установок не меняется.
+    # На запуск серверного профиля не действует (решение (а)); без трея  # noqa: RUF003
+    # не действует (решение (б)) — это решает проводка ui/app.py, не модель.  # noqa: RUF003
+    hide_on_launch: bool = False
 
 
 def load_settings(path: Path) -> Settings:
@@ -122,6 +127,7 @@ def load_settings(path: Path) -> Settings:
         recent_limit=_recent_of(payload.get("recent_limit")),
         default_client=_client_of(payload.get("default_client")),
         servers_root=_servers_root_of(payload.get("servers_root")),
+        hide_on_launch=_bool_of(payload.get("hide_on_launch"), default=False),
     )
 
 
@@ -136,6 +142,7 @@ def save_settings(path: Path, settings: Settings) -> None:
         "recent_limit": settings.recent_limit,
         "default_client": settings.default_client.value,
         "servers_root": settings.servers_root,
+        "hide_on_launch": settings.hide_on_launch,
     }
     text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
     atomic_write(path, text.encode("utf-8"))
@@ -167,9 +174,9 @@ def _servers_root_of(value: Any) -> str:
     return value if isinstance(value, str) else ""
 
 
-def _bool_of(value: Any) -> bool:
+def _bool_of(value: Any, *, default: bool = True) -> bool:
     """Не-булево — не порча файла: дефолт поля, как у режима темы."""  # noqa: RUF002
-    return value if isinstance(value, bool) else True
+    return value if isinstance(value, bool) else default
 
 
 def _hotkey_of(value: Any) -> str:

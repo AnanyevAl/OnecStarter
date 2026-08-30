@@ -327,6 +327,43 @@ def test_launch_error_goes_to_handler_not_up(qtbot, workspace_factory):
     assert isinstance(errors[0], LaunchError)
 
 
+def test_launched_is_emitted_after_a_successful_launch(qtbot, workspace_factory):
+    view, calls, _, _ = _view(qtbot, workspace_factory)
+    seen: list[str] = []
+    view.launched.connect(seen.append)
+
+    view.launch_key(_DEMO_ACCOUNTING_KEY)
+
+    assert len(calls) == 1
+    assert seen == [_DEMO_ACCOUNTING_KEY]
+
+
+def test_launched_is_not_emitted_when_launch_fails(qtbot, workspace_factory, monkeypatch):
+    """ЗАЩИТНЫЙ ТЕСТ: отказ запуска — окно обязано остаться, чтобы показать ошибку.
+
+    Мутация: `self.launched.emit(key)` до `self._workspace.launch(...)` или вне
+    `try` — сигнал уйдёт и при `LaunchError`. Отказ подстроен подменой
+    `Workspace.launch`: `workspace_factory` при `installations=None` сама
+    подставляет `INSTALLED` (см. её докстринг), pending-состояния через
+    `_view` не получить.
+    """  # noqa: RUF002
+    view, calls, errors, _ = _view(qtbot, workspace_factory)
+    seen: list[str] = []
+    view.launched.connect(seen.append)
+
+    def refuse(key: str, forced: object = None) -> None:
+        raise LaunchError("обнаружение платформ ещё не завершено")
+
+    monkeypatch.setattr(view.workspace(), "launch", refuse)
+
+    view.launch_key(_DEMO_ACCOUNTING_KEY)
+
+    assert calls == []
+    assert len(errors) == 1
+    assert isinstance(errors[0], LaunchError)
+    assert seen == []
+
+
 def test_favorite_toggle_shows_favorites_branch(qtbot, workspace_factory):
     view, _, _, _ = _view(qtbot, workspace_factory)
     key = "id:44444444-4444-4444-4444-444444444444"

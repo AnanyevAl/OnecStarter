@@ -1114,6 +1114,39 @@ def test_main_does_not_hide_the_window_into_a_missing_tray(assembled: _Assembly)
     assert assembled.window.close_to_tray is False
 
 
+_DEMO_ACCOUNTING_KEY = "id:44444444-4444-4444-4444-444444444444"
+
+
+def test_launch_hides_the_window_when_the_setting_is_on(assembled_with_tray: _Assembly) -> None:
+    """T-11, п. 9: успешный запуск базы при включённой настройке прячет окно в трей."""
+    assembled_with_tray.store.update(hide_on_launch=True)
+    assert assembled_with_tray.window.isHidden() is False
+
+    assembled_with_tray.view.launch_key(_DEMO_ACCOUNTING_KEY)
+
+    assert len(assembled_with_tray.launch_calls) == 1
+    assert assembled_with_tray.window.isHidden() is True
+
+
+def test_launch_keeps_the_window_when_the_setting_is_off(assembled_with_tray: _Assembly) -> None:
+    assembled_with_tray.view.launch_key(_DEMO_ACCOUNTING_KEY)
+    assert assembled_with_tray.window.isHidden() is False
+
+
+def test_launch_keeps_the_window_without_tray(assembled: _Assembly) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ: без трея окно не прячется (решение заказчика 29.08.2026, б).
+
+    Мутация: `hide_after_launch` без `tray is not None` — окно исчезнет,
+    вернуть его сможет только глобальный хоткей.
+    """  # noqa: RUF002
+    assembled.store.update(hide_on_launch=True)
+
+    assembled.view.launch_key(_DEMO_ACCOUNTING_KEY)
+
+    assert len(assembled.launch_calls) == 1
+    assert assembled.window.isHidden() is False
+
+
 def test_main_start_hidden_with_tray_keeps_the_window_hidden(
     assembled_hidden_start_with_tray: _Assembly,
 ) -> None:

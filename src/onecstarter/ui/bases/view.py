@@ -14,7 +14,7 @@ from enum import Enum
 from pathlib import Path
 from typing import cast
 
-from PySide6.QtCore import QModelIndex, QPoint, QStandardPaths, Qt
+from PySide6.QtCore import QModelIndex, QPoint, QStandardPaths, Qt, Signal
 from PySide6.QtGui import (
     QDragEnterEvent,
     QDragMoveEvent,
@@ -329,6 +329,11 @@ class _BasesTree(QTreeView):
 
 
 class BasesView(QWidget):
+    # T-11, п. 9: ключ записи после УСПЕШНОГО запуска — проводка ui/app.py
+    # прячет окно в трей по настройке. Все пути запуска из UI (Enter/двойной  # noqa: RUF003
+    # клик, поиск, F3/F4/Ctrl+1-3, меню, трей) сходятся в launch_key.
+    launched = Signal(str)
+
     def __init__(
         self,
         workspace: Workspace,
@@ -713,6 +718,8 @@ class BasesView(QWidget):
             self._workspace.launch(key, forced)
         except ServicesError as error:
             self._on_error(error)
+        else:
+            self.launched.emit(key)
         self.rebuild()
 
     def toggle_favorite(self, key: str) -> None:

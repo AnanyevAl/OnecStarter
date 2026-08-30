@@ -46,6 +46,7 @@ def test_schema_is_written(tmp_path: Path) -> None:
         "recent_limit": 10,
         "default_client": "thin",
         "servers_root": "",
+        "hide_on_launch": False,
     }
 
 
@@ -123,6 +124,7 @@ def test_defaults_of_new_fields() -> None:
     assert settings.recent_limit == DEFAULT_RECENT_LIMIT
     assert DEFAULT_RECENT_LIMIT == 10
     assert DEFAULT_HOTKEY == "Ctrl+Alt+B"
+    assert settings.hide_on_launch is False
 
 
 def test_old_file_without_new_keys_reads_with_defaults(tmp_path: Path) -> None:
@@ -136,7 +138,11 @@ def test_old_file_without_new_keys_reads_with_defaults(tmp_path: Path) -> None:
 def test_round_trip_keeps_all_fields(tmp_path: Path) -> None:
     path = tmp_path / "settings.json"
     settings = Settings(
-        theme=ThemeMode.DARK, close_to_tray=False, hotkey="Win+F9", recent_limit=0
+        theme=ThemeMode.DARK,
+        close_to_tray=False,
+        hotkey="Win+F9",
+        recent_limit=0,
+        hide_on_launch=True,
     )
     save_settings(path, settings)
     assert load_settings(path) == settings
@@ -270,3 +276,32 @@ class TestServersRoot:
             json.dumps({"schema": 1, "servers_root": value}), encoding="utf-8"
         )
         assert load_settings(path).servers_root == ""
+
+
+class TestHideOnLaunch:
+    """T-11, п. 9: запуск базы сворачивает окно в трей; дефолт — выключено."""
+
+    def test_default_is_off(self) -> None:
+        assert Settings().hide_on_launch is False
+
+    def test_round_trip(self, tmp_path: Path) -> None:
+        path = tmp_path / "settings.json"
+        save_settings(path, Settings(hide_on_launch=True))
+        assert load_settings(path).hide_on_launch is True
+
+    def test_old_file_without_the_key_reads_off(self, tmp_path: Path) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ: файл прошлой версии без ключа — «выключено», не «включено».
+
+        Мутация: `_bool_of(payload.get("hide_on_launch"))` без `default=False` —
+        общий `_bool_of` отдаёт `True`, и у всех существующих установок окно
+        начало бы прятаться при каждом запуске.
+        """  # noqa: RUF002
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps({"schema": 1, "theme": "dark"}), encoding="utf-8")
+        assert load_settings(path).hide_on_launch is False
+
+    @pytest.mark.parametrize("value", ["да", 1, None, [], {}])
+    def test_broken_value_falls_back_to_off(self, tmp_path: Path, value: object) -> None:
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps({"schema": 1, "hide_on_launch": value}), encoding="utf-8")
+        assert load_settings(path).hide_on_launch is False

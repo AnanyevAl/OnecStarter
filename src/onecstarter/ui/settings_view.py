@@ -152,6 +152,17 @@ class SettingsView(QWidget):
             self._tray,
         )
 
+        # T-11, п. 9 (решение заказчика 29.08.2026): любой способ запуска базы
+        # прячет окно; на серверные профили не действует; без трея — не действует.
+        self._hide_on_launch = QCheckBox()
+        self._hide_on_launch.setChecked(store.settings.hide_on_launch)
+        self._hide_on_launch.toggled.connect(self._choose_hide_on_launch)
+        self._add_row(
+            "Запуск базы сворачивает окно в трей",
+            "Любой способ запуска: Enter, F3/F4, меню, поиск, трей. Без трея не действует",
+            self._hide_on_launch,
+        )
+
         self._autostart = QCheckBox()
         self._autostart_note = QLabel("")
         self._autostart_note.setObjectName("SettingsNote")
@@ -345,6 +356,9 @@ class SettingsView(QWidget):
     def tray_checkbox(self) -> QCheckBox:
         return self._tray
 
+    def hide_on_launch_checkbox(self) -> QCheckBox:
+        return self._hide_on_launch
+
     def autostart_checkbox(self) -> QCheckBox:
         return self._autostart
 
@@ -428,6 +442,9 @@ class SettingsView(QWidget):
 
     def _choose_tray(self, checked: bool) -> None:
         self._store.update(close_to_tray=checked)
+
+    def _choose_hide_on_launch(self, checked: bool) -> None:
+        self._store.update(hide_on_launch=checked)
 
     def _choose_recent(self, value: int) -> None:
         self._store.update(recent_limit=value)
@@ -547,6 +564,10 @@ class SettingsView(QWidget):
         blocked = self._tray.blockSignals(True)
         self._tray.setChecked(settings.close_to_tray)
         self._tray.blockSignals(blocked)
+
+        blocked = self._hide_on_launch.blockSignals(True)
+        self._hide_on_launch.setChecked(settings.hide_on_launch)
+        self._hide_on_launch.blockSignals(blocked)
 
         blocked = self._recent.blockSignals(True)
         self._recent.setValue(settings.recent_limit)

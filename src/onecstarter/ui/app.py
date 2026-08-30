@@ -890,6 +890,16 @@ def _build_main_window(
         # программу с экрана.  # noqa: RUF003
         window.close_to_tray = store.settings.close_to_tray and tray is not None
 
+    def hide_after_launch(_key: str) -> None:
+        # T-11, п. 9. Без трея не скрывать (решение заказчика 29.08.2026, б):  # noqa: RUF003
+        # окно, спрятанное без значка в трее, нечем вернуть, кроме глобального
+        # хоткея — тот же довод, что у apply_close_to_tray. Серверный профиль  # noqa: RUF003
+        # (решение а) сюда не попадает: сигнал есть только у BasesView.  # noqa: RUF003
+        if store.settings.hide_on_launch and tray is not None:
+            window.hide()
+
+    view.launched.connect(hide_after_launch)
+
     def apply_hotkey(text: str) -> str | None:
         """Перевесить хоткей. Текст отказа либо None."""
         spec = parse_hotkey(text)

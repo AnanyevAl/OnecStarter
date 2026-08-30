@@ -160,6 +160,42 @@ def test_tray_toggle_starts_from_file(application: QApplication, tmp_path: Path)
     assert view.tray_checkbox().isChecked() is False
 
 
+def test_hide_on_launch_toggle_persists(application: QApplication, tmp_path: Path) -> None:
+    view, store = _view(application, tmp_path)
+    assert view.hide_on_launch_checkbox().isChecked() is False
+    assert view.row_control("Запуск базы сворачивает окно в трей") is view.hide_on_launch_checkbox()
+    assert "Без трея" in view.row_note("Запуск базы сворачивает окно в трей").text()
+
+    view.hide_on_launch_checkbox().setChecked(True)
+
+    assert store.settings.hide_on_launch is True
+
+
+def test_hide_on_launch_toggle_starts_from_file(application: QApplication, tmp_path: Path) -> None:
+    save_settings(tmp_path / "settings.json", Settings(hide_on_launch=True))
+    view, _ = _view(application, tmp_path)
+    assert view.hide_on_launch_checkbox().isChecked() is True
+
+
+def test_hide_on_launch_syncs_from_store_without_echo(
+    application: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    view, store = _view(application, tmp_path)
+    calls: list[dict[str, object]] = []
+    original_update = store.update
+
+    def spy_update(**changes: object) -> None:
+        calls.append(changes)
+        original_update(**changes)
+
+    monkeypatch.setattr(store, "update", spy_update)
+
+    store.update(hide_on_launch=True)
+
+    assert view.hide_on_launch_checkbox().isChecked() is True
+    assert calls == [{"hide_on_launch": True}]
+
+
 def test_client_choices_with_thin_selected(
     application: QApplication, tmp_path: Path
 ) -> None:
