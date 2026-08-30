@@ -139,11 +139,13 @@ tuple[int, ...]`, `close()` (идемпотентный `CloseHandle`, посл�
 `app.py`/`run_smoke` теряют `process_control`. Скан (`process_scan.py`)
 остаётся.
 
-**domain/server_match.py.** `ServerStatus` получает `job_pids:
-tuple[int, ...]` и `spawned_pid: int | None`; `orphan_managers` →
-`port_holders` (чужие процессы с портами профиля, не из наших Job —
-фильтр по множеству PID всех наших Job подаётся аргументом, функция
-остаётся чистой).
+**domain/server_match.py.** `ServerStatus` живёт в `services/servers.py`
+(с T-08); в `domain` — только чистые функции `port_holders`/
+`port_holders_text` (заменили `orphan_managers`): чужие процессы
+с портами профиля, не из наших Job — фильтр по множеству PID всех
+наших Job подаётся аргументом, функция остаётся чистой.
+`ServerStatus` получает `job_pids: tuple[int, ...]` и
+`spawned_pid: int | None`.
 
 **ui/servers/view.py.** Таблица состояний §4; диалог удаления
 работающего профиля; «Погасить» → `stop()`; красная строка держателей
