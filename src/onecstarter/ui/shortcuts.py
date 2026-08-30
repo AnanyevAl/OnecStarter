@@ -37,5 +37,9 @@ BASES_SHORTCUTS: tuple[ShortcutSpec, ...] = (
     ShortcutSpec(
         "Delete", "Удалить запись или группу из списка (с подтверждением)", ()  # noqa: RUF001
     ),
-    ShortcutSpec("Alt+↑ / Alt+↓", "Переставить запись внутри группы", ("Alt+Up", "Alt+Down")),
+    ShortcutSpec(
+        "Alt+↑ / Alt+↓",
+        "Переставить запись или группу (только в режиме «как в файле»)",
+        ("Alt+Up", "Alt+Down"),
+    ),
 )
