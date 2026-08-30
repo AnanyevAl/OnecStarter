@@ -25,7 +25,7 @@ v1, вставлена сразу ПОСЛЕ «ОКНО И ЗАПУСК» и п�
 """  # noqa: RUF002
 
 from collections.abc import Callable, Sequence
-from typing import Any
+from typing import TypeVar
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QShowEvent
@@ -71,6 +71,8 @@ ORDER_CHOICES = (
     (ListOrder.FILE, "Как в файле"),
     (ListOrder.ALPHABETICAL, "По алфавиту"),
 )
+
+T = TypeVar("T")
 
 NOT_FROZEN_NOTE = "Доступно в установленной версии — из исходников ссылка в реестре протухнет"
 
@@ -237,7 +239,8 @@ class SettingsView(QWidget):
         self._add_row(
             "Порядок списка",
             "«По алфавиту» — только показ: файл списка и штатный стартер порядка "
-            "не видят, перестановка Alt+↑/↓ и мышью отключена",
+            "не видят, перестановка Alt+↑/↓ и мышью отвечает подсказкой, "
+            "а не меняет порядок",  # noqa: RUF001
             self._build_order_segment(),
         )
 
@@ -314,31 +317,21 @@ class SettingsView(QWidget):
         return table
 
     def _build_theme_segment(self) -> QWidget:
-        seg = QWidget()
-        seg.setObjectName("ThemeSeg")
-        seg_layout = QHBoxLayout(seg)
-        seg_layout.setContentsMargins(0, 0, 0, 0)
-        seg_layout.setSpacing(0)
-        buttons = QButtonGroup(self)
-        buttons.setExclusive(True)
-        for mode, label in CHOICES:
-            button = QPushButton(label)
-            button.setCheckable(True)
-            button.setChecked(mode is self._controller.mode)
-            button.clicked.connect(lambda _checked=False, m=mode: self._choose_theme(m))
-            buttons.addButton(button)
-            seg_layout.addWidget(button)
-            self._buttons.append(button)
-        return seg
+        return self._build_segment(
+            CHOICES,
+            lambda mode: mode is self._controller.mode,
+            self._choose_theme,
+            self._buttons,
+        )
 
     def _build_segment(
         self,
-        choices: Sequence[tuple[Any, str]],
-        is_current: Callable[[Any], bool],
-        choose: Callable[[Any], None],
+        choices: Sequence[tuple[T, str]],
+        is_current: Callable[[T], bool],
+        choose: Callable[[T], None],
         registry: list[QPushButton],
     ) -> QWidget:
-        """Сегментный переключатель — один билдер на клиента и порядок списка (T-11)."""
+        """Сегментный переключатель — один билдер на тему, клиента и порядок списка."""
         seg = QWidget()
         seg.setObjectName("ThemeSeg")
         seg_layout = QHBoxLayout(seg)
