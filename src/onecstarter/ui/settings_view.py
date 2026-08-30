@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
     QFileDialog,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -45,6 +46,7 @@ from onecstarter.services import autostart
 from onecstarter.services.settings import RECENT_MAX, RECENT_MIN, DefaultClient, ThemeMode
 from onecstarter.ui.hotkey_edit import HotkeyEdit
 from onecstarter.ui.settings_store import SettingsStore
+from onecstarter.ui.shortcuts import BASES_SHORTCUTS
 from onecstarter.ui.theme_controller import ThemeController
 
 CHOICES = (
@@ -191,6 +193,13 @@ class SettingsView(QWidget):
             extra=self._hotkey_note,
         )
 
+        self._shortcut_rows: list[tuple[str, str]] = []
+        self._add_block(
+            "Сочетания раздела «Базы»",
+            "Зашиты в программу и не меняются (решение заказчика 29.08.2026)",
+            self._build_shortcut_reference(),
+        )
+
         self._add_group("СПИСОК БАЗ")
         self._recent = QSpinBox()
         self._recent.setRange(RECENT_MIN, RECENT_MAX)
@@ -237,6 +246,42 @@ class SettingsView(QWidget):
         row.addLayout(body, stretch=1)
         row.addWidget(control, alignment=Qt.AlignmentFlag.AlignTop)
         self._layout.addLayout(row)
+
+    def _add_block(self, title: str, note: str, body: QWidget) -> None:
+        """Строка настроек во всю ширину: заголовок, подпись, тело под ними.
+
+        Для справочной таблицы `_add_row` не годится: та ставит орган
+        управления справа узкой колонкой, а таблице нужна ширина раздела.
+        Регистрируется в `_row_notes`/`_row_controls` так же, как строки
+        `_add_row`, — тесты находят её теми же аксессорами.
+        """  # noqa: RUF002
+        row_title = QLabel(title)
+        row_note = QLabel(note)
+        row_note.setObjectName("SettingsNote")
+        row_note.setWordWrap(True)
+        self._row_notes[title] = row_note
+        self._row_controls[title] = body
+        self._layout.addWidget(row_title)
+        self._layout.addWidget(row_note)
+        self._layout.addWidget(body)
+
+    def _build_shortcut_reference(self) -> QWidget:
+        """Таблица «сочетание — действие» по `BASES_SHORTCUTS` (T-11, п. 3, только чтение)."""
+        table = QWidget()
+        grid = QGridLayout(table)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(18)
+        grid.setVerticalSpacing(2)
+        for row, spec in enumerate(BASES_SHORTCUTS):
+            keys = QLabel(spec.label)
+            keys_font = keys.font()
+            keys_font.setBold(True)
+            keys.setFont(keys_font)
+            grid.addWidget(keys, row, 0)
+            grid.addWidget(QLabel(spec.title), row, 1)
+            self._shortcut_rows.append((spec.label, spec.title))
+        grid.setColumnStretch(1, 1)
+        return table
 
     def _build_theme_segment(self) -> QWidget:
         seg = QWidget()
@@ -308,6 +353,10 @@ class SettingsView(QWidget):
 
     def recent_spinbox(self) -> QSpinBox:
         return self._recent
+
+    def shortcut_reference_rows(self) -> list[tuple[str, str]]:
+        """Строки справочника сочетаний в порядке показа — что реально попало в таблицу."""
+        return list(self._shortcut_rows)
 
     def servers_root_edit(self) -> QLineEdit:
         return self._servers_root
