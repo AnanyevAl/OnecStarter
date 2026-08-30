@@ -1715,7 +1715,7 @@ T-08/T-10 в `master`.
 
 ---
 
-## T-12. Job Object на профиль — `WIP` (задачи 1–5 сделаны и приняты; задача 6 — документы; задача 7 — финальный гейт и мутации, не выполнена)
+## T-12. Job Object на профиль — `WIP` (код готов, ждёт финального ревью ветки и живого чек-листа, спека T-12 §10)
 
 Спека: [2026-08-29-v2-servers-job-per-profile-design.md](superpowers/specs/2026-08-29-v2-servers-job-per-profile-design.md)
 — пересмотр §12.4 спеки v2 «Серверы» по находкам 5–6 ручного чек-листа
@@ -1786,9 +1786,56 @@ fast-forward 30.08.2026, 1677 тестов). Субагентный цикл SDD
   unresolved_version`, `test_scan_snapshot_with_unreadable_job_keeps_
   pending_confirmation`) занесены в таблицу задачи 7.
 
-**Финальный гейт и мутации — задача 7** (не выполнена: полный прогон
-тестов, `ruff`/`mypy`, сборка со smoke, мутационная проверка отказных
-тестов независимым агентом).
+**Финальный гейт и мутации — задача 7** (30.08.2026, независимый агент —
+не автор тестов вехи). Полное дерево: `pytest -q` — 1707 тестов зелёных
+(`1707 passed in 80.88s`; первый прогон в тот же день упал
+`Windows fatal exception: access violation` внутри `pytestqt.plugin.
+_process_events` — глубоко в рантайме pytest-qt/Qt offscreen, не в коде
+проекта; немедленный повтор на том же HEAD без единой правки прошёл
+чисто — отмечено долгом наблюдения, не блокером), `ruff check .` —
+`All checks passed!`, `mypy` — `Success: no issues found in 163 source
+files`; все три — код возврата 0. После прогона подставных процессов
+(`Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match
+'time.sleep\('}`) не осталось.
+
+Сборка (`build/build.ps1 -SkipInstaller`, без редиректа `2>&1`, собранный
+экземпляр не запущен): PyInstaller — успех, **smoke: OK**, portable zip —
+49,1 МБ, итоговый `dist/OneCStarter` — **118,2 МБ**.
+
+Мутационная проверка — 16/16 отказных тестов убиты названными тестами,
+НЕ УБИТЫХ нет. Протокол на каждую: правка → только названный тест
+(PowerShell foreground — под git-bash кириллица в выводе pytest бита
+кодировкой консоли) → дословный `FAILED`/assertion → `git checkout --`
+→ `git status --short` пуст → тот же тест зелёным повторно. Мутации 1–2
+(`platform_1c/job.py`) поднимают подставные python-процессы — после
+каждой подтверждено отсутствие живого держателя той же командой, что
+и в Step 1. Полный протокол с дословными правками —
+`.superpowers/sdd/2026-08-30-v2-servers-job-per-profile/task-7-report.md`.
+
+| # | Мутация | Файл | Тест | Результат |
+| --- | --- | --- | --- | --- |
+| 1 | `close()` обнуляет `_handle`, не зовя `CloseHandle` | `platform_1c/job.py` | `test_close_kills_remnants_after_external_kill` | УПАЛ — `assert _wait_gone(grandchild)`: `AssertionError: остаток пережил закрытие Job`; `1 failed in 6.60s` |
+| 2 | `pids()` всегда возвращает `()` | `platform_1c/job.py` | `test_pids_lists_parent_and_grandchild` | УПАЛ — `assert {parent.pid, grandchild} <= pids`: `AssertionError: assert {43896, 63500} <= set()`; `1 failed in 1.70s` |
+| 3 | `start()` закрывает старый Job ПОСЛЕ `server_spawn` | `services/servers.py` | `test_start_with_remnants_closes_old_job_before_spawn_and_logs` | УПАЛ — `assert spawn.probed == [True]`: `AssertionError: assert [False] == [True]`; `1 failed in 0.64s` |
+| 4 | `start()` не проверяет `port_holders` | `services/servers.py` | `test_start_refuses_when_a_foreign_process_holds_the_profile_port` | УПАЛ — `with pytest.raises(ServerError)`: `Failed: DID NOT RAISE ServerError`; `1 failed in 0.63s` |
+| 5 | `start()` не проверяет живой `ragent` в Job (`spawned in job_pids`) | `services/servers.py` | `test_start_refuses_while_own_ragent_is_alive_in_job` | УПАЛ — `with pytest.raises(ServerError)`: `Failed: DID NOT RAISE ServerError`; `1 failed in 0.28s` |
+| 6 | `stop()` закрывает ВСЕ Job | `services/servers.py` | `test_stop_closes_only_this_profiles_job` | УПАЛ — `assert factory.created[1].closed is False`: `AssertionError: assert True is False`; `1 failed in 0.30s` |
+| 7 | `running_count()` считает по `_match.by_profile` | `services/servers.py` | `TestRunningCount::test_ignores_a_foreign_matched_ragent` | УПАЛ — `assert workspace.running_count() == 0`: `AssertionError: assert 1 == 0`; `1 failed in 0.35s` |
+| 8 | `_reconcile_jobs` не забывает `spawned_pid` после события | `services/servers.py` | `test_external_ragent_death_is_logged_once` | УПАЛ — `assert content.count(...) == 1`: `AssertionError: assert 2 == 1` (событие записано дважды); `1 failed in 0.30s` |
+| 9 | `remove_profile` не останавливает Job | `services/servers.py` | `test_remove_running_profile_closes_its_job` | УПАЛ — `assert factory.created[0].closed is True`: `AssertionError: assert False is True`; `1 failed in 0.29s` |
+| 10 | `_remove` во view удаляет без вопроса | `ui/servers/view.py` | `test_removal_of_running_profile_asks_to_stop_and_refusal_keeps_it_running` | УПАЛ — `assert questions`: `AssertionError: assert []` (диалог не спрошен); `1 failed in 0.31s` |
+| 11 | `run_smoke` не передаёт `job_factory` | `ui/app.py` | `test_run_smoke_uses_null_job` | УПАЛ — `assert workspace_kwargs["job_factory"] is NullJob`: `AssertionError: assert <class 'onecstarter.platform_1c.job.ServerJob'> is NullJob`; `1 failed in 0.44s` |
+| 12 | `_button_state` считает `FOREIGN` активной «Остановить» | `ui/servers/view.py` | `test_foreign_matched_ragents_are_show_only` | УПАЛ — `assert row.button_enabled is False`: `AssertionError: assert True is False`; `1 failed in 0.30s` |
+| 13 | `port_holders` игнорирует `exclude_pids` | `domain/server_match.py` | `test_own_job_pids_are_excluded` | УПАЛ — `assert port_holders(...) == (alien,)`: чужой набор содержит и `ours`, и `alien` вместо только `alien`; `1 failed in 0.13s` |
+| 14 | `rebuild()` без `try/except ServicesError` вокруг `statuses()` | `ui/servers/view.py` | `test_rebuild_survives_a_job_that_cannot_be_read` | УПАЛ — необработанный `ServerError: Не удалось прочитать процессы сервера: QueryInformationJobObject отказал` из `view.rebuild()`; `1 failed in 0.34s` |
+| 15 | `_status_text`/`_button_state` проверяют `resolved is None` РАНЬШЕ состояния Job | `ui/servers/view.py` | `test_running_process_wins_over_unresolved_version` | УПАЛ — `assert row.status_text == "работает · PID 4242"`: `AssertionError: assert 'версия не установлена' == 'работает · PID 4242'`; `1 failed in 0.31s` |
+| 16 | `on_scan_snapshot()` зовёт `_check_pending_confirmation` и при `_status_problem` (убран ранний `return`) | `ui/servers/view.py` | `test_scan_snapshot_with_unreadable_job_keeps_pending_confirmation` | УПАЛ — `assert "работает · PID 4242" not in journal_text`: строка найдена в журнале (§8 сработала на снимке, который не удалось прочитать); `1 failed in 0.31s` |
+
+Каждая мутация внесена, прогнан только названный тест, откат
+`git checkout --`, `git status --short` пуст — протокол CLAUDE.md
+(«Мутационная проверка тестов») соблюдён по всем шестнадцати пунктам.
+Рабочее дерево после всех мутаций подтверждено идентичным HEAD
+(`git status --short`/`git diff --stat` пусты).
 
 **Факты [Ф] 29.08.2026** (проба на python-процессах с внуком,
 kill-on-close): `QueryInformationJobObject(JobObjectBasicProcessIdList)`
