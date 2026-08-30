@@ -27,17 +27,26 @@ def _kill_if_alive(pid: int) -> None:
         psutil.Process(pid).kill()
 
 
-class _FailingJob(ServerJob):
-    """`ServerJob`, чей `assign()` всегда отказывает `JobError` (для защитного теста).
+class _FailingJob:
+    """Фейк протокола `Job`, чей `assign()` всегда отказывает `JobError` (для защитного теста).
 
-    Подкласс, а не отдельный класс: сигнатура `spawn_server` — закрытая уния
-    `ServerJob | NullJob`, не протокол, и под mypy strict фейк обязан быть
-    наследником, чтобы пройти проверку типов. Реальная ctypes-механика
-    `ServerJob.assign` не вызывается — метод переопределён целиком.
-    """  # noqa: RUF002
+    Самостоятельный класс, не наследник `ServerJob`: сигнатура `spawn_server`
+    принимает протокол `Job` (долг T-10 «закрытая уния» закрыт задачей 1
+    T-12), наследование от конкретной реализации больше не нужно для
+    прохождения mypy strict.
+    """
 
     def assign(self, process_handle: int) -> None:
         raise JobError("подставной отказ assign для теста")
+
+    def pids(self) -> tuple[int, ...]:
+        return ()
+
+    def close(self) -> None:
+        pass
+
+    def is_empty(self) -> bool:
+        return True
 
 
 def test_spawn_server_redirects_stdout_to_log_file(tmp_path: Path) -> None:
@@ -64,7 +73,7 @@ def test_spawn_server_process_dies_when_job_closes(tmp_path: Path) -> None:
     pid = spawn_server(_printing_command(), log_path, job)
     try:
         assert psutil.pid_exists(pid)
-        job._close_for_tests()
+        job.close()
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline and psutil.pid_exists(pid):
             time.sleep(0.05)

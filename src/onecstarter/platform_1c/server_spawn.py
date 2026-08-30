@@ -75,7 +75,7 @@ from ctypes import wintypes
 from pathlib import Path
 
 from onecstarter.domain.launch import LaunchCommand
-from onecstarter.platform_1c.job import JobError, NullJob, ServerJob
+from onecstarter.platform_1c.job import Job, JobError
 
 __all__ = ["spawn_server"]
 
@@ -170,7 +170,7 @@ def _open_append_shared(path: Path) -> int:
         raise
 
 
-def spawn_server(command: LaunchCommand, log_path: Path, job: ServerJob | NullJob) -> int:
+def spawn_server(command: LaunchCommand, log_path: Path, job: Job) -> int:
     """Запустить серверный процесс тихо, с редиректом stdout в `log_path`, в `job`.
 
     `OSError` (файл журнала не открылся, `Popen` не смог создать процесс)
