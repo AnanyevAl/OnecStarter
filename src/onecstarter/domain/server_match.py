@@ -7,7 +7,7 @@
 """  # noqa: RUF002
 
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping, Sequence, Set
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -109,4 +109,56 @@ def match_profiles(
     return MatchResult(
         by_profile={key: tuple(value) for key, value in matched.items()},
         foreign=tuple(foreign),
+    )
+
+
+def _held_ports(profile: ServerProfile, params: RagentParams) -> set[int]:
+    """Какие порты ПРОФИЛЯ держит процесс с такими параметрами."""  # noqa: RUF002
+    held: set[int] = set()
+    if params.port is not None and params.port in (profile.port, profile.regport):
+        held.add(params.port)
+    if params.regport is not None and params.regport == profile.regport:
+        held.add(profile.regport)
+    return held
+
+
+def port_holders(
+    profile: ServerProfile,
+    processes: Sequence[RagentProcess],
+    exclude_pids: Set[int],
+) -> tuple[RagentProcess, ...]:
+    """Чужие процессы снимка, держащие порты профиля (спека T-12 §4).
+
+    [Ф] А3 T-07: `rmngr` переживает `ragent` и держит его `regport` своим
+    `-port`; новый `ragent` поверх такого держателя поднимается полумёртвым
+    (находка 5 чек-листа T-10). Наши процессы (`exclude_pids` — все PID
+    наших Job) — не держатели, а остатки; непрозрачный процесс (`argv is
+    None`) пропускается — выдумывать сопоставление нельзя.
+    """  # noqa: RUF002
+    holders: list[RagentProcess] = []
+    for process in processes:
+        if process.pid in exclude_pids or process.argv is None:
+            continue
+        if _held_ports(profile, extract_ragent_params(process.argv)):
+            holders.append(process)
+    return tuple(holders)
+
+
+def port_holders_text(profile: ServerProfile, holders: Sequence[RagentProcess]) -> str:
+    """Текст красной строки о занятости портов профиля."""  # noqa: RUF002
+    ports: set[int] = set()
+    for holder in holders:
+        if holder.argv is not None:
+            ports |= _held_ports(profile, extract_ragent_params(holder.argv))
+    pids = ", ".join(str(holder.pid) for holder in holders)
+    if ports == {profile.regport}:
+        return (
+            f"порт регистрации {profile.regport} занят PID {pids} "
+            "(запущен не лаунчером)"
+        )
+    if ports == {profile.port}:
+        return f"порт {profile.port} занят PID {pids} (запущен не лаунчером)"
+    return (
+        f"порты {profile.port} и {profile.regport} заняты PID {pids} "
+        "(запущен не лаунчером)"
     )
