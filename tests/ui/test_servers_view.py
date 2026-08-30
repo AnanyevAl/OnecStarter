@@ -105,6 +105,35 @@ class FakeSpawn:
         return self.pid
 
 
+@pytest.fixture(autouse=True)
+def _register_views_with_qtbot(qtbot: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Каждый `ServersView` файла — под управлением qtbot (долг T-12, п. 15).
+
+    Тесты файла строят `ServersView(...)` напрямую (63 места на 30.08.2026)
+    и не отдают его `qtbot.addWidget`: Python-обёртка вьюхи с циклами
+    «self → кнопка → лямбда → self» освобождалась циклическим GC
+    в произвольный момент — в том числе внутри `processEvents()` следующего
+    теста, когда у дерева виджетов ещё висят `DeferredDelete` от `_clear()`.
+    Наблюдалось дважды 30.08.2026 как `Windows fatal exception: access
+    violation` в `pytestqt.plugin._process_events` ([Р] разбор финального
+    ревью T-12). `qtbot.addWidget` закрывает и удаляет виджет в teardown
+    того же теста, детерминированно. Обёртка над `__init__`, а не правка
+    63 вызовов: одно место, и каждый новый тест файла защищён сам собой.
+    """  # noqa: RUF002
+    original_init = ServersView.__init__
+
+    def init_and_register(self: ServersView, *args: Any, **kwargs: Any) -> None:
+        original_init(self, *args, **kwargs)
+        qtbot.addWidget(self)
+
+    monkeypatch.setattr(ServersView, "__init__", init_and_register)
+
+
+def test_views_are_registered_with_qtbot() -> None:
+    """Фикстура действительно подменила конструктор — иначе она пустая формальность."""
+    assert ServersView.__init__.__name__ == "init_and_register"
+
+
 def _profile(**overrides: object) -> ServerProfile:
     values: dict[str, str | int | bool] = {
         "id": "p1",
