@@ -1515,3 +1515,66 @@ class TestNothingRegistersWithoutExplicitCall:
         workspace.foreign_servers()
 
         assert run_elevated.calls == []
+
+
+class TestReconcileOnScan:
+    """Спека T-12 §4: обнаружение остатков — на снимке монитора, событие один раз."""
+
+    def _running(
+        self, tmp_path: Path, prefix: str
+    ) -> tuple[ServersWorkspace, FakeJobFactory, ServerProfile]:
+        factory = FakeJobFactory()
+        spawn = FakeServerSpawn(pid=4242)
+        workspace = _workspace(tmp_path / "servers.json", new_id=lambda: prefix * 16,
+                               job_factory=factory, server_spawn=spawn, logs_dir=tmp_path / "logs")
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        workspace.start(profile.id, [_installation_in(tmp_path)])
+        return workspace, factory, profile
+
+    def test_external_ragent_death_is_logged_once(self, tmp_path: Path) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ: переход «ragent был в Job → его нет, Job не пуст»
+        пишется в журнал РОВНО один раз, `spawned_pid` после него — `None`.
+        Мутация: не забывать `spawned_pid` после события — второй снимок
+        напишет его ещё раз.
+        """  # noqa: RUF002
+        workspace, factory, profile = self._running(tmp_path, "ra")
+        factory.created[0].pids_value = (4300, 4301)  # ragent 4242 снят извне
+
+        workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+        workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+
+        content = server_journal.journal_path(tmp_path / "logs", profile.id).read_text(
+            encoding="utf-8"
+        )
+        assert content.count("ragent завершился извне; остатки дерева: PID 4300, 4301") == 1
+        status = workspace.statuses([])[0]
+        assert status.spawned_pid is None
+        assert status.job_pids == (4300, 4301)
+        assert workspace.running_count() == 1  # остатки — всё ещё наш Job (гейт выхода)
+
+    def test_job_whose_tree_is_gone_is_released(self, tmp_path: Path) -> None:
+        workspace, factory, profile = self._running(tmp_path, "rb")
+        factory.created[0].pids_value = ()
+
+        workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+
+        assert factory.created[0].closed is True
+        status = workspace.statuses([])[0]
+        assert status.job_pids == () and status.spawned_pid is None
+        assert workspace.running_count() == 0
+        content = server_journal.journal_path(tmp_path / "logs", profile.id).read_text(
+            encoding="utf-8"
+        )
+        assert "завершился извне" not in content
+
+    def test_healthy_job_stays_silent(self, tmp_path: Path) -> None:
+        workspace, _factory, profile = self._running(tmp_path, "rc")
+
+        workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+
+        assert workspace.statuses([])[0].spawned_pid == 4242
+        content = server_journal.journal_path(tmp_path / "logs", profile.id).read_text(
+            encoding="utf-8"
+        )
+        assert "завершился извне" not in content

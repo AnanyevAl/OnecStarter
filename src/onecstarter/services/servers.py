@@ -70,6 +70,18 @@ T-08), гонка PID §6.2 и её собственный класс ошибк
 (`errors.py`): гасит теперь ОС, а сверять PID со снимком незачем —
 Job отвечает об одном и том же дереве.
 
+T-12 (задача 4): обнаружение остатков — на снимке. Job сам не уведомляет
+о смерти своего `ragent` — только отвечает на `pids()` по прямому запросу,
+— поэтому `apply_scan` после сопоставления зовёт `_reconcile_jobs`: узнать
+о пропаже можно только на очередном снимке монитора (спека §4.4, до 5 с),
+не раньше. Пустой Job (дерево умерло целиком, само или снято извне до
+последнего процесса) освобождается тихо, тем же приёмом, что пустой Job
+в `remove_profile`, — сообщать не о чем. Job, где `ragent` пропал, а дети
+(`rmngr`/`rphost`/`dbgs`) ещё живы, — остатки: событие `ragent завершился
+извне; остатки дерева: PID …` пишет `_reconcile_jobs` РОВНО один раз —
+`spawned_pid` забывается сразу после записи, и повторный снимок того же
+состояния молчит.
+
 Приём инъекции эффектов и отката состояния в памяти при отказе записи —
 тот же, что в `services/workspace.py::Workspace` (см. её докстринг
 и `_store_user`): экран, построенный по `profiles()`, обязан показывать
@@ -221,9 +233,11 @@ class ServerStatus:
     и наши, и чужие, потому что по командной строке они неразличимы.
     `job_pids` — всё дерево НАШЕГО Job этого профиля (`()`, если Job нет или
     он пуст), `spawned_pid` — PID `ragent`, порождённого нами (`None`, если
-    запускали не мы либо `ragent` завершился извне). Только эти два поля
-    говорят, чем мы вправе управлять: непустой `job_pids` без `spawned_pid`
-    внутри — остатки нашего прошлого дерева.
+    запускали не мы, либо `ragent` завершился извне — `_reconcile_jobs`
+    забывает `spawned_pid`, как только обнаружит пропажу на снимке, и тем
+    же снимком пишет в журнал `ragent завершился извне …` ровно один раз).
+    Только эти два поля говорят, чем мы вправе управлять: непустой
+    `job_pids` без `spawned_pid` внутри — остатки нашего прошлого дерева.
 
     `port_holders` — чужие процессы снимка, держащие порты профиля
     (`domain/server_match.py`, спека T-12 §4); пусто, пока снимка не было
@@ -368,7 +382,7 @@ class ServersWorkspace:
         self._save(updated)
 
     def apply_scan(self, snapshot: ScanSnapshot) -> None:
-        """Положить снимок процессов и сопоставить его с профилями.
+        """Положить снимок процессов, сопоставить его с профилями и сверить наши Job.
 
         Главный поток — тот же приём разделения, что `scan_servers`/этот
         метод и `Workspace.apply_common_lists`: чтение живых процессов
@@ -376,9 +390,40 @@ class ServersWorkspace:
         `ProcessInfo` → `RagentProcess` и чистое сопоставление через
         `match_profiles`. Результат и сырые `managers` из снимка остаются
         в состоянии до следующего `apply_scan`.
+
+        После сопоставления зовёт `_reconcile_jobs` (спека T-12 §4): снимок —
+        единственный регулярный повод узнать, что `ragent`, которого мы
+        породили, пропал НЕ через `stop` (сняли извне, уронила ОС), — сам
+        Job об этом не уведомляет, только отвечает на прямой запрос `pids()`.
         """  # noqa: RUF002
         self._snapshot = snapshot
         self._match = match_profiles(self._profiles, _snapshot_agents(snapshot))
+        self._reconcile_jobs()
+
+    def _reconcile_jobs(self) -> None:
+        """Сверить Job с реальностью на снимке монитора (спека T-12 §4).
+
+        Пустой Job — дерево умерло целиком (само или снято извне до последнего
+        процесса): хендл освобождается, профиль становится «остановлен».
+        `ragent` пропал, а Job не пуст — остатки: событие пишется ОДИН раз
+        (после него `spawned_pid` забыт, повторный снимок молчит).
+        """  # noqa: RUF002
+        for profile_id in list(self._jobs):
+            try:
+                pids = self._jobs[profile_id].pids()
+            except JobError:
+                _log.warning("не удалось прочитать Job профиля %s", profile_id)
+                continue
+            if not pids:
+                self._forget_job(profile_id)
+                continue
+            spawned = self._spawned.get(profile_id)
+            if spawned is not None and spawned not in pids:
+                del self._spawned[profile_id]
+                pids_text = ", ".join(str(pid) for pid in pids)
+                self.log_event(
+                    profile_id, f"ragent завершился извне; остатки дерева: PID {pids_text}"
+                )
 
     @property
     def scan_pending(self) -> bool:
