@@ -99,6 +99,14 @@ NO_CACHE_ID_NOTE = "У записи нет ID — каталог кэша не �
 # причины, и подсказка не должна путать одну с другой.  # noqa: RUF003
 NO_CACHE_ROOT_NOTE = "В окружении нет корня кэша (APPDATA/LOCALAPPDATA)"  # noqa: RUF001
 CACHE_EMPTY_NOTE = "кэш пуст"
+# Находка финального ревью ветки: отказ переставить запись в алфавитном режиме
+# (мышью и с клавиатуры) был молчаливым `return` — тот же дефект класса, что  # noqa: RUF003
+# customer сообщил в smoke №2 (09.08.2026): курсор обещает перенос, ничего не
+# происходит. §14 п. 5 решения заказчика — на такой жест нужна подсказка.
+ALPHABETICAL_REORDER_NOTE = (
+    "Порядок задан алфавитом — перестановка отключена. Переключите «Порядок списка» "
+    "в настройках на «Как в файле», чтобы менять порядок вручную"
+)
 
 
 def browse_for_shortcut_path(parent: QWidget | None, suggested: str) -> str:
@@ -1570,6 +1578,15 @@ class BasesView(QWidget):
         группами позиция по-прежнему не переносится — только сам факт
         переноса, тем же `update_group`/`update_infobase`, что и раньше
         ([Р] ограничение v1 плана 4b, §12).
+
+        В алфавитном режиме показа (`ListOrder.ALPHABETICAL`) перестановка
+        внутри группы отключена — `OrderInList` в этом режиме не читается
+        при показе, писать в него нечего и незачем (T-11, п. 2). Отказ идёт
+        через `_on_error`/`ALPHABETICAL_REORDER_NOTE`, а не молча: индикатор
+        drop продолжает рисовать «перенос разрешён», и без сообщения жест
+        выглядел бы принятым, но ничего не происходящим — тот же дефект,
+        что заказчик сообщил в smoke №2 (находка финального ревью ветки).
+        Файл в этом случае не трогается вовсе — до `_reorder` дело не доходит.
         """  # noqa: RUF002
         if target_is_implicit:
             self._on_error(
@@ -1596,7 +1613,8 @@ class BasesView(QWidget):
                 target.folder
             ):
                 if self._list_order() is ListOrder.ALPHABETICAL:
-                    return  # перестановка внутри группы в алфавитном режиме не имеет смысла
+                    self._on_error(InvalidRequestError(ALPHABETICAL_REORDER_NOTE))
+                    return
                 self._reorder(source_key, target.key, where)
                 return
         folder = self._folder_of_drop(target_key, where)
@@ -1711,11 +1729,14 @@ class BasesView(QWidget):
 
         Виртуальные ветки (Избранное/Недавние/Общие списки) не переставляются:
         их порядок не хранится в `OrderInList` (`_is_in_file_tree`).
-        В алфавитном режиме перестановки нет вовсе (T-11, п. 2).
+        В алфавитном режиме перестановки нет вовсе (T-11, п. 2) — отказ идёт
+        через `_on_error`/`ALPHABETICAL_REORDER_NOTE`, не молча (находка
+        финального ревью ветки: голый `return` повторял дефект smoke №2).
         """  # noqa: RUF002
         if self._list_order() is ListOrder.ALPHABETICAL:
             # Порядок задаёт алфавит, а не OrderInList: писать в файл нечего  # noqa: RUF003
-            # и незачем (T-11, п. 2, вариант а).  # noqa: RUF003
+            # и незачем (T-11, п. 2, вариант а) — но отказ обязан быть виден.  # noqa: RUF003
+            self._on_error(InvalidRequestError(ALPHABETICAL_REORDER_NOTE))
             return
         index = self._tree.currentIndex().siblingAtColumn(0)
         if not index.isValid() or not self._is_in_file_tree(index):

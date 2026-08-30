@@ -41,7 +41,12 @@ from onecstarter.services.settings import DEFAULT_RECENT_LIMIT, ListOrder
 from onecstarter.ui import theme
 from onecstarter.ui.bases.icons import placement_icon
 from onecstarter.ui.bases.tree_model import KEY_ROLE, KIND_ROLE
-from onecstarter.ui.bases.view import NO_CACHE_ROOT_NOTE, BasesView, DropTarget
+from onecstarter.ui.bases.view import (
+    ALPHABETICAL_REORDER_NOTE,
+    NO_CACHE_ROOT_NOTE,
+    BasesView,
+    DropTarget,
+)
 from onecstarter.ui.dialogs.confirm import ask_group_removal, confirm_removal
 from onecstarter.ui.dialogs.group import GroupDialog
 from onecstarter.ui.dialogs.infobase import InfobaseDialog
@@ -1061,7 +1066,7 @@ def test_shortcut_reference_matches_registered_shortcuts(qtbot, workspace_factor
         for spec in BASES_SHORTCUTS
         for sequence in spec.sequences
     }
-    assert expected <= registered, expected - registered
+    assert expected == registered, (expected - registered, registered - expected)
 
 
 def test_alt_enter_opens_properties_of_the_current_base(qtbot, workspace_factory, monkeypatch):
@@ -1834,7 +1839,7 @@ def test_group_menu_offers_to_add_a_base_into_that_group(qtbot, workspace_factor
 
     menu = view._build_group_menu(item, _CLIENTS_KEY)
     actions = {action.text(): action for action in menu.actions()}
-    assert list(actions)[0] == "Добавить базу…"  # noqa: RUF015
+    assert next(iter(actions)) == "Добавить базу…"
     actions["Добавить базу…"].trigger()
 
     assert folders == ["Клиенты"]
@@ -2781,9 +2786,15 @@ def test_alt_up_in_a_virtual_branch_is_a_no_op(qtbot: Any, workspace_factory: An
 def test_alphabetical_mode_disables_keyboard_reorder(qtbot, workspace_factory, monkeypatch):
     """ЗАЩИТНЫЙ ТЕСТ (T-11, п. 2, вариант а): в алфавитном режиме Alt+↑ не пишет файл.
 
-    Мутация: убрать проверку `self._list_order() is ListOrder.ALPHABETICAL`
+    Мутация 1: убрать проверку `self._list_order() is ListOrder.ALPHABETICAL`
     в `_move_current` — `move_within_group` перепишет `OrderInList`, который
-    в этом режиме не показывается.
+    в этом режиме не показывается. Падает на `moves == []`.
+
+    Мутация 2 (находка финального ревью ветки): заменить
+    `self._on_error(InvalidRequestError(ALPHABETICAL_REORDER_NOTE))` на голый
+    `return` в `_move_current` — файл по-прежнему не пишется, но пользователь
+    не получает объяснения, почему перестановка не сработала (дефект того
+    же класса, что customer сообщил в smoke №2). Падает на `len(errors) == 1`.
 
     Ключ и направление — как в `test_alt_up_moves_the_current_record_before_
     its_neighbor` (реальная перестановка в режиме FILE): «Демо Бухгалтерия» —
@@ -2793,7 +2804,7 @@ def test_alphabetical_mode_disables_keyboard_reorder(qtbot, workspace_factory, m
     перестановки от списанного гварда; Alt+↑ имеет настоящего соседа сверху
     и действительно упёрся бы в `move_within_group`, не будь проверки.
     """  # noqa: RUF002
-    view, _, _, _ = _view(qtbot, workspace_factory, list_order=lambda: ListOrder.ALPHABETICAL)
+    view, _, errors, _ = _view(qtbot, workspace_factory, list_order=lambda: ListOrder.ALPHABETICAL)
     _show_exposed(qtbot, view)
     moves = _spy_on(monkeypatch, view.workspace(), "move_within_group")
     before = view.workspace().paths.ibases.read_bytes()
@@ -2803,11 +2814,19 @@ def test_alphabetical_mode_disables_keyboard_reorder(qtbot, workspace_factory, m
 
     assert moves == []
     assert view.workspace().paths.ibases.read_bytes() == before
+    assert len(errors) == 1 and isinstance(errors[0], InvalidRequestError)
+    assert ALPHABETICAL_REORDER_NOTE in str(errors[0])
 
 
 def test_alphabetical_mode_drop_within_group_does_not_reorder(
     qtbot, workspace_factory, monkeypatch
 ):
+    """В алфавитном режиме drop внутри группы не переставляет и не молчит.
+
+    Мутация (находка финального ревью ветки): заменить `self._on_error(...)`
+    в `handle_drop` на голый `return` — файл по-прежнему не пишется, но
+    подсказки не будет. Падает на `len(errors) == 1`.
+    """  # noqa: RUF002
     view, _, errors, _ = _view(qtbot, workspace_factory, list_order=lambda: ListOrder.ALPHABETICAL)
     moves = _spy_on(monkeypatch, view.workspace(), "move_within_group")
     updates = _spy_on(monkeypatch, view.workspace(), "update_infobase")
@@ -2821,7 +2840,8 @@ def test_alphabetical_mode_drop_within_group_does_not_reorder(
 
     assert moves == []
     assert updates == []
-    assert errors == []
+    assert len(errors) == 1 and isinstance(errors[0], InvalidRequestError)
+    assert ALPHABETICAL_REORDER_NOTE in str(errors[0])
 
 
 def test_alphabetical_mode_drop_into_another_group_still_moves(
