@@ -384,7 +384,7 @@ class NullJob:
 **Interfaces:**
 - Consumes: `RagentProcess`, `extract_ragent_params`, `ServerProfile` (есть).
 - Produces:
-  - `port_holders(profile: ServerProfile, processes: Sequence[RagentProcess], exclude_pids: AbstractSet[int]) -> tuple[RagentProcess, ...]` — процессы снимка (любого имени: `ragent`/`rmngr`), чьи `-port`/`-regport` совпадают с портами профиля и чей PID не в `exclude_pids`. Правило: `params.port in {profile.port, profile.regport}` ИЛИ `params.regport == profile.regport` ([Ф] А3 T-07: у `rmngr` собственный `-port` равен `-regport` агента, поэтому `rmngr` на нашем `regport` — держатель). `argv is None` — пропуск (непрозрачный процесс, сопоставить нечем). Порядок — как во входе.
+  - `port_holders(profile: ServerProfile, processes: Sequence[RagentProcess], exclude_pids: Set[int]) -> tuple[RagentProcess, ...]` — процессы снимка (любого имени: `ragent`/`rmngr`), чьи `-port`/`-regport` совпадают с портами профиля и чей PID не в `exclude_pids`. Правило: `params.port in {profile.port, profile.regport}` ИЛИ `params.regport == profile.regport` ([Ф] А3 T-07: у `rmngr` собственный `-port` равен `-regport` агента, поэтому `rmngr` на нашем `regport` — держатель). `argv is None` — пропуск (непрозрачный процесс, сопоставить нечем). Порядок — как во входе.
   - `port_holders_text(profile: ServerProfile, holders: Sequence[RagentProcess]) -> str` — текст красной строки и отказа `start()`. Три формы: только `regport` → `порт регистрации {regport} занят PID {pids} (запущен не лаунчером)`; только `port` → `порт {port} занят PID {pids} (запущен не лаунчером)`; оба → `порты {port} и {regport} заняты PID {pids} (запущен не лаунчером)`. `pids` — через `", "`.
 
 Функция чистая: множество наших PID подаёт `services` (Task 3), сам Job здесь не появляется.
@@ -460,7 +460,7 @@ class TestPortHoldersText:
 
 - [ ] **Step 2: RED** — `uv run pytest tests/unit/test_server_match.py -q` → `ImportError: cannot import name 'port_holders'`.
 
-- [ ] **Step 3: Реализация** — в `server_match.py` (импорт `AbstractSet` из `collections.abc`):
+- [ ] **Step 3: Реализация** — в `server_match.py` (импорт `Set` из `collections.abc` — находка исполнителя задачи 2: `collections.abc.AbstractSet` не существует, есть только устаревший `typing.AbstractSet`):
 
 ```python
 def _held_ports(profile: ServerProfile, params: RagentParams) -> set[int]:
@@ -476,7 +476,7 @@ def _held_ports(profile: ServerProfile, params: RagentParams) -> set[int]:
 def port_holders(
     profile: ServerProfile,
     processes: Sequence[RagentProcess],
-    exclude_pids: AbstractSet[int],
+    exclude_pids: Set[int],
 ) -> tuple[RagentProcess, ...]:
     """Чужие процессы снимка, держащие порты профиля (спека T-12 §4).
 
