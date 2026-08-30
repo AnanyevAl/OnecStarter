@@ -55,20 +55,31 @@ def _tree_in_job() -> Iterator[tuple[ServerJob, subprocess.Popen[str], int]]:
         time.sleep(0.3)  # внуку — дожить до попадания в список Job
         yield job, parent, grandchild
     finally:
-        # Уборка гонки с самим `job.close()`: kill-on-close уже мог погасить  # noqa: RUF003
-        # родителя/внука асинхронно между этой строкой и следующей — окно
-        # «pid_exists() → Process(pid).kill()» гонку не закрывает (found
-        # flaky: NoSuchProcess на .kill() при полном прогоне и изредка на
-        # изолированном). `NoSuchProcess` здесь — это успех уборки, а не  # noqa: RUF003
-        # ошибка теста.
-        job.close()
-        for pid in (parent.pid, grandchild):
-            if pid is not None:
-                try:
-                    psutil.Process(pid).kill()
-                except psutil.NoSuchProcess:
-                    pass
-        parent.wait(timeout=5)
+        # `close()` — во ВЛОЖЕННОМ try (волна финального ревью ветки T-12,
+        # п. 4): он умеет отказать `JobError` (`CloseHandle` вернул 0,
+        # и хендл при этом СОХРАНЯЕТСЯ — правка ревью задачи 1), и стоя
+        # первым в общем `finally` он уносил бы с собой уборку  # noqa: RUF003
+        # процессов
+        # — два `python -c "... time.sleep(120)"` пережили бы прогон
+        # и остались бы на машине разработчика до перезагрузки.
+        try:
+            job.close()
+        finally:
+            # Уборка гонки с самим `job.close()`: kill-on-close  # noqa: RUF003
+            # уже мог
+            # погасить родителя/внука асинхронно между этой строкой
+            # и следующей — окно «pid_exists() → Process(pid).kill()»
+            # гонку не закрывает (found flaky: NoSuchProcess на .kill()
+            # при полном прогоне и изредка на изолированном).
+            # `NoSuchProcess` здесь — это успех уборки, а не  # noqa: RUF003
+            # ошибка теста.
+            for pid in (parent.pid, grandchild):
+                if pid is not None:
+                    try:
+                        psutil.Process(pid).kill()
+                    except psutil.NoSuchProcess:
+                        pass
+            parent.wait(timeout=5)
 
 
 class TestServerJob:
