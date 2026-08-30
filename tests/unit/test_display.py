@@ -490,6 +490,22 @@ def test_sort_rows_keeps_note_rows_last() -> None:
     assert [row.label for row in sort_rows(rows)] == ["Архив", "Яблоко", "ошибка"]
 
 
+def test_sort_rows_keeps_section_rows_last_as_is() -> None:
+    """Строка вида SECTION — не GROUP/BASE/NOTE — раньше отбрасывалась молча (находка
+
+    финального ревью ветки T-11): `_sorted_siblings` собирала только group/base/note
+    и не переносила остальное в результат. Теперь такая строка выживает и идёт
+    последней, после NOTE, без сортировки.
+    """
+    rows = [
+        Row(RowKind.SECTION, "Избранное", None),
+        Row(RowKind.NOTE, "ошибка", None),
+        Row(RowKind.BASE, "Яблоко", None),
+        Row(RowKind.GROUP, "Архив", None),
+    ]
+    assert [row.label for row in sort_rows(rows)] == ["Архив", "Яблоко", "ошибка", "Избранное"]
+
+
 def test_sort_rows_sorts_nested_children_recursively() -> None:
     """ЗАЩИТНЫЙ ТЕСТ: рекурсия `sort_rows` — дети и внуки тоже сортируются.
 

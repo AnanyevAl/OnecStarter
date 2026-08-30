@@ -158,7 +158,11 @@ def collation_key(text: str) -> tuple[str, str]:
 
 
 def _sorted_siblings(rows: Sequence[Row]) -> list[Row]:
-    """Группы (и неявные узлы) перед базами, внутри класса — по `collation_key`; NOTE — в конце."""
+    """Группы (и неявные узлы) перед базами, внутри класса — по `collation_key`;
+
+    NOTE — в конце, строки других видов (SECTION) — в конце как есть, без
+    сортировки (находка финального ревью ветки: раньше отбрасывались молча).
+    """
     groups = sorted(
         (row for row in rows if row.kind in (RowKind.GROUP, RowKind.IMPLICIT_GROUP)),
         key=lambda row: collation_key(row.label),
@@ -168,7 +172,12 @@ def _sorted_siblings(rows: Sequence[Row]) -> list[Row]:
         key=lambda row: collation_key(row.label),
     )
     notes = [row for row in rows if row.kind is RowKind.NOTE]
-    return [*groups, *bases, *notes]
+    others = [
+        row
+        for row in rows
+        if row.kind not in (RowKind.GROUP, RowKind.IMPLICIT_GROUP, RowKind.BASE, RowKind.NOTE)
+    ]
+    return [*groups, *bases, *notes, *others]
 
 
 def sort_rows(rows: Sequence[Row]) -> list[Row]:
