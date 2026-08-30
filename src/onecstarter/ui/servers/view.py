@@ -6,14 +6,21 @@ assets/2026-08-26-v2-servers-mockup.html), секция «Раздел „Сер
 и производные от него `statuses`/`foreign_servers`. Задача 14 добавила показ
 и локальные действия карточки (запуск/остановка/удаление профиля, гашение
 сирот) — диалоги «Консоль администрирования…»/«+ Профиль»/«Свойства…» тогда
-были инъекциями с безопасным дефолтом `lambda: None`. **Пересмотрено T-12
-(задача 5 этого плана):** «сирот» больше нет как понятия — кнопка «Погасить»
-относится к остаткам НАШЕГО Job (`stop()`), а чужие держатели портов
-(`status.port_holders`) показываются красной строкой БЕЗ кнопки, потому что
-чужим процессом мы не управляем (решение заказчика 4 от 29.08.2026).
-Задача 3 T-12 сделала здесь минимум — два блока предупреждений под карточкой
-и `_extinguish` на `stop()`; таблицу четырёх состояний карточки и диалоги
-удаления по Job доделывает задача 5.
+были инъекциями с безопасным дефолтом `lambda: None`.
+
+**T-12 переписал модель состояния карточки** (задача 3 — предупреждения
+и `_extinguish` на `stop()`, задача 5 — сама таблица). «Сирот» больше нет
+как понятия, и «работает» больше не значит «в снимке нашёлся `ragent`
+на нашем каталоге кластера»: по командной строке наш и чужой процессы
+неразличимы, а управлять мы вправе только тем, чей Job у нас на руках.
+Состояние карточки решает `_card_state` — четыре взаимоисключающих:
+`RUNNING` (наш `ragent` жив в Job профиля), `REMNANTS` (Job непуст,
+нашего `ragent` в нём уже нет — остатки прошлого дерева держат порты),
+`FOREIGN` (Job нет, снимок нашёл совпавший `ragent` — только показ,
+решение заказчика 4 от 29.08.2026) и `STOPPED`. Кнопка «Погасить»
+в красной строке относится к остаткам НАШЕГО Job (`stop()`), а чужие
+держатели портов (`status.port_holders`) показываются красной строкой
+БЕЗ кнопки — чужим процессом мы не управляем.
 
 **Задача 15** подключает `ServerProfileDialog` (`ui/servers/dialog.py`):
 `on_add_profile`/`on_edit_profile` теперь по умолчанию открывают настоящий
@@ -42,28 +49,31 @@ assets/2026-08-26-v2-servers-mockup.html), секция «Раздел „Сер
 у каждого меняются между сканами.
 
 Цвета — ТОЛЬКО из `Palette` (accent/text_dim/problem, урок T-06: зелёного
-в палитре нет и не появляется): «работает» — accent, «остановлен» — dim,
-«версия не установлена» — problem. У чужих серверов («Другие серверы на
-машине») нет ни одной кнопки вовсе (решение заказчика 5) — не «неактивная»,
-а отсутствующая как виджет: раздел справочный, отвечает на вопрос «почему
-порт занят», а не управляет чужим процессом.
+в палитре нет и не появляется): «работает» и «работает (запущен не
+лаунчером)» — accent, «остановлен» — dim, «остатки прошлого запуска»
+и «версия не установлена» — problem. У чужих серверов («Другие серверы на
+машине») нет ни одной кнопки вовсе (вторая половина решения заказчика 5,
+она в силе) — не «неактивная», а отсутствующая как виджет: раздел
+справочный, отвечает на вопрос «почему порт занят», а не управляет чужим
+процессом. Совпавший с профилем чужой `ragent` кнопку сохраняет, но
+неактивной и с подсказкой: место под неё на карточке уже есть, а
+объяснение «остановить его можно только там, где он был запущен» дороже
+пустоты (первая половина решения 5 — «совпавший управляем» — отменена
+решением 4 T-12).
 
-Удаление профиля предупреждает отдельно, если сервер запущен (решение
-заказчика 8, `_removal_question`): профиль пропадает из списка, но процесс
-`ragent`, если он жив, никто не трогает — молчание об этом стоило бы
-пользователю потерянного из виду, но работающего сервера. **Пересмотрено
-T-12 (задача 5 этого плана):** решение 3 от 29.08.2026 — удаление профиля,
-запущенного НАМИ, теперь его и останавливает (`ServersWorkspace.
-remove_profile` зовёт `stop`), и текст вопроса обязан говорить именно это;
-прежняя формулировка «продолжит работать» остаётся верной только для чужого
-`ragent`, совпавшего с профилем по каталогу кластера. Сам текст правит
-задача 5, здесь он ещё прежний. После
-подтверждённого удаления карточка обязана позвать `request_scan()`, как
-и запуск/остановка (круг правок 1 ревью задачи 14): без пересчёта снимка
-процессов работающий сервер молча пропадает из показа целиком, вместо того
-чтобы перейти в «Другие серверы на машине» — `foreign_servers()` отдаёт
-классификацию ПРЕЖНЕГО снимка, где процесс ещё сопоставлен со своим (уже
-удалённым) профилем.
+Удаление профиля спрашивает по состоянию карточки (`_removal_question`,
+`_remove`). Решение заказчика 3 от 29.08.2026: удаление профиля,
+запущенного НАМИ, его же и останавливает (`ServersWorkspace.remove_profile`
+сама зовёт `stop`) — вопрос обязан говорить именно это. Решение 8 T-08
+(«сервер продолжит работать и станет чужим») отменено и остаётся верным
+ровно для одного случая — чужого `ragent`, совпавшего с профилем по
+каталогу кластера: его Job у нас нет, останавливать нечем, и он
+действительно перейдёт в «Другие серверы на машине». После подтверждённого
+удаления карточка обязана позвать `request_scan()`, как и запуск/остановка
+(круг правок 1 ревью задачи 14): `foreign_servers()` отдаёт классификацию
+ПРЕЖНЕГО снимка, где процесс ещё сопоставлен со своим (уже удалённым)
+профилем, — без пересчёта чужой сервер не виден никак, а погашенное нами
+дерево, наоборот, показывалось бы живым.
 
 Удаление вынесено в контекстное меню карточки, а не в кнопку (круг правок 1
 ревью задачи 14, решение контроллера): эталон мокапа несёт на карточке
@@ -74,7 +84,7 @@ remove_profile` зовёт `stop`), и текст вопроса обязан г
 обработчика `customContextMenuRequested`, тот же приём, что и
 `BasesView._show_menu` (не в `_build_menu` заранее для всех строк). Между
 `rebuild()` в `self` не хранится ни одного `QMenu` — только пара
-`(profile_id, running)` на карточку (круг правок 2 ревью задачи 14, находка
+`(profile_id, state)` на карточку (круг правок 2 ревью задачи 14, находка
 подтверждена эмпирически): жадная сборка меню на каждый `rebuild()`
 плодила осиротевший `QMenu`+`QAction` на профиль на каждый тик, потому что
 `_clear()` убивает только карточки, а меню с родителем `self` переживают
@@ -99,10 +109,21 @@ journal_path`, услуга задачи 3-4 T-10) — сама панель ф�
 теперь ещё и пишет то же сообщение в журнал профиля через
 `workspace.log_event` — молчание платформы ([Ф] А3/А4) не должно означать
 дыру в журнале, раз уж OneCStarter сам заметил исход.
+
+**Страховка `rebuild()` (T-12, ревью задачи 3).** С Job у `statuses()`
+появился отказ, которого раньше не было: `Job.pids()` может вернуть
+ошибку WinAPI (`JobError` → `ServerError`, спека T-12 §7). `rebuild()`
+зовётся из слота периодического скана каждые 5 с и после каждого
+действия, а необработанное исключение в слоте Qt оставило бы раздел
+неперерисовываемым до конца сессии. Поэтому данные читаются ДО очистки
+layout: при отказе прошлый показ остаётся на экране целиком, а причина
+уходит в строку пути цветом problem (`status_problem`). Проверка §8 на
+таком снимке не выполняется вовсе — ожидание сохраняется до следующего.
 """  # noqa: RUF002
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from enum import Enum
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QMouseEvent
@@ -147,52 +168,97 @@ class ProfileRow:
 # -- чистые функции текста: без Qt, испытаны через UI-тесты выше по слою ----
 
 
-def _status_text(status: ServerStatus) -> str:
-    """Текст статуса карточки — статус процессов главнее разрешения версии.
+class CardState(Enum):
+    """Четыре взаимоисключающих состояния карточки профиля (T-12, задача 5)."""
 
-    IMPORTANT 3 (финальное ревью ветки, правка спеки §3.1): раньше
-    `resolved is None` проверялся первым и подавлял «работает» даже при
-    живом совпавшем процессе — карточка работающего сервера с неразрешённой
-    версией (например, после удаления установки, которой он был запущен)
-    показывала «версия не установлена», хотя остановка версии не требует
-    вовсе. Порядок теперь: сначала процессы (они и есть источник истины
-    о статусе, решение заказчика 3), «версия не установлена» — только
-    для карточки БЕЗ процессов.
+    RUNNING = "running"    # наш ragent жив в Job
+    REMNANTS = "remnants"  # Job не пуст, ragent в нём нет
+    FOREIGN = "foreign"    # Job пуст, снимок нашёл совпавший ragent — только показ (решение 4)
+    STOPPED = "stopped"
+
+
+def _card_state(status: ServerStatus) -> CardState:
+    """Состояние карточки: Job профиля главнее снимка процессов (T-12 §3).
+
+    Порядок проверок и есть решение заказчика 4 от 29.08.2026: снимок
+    (`processes`) спрашивается ПОСЛЕДНИМ и отвечает только на вопрос
+    «есть ли на нашем каталоге кластера чужой `ragent`». Наш он или нет,
+    командная строка не говорит — говорит только наличие PID в НАШЕМ Job.
+    Поэтому «работает» = порождённый нами `ragent` жив в Job, а совпавший
+    процесс без Job — `FOREIGN`, показ без управления.
     """  # noqa: RUF002
-    processes = status.processes
-    if processes:
-        pids = ", ".join(f"PID {p.pid}" for p in processes)
-        if len(processes) == 1:
-            return f"работает · {pids}"
-        return f"работает · {pids} · не выбрать, кого останавливать"
+    if status.spawned_pid is not None and status.spawned_pid in status.job_pids:
+        return CardState.RUNNING
+    if status.job_pids:
+        return CardState.REMNANTS
+    if status.processes:
+        return CardState.FOREIGN
+    return CardState.STOPPED
+
+
+def _status_text(status: ServerStatus) -> str:
+    """Текст статуса карточки — состояние Job главнее разрешения версии.
+
+    IMPORTANT 3 (финальное ревью ветки, правка спеки §3.1; в T-12 — «Job
+    главнее версии»): раньше `resolved is None` проверялся первым
+    и подавлял «работает» даже у живого сервера — карточка работающего
+    профиля с неразрешённой версией (например, после удаления установки,
+    которой он был запущен) показывала «версия не установлена», хотя
+    остановка версии не требует вовсе. Порядок теперь: сначала состояние
+    (`_card_state`), «версия не установлена» — только для `STOPPED`.
+    """  # noqa: RUF002
+    state = _card_state(status)
+    if state is CardState.RUNNING:
+        return f"работает · PID {status.spawned_pid}"
+    if state is CardState.REMNANTS:
+        pids = ", ".join(str(pid) for pid in status.job_pids)
+        return f"остановлен · остатки прошлого запуска: PID {pids}"
+    if state is CardState.FOREIGN:
+        pids = ", ".join(str(p.pid) for p in status.processes)
+        return f"работает (запущен не лаунчером) · PID {pids}"
     if status.resolved is None:
         return "версия не установлена"
     return "остановлен"
 
 
 def _status_colour(status: ServerStatus, palette: Palette) -> str:
-    """Цвет статуса — тот же приоритет, что `_status_text` (IMPORTANT 3)."""
-    if status.processes:
+    """Цвет статуса — тот же приоритет, что `_status_text` (IMPORTANT 3).
+
+    Остатки прошлого запуска красятся problem, а не dim: профиль
+    «остановлен», но его порты заняты собственными недобитыми процессами —
+    это состояние, требующее действия, а не спокойный простой.
+    """  # noqa: RUF002
+    state = _card_state(status)
+    if state in (CardState.RUNNING, CardState.FOREIGN):
         return palette.accent
-    if status.resolved is None:
+    if state is CardState.REMNANTS or status.resolved is None:
         return palette.problem
     return palette.text_dim
 
 
-def _button_state(status: ServerStatus) -> tuple[str, bool]:
-    """Текст и активность кнопки — тот же приоритет, что `_status_text` (IMPORTANT 3).
+_FOREIGN_TOOLTIP = (
+    "Сервер запущен не лаунчером — остановить его "  # noqa: RUF001
+    "можно только там, где он был запущен"
+)
 
-    Остановка не требует разрешённой версии вовсе (`stop` работает по PID
-    из снимка, не по установке) — «Остановить» активна независимо от
-    `resolved`. «Запустить» неактивна, только если процессов нет И версия
-    не разрешилась: запускать действительно нечем.
-    """
-    count = len(status.processes)
-    if count == 1:
-        return "Остановить", True
-    if count > 1:
-        return "Остановить", False
-    return "Запустить", status.resolved is not None
+
+def _button_state(status: ServerStatus) -> tuple[str, bool, str]:
+    """Текст, активность и подсказка кнопки — тот же приоритет, что `_status_text`.
+
+    Остановка не требует разрешённой версии вовсе (`stop` закрывает Job,
+    установка ему не нужна) — «Остановить» активна независимо от
+    `resolved`. У `FOREIGN` кнопка остаётся «Остановить», но НЕАКТИВНА
+    с подсказкой (решение заказчика 4): чужой процесс мы не остановим,
+    и обещать это активной кнопкой значило бы гнать пользователя
+    в гарантированный отказ. У `REMNANTS`/`STOPPED` — «Запустить»,
+    неактивная, только если версия не разрешилась: запускать нечем.
+    """  # noqa: RUF002
+    state = _card_state(status)
+    if state is CardState.RUNNING:
+        return "Остановить", True, ""
+    if state is CardState.FOREIGN:
+        return "Остановить", False, _FOREIGN_TOOLTIP
+    return "Запустить", status.resolved is not None, ""
 
 
 def _flags_text(profile: ServerProfile) -> str:
@@ -219,18 +285,31 @@ def _detail_line(status: ServerStatus) -> str:
     return f"{line} · {flags}" if flags else line
 
 
-def _removal_question(profile: ServerProfile, running: bool) -> str:
-    """Текст вопроса на удаление профиля — решение заказчика 8.
+def _removal_question(profile: ServerProfile, state: CardState) -> str:
+    """Текст вопроса на удаление профиля — свой на каждое состояние карточки.
 
-    Запущенный профиль предупреждает отдельно: удаляется только запись
-    списка, живой `ragent` (если он есть) никто не трогает и он продолжит
-    работать, просто перестанет быть виден в разделе.
-    """
-    if running:
+    Решение заказчика 3 от 29.08.2026 отменило решение 8 T-08: удаление
+    профиля, запущенного НАМИ, теперь его и останавливает, и вопрос обязан
+    говорить именно это — «продолжит работать» стало бы прямым враньём
+    (`ServersWorkspace.remove_profile` закрывает Job до удаления записи).
+    То же и с остатками: они не переживут удаления, значит вопрос —
+    про гашение. Прежняя формулировка уцелела ровно для `FOREIGN`: чужой
+    `ragent` действительно продолжит работать и станет виден в «Других
+    серверах на машине» — Job у него нет, и трогать его нам нечем.
+    """  # noqa: RUF002
+    if state is CardState.RUNNING:
         return (
-            f"Удалить профиль «{profile.name}»? Сервер сейчас работает и "
-            "продолжит работать — профиль только перестанет быть виден "
-            "в списке серверов."
+            f"Сервер «{profile.name}» работает — остановить его и удалить профиль?"  # noqa: RUF001
+        )
+    if state is CardState.REMNANTS:
+        return (
+            f"У профиля «{profile.name}» остались процессы прошлого запуска — "  # noqa: RUF001
+            "погасить их и удалить профиль?"
+        )
+    if state is CardState.FOREIGN:
+        return (
+            f"Удалить профиль «{profile.name}»? Сервер запущен не лаунчером и продолжит "
+            "работать — он перейдёт в «Другие серверы на машине»."
         )
     return f"Удалить профиль «{profile.name}» из списка серверов?"
 
@@ -339,10 +418,10 @@ class ServersView(QWidget):
         self._profile_rows: list[ProfileRow] = []
         self._profile_status_labels: list[QLabel] = []
         self._profile_buttons: list[QPushButton] = []
-        # (profile_id, running) на карточку — не QMenu (круг правок 2 ревью
+        # (profile_id, state) на карточку — не QMenu (круг правок 2 ревью
         # задачи 14): меню строится лениво по клику/по требованию теста,
         # см. `_build_card_menu`/`profile_menu` и докстринг модуля.
-        self._profile_menu_args: list[tuple[str, bool]] = []
+        self._profile_menu_args: list[tuple[str, CardState]] = []
         self._profile_warning_texts: list[list[str]] = []
         self._profile_extinguish_buttons: list[QPushButton | None] = []
         self._profile_cards: list[QWidget] = []
@@ -355,6 +434,15 @@ class ServersView(QWidget):
         # rebuild() — посторонние rebuild() (apply_palette, CRUD профиля)
         # видят ещё старый снимок и не имеют права его потребить.  # noqa: RUF003
         self._pending_confirmation: str | None = None
+        # T-12 (ревью задачи 3, Important 1): текст отказа `statuses()`
+        # или None, когда всё в порядке — см. `rebuild()` и докстринг
+        # модуля. Держит и последний УДАЧНЫЙ расчёт статусов: его  # noqa: RUF003
+        # потребляет `on_scan_snapshot()`, чтобы не звать `statuses()`
+        # второй раз (второй вызов мог бы отказать уже вне try/except —
+        # ровно тем необработанным исключением в слоте Qt, от которого
+        # эта страховка и защищает).
+        self._status_problem: str | None = None
+        self._last_statuses: list[ServerStatus] = []
         # Задача 5 (T-10): выделенная кликом карточка — id профиля или None.
         # Переживает rebuild() (список, а не виджет: карточки пересобираются  # noqa: RUF003
         # целиком, id — нет), сбрасывается только явно (`_clear_selection`,
@@ -418,7 +506,32 @@ class ServersView(QWidget):
         Не правка на месте: число карточек и число процессов у каждой могут
         поменяться между сканами, отслеживать разницу дороже и рискованнее,
         чем перестроить — тот же выбор, что и у `BasesView.rebuild()`.
+
+        T-12 (ревью задачи 3, Important 1): данные читаются ДО `_clear` —
+        с Job у `statuses()` появился отказ, которого раньше не было
+        (`Job.pids()` → `JobError` → `ServerError`, спека T-12 §7), а этот
+        метод зовётся из слота периодического скана и после каждого
+        действия. Необработанное исключение там оставило бы раздел
+        неперерисовываемым до конца сессии, а очистка layout до отказа —
+        пустым. Поэтому при `ServicesError` карточки прошлого `rebuild()`
+        остаются как есть, а причина уходит в строку пути цветом problem.
         """  # noqa: RUF002
+        server_installations = self._installed()
+        installed_versions = [si.installation.version for si in server_installations]
+        try:
+            statuses = self._workspace.statuses(installed_versions)
+            foreign = self._workspace.foreign_servers()
+        except ServicesError as error:
+            self._status_problem = str(error)
+            self._path_label.setText(
+                f"{self._workspace.store_path} · статус недоступен: {error}"
+            )
+            self._path_label.setStyleSheet(f"color: {self._palette.problem};")
+            return
+        self._status_problem = None
+        self._last_statuses = statuses
+        self._path_label.setStyleSheet("")
+
         self._clear(self._cards_layout)
         self._clear(self._foreign_layout)
         self._profile_rows = []
@@ -431,12 +544,9 @@ class ServersView(QWidget):
         self._foreign_row_texts = []
         self._foreign_row_widgets = []
 
-        server_installations = self._installed()
-        installed_versions = [si.installation.version for si in server_installations]
-        statuses = self._workspace.statuses(installed_versions)
         for status in statuses:
             self._build_card(status, server_installations)
-        for entry in self._workspace.foreign_servers():
+        for entry in foreign:
             self._build_foreign_row(entry)
 
         self._console_note_text = self._read_console_note()
@@ -462,11 +572,18 @@ class ServersView(QWidget):
         же порядок, что раньше — карточки обязаны отразить снимок ДО того,
         как решаем, показывать ли предупреждение) и уже поверх пересчитанных
         `statuses` проверяет ожидающий профиль.
+
+        T-12 (ревью задачи 3, Important 1): если `rebuild()` не смог
+        прочитать статусы (`status_problem`), проверка §8 не выполняется
+        вовсе, а ожидание СОХРАНЯЕТСЯ до следующего снимка. Съесть его
+        на снимке, который не удалось прочитать, значило бы навсегда
+        лишить пользователя ответа об исходе запуска — платформа о смерти
+        `ragent` молчит сама ([Ф] А3/А4).
         """  # noqa: RUF002
         self.rebuild()
-        server_installations = self._installed()
-        installed_versions = [si.installation.version for si in server_installations]
-        self._check_pending_confirmation(self._workspace.statuses(installed_versions))
+        if self._status_problem is not None:
+            return
+        self._check_pending_confirmation(self._last_statuses)
 
     def _check_pending_confirmation(self, statuses: Sequence[ServerStatus]) -> None:
         """§8 мокапа, [Ф] А3/А4: платформа о смерти ragent сама ничего не пишет.
@@ -488,12 +605,19 @@ class ServersView(QWidget):
         между «запуск: …» и следующим событием.
 
         Important 2 финального ревью ветки T-10: положительный исход того
-        же подтверждающего скана (профиль нашёлся, и у него есть живые
-        `status.processes`) тоже пишется в журнал — `работает · PID …`
-        (спека §12.1: «PID-ы дерева по скану, итог подтверждающего скана»).
-        Раньше в журнал попадал только отрицательный исход, и между
-        «запуск: …» и следующим ручным действием пользователя не
-        оставалось никакого следа о том, что сервер вообще поднялся.
+        же подтверждающего скана тоже пишется в журнал — `работает · PID …`
+        (спека §12.1: «итог подтверждающего скана»). Раньше в журнал попадал
+        только отрицательный исход, и между «запуск: …» и следующим ручным
+        действием пользователя не оставалось никакого следа о том, что
+        сервер вообще поднялся.
+
+        T-12: «поднялся» решается по НАШЕМУ Job (`spawned_pid` жив
+        в `job_pids`), а снимок в решении не участвует вовсе. Совпавший
+        по каталогу кластера чужой `ragent` (решение заказчика 4) не имеет
+        к нашему запуску отношения: раньше он подтвердил бы чужим PID наш
+        не поднявшийся сервер, и §8 промолчала бы ровно там, где обязана
+        сказать. Обратное тоже верно: наш `ragent` жив в Job с первой
+        миллисекунды, ждать, пока его увидит скан, не нужно.
         """  # noqa: RUF002
         profile_id = self._pending_confirmation
         if profile_id is None:
@@ -502,9 +626,8 @@ class ServersView(QWidget):
         status = next((s for s in statuses if s.profile.id == profile_id), None)
         if status is None:
             return
-        if status.processes:
-            pids = ", ".join(str(p.pid) for p in status.processes)
-            self._workspace.log_event(profile_id, f"работает · PID {pids}")
+        if status.spawned_pid is not None and status.spawned_pid in status.job_pids:
+            self._workspace.log_event(profile_id, f"работает · PID {status.spawned_pid}")
             return
         profile = status.profile
         message = (
@@ -550,8 +673,13 @@ class ServersView(QWidget):
         else:
             status_text = _status_text(status)
             colour = _status_colour(status, palette)
-            button_text, button_enabled = _button_state(status)
-        running = bool(status.processes)
+            button_text, button_enabled, button_tooltip = _button_state(status)
+        # Состояние считается ВСЕГДА, даже в слепом окне: показ там свой
+        # (снимка ещё нет, `FOREIGN` от `STOPPED` не отличить), но наш Job
+        # знает о себе сразу — и меню удаления обязано спросить по нему,  # noqa: RUF003
+        # а не по «неизвестно».  # noqa: RUF003
+        state = _card_state(status)
+        running = state is CardState.RUNNING
 
         # Задача 5 (T-10): _ProfileCard — тот же QWidget, что и раньше, плюс
         # mouseReleaseEvent, выделяющий карточку кликом (см. её докстринг).
@@ -618,8 +746,8 @@ class ServersView(QWidget):
         # (см. докстринг модуля); здесь сохраняются только (id, running).
         card.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         card.customContextMenuRequested.connect(
-            lambda position, w=card, pid=profile.id, r=running: (
-                self._build_card_menu(pid, r).exec(w.mapToGlobal(position))
+            lambda position, w=card, pid=profile.id, s=state: (
+                self._build_card_menu(pid, s).exec(w.mapToGlobal(position))
             )
         )
 
@@ -637,7 +765,7 @@ class ServersView(QWidget):
             card_layout.addWidget(mismatch_label)
 
         extinguish_button: QPushButton | None = None
-        if status.job_pids and status.spawned_pid not in status.job_pids:
+        if state is CardState.REMNANTS:
             text = "Остатки прошлого запуска держат порты — погасите их или запустите сервер заново"
             warnings.append(text)
             remnants_row = QHBoxLayout()
@@ -670,12 +798,12 @@ class ServersView(QWidget):
         )
         self._profile_status_labels.append(status_label)
         self._profile_buttons.append(toggle_button)
-        self._profile_menu_args.append((profile.id, running))
+        self._profile_menu_args.append((profile.id, state))
         self._profile_warning_texts.append(warnings)
         self._profile_extinguish_buttons.append(extinguish_button)
         self._profile_cards.append(card)
 
-    def _build_card_menu(self, profile_id: str, running: bool) -> QMenu:
+    def _build_card_menu(self, profile_id: str, state: CardState) -> QMenu:
         """Собрать контекстное меню карточки без показа — по требованию, не заранее.
 
         Вызывается лениво: из обработчика `customContextMenuRequested`
@@ -691,7 +819,7 @@ class ServersView(QWidget):
         menu = QMenu(self)
         menu.addAction("Свойства…", lambda: self._on_edit_profile(profile_id))
         menu.addAction(
-            "Удалить профиль…", lambda: self._remove(profile_id, running)
+            "Удалить профиль…", lambda: self._remove(profile_id, state)
         )
         return menu
 
@@ -755,11 +883,22 @@ class ServersView(QWidget):
         self._selected_profile_id = None
         self._journal_panel.show_journal("", None)
 
-    def _remove(self, profile_id: str, running: bool) -> None:
+    def _remove(self, profile_id: str, state: CardState) -> None:
+        """Удалить профиль по пункту меню карточки — вопрос по состоянию карточки.
+
+        Сама остановка живёт в `ServersWorkspace.remove_profile` (T-12,
+        задача 3, решение заказчика 3): она закрывает непустой Job до
+        удаления записи и, если закрытие отказало, НЕ удаляет профиль —
+        отказ приходит сюда `ServicesError` и показывается пользователем.
+        Вьюхе остаётся спросить правильным текстом (`_removal_question`)
+        и не делать ничего до согласия: порядок «спросить → удалить»
+        сторожит защитный тест
+        (`test_removal_of_running_profile_asks_to_stop_and_refusal_...`).
+        """  # noqa: RUF002
         profile = next((p for p in self._workspace.profiles() if p.id == profile_id), None)
         if profile is None:
             return
-        if not self._confirm_removal(_removal_question(profile, running)):
+        if not self._confirm_removal(_removal_question(profile, state)):
             return
         try:
             self._workspace.remove_profile(profile_id)
@@ -776,12 +915,13 @@ class ServersView(QWidget):
         ):
             self._clear_selection()
         # Находка ревью задачи 14 (круг правок 1), подтверждена эмпирически:
-        # без пересчёта снимка удаление РАБОТАЮЩЕГО профиля выкидывало его  # noqa: RUF003
-        # процесс из показа целиком — `foreign_servers()` отдаёт
-        # классификацию ПРЕЖНЕГО `apply_scan`, где процесс ещё сопоставлен
-        # со своим (уже удалённым) профилем и в `foreign` не попадает.  # noqa: RUF003
-        # Решение заказчика 8 требует, чтобы сервер «продолжил работать»
-        # и стал виден как чужой — без `request_scan()` он не виден никак.
+        # без пересчёта снимка удаление профиля с процессами оставляло показ  # noqa: RUF003
+        # на прежнем `apply_scan` — `foreign_servers()` отдаёт его  # noqa: RUF003
+        # классификацию, где процессы ещё сопоставлены со своим (уже  # noqa: RUF003
+        # удалённым) профилем и в `foreign` не попадают. Чужой `ragent`
+        # (`FOREIGN`) обязан перейти в «Другие серверы на машине», а наше  # noqa: RUF003
+        # только что погашенное дерево — исчезнуть; без `request_scan()`
+        # не случится ни то, ни другое.
         self._request_scan()
         self.rebuild()
 
@@ -918,11 +1058,11 @@ class ServersView(QWidget):
         Строит СВЕЖИЙ `QMenu` тем же ленивым билдером (`_build_card_menu`),
         что и реальный клик — не читает предсозданный список (круг правок 2
         ревью задачи 14: между `rebuild()` в `self` не хранится ни одного
-        `QMenu`, только пара `(profile_id, running)`). Тестируется прямым
+        `QMenu`, только пара `(profile_id, state)`). Тестируется прямым
         `trigger()` пункта, не открытием настоящего `QMenu.exec()`.
         """
-        profile_id, running = self._profile_menu_args[index]
-        return self._build_card_menu(profile_id, running)
+        profile_id, state = self._profile_menu_args[index]
+        return self._build_card_menu(profile_id, state)
 
     def profile_warnings(self, index: int) -> list[str]:
         return list(self._profile_warning_texts[index])
@@ -941,6 +1081,13 @@ class ServersView(QWidget):
 
     def path_text(self) -> str:
         return self._path_label.text()
+
+    def path_label_style(self) -> str:
+        return self._path_label.styleSheet()
+
+    def status_problem(self) -> str | None:
+        """Текст отказа `statuses()` или `None`, когда статусы читаются (T-12)."""
+        return self._status_problem
 
     def console_button(self) -> QPushButton:
         return self._console_button

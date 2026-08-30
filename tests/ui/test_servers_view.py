@@ -4,10 +4,12 @@
 `FakeJob`/`FakeJobFactory`/`FakeSpawn` (тот же приём, что и в
 `tests/unit/test_servers.py`, но не импортируется оттуда — там классы
 модульные, а не для переиспользования извне, и раздувать связь между unit-
-и ui-наборами незачем). T-12: «работает» для профиля — это НАШ непустой Job
-(хелпер `_start`), а не совпавший процесс снимка; часть тестов этого файла
-ещё делает профиль работающим через `apply_scan` — карточка до задачи 5
-считает статус и кнопку по `status.processes`, и они остаются верными.
+и ui-наборами незачем). T-12: «работает» для профиля — это НАШ живой
+`ragent` в Job (хелпер `_start`), а не совпавший процесс снимка. Задача 5
+довела это до карточки: совпавший `ragent` БЕЗ нашего Job — «запущен
+не лаунчером», только показ (решение заказчика 4), поэтому все тесты
+«работает» здесь идут через `_start`, а `apply_scan` в них нужен лишь
+затем, чтобы карточка вышла из слепого окна первого скана.
 Снимок процессов
 кладётся напрямую через `ServersWorkspace.apply_scan(ScanSnapshot(...))` —
 конструировать `ProcessScanner` ради одного снимка в каждом тесте избыточно,
@@ -33,14 +35,15 @@ from PySide6.QtWidgets import QApplication, QDialog, QLabel, QPushButton
 
 from onecstarter.domain.launch import LaunchCommand
 from onecstarter.domain.server import ServerProfile
+from onecstarter.domain.server_match import RagentProcess
 from onecstarter.domain.version import Arch, Installation, parse_version
 from onecstarter.platform_1c.job import Job, JobError
 from onecstarter.platform_1c.process_scan import ProcessInfo
 from onecstarter.platform_1c.server_discovery import ServerInstallation
-from onecstarter.services.servers import ScanSnapshot, ServersWorkspace
+from onecstarter.services.servers import ScanSnapshot, ServerStatus, ServersWorkspace
 from onecstarter.ui import theme
 from onecstarter.ui.servers.dialog import ServerProfileDialog
-from onecstarter.ui.servers.view import ServersView
+from onecstarter.ui.servers.view import CardState, ServersView, _card_state
 
 RAGENT = r"C:\Program Files\1cv8\8.3.25.1633\bin\ragent.exe"
 FOREIGN_RAGENT = r"C:\Program Files\1cv8\8.3.22.1923\bin\ragent.exe"
@@ -53,11 +56,14 @@ class FakeJob:
     pids_value: tuple[int, ...] = ()
     closed: bool = False
     close_error: JobError | None = None
+    pids_error: JobError | None = None
 
     def assign(self, process_handle: int) -> None:
         pass
 
     def pids(self) -> tuple[int, ...]:
+        if self.pids_error is not None:
+            raise self.pids_error
         return () if self.closed else self.pids_value
 
     def close(self) -> None:
@@ -180,27 +186,71 @@ def application(qapp: QApplication) -> QApplication:
     return qapp
 
 
+# -- таблица состояний карточки (T-12, задача 5) -----------------------------
+#
+# `_card_state` — чистая функция без Qt, поэтому проверяется табличным
+# тестом на собранном вручную `ServerStatus`, а не через сборку вьюхи:  # noqa: RUF003
+# состояние карточки решают ТОЛЬКО поля Job (`spawned_pid`/`job_pids`),
+# снимок (`processes`) — последний по приоритету и говорит лишь о чужом  # noqa: RUF003
+# `ragent` на нашем каталоге кластера (решение заказчика 4 от 29.08.2026).
+
+
+def _status(**overrides: object) -> ServerStatus:
+    values: dict[str, object] = {
+        "profile": _profile(),
+        "resolved": parse_version("8.3.25.1633"),
+        "processes": (),
+        "job_pids": (),
+        "spawned_pid": None,
+        "port_holders": (),
+        "dir_mismatch": False,
+    }
+    values.update(overrides)
+    return ServerStatus(**values)  # type: ignore[arg-type]
+
+
+def _matched(pid: int) -> RagentProcess:
+    return RagentProcess(pid=pid, executable=None, argv=("ragent.exe",), create_time=1.0)
+
+
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        (_status(job_pids=(1, 2), spawned_pid=1), CardState.RUNNING),
+        (_status(job_pids=(2,), spawned_pid=1), CardState.REMNANTS),
+        (_status(job_pids=(2,), spawned_pid=None), CardState.REMNANTS),
+        (_status(processes=(_matched(9),)), CardState.FOREIGN),
+        (_status(), CardState.STOPPED),
+        (_status(job_pids=(1,), spawned_pid=1, processes=(_matched(9),)), CardState.RUNNING),
+    ],
+)
+def test_card_state_table(status: ServerStatus, expected: CardState) -> None:
+    assert _card_state(status) is expected
+
+
 # -- статусы карточки ---------------------------------------------------------
 
 
 def test_running_profile_shows_stop_button(application: QApplication, tmp_path: Path) -> None:
+    """«Работает» — это НАШ живой `ragent` в Job профиля (T-12), не совпавший процесс снимка."""
     profile = _profile()
     workspace = _workspace(tmp_path, (profile,))
-    workspace.apply_scan(ScanSnapshot(agents=(_agent(100, profile.cluster_dir),), managers=()))
+    _start(workspace, profile)
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
 
     view = ServersView(workspace, installed=lambda: [_installation()], palette=theme.DARK)
 
     row = view.profile_rows()[0]
     assert row.button_text == "Остановить"
     assert row.button_enabled is True
-    assert "работает" in row.status_text
-    assert "PID 100" in row.status_text
+    assert row.status_text == "работает · PID 4242"
 
 
 def test_running_status_uses_accent_colour(application: QApplication, tmp_path: Path) -> None:
     profile = _profile()
     workspace = _workspace(tmp_path, (profile,))
-    workspace.apply_scan(ScanSnapshot(agents=(_agent(100, profile.cluster_dir),), managers=()))
+    _start(workspace, profile)
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
 
     view = ServersView(workspace, installed=lambda: [_installation()], palette=theme.DARK)
 
@@ -252,33 +302,46 @@ def test_running_process_wins_over_unresolved_version(
 ) -> None:
     """ЗАЩИТНЫЙ ТЕСТ.
 
-    IMPORTANT 3 финального ревью, правка спеки §3.1: раньше `resolved is
-    None` проверялся первым и подавлял «работает» даже при живом совпавшем
-    процессе — карточка показывала «версия не установлена» и блокировала
-    «Остановить», хотя остановка версии не требует вовсе (`stop` работает
-    по PID снимка, не по установке). Статус процессов обязан быть главнее
-    разрешения версии — здесь версия не разрешается вовсе (`installed=[]`),
-    но процесс живой.
+    IMPORTANT 3 финального ревью, правка спеки §3.1 (в T-12 — «Job главнее
+    версии»): раньше `resolved is None` проверялся первым и подавлял
+    «работает» даже при живом сервере — карточка показывала «версия
+    не установлена» и блокировала «Остановить», хотя остановка версии
+    не требует вовсе (`stop` закрывает Job, установка ему не нужна).
+    Здесь версия не разрешается вовсе (`installed=[]` у вьюхи), но наш
+    `ragent` жив в Job — установка ушла прямо в `start()`.
     Мутация: вернуть проверку `resolved is None` в начало `_status_text`/
     `_button_state`/`_status_colour` — тест обязан упасть.
     """  # noqa: RUF002
     profile = _profile()
     workspace = _workspace(tmp_path, (profile,))
-    workspace.apply_scan(ScanSnapshot(agents=(_agent(100, profile.cluster_dir),), managers=()))
+    _start(workspace, profile)
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
 
     view = ServersView(workspace, installed=lambda: [], palette=theme.DARK)
 
     row = view.profile_rows()[0]
-    assert row.status_text == "работает · PID 100"
+    assert row.status_text == "работает · PID 4242"
     assert row.button_text == "Остановить"
     assert row.button_enabled is True
     assert theme.DARK.accent in view.profile_status_label(0).styleSheet()
 
 
-def test_multiple_processes_disable_stop_with_explanation(
+def test_foreign_matched_ragents_are_show_only(
     application: QApplication, tmp_path: Path
 ) -> None:
-    """Несколько процессов — все PID видны, остановка неактивна с подсказкой."""  # noqa: RUF002
+    """ЗАЩИТНЫЙ ТЕСТ (решение заказчика 4 от 29.08.2026): совпавший `ragent` без Job — только показ.
+
+    Совпадение по каталогу кластера НЕ делает процесс нашим: по командной
+    строке наш и чужой `ragent` неразличимы, а управлять мы вправе только
+    тем, чей Job у нас на руках. Поэтому карточка честно говорит «запущен
+    не лаунчером», перечисляет PID и держит «Остановить» НЕАКТИВНОЙ
+    с подсказкой — вместо того чтобы обещать остановку, которая всё равно
+    отказала бы («нечего останавливать»).
+    Мутация: считать совпавший процесс нашим (например, вернуть в
+    `_card_state` ветку `status.processes → RUNNING` перед проверкой Job
+    или включить FOREIGN в активную кнопку `_button_state`) — кнопка станет
+    активной, тест упадёт.
+    """  # noqa: RUF002
     profile = _profile()
     workspace = _workspace(tmp_path, (profile,))
     workspace.apply_scan(
@@ -291,11 +354,39 @@ def test_multiple_processes_disable_stop_with_explanation(
     view = ServersView(workspace, installed=lambda: [_installation()], palette=theme.DARK)
 
     row = view.profile_rows()[0]
+    assert row.status_text == "работает (запущен не лаунчером) · PID 100, 200"
     assert row.button_text == "Остановить"
     assert row.button_enabled is False
-    assert "PID 100" in row.status_text
-    assert "PID 200" in row.status_text
-    assert "не выбрать" in row.status_text
+    assert "не лаунчером" in view.profile_button(0).toolTip()
+    assert theme.DARK.accent in view.profile_status_label(0).styleSheet()
+
+
+def test_remnants_state_shows_red_status_and_start_button(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Job непуст, нашего `ragent` в нём нет — «остановлен · остатки прошлого запуска».
+
+    Красный статус, а не dim: порты профиля заняты собственными остатками,
+    и запуск поверх них поднял бы полумёртвый сервер. Кнопка при этом
+    «Запустить» и активна — `start()` сам гасит остатки перед запуском
+    (решение заказчика 2), альтернатива — «Погасить» в красной строке.
+    """  # noqa: RUF002
+    profile = _profile()
+    factory = FakeJobFactory()
+    workspace = _workspace(tmp_path, (profile,), job_factory=factory)
+    _start(workspace, profile)
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+    view = ServersView(workspace, installed=lambda: [_installation()], palette=theme.DARK)
+
+    factory.created[0].pids_value = (4300, 4301)  # ragent снят извне, дети живы
+    view.rebuild()
+
+    row = view.profile_rows()[0]
+    assert row.status_text == "остановлен · остатки прошлого запуска: PID 4300, 4301"
+    assert theme.DARK.problem in view.profile_status_label(0).styleSheet()
+    assert row.button_text == "Запустить"
+    assert row.button_enabled is True
+    assert view.profile_extinguish_button(0) is not None
 
 
 # -- слепое окно до первого скана (IMPORTANT 4b, финальное ревью) -----------
@@ -448,14 +539,109 @@ def _trigger_properties(view: ServersView, index: int) -> None:
     action.trigger()
 
 
-def test_removal_of_running_profile_warns_it_keeps_running(
+def test_removal_of_running_profile_asks_to_stop_and_refusal_keeps_it_running(
     application: QApplication, tmp_path: Path
 ) -> None:
-    """ЗАЩИТНЫЙ ТЕСТ: удаление РАБОТАЮЩЕГО профиля предупреждает, что сервер
-    продолжит работать (решение заказчика 8), а отказ в диалоге оставляет
-    профиль на месте — сторожит от «сначала удалить, потом спросить».
-    Действие вызывается через контекстное меню карточки (`profile_menu`),
-    не через приватный `_remove` напрямую.
+    """ЗАЩИТНЫЙ ТЕСТ (решение заказчика 3 от 29.08.2026): удаление работающего профиля
+
+    останавливает и сервер — вопрос обязан говорить именно это, а не
+    прежнее «продолжит работать» (решение 8 T-08 отменено). Отказ
+    в диалоге оставляет профиль на месте И сервер работающим — сторожит
+    от «сначала остановить/удалить, потом спросить». Действие вызывается
+    через контекстное меню карточки (`profile_menu`), не через приватный
+    `_remove` напрямую.
+    Мутация: позвать `remove_profile`/`stop` до `confirm_removal` — тест
+    упадёт на `closed is False` (и на живом профиле).
+    """  # noqa: RUF002
+    profile = _profile()
+    factory = FakeJobFactory()
+    workspace = _workspace(tmp_path, (profile,), job_factory=factory)
+    _start(workspace, profile)
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+    questions: list[str] = []
+
+    def refuse(question: str) -> bool:
+        questions.append(question)
+        return False
+
+    view = ServersView(
+        workspace,
+        installed=lambda: [_installation()],
+        palette=theme.DARK,
+        confirm_removal=refuse,
+    )
+
+    _trigger_delete(view, 0)
+
+    assert questions
+    assert "остановить его и удалить" in questions[0]  # noqa: RUF001
+    assert factory.created[0].closed is False
+    assert any(p.id == profile.id for p in workspace.profiles())
+
+
+def test_removal_of_running_profile_confirmed_stops_and_removes(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Согласие — и Job закрыт (дерево гасит ОС), и профиль исчез из списка."""  # noqa: RUF002
+    profile = _profile()
+    factory = FakeJobFactory()
+    workspace = _workspace(tmp_path, (profile,), job_factory=factory)
+    _start(workspace, profile)
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+
+    view = ServersView(
+        workspace,
+        installed=lambda: [_installation()],
+        palette=theme.DARK,
+        confirm_removal=lambda _question: True,
+    )
+
+    _trigger_delete(view, 0)
+
+    assert factory.created[0].closed is True
+    assert workspace.profiles() == []
+
+
+def test_removal_of_remnants_profile_asks_to_extinguish(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Остатки прошлого запуска — вопрос про гашение, а не про остановку сервера."""  # noqa: RUF002
+    profile = _profile()
+    factory = FakeJobFactory()
+    workspace = _workspace(tmp_path, (profile,), job_factory=factory)
+    _start(workspace, profile)
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+    questions: list[str] = []
+
+    def refuse(question: str) -> bool:
+        questions.append(question)
+        return False
+
+    view = ServersView(
+        workspace,
+        installed=lambda: [_installation()],
+        palette=theme.DARK,
+        confirm_removal=refuse,
+    )
+    factory.created[0].pids_value = (4300,)  # ragent снят извне, дети живы
+    view.rebuild()
+
+    _trigger_delete(view, 0)
+
+    assert questions
+    assert "погасить их и удалить" in questions[0]
+    assert any(p.id == profile.id for p in workspace.profiles())
+
+
+def test_removal_of_foreign_running_profile_warns_it_keeps_running(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Чужой `ragent` на нашем каталоге кластера — удаление его не трогает.
+
+    Прежняя формулировка «продолжит работать» (решение 8 T-08) остаётся
+    верной ровно для этого случая: Job у процесса нет, останавливать нам
+    нечего, и после удаления профиля он перейдёт в «Другие серверы
+    на машине» (решение заказчика 4 от 29.08.2026).
     """  # noqa: RUF002
     profile = _profile()
     workspace = _workspace(tmp_path, (profile,))
@@ -480,37 +666,19 @@ def test_removal_of_running_profile_warns_it_keeps_running(
     assert any(p.id == profile.id for p in workspace.profiles())
 
 
-def test_removal_of_running_profile_confirmed_removes_it(
-    application: QApplication, tmp_path: Path
-) -> None:
-    profile = _profile()
-    workspace = _workspace(tmp_path, (profile,))
-    workspace.apply_scan(ScanSnapshot(agents=(_agent(100, profile.cluster_dir),), managers=()))
-
-    view = ServersView(
-        workspace,
-        installed=lambda: [_installation()],
-        palette=theme.DARK,
-        confirm_removal=lambda _question: True,
-    )
-
-    _trigger_delete(view, 0)
-
-    assert workspace.profiles() == []
-
-
 def test_removal_confirmed_triggers_rescan(application: QApplication, tmp_path: Path) -> None:
     """НАХОДКА ревью (круг правок 1), подтверждена эмпирически: без
-    `request_scan()` после удаления РАБОТАЮЩЕГО профиля его процесс пропадал
-    из показа целиком — `foreign_servers()` отдаёт классификацию ПРЕЖНЕГО
-    снимка, где процесс ещё сопоставлен со своим (уже удалённым) профилем
-    и в «чужие» не попадает. Решение заказчика 8 требует, чтобы сервер
-    «продолжил работать» и стал виден как чужой — без пересчёта снимка
-    он не виден никак.
+    `request_scan()` после удаления РАБОТАЮЩЕГО профиля показ остаётся
+    на прежнем снимке — `foreign_servers()` отдаёт классификацию ПРЕЖНЕГО
+    `apply_scan`, где процессы ещё сопоставлены со своим (уже удалённым)
+    профилем и в «чужие» не попадают. С T-12 удаление ещё и гасит дерево
+    (решение 3), так что старый снимок вдобавок показывает уже мёртвые
+    процессы — пересчёт нужен тем более.
     """  # noqa: RUF002
     profile = _profile()
     workspace = _workspace(tmp_path, (profile,))
-    workspace.apply_scan(ScanSnapshot(agents=(_agent(100, profile.cluster_dir),), managers=()))
+    _start(workspace, profile)
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
     rescans: list[int] = []
 
     view = ServersView(
@@ -656,8 +824,45 @@ def test_start_that_dies_silently_is_reported(
     `show_error` из `ServersView` сама по себе. Подтверждающий путь — ровно
     тот, каким его зовёт `app.py` (круг исправлений 1, ревью задачи 16):
     `workspace.apply_scan(...)` + `view.on_scan_snapshot()`, а не голый
-    `rebuild()`. Мутация «не проверять подтверждающий скан» (или «вернуть
-    проверку в `rebuild()`») обязана уронить этот тест.
+    `rebuild()`. T-12: «умер» — это ПУСТОЙ Job (`pids_value = ()`), снимок
+    в решении не участвует вовсе.
+    Мутация «не проверять подтверждающий скан» (или «вернуть проверку
+    в `rebuild()`») обязана уронить этот тест.
+    """  # noqa: RUF002
+    profile = _profile()
+    factory = FakeJobFactory()
+    workspace = _workspace(tmp_path, (profile,), job_factory=factory)
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+    errors: list[str] = []
+
+    view = ServersView(
+        workspace,
+        installed=lambda: [_installation()],
+        palette=theme.DARK,
+        show_error=lambda message: errors.append(message),
+    )
+
+    view.profile_button(0).click()
+    assert errors == [], "на самом клике репорта быть не должно — Job ещё жив"
+
+    # Подтверждающий скан: дерево умерло целиком, Job пуст — тот же исход,
+    # что и «умер сразу после старта, порт занят».
+    factory.created[0].pids_value = ()
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+    view.on_scan_snapshot()
+
+    assert errors
+    assert profile.name in errors[0]
+    assert str(profile.port) in errors[0]
+
+
+def test_start_confirmed_running_reports_nothing(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Обратная сторона защитного теста: наш `ragent` жив в Job —
+
+    никакого сообщения, профиль просто работает. Снимок при этом ПУСТ:
+    решение принимается по Job, а не по совпавшим процессам скана.
     """  # noqa: RUF002
     profile = _profile()
     workspace = _workspace(tmp_path, (profile,))
@@ -672,27 +877,27 @@ def test_start_that_dies_silently_is_reported(
     )
 
     view.profile_button(0).click()
-    assert errors == [], "на самом клике репорта быть не должно — снимок ещё старый"
-
-    # Подтверждающий скан: ragent так и не появился в списке процессов —
-    # тот же исход, что и «умер сразу после старта, порт занят».
     workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
     view.on_scan_snapshot()
 
-    assert errors
-    assert profile.name in errors[0]
-    assert str(profile.port) in errors[0]
+    assert errors == []
 
 
-def test_start_confirmed_running_reports_nothing(
+def test_start_that_dies_leaving_remnants_reports_death_and_shows_remnants(
     application: QApplication, tmp_path: Path
 ) -> None:
-    """Обратная сторона защитного теста: подтверждающий скан нашёл процесс —
+    """`ragent` умер, дети живы: §8 репортует смерть, карточка показывает остатки.
 
-    никакого сообщения, профиль просто жив.
-    """
+    Два разных факта об одном событии, и оба обязаны дойти: воркспейс сам
+    пишет `ragent завершился извне …` (сверка Job со снимком, задача 4),
+    а §8 добавляет свой вывод о ТОЛЬКО ЧТО нажатом «Запустить» — сервер
+    не поднялся. Карточка при этом не «работает» и не «остановлен», а
+    «остатки прошлого запуска»: порты заняты, и пользователю есть что
+    погасить.
+    """  # noqa: RUF002
     profile = _profile()
-    workspace = _workspace(tmp_path, (profile,))
+    factory = FakeJobFactory()
+    workspace = _workspace(tmp_path, (profile,), job_factory=factory)
     workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
     errors: list[str] = []
 
@@ -704,10 +909,15 @@ def test_start_confirmed_running_reports_nothing(
     )
 
     view.profile_button(0).click()
-    workspace.apply_scan(ScanSnapshot(agents=(_agent(100, profile.cluster_dir),), managers=()))
+    factory.created[0].pids_value = (4300,)  # ragent снят извне, дети живы
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
     view.on_scan_snapshot()
 
-    assert errors == []
+    assert errors
+    assert view.profile_rows()[0].status_text.startswith("остановлен · остатки прошлого запуска")
+    journal_text = workspace.journal_path(profile.id).read_text(encoding="utf-8")
+    assert "ragent завершился извне" in journal_text
+    assert "завершился сразу после запуска" in journal_text
 
 
 def test_start_followed_by_unrelated_rebuild_does_not_falsely_report_death(
@@ -725,8 +935,14 @@ def test_start_followed_by_unrelated_rebuild_does_not_falsely_report_death(
     ложное «завершился сразу после запуска». Здесь посторонний rebuild()
     смоделирован через `apply_palette()` (тот же путь, каким смена темы
     перестраивает карточки) — ревьюер воспроизвёл падение детерминированно
-    именно на нём. Мутация «вернуть `_check_pending_confirmation` в
-    `rebuild()`» обязана уронить этот тест на первом `assert errors == []`.
+    именно на нём.
+
+    T-12: решение §8 принимается по Job, а не по снимку, и Job знает
+    о нашем `ragent` сразу — ложной смерти на постороннем rebuild() уже
+    неоткуда взяться, но ПОТРЕБИТЬСЯ ожидание по-прежнему может. Поэтому
+    сторожат оба факта: `errors` пусты и §8-исход ещё НЕ записан в журнал.
+    Мутация «вернуть `_check_pending_confirmation` в `rebuild()`» обязана
+    уронить этот тест на журнальной проверке после `apply_palette()`.
     """  # noqa: RUF002
     profile = _profile()
     workspace = _workspace(tmp_path, (profile,))
@@ -742,17 +958,25 @@ def test_start_followed_by_unrelated_rebuild_does_not_falsely_report_death(
 
     view.profile_button(0).click()  # «Запустить» — ставит профиль в ожидание
 
-    # Посторонний rebuild() ДО прихода свежего снимка — снимок процессов
-    # в workspace всё ещё старый (без агента), но проверка §8 не должна
-    # его увидеть вовсе.  # noqa: RUF003
+    # Посторонний rebuild() ДО прихода свежего снимка — проверка §8 не
+    # должна ни сработать, ни ПОТРЕБИТЬСЯ на нём. С T-12 «потребиться»  # noqa: RUF003
+    # проверяется по журналу: Job знает о нашем ragent сразу, поэтому  # noqa: RUF003
+    # мутация «проверять в rebuild()» здесь напишет не ложную смерть,
+    # а преждевременный положительный исход — и настоящий подтверждающий  # noqa: RUF003
+    # скан (в бою — секунды спустя, когда сервер уже мог упасть) остался
+    # бы без проверки вовсе.
     view.apply_palette(theme.LIGHT)
     assert errors == [], "посторонний rebuild() не должен потреблять проверку §8"
+    journal_text = workspace.journal_path(profile.id).read_text(encoding="utf-8")
+    assert "работает · PID 4242" not in journal_text
 
     # Свежий снимок наконец пришёл — сервер на самом деле жив.
-    workspace.apply_scan(ScanSnapshot(agents=(_agent(100, profile.cluster_dir),), managers=()))
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
     view.on_scan_snapshot()
 
-    assert errors == [], "первый настоящий свежий снимок показывает живой процесс"
+    assert errors == [], "первый настоящий свежий снимок показывает живой сервер"
+    journal_text = workspace.journal_path(profile.id).read_text(encoding="utf-8")
+    assert "работает · PID 4242" in journal_text
 
 
 def test_confirmation_check_fires_only_once(application: QApplication, tmp_path: Path) -> None:
@@ -762,7 +986,8 @@ def test_confirmation_check_fires_only_once(application: QApplication, tmp_path:
     не должны повторять предупреждение.
     """
     profile = _profile()
-    workspace = _workspace(tmp_path, (profile,))
+    factory = FakeJobFactory()
+    workspace = _workspace(tmp_path, (profile,), job_factory=factory)
     workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
     errors: list[str] = []
 
@@ -774,6 +999,7 @@ def test_confirmation_check_fires_only_once(application: QApplication, tmp_path:
     )
 
     view.profile_button(0).click()
+    factory.created[0].pids_value = ()  # дерево умерло целиком
     workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
     view.on_scan_snapshot()
     assert len(errors) == 1
@@ -794,7 +1020,7 @@ def test_stop_does_not_arm_the_confirmation_check(
     profile = _profile()
     workspace = _workspace(tmp_path, (profile,))
     _start(workspace, profile)
-    workspace.apply_scan(ScanSnapshot(agents=(_agent(4242, profile.cluster_dir),), managers=()))
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
     errors: list[str] = []
 
     view = ServersView(
@@ -1392,7 +1618,8 @@ def test_death_after_start_is_also_written_to_the_journal(
     `test_start_that_dies_silently_is_reported` выше.
     """  # noqa: RUF002
     profile = _profile()
-    workspace = _workspace(tmp_path, (profile,))
+    factory = FakeJobFactory()
+    workspace = _workspace(tmp_path, (profile,), job_factory=factory)
     workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
     errors: list[str] = []
     view = ServersView(
@@ -1406,6 +1633,7 @@ def test_death_after_start_is_also_written_to_the_journal(
     )
 
     view.profile_button(0).click()
+    factory.created[0].pids_value = ()  # дерево умерло целиком
     workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
     view.on_scan_snapshot()
 
@@ -1426,6 +1654,8 @@ def test_confirmed_running_is_also_written_to_the_journal(
     и между «запуск: …» и следующим ручным действием пользователя не
     оставалось никакого следа о том, что сервер вообще поднялся. Тот же
     путь, каким его зовёт `app.py`, что и у теста отрицательной ветки.
+    T-12: в строку идёт `spawned_pid` — PID НАШЕГО `ragent` из Job,
+    а не PID-ы совпавших процессов снимка (снимок здесь пуст).
     Мутация: убрать запись `работает · PID …` из положительной ветки
     `_check_pending_confirmation` — тест обязан упасть (строки не будет).
     """  # noqa: RUF002
@@ -1441,9 +1671,114 @@ def test_confirmed_running_is_also_written_to_the_journal(
     )
 
     view.profile_button(0).click()
-    workspace.apply_scan(ScanSnapshot(agents=(_agent(4242, profile.cluster_dir),), managers=()))
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
     view.on_scan_snapshot()
 
     assert errors == []  # положительный исход — не §8-предупреждение
+    journal_text = workspace.journal_path(profile.id).read_text(encoding="utf-8")
+    assert "работает · PID 4242" in journal_text
+
+
+# -- страховка rebuild(): statuses() может отказать (ревью задачи 3, Important 1)
+#
+# С T-12 `ServersWorkspace.statuses()` читает `Job.pids()` и переводит  # noqa: RUF003
+# `JobError` в `ServerError` (спека §7). `rebuild()` зовётся из слота скана
+# каждые 5 с и после каждого действия — необработанное исключение в слоте  # noqa: RUF003
+# Qt оставило бы раздел неперерисовываемым до конца сессии.
+
+
+def test_rebuild_survives_a_job_that_cannot_be_read(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ: отказ `statuses()` не роняет `rebuild()` и не стирает карточки.
+
+    `QueryInformationJobObject` может отказать (`JobError` → `ServerError`,
+    спека T-12 §7). `rebuild()` читает `statuses()`/`foreign_servers()` ДО
+    очистки layout, поэтому при отказе на экране остаётся ПРОШЛЫЙ показ,
+    а причина уходит в строку пути цветом problem — вместо пустого раздела
+    или, того хуже, исключения из слота таймера.
+    Мутация: убрать `try/except ServicesError` в `rebuild()` — тест упадёт
+    необработанным `ServerError` прямо на `view.rebuild()`.
+    """  # noqa: RUF002
+    profile = _profile()
+    factory = FakeJobFactory()
+    workspace = _workspace(tmp_path, (profile,), job_factory=factory)
+    _start(workspace, profile)
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+    view = ServersView(workspace, installed=lambda: [_installation()], palette=theme.DARK)
+    assert view.profile_rows()[0].status_text == "работает · PID 4242"
+
+    factory.created[0].pids_error = JobError("QueryInformationJobObject отказал")
+    view.rebuild()
+
+    rows = view.profile_rows()
+    assert len(rows) == 1
+    assert rows[0].status_text == "работает · PID 4242"
+    assert "статус недоступен" in view.path_text()
+    assert theme.DARK.problem in view.path_label_style()
+    assert view.status_problem() is not None
+    assert "QueryInformationJobObject" in view.status_problem()  # type: ignore[operator]
+
+
+def test_rebuild_clears_the_problem_when_statuses_recover(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Отказ прошёл — строка пути возвращается к обычному виду и цвету."""
+    profile = _profile()
+    factory = FakeJobFactory()
+    workspace = _workspace(tmp_path, (profile,), job_factory=factory)
+    _start(workspace, profile)
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+    view = ServersView(workspace, installed=lambda: [_installation()], palette=theme.DARK)
+    factory.created[0].pids_error = JobError("QueryInformationJobObject отказал")
+    view.rebuild()
+    assert view.status_problem() is not None
+
+    factory.created[0].pids_error = None
+    view.rebuild()
+
+    assert view.status_problem() is None
+    assert "статус недоступен" not in view.path_text()
+    assert theme.DARK.problem not in view.path_label_style()
+
+
+def test_scan_snapshot_with_unreadable_job_keeps_pending_confirmation(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Отказ `statuses()` откладывает проверку §8, а не съедает её.
+
+    Ожидание подтверждения — единственный след только что нажатого
+    «Запустить» ([Ф] А3: платформа о смерти `ragent` молчит). Потерять его
+    на снимке, который не удалось прочитать, значило бы навсегда лишить
+    пользователя ответа об исходе запуска.
+    """  # noqa: RUF002
+    profile = _profile()
+    factory = FakeJobFactory()
+    workspace = _workspace(tmp_path, (profile,), job_factory=factory)
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+    errors: list[str] = []
+    view = ServersView(
+        workspace,
+        installed=lambda: [_installation()],
+        palette=theme.DARK,
+        show_error=lambda message: errors.append(message),
+    )
+
+    view.profile_button(0).click()  # «Запустить» — ставит профиль в ожидание
+    factory.created[0].pids_error = JobError("QueryInformationJobObject отказал")
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+    view.on_scan_snapshot()
+
+    assert errors == []
+    assert view.status_problem() is not None
+    journal_text = workspace.journal_path(profile.id).read_text(encoding="utf-8")
+    assert "работает · PID 4242" not in journal_text
+
+    factory.created[0].pids_error = None
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+    view.on_scan_snapshot()
+
+    assert errors == []
+    assert view.status_problem() is None
     journal_text = workspace.journal_path(profile.id).read_text(encoding="utf-8")
     assert "работает · PID 4242" in journal_text
