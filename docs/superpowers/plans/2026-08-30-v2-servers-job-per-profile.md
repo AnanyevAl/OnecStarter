@@ -18,7 +18,7 @@
 - Чужим не управляем никогда (решение 4): нет ни одного пути кода, который завершает процесс, не входящий в наш Job.
 - Job в `services` приходит инъекцией: `job_factory: Callable[[], Job]` и `server_spawn: Callable[[LaunchCommand, Path, Job], int]` — оба обязательные, без дефолта; `ServerJob` в проде, `NullJob` в `run_smoke`.
 - Тексты событий журнала — дословно из спеки T-12 §6: `погашены остатки прошлого запуска: PID …`; `ragent завершился извне; остатки дерева: PID …`; `отказ запуска: порт регистрации N занят PID … (запущен не лаунчером)`; остаются `запуск: …`, `порождён PID N`, `работает · PID N`, `остановка по команде пользователя`, `отказ остановки: …`, `отказ запуска: …`, `ротация журнала не удалась (…)`, `выход лаунчера — сервер будет остановлен вместе с ним`. Удаляются `гашение сирот: PID …`.
-- Порядок `start()` (спека §3): проверки → живой наш `ragent` в Job → совпавший процесс снимка (§6.4) → чужие держатели портов (отказ ДО ротации и spawn) → остатки в Job (`close()` + событие) → новый Job → best-effort ротация → `запуск: …` → spawn → `порождён PID`.
+- Порядок `start()` (спека §3): проверки → живой наш `ragent` в Job → совпавший процесс снимка (§6.4) → чужие держатели портов (отказ ДО ротации и spawn) → остатки в Job (`close()`; ОТКАЗ `close` — тоже отказ запуска, ДО ротации) → новый Job → best-effort ротация → событие `погашены остатки прошлого запуска: PID …` → `запуск: …` → spawn → `порождён PID`. Событие успешного гашения — ПОСЛЕ ротации (правка вслед за находкой задачи 3, 30.08.2026: `rotate_journal` переименовывает текущий файл в `.1.log`, и записанное до неё событие уехало бы в журнал прошлого запуска, тогда как §10 п.3 требует видеть его в ТЕКУЩЕМ журнале рядом со стартом, который оно объясняет).
 - ctypes-гигиена в новом/правленом коде `platform_1c`: один `WinDLL` на модуль, `argtypes`/`restype` у каждой функции, `use_last_error=True`, отказ WinAPI → `JobError` с `GetLastError`.
 - Проверки: `uv run pytest` (ОБЫЧНЫЙ режим, не фоновый; suite, не завершившийся за 5 мин, — зависание на модальном диалоге), `uv run ruff check .`, `uv run mypy` — коды 0 после каждой задачи; mypy strict вне `onecstarter.ui.*`.
 - Тесты не запускают живой `ragent` (правило «Границы»); Job тестируется подставными python-процессами, каждый — `kill()`+`wait()` в `finally`.
@@ -1103,8 +1103,8 @@ class ServerStatus:
             raise ServerError(f"Не удалось запустить сервер «{profile.name}»: {message}")
         old_job = self._jobs.pop(profile_id, None)
         self._spawned.pop(profile_id, None)
+        pids_text = ", ".join(str(pid) for pid in job_pids)
         if old_job is not None:
-            pids_text = ", ".join(str(pid) for pid in job_pids)
             try:
                 old_job.close()
             except JobError as error:
@@ -1117,8 +1117,17 @@ class ServerStatus:
                     f"Не удалось запустить сервер «{profile.name}»: остатки прошлого "
                     f"запуска (PID {pids_text}) не погашены — {error}"
                 ) from error
-            if job_pids:
-                self.log_event(profile_id, f"погашены остатки прошлого запуска: PID {pids_text}")
+        # ВНИМАНИЕ (правка вслед за находкой задачи 3, 30.08.2026): событие
+        # успешного гашения пишется НИЖЕ, ПОСЛЕ ротации журнала, а не здесь.
+        # `rotate_journal` переименовывает текущий файл в `.1.log`, и событие,
+        # записанное до неё, уехало бы в журнал ПРОШЛОГО запуска — тогда как
+        # §10 п.3 живого чек-листа требует видеть `погашены остатки…` и следом
+        # штатный старт в ОДНОМ (текущем) журнале, и этого же требует
+        # `test_start_with_remnants_closes_old_job_before_spawn_and_logs`
+        # (`content.index("погашены остатки") < content.index("запуск:")` по
+        # ТЕКУЩЕМУ журналу). Сам `close()` и его отказ остаются ДО ротации:
+        # несостоявшийся запуск не имеет права трогать прошлый журнал — то же
+        # правило, что у чужих держателей портов выше.
         job = self._job_factory()
         command = LaunchCommand(
             executable=installation.ragent, arguments=build_ragent_arguments(profile)
@@ -1132,6 +1141,8 @@ class ServerStatus:
                 profile_id,
                 f"ротация журнала не удалась ({error}), записи продолжаются в тот же файл",
             )
+        if old_job is not None and job_pids:
+            self.log_event(profile_id, f"погашены остатки прошлого запуска: PID {pids_text}")
         try:
             server_journal.append_event(journal, f"запуск: {command.command_line}", self._now())
             pid = self._server_spawn(command, journal, job)
