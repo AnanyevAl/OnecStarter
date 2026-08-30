@@ -191,6 +191,10 @@ class _BasesTree(QTreeView):
                 self._view._add_infobase_at_current()
                 event.accept()
                 return
+            if event.key() == Qt.Key.Key_Delete:
+                self._view._remove_current()
+                event.accept()
+                return
         super().keyPressEvent(event)
 
     def _rejects_drop_at(self, position: QPoint) -> bool:
@@ -1157,6 +1161,31 @@ class BasesView(QWidget):
                 kind if isinstance(kind, str) else None,
             )
         )
+
+    def _remove_current(self) -> None:
+        """`Delete` — удалить текущую запись или группу тем же путём, что пункт меню (T-11, п. 8).
+
+        Подтверждение — внутри `remove_key`/`remove_group`, здесь не
+        дублируется. Тот же порог, что у пунктов меню: запись или группа
+        общего списка — бездействие без диалога (`_build_menu` гасит «Удалить
+        из списка…», `_group_menu_for` — всё меню). Запись в «Недавних»/
+        «Избранном» — удаление из списка (значение клавиши одно), не из ветки;
+        от неожиданности защищает подтверждение с именем записи.
+        """  # noqa: RUF002
+        index = self._tree.currentIndex().siblingAtColumn(0)
+        if not index.isValid():
+            return
+        kind = index.data(KIND_ROLE)
+        key = index.data(KEY_ROLE)
+        if not isinstance(key, str):
+            return
+        item = next((i for i in self._workspace.items() if i.key == key), None)
+        if item is None or item.source is InfobaseSource.COMMON:
+            return
+        if kind == RowKind.BASE.value:
+            self.remove_key(key)
+        elif kind == RowKind.GROUP.value:
+            self.remove_group(key)
 
     def build_dialog_for_dropped_directory(
         self, directory: str, target_key: str | None, kind: str | None

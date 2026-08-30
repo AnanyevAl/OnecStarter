@@ -1628,6 +1628,108 @@ def test_remove_key_reports_unknown_item_when_target_is_gone(
     assert isinstance(errors[0], UnknownItemError)
 
 
+def test_delete_key_asks_and_removes_the_current_base(qtbot, workspace_factory):
+    """T-11, п. 8: `Delete` в дереве — тот же путь, что «Удалить из списка…»."""
+    asked: list[str] = []
+
+    def _confirm(_parent: object, item: InfobaseItem) -> bool:
+        asked.append(item.key)
+        return True
+
+    view, _, errors, _ = _view(qtbot, workspace_factory, confirm_removal=_confirm)
+    _select_key(view, _DEMO_ACCOUNTING_KEY)
+
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Delete)
+
+    assert asked == [_DEMO_ACCOUNTING_KEY]
+    assert errors == []
+    assert all(i.key != _DEMO_ACCOUNTING_KEY for i in view.workspace().items())
+
+
+def test_delete_key_with_declined_confirmation_keeps_the_file(qtbot, workspace_factory):
+    """ЗАЩИТНЫЙ ТЕСТ: отказ подтверждения — файл списка не тронут.
+
+    Мутация: `_remove_current` зовёт `self._workspace.remove_infobase(key)`
+    напрямую, минуя `remove_key` с его подтверждением, — байты файла изменятся.
+    """  # noqa: RUF002
+    asked: list[int] = []
+
+    def _confirm(*_args: object) -> bool:
+        asked.append(1)
+        return False
+
+    view, _, errors, _ = _view(qtbot, workspace_factory, confirm_removal=_confirm)
+    before = view.workspace().paths.ibases.read_bytes()
+    _select_key(view, _DEMO_ACCOUNTING_KEY)
+
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Delete)
+
+    assert asked == [1]
+    assert view.workspace().paths.ibases.read_bytes() == before
+    assert errors == []
+
+
+def test_delete_key_on_a_group_goes_through_group_removal(qtbot, workspace_factory):
+    asked: list[str] = []
+
+    def _ask(_parent: object, name: str, *_rest: object) -> GroupRemoval | None:
+        asked.append(name)
+        return None
+
+    view, _, errors, _ = _view(qtbot, workspace_factory, ask_group_removal=_ask)
+    before = view.workspace().paths.ibases.read_bytes()
+    _select_key(view, _CLIENTS_KEY)
+
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Delete)
+
+    assert asked == ["Клиенты"]
+    assert view.workspace().paths.ibases.read_bytes() == before
+    assert errors == []
+
+
+def test_delete_key_on_common_record_does_nothing(
+    qtbot, workspace_factory, common_base_cfg_paths
+):
+    """ЗАЩИТНЫЙ ТЕСТ: запись общего списка — ни вопроса, ни ошибки (порог пункта меню).
+
+    Мутация: убрать проверку `item.source is InfobaseSource.COMMON`
+    в `_remove_current` — появится подтверждение, а за ним `ReadOnlySourceError`.
+    """  # noqa: RUF002
+    asked: list[int] = []
+
+    def _confirm(*_args: object) -> bool:
+        asked.append(1)
+        return True
+
+    view, _, errors, _ = _view(
+        qtbot, workspace_factory, confirm_removal=_confirm, cfg_paths=common_base_cfg_paths
+    )
+    _select_key(view, COMMON_BASE_KEY)
+
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Delete)
+
+    assert asked == []
+    assert errors == []
+
+
+def test_delete_in_search_field_edits_text_not_the_list(qtbot, workspace_factory):
+    asked: list[int] = []
+
+    def _confirm(*_args: object) -> bool:
+        asked.append(1)
+        return True
+
+    view, _, _, _ = _view(qtbot, workspace_factory, confirm_removal=_confirm)
+    _select_key(view, _DEMO_ACCOUNTING_KEY)
+    view.search().setText("abc")
+    view.search().setCursorPosition(0)
+
+    qtbot.keyClick(view.search(), Qt.Key.Key_Delete)
+
+    assert view.search().text() == "bc"
+    assert asked == []
+
+
 def test_view_defaults_to_the_real_confirm_removal_dialog(qtbot, workspace_factory):
     """Без явной инъекции конструктор обязан ссылаться на настоящий Qt-диалог.
 
