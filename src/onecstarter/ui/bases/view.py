@@ -430,6 +430,13 @@ class BasesView(QWidget):
         # (handle_drop/_reorder), только сосед не из-под курсора, а из модели.  # noqa: RUF003
         QShortcut(QKeySequence("Alt+Up"), self, lambda: self._move_current(-1))
         QShortcut(QKeySequence("Alt+Down"), self, lambda: self._move_current(1))
+        # T-11, п. 3 (решение заказчика 29.08.2026 — зашить, не keymap):
+        # Alt+Enter — «Свойства», как в Проводнике Windows. Return и Enter
+        # (цифровой блок) — разные клавиши Qt, регистрируются обе; справочник  # noqa: RUF003
+        # в настройках рисуется по ui/shortcuts.py, тест сверяет его с этими  # noqa: RUF003
+        # регистрациями.
+        QShortcut(QKeySequence("Alt+Return"), self, self._show_current_properties)
+        QShortcut(QKeySequence("Alt+Enter"), self, self._show_current_properties)
 
         self.rebuild()
 
@@ -868,6 +875,30 @@ class BasesView(QWidget):
         if key:
             self.toggle_favorite(key)
 
+    def _show_current_properties(self) -> None:
+        """`Alt+Enter` — свойства текущей строки (T-11, п. 3).
+
+        Запись → `show_properties`, группа → диалог группы (`rename_group`).
+        Тот же порог, что у пунктов меню: запись или группа общего списка
+        (`_build_menu` гасит «Свойства…», `_group_menu_for` — всё меню) —
+        бездействие, а не диалог, который отвергнут при «ОК». Неявный узел,
+        заголовок ветки, пустое дерево — бездействие.
+        """  # noqa: RUF002
+        index = self._tree.currentIndex().siblingAtColumn(0)
+        if not index.isValid():
+            return
+        kind = index.data(KIND_ROLE)
+        key = index.data(KEY_ROLE)
+        if not isinstance(key, str):
+            return
+        item = next((i for i in self._workspace.items() if i.key == key), None)
+        if item is None or item.source is InfobaseSource.COMMON:
+            return
+        if kind == RowKind.BASE.value:
+            self.show_properties(key)
+        elif kind == RowKind.GROUP.value:
+            self.rename_group(key)
+
     def _build_menu(self, item: InfobaseItem, key: str) -> QMenu:
         """Собрать контекстное меню базы без показа (для тестов и _show_menu).
 
@@ -917,7 +948,7 @@ class BasesView(QWidget):
         # Ярлык осмыслен и для веб-базы: он зовёт нашу программу
         # с `--ib-name`, а та открывает браузер (services/launch.py).  # noqa: RUF003
         menu.addAction("Создать ярлык…", lambda: self.create_shortcut(key))
-        properties = menu.addAction("Свойства…", lambda: self.show_properties(key))
+        properties = menu.addAction("Свойства…\tAlt+Enter", lambda: self.show_properties(key))
         self._add_cache_menu(menu, item)
         menu.addSeparator()
         star = "Убрать из избранного" if item.favorite else "В избранное"  # noqa: RUF001

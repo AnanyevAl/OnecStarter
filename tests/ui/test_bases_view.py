@@ -16,7 +16,7 @@ from PySide6.QtCore import (
     Qt,
     QUrl,
 )
-from PySide6.QtGui import QDragMoveEvent, QDropEvent, QKeyEvent, QShortcut
+from PySide6.QtGui import QDragMoveEvent, QDropEvent, QKeyEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication, QDialog, QTreeView, QWidget
 
 from onecstarter.config.shell_link import build_shell_link, safe_file_name, shortcut_command
@@ -45,6 +45,7 @@ from onecstarter.ui.bases.view import NO_CACHE_ROOT_NOTE, BasesView, DropTarget
 from onecstarter.ui.dialogs.confirm import ask_group_removal, confirm_removal
 from onecstarter.ui.dialogs.group import GroupDialog
 from onecstarter.ui.dialogs.infobase import InfobaseDialog
+from onecstarter.ui.shortcuts import BASES_SHORTCUTS
 from tests.unit.test_cache import FakeCacheOps
 
 from .conftest import (
@@ -377,7 +378,7 @@ def test_context_menu_has_properties_action(qtbot, workspace_factory):
     item = next(i for i in view.workspace().items() if i.key == key)
     menu = view._build_menu(item, key)
     texts = [action.text() for action in menu.actions()]
-    assert "Свойства…" in texts
+    assert "Свойства…\tAlt+Enter" in texts
 
 
 # -- отказ записи bases.json доходит до пользователя (финальное ревью, I9) ----
@@ -450,7 +451,7 @@ def test_common_record_menu_disables_the_writing_actions(
 
     actions = _menu_actions(view._build_menu(item, item.key))
 
-    for label in ("Свойства…", "Удалить из списка…"):
+    for label in ("Свойства…\tAlt+Enter", "Удалить из списка…"):
         assert not actions[label].isEnabled(), label
         assert actions[label].toolTip() == COMMON_NOTE, label
 
@@ -1003,6 +1004,67 @@ def test_f4_launches_designer(qtbot: Any, workspace_factory: Any) -> None:
 
     assert len(calls) == 1
     assert "DESIGNER" in calls[0].arguments
+
+
+def test_shortcut_reference_matches_registered_shortcuts(qtbot, workspace_factory):
+    """Таблица `BASES_SHORTCUTS` — то, что вьюха реально регистрирует (T-11, п. 3).
+
+    Справочник в настройках (задача 3) рисуется по этой таблице; сочетание,
+    записанное в таблице, но не созданное вьюхой, было бы враньём в UI.
+    """
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    registered = {shortcut.key().toString() for shortcut in view.findChildren(QShortcut)}
+    expected = {
+        QKeySequence(sequence).toString()
+        for spec in BASES_SHORTCUTS
+        for sequence in spec.sequences
+    }
+    assert expected <= registered, expected - registered
+
+
+def test_alt_enter_opens_properties_of_the_current_base(qtbot, workspace_factory, monkeypatch):
+    """`Alt+Enter` — «Свойства…» текущей записи (решение заказчика 29.08.2026: зашить)."""
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    _show_exposed(qtbot, view)
+    _select_key(view, _DEMO_ACCOUNTING_KEY)
+    shown: list[str] = []
+    monkeypatch.setattr(view, "show_properties", shown.append)
+
+    qtbot.keyClick(view, Qt.Key.Key_Return, Qt.KeyboardModifier.AltModifier)
+
+    assert shown == [_DEMO_ACCOUNTING_KEY]
+
+
+def test_alt_enter_on_a_group_opens_the_group_dialog(qtbot, workspace_factory, monkeypatch):
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    _show_exposed(qtbot, view)
+    _select_key(view, _CLIENTS_KEY)
+    shown: list[str] = []
+    monkeypatch.setattr(view, "rename_group", shown.append)
+
+    qtbot.keyClick(view, Qt.Key.Key_Return, Qt.KeyboardModifier.AltModifier)
+
+    assert shown == [_CLIENTS_KEY]
+
+
+def test_alt_enter_on_common_record_does_nothing(
+    qtbot, workspace_factory, common_base_cfg_paths, monkeypatch
+):
+    """ЗАЩИТНЫЙ ТЕСТ: запись общего списка — тот же порог, что у пункта меню.
+
+    Мутация: убрать проверку `item.source is InfobaseSource.COMMON`
+    в `_show_current_properties` — откроется диалог, чей «ОК» отвергнет
+    `ReadOnlySourceError` (`_build_menu` для таких записей гасит «Свойства…»).
+    """  # noqa: RUF002
+    view, _, _, _ = _view(qtbot, workspace_factory, cfg_paths=common_base_cfg_paths)
+    _show_exposed(qtbot, view)
+    _select_key(view, COMMON_BASE_KEY)
+    shown: list[str] = []
+    monkeypatch.setattr(view, "show_properties", shown.append)
+
+    qtbot.keyClick(view, Qt.Key.Key_Return, Qt.KeyboardModifier.AltModifier)
+
+    assert shown == []
 
 
 def test_f4_does_nothing_for_web_base(qtbot: Any, workspace_factory: Any) -> None:
@@ -3307,7 +3369,7 @@ def test_cache_submenu_stays_enabled_for_common_entry(
     menu = view._build_menu(item, item.key)
     by_text = {a.text(): a for a in menu.actions()}
     # Сам дизейбл COMMON на месте…
-    assert not by_text["Свойства…"].isEnabled()
+    assert not by_text["Свойства…\tAlt+Enter"].isEnabled()
     assert not by_text["Удалить из списка…"].isEnabled()
     # …а кэш он не зацепил.  # noqa: RUF003
     actions = _cache_actions(menu)
