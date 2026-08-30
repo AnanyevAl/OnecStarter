@@ -10,6 +10,12 @@ $version = uv run python -c "import tomllib; print(tomllib.load(open('pyproject.
 if ($LASTEXITCODE -ne 0) { exit 1 }
 Write-Host "== OneCStarter $version =="
 
+# Запуск из Git Bash подмешивает в PATH C:\Program Files\Git\mingw64\bin, и
+# PyInstaller уносит оттуда чужие libcrypto-3-x64.dll/libssl-3-x64.dll
+# (RC 2.0.0, 30.08.2026: +6 МБ в _internal рядом со штатными libcrypto-3.dll/
+# libssl-3.dll из DLLs Python). Зависимости ищем без каталогов Git.
+$env:PATH = ($env:PATH -split ";" | Where-Object { $_ -notmatch "\\Git\\(mingw64|usr)\\bin" }) -join ";"
+
 uv run pyinstaller build/onecstarter.spec --noconfirm --distpath dist --workpath build/pyi
 if ($LASTEXITCODE -ne 0) { Write-Host "PyInstaller: отказ"; exit 1 }
 
