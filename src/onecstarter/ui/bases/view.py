@@ -109,6 +109,18 @@ ALPHABETICAL_REORDER_NOTE = (
 )
 
 
+def _is_read_only(item: InfobaseItem) -> bool:
+    """Порог «общий список — только для чтения» (спека §3.2): одно место на меню и клавиши.
+
+    По нему `_build_menu` гасит «Свойства…» и «Удалить из списка…»,
+    `_group_menu_for` отдаёт неактивное меню группы, `_current_editable_row`
+    отсеивает строку для `Alt+Enter`/`Delete`, `remove_group` держит
+    последний рубеж. Одно имя вместо пяти сравнений с
+    `InfobaseSource.COMMON`: правило расширяется в одном месте.
+    """  # noqa: RUF002
+    return item.source is InfobaseSource.COMMON
+
+
 def browse_for_shortcut_path(parent: QWidget | None, suggested: str) -> str:
     """Диалог сохранения ярлыка. Пустая строка — пользователь отказался.
 
@@ -919,25 +931,40 @@ class BasesView(QWidget):
         if key:
             self.toggle_favorite(key)
 
-    def _show_current_properties(self) -> None:
-        """`Alt+Enter` — свойства текущей строки (T-11, п. 3).
+    def _current_editable_row(self) -> tuple[str, str] | None:
+        """Текущая строка дерева как `(kind, key)`, если её можно править.
 
-        Запись → `show_properties`, группа → диалог группы (`rename_group`).
-        Тот же порог, что у пунктов меню: запись или группа общего списка
-        (`_build_menu` гасит «Свойства…», `_group_menu_for` — всё меню) —
-        бездействие, а не диалог, который отвергнут при «ОК». Неявный узел,
-        заголовок ветки, пустое дерево — бездействие.
+        Единый порог клавиатурных действий (`Alt+Enter`, `Delete`; T-11,
+        пп. 3 и 8) — тот же, что у меню: запись или группа общего списка
+        (`_is_read_only`) даёт `None`, как `_build_menu` гасит «Свойства…»
+        и «Удалить из списка…», а `_group_menu_for` — всё меню группы.
+        Неявный узел, заголовок ветки, пустое дерево, неизвестный ключ —
+        тоже `None`: бездействие, а не диалог, который отвергнут при «ОК».
+        До 30.08.2026 этот пролог жил копией в каждом обработчике (долг
+        финального ревью T-11).
         """  # noqa: RUF002
         index = self._tree.currentIndex().siblingAtColumn(0)
         if not index.isValid():
-            return
+            return None
         kind = index.data(KIND_ROLE)
         key = index.data(KEY_ROLE)
-        if not isinstance(key, str):
-            return
+        if not isinstance(kind, str) or not isinstance(key, str):
+            return None
         item = next((i for i in self._workspace.items() if i.key == key), None)
-        if item is None or item.source is InfobaseSource.COMMON:
+        if item is None or _is_read_only(item):
+            return None
+        return kind, key
+
+    def _show_current_properties(self) -> None:
+        """`Alt+Enter` — свойства текущей строки (T-11, п. 3).
+
+        Запись → `show_properties`, группа → диалог группы (`rename_group`);
+        порог — `_current_editable_row`.
+        """
+        row = self._current_editable_row()
+        if row is None:
             return
+        kind, key = row
         if kind == RowKind.BASE.value:
             self.show_properties(key)
         elif kind == RowKind.GROUP.value:
@@ -1002,7 +1029,7 @@ class BasesView(QWidget):
         # низу, как и в штатном стартере: разделяет обычные операции и то, что
         # трогает файл списка необратимо (remove_key спрашивает подтверждение).
         removal = menu.addAction("Удалить из списка…", lambda: self.remove_key(key))
-        if item.source is InfobaseSource.COMMON:
+        if _is_read_only(item):
             # `setToolTipsVisible(True)` обязателен: без него `QMenu`
             # на этой платформе подсказки пунктов не показывает вовсе —
             # тот же вывод, что и у `_build_disabled_group_menu`.  # noqa: RUF003
@@ -1186,22 +1213,14 @@ class BasesView(QWidget):
         """`Delete` — удалить текущую запись или группу тем же путём, что пункт меню (T-11, п. 8).
 
         Подтверждение — внутри `remove_key`/`remove_group`, здесь не
-        дублируется. Тот же порог, что у пунктов меню: запись или группа
-        общего списка — бездействие без диалога (`_build_menu` гасит «Удалить
-        из списка…», `_group_menu_for` — всё меню). Запись в «Недавних»/
+        дублируется; порог — `_current_editable_row`. Запись в «Недавних»/
         «Избранном» — удаление из списка (значение клавиши одно), не из ветки;
         от неожиданности защищает подтверждение с именем записи.
         """  # noqa: RUF002
-        index = self._tree.currentIndex().siblingAtColumn(0)
-        if not index.isValid():
+        row = self._current_editable_row()
+        if row is None:
             return
-        kind = index.data(KIND_ROLE)
-        key = index.data(KEY_ROLE)
-        if not isinstance(key, str):
-            return
-        item = next((i for i in self._workspace.items() if i.key == key), None)
-        if item is None or item.source is InfobaseSource.COMMON:
-            return
+        kind, key = row
         if kind == RowKind.BASE.value:
             self.remove_key(key)
         elif kind == RowKind.GROUP.value:
@@ -1434,7 +1453,7 @@ class BasesView(QWidget):
         последний рубеж (метод достижим напрямую, в обход меню — см. его
         докстринг), но эта проверка больше не единственная защита.
         """  # noqa: RUF002
-        if item.source is InfobaseSource.COMMON:
+        if _is_read_only(item):
             return self._build_disabled_group_menu(COMMON_NOTE)
         return self._build_group_menu(item, key)
 
@@ -1845,7 +1864,7 @@ class BasesView(QWidget):
                 InvalidRequestError(f"«{item.name}» — не группа, а запись базы")  # noqa: RUF001
             )
             return
-        if item.source is InfobaseSource.COMMON:
+        if _is_read_only(item):
             self._on_error(
                 ReadOnlySourceError(
                     f"«{item.name}» — группа из общего списка, доступна только "

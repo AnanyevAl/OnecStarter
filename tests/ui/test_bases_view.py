@@ -1099,9 +1099,10 @@ def test_alt_enter_on_common_record_does_nothing(
 ):
     """ЗАЩИТНЫЙ ТЕСТ: запись общего списка — тот же порог, что у пункта меню.
 
-    Мутация: убрать проверку `item.source is InfobaseSource.COMMON`
-    в `_show_current_properties` — откроется диалог, чей «ОК» отвергнет
-    `ReadOnlySourceError` (`_build_menu` для таких записей гасит «Свойства…»).
+    Мутация: убрать `_is_read_only` из `_current_editable_row` (порог
+    `Alt+Enter`/`Delete`; до 30.08.2026 — копия в `_show_current_properties`)
+    — откроется диалог, чей «ОК» отвергнет `ReadOnlySourceError`
+    (`_build_menu` для таких записей гасит «Свойства…»).
     """  # noqa: RUF002
     view, _, _, _ = _view(qtbot, workspace_factory, cfg_paths=common_base_cfg_paths)
     _show_exposed(qtbot, view)
@@ -1744,8 +1745,9 @@ def test_delete_key_on_common_record_does_nothing(
 ):
     """ЗАЩИТНЫЙ ТЕСТ: запись общего списка — ни вопроса, ни ошибки (порог пункта меню).
 
-    Мутация: убрать проверку `item.source is InfobaseSource.COMMON`
-    в `_remove_current` — появится подтверждение, а за ним `ReadOnlySourceError`.
+    Мутация: убрать `_is_read_only` из `_current_editable_row` (порог
+    `Alt+Enter`/`Delete`; до 30.08.2026 — копия в `_remove_current`) —
+    появится подтверждение, а за ним `ReadOnlySourceError`.
     """  # noqa: RUF002
     asked: list[int] = []
 
