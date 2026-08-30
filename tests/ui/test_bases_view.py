@@ -1676,7 +1676,84 @@ def test_group_menu_for_user_group_offers_full_operations(qtbot, workspace_facto
     assert all(action.isEnabled() for action in menu.actions())
 
 
-def test_common_group_context_menu_disables_all_three_actions(
+def test_group_menu_offers_to_add_a_base_into_that_group(qtbot, workspace_factory, monkeypatch):
+    """T-11, п. 4: «Добавить базу…» в меню группы — база попадает в эту группу."""
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    item = next(i for i in view.workspace().items() if i.key == _CLIENTS_KEY)
+    folders: list[str] = []
+    monkeypatch.setattr(view, "add_infobase", folders.append)
+
+    menu = view._build_group_menu(item, _CLIENTS_KEY)
+    actions = {action.text(): action for action in menu.actions()}
+    assert list(actions)[0] == "Добавить базу…"  # noqa: RUF015
+    actions["Добавить базу…"].trigger()
+
+    assert folders == ["Клиенты"]
+
+
+def test_add_dialog_is_prefilled_with_the_requested_group(qtbot, workspace_factory):
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    dialog = view._build_add_dialog("Клиенты")
+    qtbot.addWidget(dialog)
+    dialog.set_kind(ConnectKind.FILE)
+    dialog.set_file_path(r"D:\bases\new")
+    dialog.set_name("Новая")
+    assert dialog.new_record()[2] == "Клиенты"
+
+
+def test_empty_space_menu_add_goes_to_root(qtbot, workspace_factory, monkeypatch):
+    """`QAction.triggered` несёт `checked`; голая ссылка на метод получила бы его как `folder`."""  # noqa: RUF002
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    folders: list[str] = []
+    monkeypatch.setattr(view, "add_infobase", folders.append)
+
+    menu = view._build_empty_space_menu()
+    next(a for a in menu.actions() if a.text() == "Добавить базу…").trigger()
+
+    assert folders == [ROOT]
+
+
+def test_insert_adds_into_the_group_of_the_current_row(qtbot, workspace_factory, monkeypatch):
+    """ЗАЩИТНЫЙ ТЕСТ (T-11, п. 7): `Insert` в дереве — группа текущей строки, не корень.
+
+    Мутация: `_add_infobase_at_current` передаёт `ROOT` всегда — обе проверки
+    ниже дадут `"/"` вместо `"Клиенты"`.
+    """  # noqa: RUF002
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    folders: list[str] = []
+    monkeypatch.setattr(view, "add_infobase", folders.append)
+
+    _select_key(view, _CLIENTS_KEY)
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Insert)
+    _select_key(view, _DEMO_ACCOUNTING_KEY)
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Insert)
+
+    assert folders == ["Клиенты", "Клиенты"]
+
+
+def test_insert_without_current_row_adds_into_root(qtbot, workspace_factory, monkeypatch):
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    folders: list[str] = []
+    monkeypatch.setattr(view, "add_infobase", folders.append)
+    view.tree().setCurrentIndex(QModelIndex())
+
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Insert)
+
+    assert folders == [ROOT]
+
+
+def test_insert_in_search_field_does_not_add(qtbot, workspace_factory, monkeypatch):
+    """`Insert` — операция дерева, а не окна: в поле поиска это режим ввода, не добавление."""  # noqa: RUF002
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    folders: list[str] = []
+    monkeypatch.setattr(view, "add_infobase", folders.append)
+
+    qtbot.keyClick(view.search(), Qt.Key.Key_Insert)
+
+    assert folders == []
+
+
+def test_common_group_context_menu_disables_all_four_actions(
     qtbot, workspace_factory, common_group_cfg_paths
 ):
     """Круг правок 1 ревью задачи 12: группа общего списка — не полное меню.
@@ -1688,13 +1765,17 @@ def test_common_group_context_menu_disables_all_three_actions(
     guard'ом в `remove_group`. Теперь решение принимает `_group_menu_for`
     до показа меню, единым правилом на все три пункта, тем же приёмом,
     что и у неявного узла.
+
+    T-11, п. 4: четвёртый пункт «Добавить базу…» — тем же правилом.
     """  # noqa: RUF002
     view, _, _, _ = _view(qtbot, workspace_factory, cfg_paths=common_group_cfg_paths)
     item = next(i for i in view.workspace().items() if i.key == COMMON_GROUP_KEY)
     menu = view._group_menu_for(item, COMMON_GROUP_KEY)
     assert menu.toolTipsVisible() is True
     texts = [action.text() for action in menu.actions()]
-    assert texts == ["Создать группу…", "Переименовать группу…", "Удалить группу…"]
+    assert texts == [
+        "Добавить базу…", "Создать группу…", "Переименовать группу…", "Удалить группу…"
+    ]
     for action in menu.actions():
         assert action.isEnabled() is False
         assert action.toolTip() == COMMON_NOTE
@@ -1711,18 +1792,24 @@ def test_group_paths_excludes_common_list_groups(qtbot, workspace_factory, commo
     assert COMMON_GROUP_NAME not in view._group_paths()
 
 
-def test_implicit_group_context_menu_disables_all_three_actions(qtbot, workspace_factory):
+def test_implicit_group_context_menu_disables_all_four_actions(qtbot, workspace_factory):
     """[Ф] T-05.7: у неявного узла нет ни секции, ни ключа — операции недоступны
 
     с пояснением в тултипе, а не молча. `setToolTipsVisible(True)`
     обязателен — без него QMenu тултипы пунктов на этой платформе не
     показывает вовсе, даже если текст в setToolTip есть.
+
+    T-11, п. 4: четвёртый пункт «Добавить базу…» — тем же правилом
+    (`_build_disabled_group_menu` общий для неявного узла и группы общего
+    списка, находка задачи 4: изменение одного затрагивает оба случая).
     """  # noqa: RUF002
     view, _, _, _ = _view(qtbot, workspace_factory)
     menu = view._build_implicit_group_menu()
     assert menu.toolTipsVisible() is True
     texts = [action.text() for action in menu.actions()]
-    assert texts == ["Создать группу…", "Переименовать группу…", "Удалить группу…"]
+    assert texts == [
+        "Добавить базу…", "Создать группу…", "Переименовать группу…", "Удалить группу…"
+    ]
     for action in menu.actions():
         assert action.isEnabled() is False
         assert action.toolTip() == IMPLICIT_NOTE

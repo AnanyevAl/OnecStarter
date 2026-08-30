@@ -19,6 +19,7 @@ from PySide6.QtGui import (
     QDragEnterEvent,
     QDragMoveEvent,
     QDropEvent,
+    QKeyEvent,
     QKeySequence,
     QShortcut,
     QStandardItemModel,
@@ -175,6 +176,22 @@ class _BasesTree(QTreeView):
     def __init__(self, view: "BasesView", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._view = view
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        """`Insert`/`Delete` — операции над списком, но только при фокусе в дереве.
+
+        T-11, пп. 7–8: `QShortcut` уровня окна (как у F3/Ctrl+N) перехватил бы
+        `Delete` и в поле поиска, где это правка текста. Обработчик дерева
+        ограничивает клавиши структурно, без проверки «кто в фокусе».
+        Модификаторы не допускаются: `Ctrl+Insert`/`Shift+Delete` — чужие
+        соглашения (копировать/вырезать), их не перехватываем.
+        """  # noqa: RUF002
+        if event.modifiers() == Qt.KeyboardModifier.NoModifier:
+            if event.key() == Qt.Key.Key_Insert:
+                self._view._add_infobase_at_current()
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
     def _rejects_drop_at(self, position: QPoint) -> bool:
         """Запрещён ли бросок в этой точке — то есть будет ли он немым.
@@ -416,7 +433,7 @@ class BasesView(QWidget):
         self._tree.activated.connect(self._launch_index)
         self._tree.customContextMenuRequested.connect(self._show_menu)
         QShortcut(QKeySequence("Ctrl+D"), self, self._toggle_current_favorite)
-        QShortcut(QKeySequence("Ctrl+N"), self, self.add_infobase)
+        QShortcut(QKeySequence("Ctrl+N"), self, lambda: self.add_infobase())
         QShortcut(QKeySequence("Ctrl+1"), self, lambda: self._launch_current(ClientKind.THIN))
         QShortcut(QKeySequence("Ctrl+2"), self, lambda: self._launch_current(ClientKind.THICK))
         QShortcut(QKeySequence("Ctrl+3"), self, lambda: self._launch_current(ClientKind.DESIGNER))
@@ -452,6 +469,9 @@ class BasesView(QWidget):
 
     def search(self) -> QLineEdit:
         return self._search
+
+    def tree(self) -> QTreeView:
+        return self._tree
 
     def panel(self) -> ConnectionPanel:
         return self._panel
@@ -1085,7 +1105,7 @@ class BasesView(QWidget):
         normalized = normalize_folder(folder)
         return normalized if normalized in self._group_paths() else ROOT
 
-    def _build_add_dialog(self) -> InfobaseDialog:
+    def _build_add_dialog(self, folder: str = ROOT) -> InfobaseDialog:
         """Собрать диалог добавления записи без показа (для тестов и add_infobase).
 
         Тот же приём, что у `_build_menu`/`_build_properties_dialog`: `exec()`
@@ -1093,8 +1113,13 @@ class BasesView(QWidget):
         разделения `add_infobase` повторил бы дефект, который ревью задачи 8
         нашло у `show_properties`, — единственный пользовательский путь без
         покрытия (задача 10, урок 2).
+
+        `folder` — группа, предложенная диалогом (T-11, пп. 4 и 7), в форме
+        `_group_paths()`; вызывающие берут её оттуда же (`group_path` у меню
+        группы, `folder_for_dropped_directory` у `Insert`), поэтому
+        `set_folder` здесь не отказывает.
         """  # noqa: RUF002
-        return InfobaseDialog.for_new(
+        dialog = InfobaseDialog.for_new(
             groups=self._group_paths(),
             # Обнаружение платформ может быть ещё не закончено (первые
             # полсекунды старта, спека T-04.6, §3.4) — диалог честно не
@@ -1103,13 +1128,35 @@ class BasesView(QWidget):
             cfg_rules=self._cfg_rules,
             parent=self,
         )
+        dialog.set_folder(folder)
+        return dialog
 
-    def add_infobase(self) -> None:
-        """«Добавить базу…» — пункт меню пустого места дерева и `Ctrl+N`."""
-        dialog = self._build_add_dialog()
+    def add_infobase(self, folder: str = ROOT) -> None:
+        """«Добавить базу…» — пустое место дерева (корень), меню группы (в неё),
+        `Ctrl+N`, `Insert`.
+        """
+        dialog = self._build_add_dialog(folder)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         self._apply_new_infobase(dialog)
+
+    def _add_infobase_at_current(self) -> None:
+        """`Insert` — добавить базу в группу текущей строки (T-11, п. 7).
+
+        Цель — по тому же правилу, что у брошенного каталога
+        (`folder_for_dropped_directory`): группа → в неё, запись → её группа,
+        всё остальное (пусто, виртуальная ветка, неявный узел, запись общего
+        списка) — корень.
+        """  # noqa: RUF002
+        index = self._tree.currentIndex().siblingAtColumn(0)
+        key = index.data(KEY_ROLE) if index.isValid() else None
+        kind = index.data(KIND_ROLE) if index.isValid() else None
+        self.add_infobase(
+            self.folder_for_dropped_directory(
+                key if isinstance(key, str) else None,
+                kind if isinstance(kind, str) else None,
+            )
+        )
 
     def build_dialog_for_dropped_directory(
         self, directory: str, target_key: str | None, kind: str | None
@@ -1262,7 +1309,7 @@ class BasesView(QWidget):
     def _build_empty_space_menu(self) -> QMenu:
         """Меню пустого места дерева — добавление записи и создание группы в корне."""
         menu = QMenu(self)
-        menu.addAction("Добавить базу…", self.add_infobase)
+        menu.addAction("Добавить базу…", lambda: self.add_infobase(ROOT))
         menu.addAction("Создать группу…", lambda: self.add_group(ROOT))
         return menu
 
@@ -1276,9 +1323,12 @@ class BasesView(QWidget):
         `QMenu.exec`. Разрушительный пункт («Удалить группу…») — за отдельным
         разделителем, в самом низу, как и «Удалить из списка…» в
         `_build_menu` (задача 11).
+
+        Первый пункт — «Добавить базу…» с группой `own_path` (T-11, п. 4).
         """  # noqa: RUF002
         menu = QMenu(self)
         own_path = group_path(item.folder, item.name)
+        menu.addAction("Добавить базу…", lambda: self.add_infobase(own_path))
         menu.addAction("Создать группу…", lambda: self.add_group(own_path))
         menu.addAction("Переименовать группу…", lambda: self.rename_group(key))
         menu.addSeparator()
@@ -1286,22 +1336,31 @@ class BasesView(QWidget):
         return menu
 
     def _build_disabled_group_menu(self, note: str) -> QMenu:
-        """Меню группы без операций: три пункта видны, но недоступны — с пояснением.
+        """Меню группы без операций: четыре пункта видны, но недоступны — с пояснением.
 
         Общий билдер для двух случаев, у которых один и тот же результат
         (операции невозможны), но разная причина: неявный узел (`IMPLICIT_NOTE`
         — [Ф] T-05.7, нет ни секции, ни ключа) и группа из общего списка
         (`COMMON_NOTE` — источник только для чтения, `_group_menu_for`).
         До круга правок 1 задачи 12 у каждого случая было своё меню с одним
-        и тем же телом — вынесено в одно место, чтобы правило «эти три
+        и тем же телом — вынесено в одно место, чтобы правило «эти четыре
         пункта показываются неактивными с пояснением» не разошлось между
         копиями. `setToolTipsVisible(True)` обязателен: без него `QMenu`
         на этой платформе тултипы пунктов не показывает вовсе — сам факт
         наличия текста в `setToolTip` этого не гарантирует.
+
+        T-11, п. 4: «Добавить базу…» добавлен первым пунктом тем же правилом,
+        что и у `_build_group_menu`, — недоступное меню группы не должно
+        предлагать операцию, которую полное меню предлагает.
         """  # noqa: RUF002
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
-        for label in ("Создать группу…", "Переименовать группу…", "Удалить группу…"):
+        for label in (
+            "Добавить базу…",
+            "Создать группу…",
+            "Переименовать группу…",
+            "Удалить группу…",
+        ):
             action = menu.addAction(label)
             action.setEnabled(False)
             action.setToolTip(note)
