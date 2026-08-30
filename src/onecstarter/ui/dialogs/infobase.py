@@ -158,6 +158,7 @@ from onecstarter.services.display import VersionCell, version_cell
 from onecstarter.services.model import InfobaseItem
 from onecstarter.services.paths import ROOT, normalize_folder
 from onecstarter.ui.dialogs.buttons import ButtonKind, russian_button_box
+from onecstarter.ui.dialogs.group_picker import GroupPicker
 
 HIDDEN_VALUE = "значение скрыто"
 _UNPARSED_PLACEMENT_HINT = "не удалось разобрать для правки"
@@ -426,13 +427,12 @@ class InfobaseDialog(QDialog):
         # бы каждую вложенную запись, а не только настоящую сироту без  # noqa: RUF003
         # секции-группы (I7, круг правок 1). Для новой записи (item is None)
         # «текущей» папки нет — по умолчанию корень.
-        folder_options = list(groups)
         current_folder = normalize_folder(item.folder) if item is not None else ROOT
-        if current_folder not in folder_options:
-            folder_options.append(current_folder)
-        self._folder = QComboBox()
-        self._folder.addItems(folder_options)
-        self._folder.setCurrentText(current_folder)
+        self._folder = GroupPicker(groups)
+        # Путь записи, отсутствующий среди групп (неявная группа, [Ф] T-05.7),
+        # добавляется как есть — иначе «текущая» группа не совпала бы с фактом.  # noqa: RUF003
+        self._folder.ensure_path(current_folder)
+        self._folder.set_current_path(current_folder)
 
         form = QFormLayout()
         form.addRow("Имя", self._name)
@@ -788,7 +788,7 @@ class InfobaseDialog(QDialog):
 
     def groups_shown(self) -> list[str]:
         """Пути групп в выпадающем списке — проверка проброса параметра `groups`."""
-        return [self._folder.itemText(i) for i in range(self._folder.count())]
+        return self._folder.paths()
 
     def accepts(self) -> bool:
         """Активна ли «ОК» — то, что видит пользователь до клика."""  # noqa: RUF002
@@ -841,7 +841,7 @@ class InfobaseDialog(QDialog):
             ref=self._ref.text(),
             url=self._url.text(),
         )
-        return self._name.text().strip(), connect, self._folder.currentText()
+        return self._name.text().strip(), connect, self._folder.current_path()
 
     def accept_directory(self, path: str) -> None:
         """Каталог, перетащённый на диалог: путь — в поле, имя — если оно пустое.
@@ -905,10 +905,10 @@ class InfobaseDialog(QDialog):
         self._name.setText(value)
 
     def set_folder(self, value: str) -> None:
-        index = self._folder.findText(value)
-        if index < 0:
-            raise ValueError(f"диалог не предлагает группу «{value}»")
-        self._folder.setCurrentIndex(index)
+        try:
+            self._folder.set_current_path(value)
+        except ValueError:
+            raise ValueError(f"диалог не предлагает группу «{value}»") from None
 
     def set_version(self, value: str | None) -> None:
         index = self._version.findData(value)
@@ -962,7 +962,7 @@ class InfobaseDialog(QDialog):
         version = self._version.currentData()
         if version != item.requested_version:
             changes["Version"] = version
-        folder = self._folder.currentText()
+        folder = self._folder.current_path()
         if folder != normalize_folder(item.folder):
             changes["Folder"] = folder
         app = self._app.currentData()

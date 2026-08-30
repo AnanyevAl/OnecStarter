@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QDialog
 
 from onecstarter.domain.connect import ConnectKind, classify_connect
 from onecstarter.services.model import InfobaseItem, InfobaseSource
+from onecstarter.ui.dialogs.group_picker import INDENT
 from onecstarter.ui.dialogs.infobase import (
     HIDDEN_VALUE,
     InfobaseDialog,
@@ -311,6 +312,18 @@ def test_unknown_kind_has_no_placement_fields_to_edit(qtbot: Any) -> None:
     dialog = InfobaseDialog(item, groups=["/"], installations=INSTALLED, cfg_rules=[])
     qtbot.addWidget(dialog)
     assert dialog._placement_fields() == []
+
+
+def test_folder_picker_shows_groups_as_a_tree(qtbot: Any) -> None:
+    """T-11, п. 5: выпадающий список групп — с отступом по вложенности, значения — пути."""  # noqa: RUF002
+    item = _item('File="D:\\b";', (), folder="/Клиенты/Розница")
+    dialog = InfobaseDialog(
+        item, groups=["/", "Клиенты", "Клиенты/Розница"], installations=INSTALLED, cfg_rules=[]
+    )
+    qtbot.addWidget(dialog)
+    assert dialog.groups_shown() == ["/", "Клиенты", "Клиенты/Розница"]
+    assert dialog._folder.currentText() == f"{INDENT}Розница"
+    assert dialog.changes() == ({}, None)
 
 
 # -- I7 (круг правок 1): normalize_folder на обеих сторонах сравнения ------------

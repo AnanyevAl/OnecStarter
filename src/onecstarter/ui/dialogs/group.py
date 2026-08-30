@@ -29,7 +29,6 @@
 from collections.abc import Sequence
 
 from PySide6.QtWidgets import (
-    QComboBox,
     QDialog,
     QFormLayout,
     QLabel,
@@ -43,6 +42,7 @@ from onecstarter.services.display import EMPTY_CONNECT_NOTE, is_degraded_group
 from onecstarter.services.model import InfobaseItem
 from onecstarter.services.paths import ROOT, normalize_folder
 from onecstarter.ui.dialogs.buttons import ButtonKind, russian_button_box
+from onecstarter.ui.dialogs.group_picker import GroupPicker
 
 
 class GroupDialog(QDialog):
@@ -62,13 +62,10 @@ class GroupDialog(QDialog):
 
         self._name = QLineEdit(item.name if item is not None else "")
 
-        folder_options = list(groups)
         current_folder = normalize_folder(item.folder) if item is not None else default_folder
-        if current_folder not in folder_options:
-            folder_options.append(current_folder)
-        self._parent_box = QComboBox()
-        self._parent_box.addItems(folder_options)
-        self._parent_box.setCurrentText(current_folder)
+        self._parent_box = GroupPicker(groups)
+        self._parent_box.ensure_path(current_folder)
+        self._parent_box.set_current_path(current_folder)
 
         form = QFormLayout()
         form.addRow("Имя", self._name)
@@ -131,7 +128,7 @@ class GroupDialog(QDialog):
         return self._name.text().strip()
 
     def parent_path(self) -> str:
-        return self._parent_box.currentText()
+        return self._parent_box.current_path()
 
     def button_labels(self) -> list[str]:
         """Подписи кнопок диалога — тот же тест, что и ревью задачи 8: подмена не забыта."""
@@ -177,7 +174,7 @@ class GroupDialog(QDialog):
         self._name.setText(value)
 
     def set_parent_path(self, value: str) -> None:
-        index = self._parent_box.findText(value)
-        if index < 0:
-            raise ValueError(f"диалог не предлагает путь «{value}»")
-        self._parent_box.setCurrentIndex(index)
+        try:
+            self._parent_box.set_current_path(value)
+        except ValueError:
+            raise ValueError(f"диалог не предлагает путь «{value}»") from None
