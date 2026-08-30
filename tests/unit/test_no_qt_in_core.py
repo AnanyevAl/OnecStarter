@@ -31,7 +31,6 @@ CORE = (
     "onecstarter.platform_1c.elevation",
     "onecstarter.platform_1c.job",
     "onecstarter.platform_1c.process",
-    "onecstarter.platform_1c.process_control",
     "onecstarter.platform_1c.process_scan",
     "onecstarter.platform_1c.registry",
     "onecstarter.platform_1c.server_discovery",
