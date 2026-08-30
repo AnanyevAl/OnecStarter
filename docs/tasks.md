@@ -1954,8 +1954,12 @@ kill-on-close): `QueryInformationJobObject(JobObjectBasicProcessIdList)`
     хендла операционной системой — без метки достоверности; сам факт есть
     ([Ф] Б2 T-09, чек-лист T-10 п. 6), не хватает одной пометки.
 15. **`Windows fatal exception: access violation` в
-    `pytestqt.plugin._process_events`** (наблюдался однажды на прогоне
-    задачи 7). Правдоподобная причина [Р] — не логика T-12, а паттерн
+    `pytestqt.plugin._process_events`** (наблюдался ДВАЖДЫ 30.08.2026:
+    на прогоне задачи 7 и на первом прогоне `master` сразу после слияния
+    T-12 — хвост «`<cannot get C stack on this system>`», вывод первого
+    прогона не сохранён; повтор с `PYTHONFAULTHANDLER=1` — 1711 passed;
+    ~2 падения на ~8 полных прогонов за день — это уже не «однажды»,
+    пункт первый в очереди долга). Правдоподобная причина [Р] — не логика T-12, а паттерн
     UI-тестов с T-08: `tests/ui/test_servers_view.py` строит `ServersView`
     без `qtbot.addWidget(view)`, поэтому Python-обёртка вьюхи с циклами
     «`self` → кнопка → лямбда → `self`» освобождается циклическим GC
