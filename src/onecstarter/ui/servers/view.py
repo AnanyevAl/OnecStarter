@@ -150,6 +150,13 @@ from onecstarter.ui.servers.journal_panel import JournalPanel
 from onecstarter.ui.theme import Palette
 
 _MONO = "font-family: Consolas, 'Cascadia Mono', monospace;"
+
+# Зазор между именем профиля и статусом в строке заголовка карточки —
+# мокап v2 `.srv .t { gap: 9px }` (T-11, п. 1). Вложенная раскладка без
+# собственного spacing наследует его у родителя (документация Qt,  # noqa: RUF003
+# `QLayout::spacing`), а `card_layout` держит 2 px — имя и статус слипались.  # noqa: RUF003
+TITLE_ROW_SPACING = 9
+
 _RANGE_DASH = "–"  # тире мокапа («1560–1591»), не дефис  # noqa: RUF001, RUF003
 
 
@@ -417,6 +424,7 @@ class ServersView(QWidget):
 
         self._profile_rows: list[ProfileRow] = []
         self._profile_status_labels: list[QLabel] = []
+        self._profile_title_rows: list[QHBoxLayout] = []
         self._profile_buttons: list[QPushButton] = []
         # (profile_id, state) на карточку — не QMenu (круг правок 2 ревью
         # задачи 14): меню строится лениво по клику/по требованию теста,
@@ -536,6 +544,7 @@ class ServersView(QWidget):
         self._clear(self._foreign_layout)
         self._profile_rows = []
         self._profile_status_labels = []
+        self._profile_title_rows = []
         self._profile_buttons = []
         self._profile_menu_args = []
         self._profile_warning_texts = []
@@ -692,6 +701,7 @@ class ServersView(QWidget):
         card_layout.setSpacing(2)
 
         title_row = QHBoxLayout()
+        title_row.setSpacing(TITLE_ROW_SPACING)
         name_label = QLabel(profile.name)
         name_font = name_label.font()
         name_font.setBold(True)
@@ -797,6 +807,7 @@ class ServersView(QWidget):
             )
         )
         self._profile_status_labels.append(status_label)
+        self._profile_title_rows.append(title_row)
         self._profile_buttons.append(toggle_button)
         self._profile_menu_args.append((profile.id, state))
         self._profile_warning_texts.append(warnings)
@@ -1039,6 +1050,10 @@ class ServersView(QWidget):
 
     def profile_status_label(self, index: int) -> QLabel:
         return self._profile_status_labels[index]
+
+    def profile_title_row(self, index: int) -> QHBoxLayout:
+        """Строка заголовка карточки (имя + статус) — тесту зазора (T-11, п. 1)."""
+        return self._profile_title_rows[index]
 
     def profile_button(self, index: int) -> QPushButton:
         return self._profile_buttons[index]

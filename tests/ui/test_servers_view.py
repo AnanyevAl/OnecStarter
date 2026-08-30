@@ -43,7 +43,12 @@ from onecstarter.platform_1c.server_discovery import ServerInstallation
 from onecstarter.services.servers import ScanSnapshot, ServerStatus, ServersWorkspace
 from onecstarter.ui import theme
 from onecstarter.ui.servers.dialog import ServerProfileDialog
-from onecstarter.ui.servers.view import CardState, ServersView, _card_state
+from onecstarter.ui.servers.view import (
+    TITLE_ROW_SPACING,
+    CardState,
+    ServersView,
+    _card_state,
+)
 
 RAGENT = r"C:\Program Files\1cv8\8.3.25.1633\bin\ragent.exe"
 FOREIGN_RAGENT = r"C:\Program Files\1cv8\8.3.22.1923\bin\ragent.exe"
@@ -307,6 +312,25 @@ def test_stopped_status_uses_dim_colour(application: QApplication, tmp_path: Pat
     view = ServersView(workspace, installed=lambda: [_installation()], palette=theme.DARK)
 
     assert theme.DARK.text_dim in view.profile_status_label(0).styleSheet()
+
+
+def test_card_title_row_separates_name_from_status(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ (T-11, п. 1): между именем профиля и статусом — зазор мокапа.
+
+    Мутация: убрать `title_row.setSpacing(TITLE_ROW_SPACING)` — вложенная
+    раскладка унаследует 2 px у `card_layout`, имя и статус снова слипнутся
+    (`8.3.25.1633остановлен`, скриншот заказчика 29.08.2026).
+    """  # noqa: RUF002
+    profile = _profile()
+    workspace = _workspace(tmp_path, (profile,))
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+
+    view = ServersView(workspace, installed=lambda: [_installation()], palette=theme.DARK)
+
+    assert TITLE_ROW_SPACING >= 8, "мокап .srv .t: gap 9px"
+    assert view.profile_title_row(0).spacing() == TITLE_ROW_SPACING
 
 
 def test_unresolved_version_disables_start_and_uses_problem_colour(
