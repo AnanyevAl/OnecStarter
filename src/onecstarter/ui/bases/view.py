@@ -116,7 +116,11 @@ def _is_read_only(item: InfobaseItem) -> bool:
     `_group_menu_for` отдаёт неактивное меню группы, `_current_editable_row`
     отсеивает строку для `Alt+Enter`/`Delete`, `remove_group` держит
     последний рубеж. Одно имя вместо пяти сравнений с
-    `InfobaseSource.COMMON`: правило расширяется в одном месте.
+    `InfobaseSource.COMMON`: правило отказа расширяется в одном месте.
+    Положительная форма `source is InfobaseSource.USER` (`_group_paths`,
+    `_previous_sibling_key`, `_target_of_drop`) — выбор строк файла
+    пользователя, а не порог отказа; с `not _is_read_only` она
+    совпадает лишь пока источников два (ревью 30.08.2026).
     """  # noqa: RUF002
     return item.source is InfobaseSource.COMMON
 

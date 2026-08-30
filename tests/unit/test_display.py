@@ -440,6 +440,7 @@ def test_degraded_group_row_carries_a_warning() -> None:
         (["8.3.24", "8.3.9"], ["8.3.9", "8.3.24"]),
         (["База 1", "База"], ["База", "База 1"]),
         (["a1b", "a01b"], ["a01b", "a1b"]),
+        (["10", "9", "База"], ["9", "10", "База"]),
     ],
 )
 def test_collation_key_table(names: list[str], expected: list[str]) -> None:
@@ -448,9 +449,22 @@ def test_collation_key_table(names: list[str], expected: list[str]) -> None:
     Числа — как в Проводнике Windows (`StrCmpLogicalW`): «База 2» перед
     «База 10», «8.3.9» перед «8.3.24» (решение заказчика 30.08.2026).
     Равные числа с разной записью («a01b»/«a1b») упорядочены устойчиво
-    вторым элементом ключа, а не порядком ввода.
+    вторым элементом ключа, а не порядком ввода. Имя из одних цифр рядом
+    с текстовым — сторож чередования типов по позициям ключа: без него
+    сравнение упёрлось бы в `str < int` и уронило сортировку исключением.
     """  # noqa: RUF002
     assert sorted(names, key=collation_key) == expected
+
+
+def test_collation_key_survives_absurdly_long_digit_runs() -> None:
+    """Имя из `.v8i` — чужие данные: цепочка цифр длиннее лимита `int()` не роняет ключ.
+
+    `int()` строки длиннее `sys.get_int_max_str_digits()` (4300 по
+    умолчанию) бросает `ValueError`; ключ обязан считаться и ставить
+    такую запись после короткого числа (находка ревью 30.08.2026).
+    """
+    long_name = "б" + "1" * 4301  # noqa: RUF001
+    assert collation_key("б2") < collation_key(long_name)  # noqa: RUF001
 
 
 def test_file_order_is_untouched_by_default() -> None:
