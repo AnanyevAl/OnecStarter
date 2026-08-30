@@ -123,9 +123,15 @@ def _tree_in_job() -> Iterator[tuple[ServerJob, subprocess.Popen[str], int]]:
         yield job, parent, grandchild
     finally:
         job.close()
+        # Находка исполнителя задачи 1: kill-on-close гасит дерево асинхронно —
+        # между pid_exists() и kill() процесс мог уже умереть (1 флейк из 5
+        # прогонов). Уборка терпит NoSuchProcess, а не проверяет заранее.
         for pid in (parent.pid, grandchild):
-            if pid is not None and psutil.pid_exists(pid):
-                psutil.Process(pid).kill()
+            if pid is not None:
+                try:
+                    psutil.Process(pid).kill()
+                except psutil.NoSuchProcess:
+                    pass
         parent.wait(timeout=5)
 
 
@@ -317,10 +323,13 @@ class ServerJob:
     def close(self) -> None:
         if self._handle is None:
             return
-        handle, self._handle = self._handle, None
-        if not _k32.CloseHandle(handle):
+        # Ревью задачи 1 (Important 1): хендл забывается ТОЛЬКО после успешного
+        # CloseHandle — иначе после отказа Job выглядел бы закрытым (pids() == ()),
+        # хотя дерево живо, и services не смог бы показать остатки.
+        if not _k32.CloseHandle(self._handle):
             error = ctypes.get_last_error()
             raise JobError(f"CloseHandle не смог закрыть Job: GetLastError={error}")
+        self._handle = None
 
     def is_empty(self) -> bool:
         return not self.pids()
