@@ -6,13 +6,10 @@
 его применение (`apply_scan`, главный поток — сопоставляет процессы
 с профилями через `match_profiles`) и производные от снимка вопросы:
 `statuses` (что запущено, какая версия разрешилась, не разъехался ли
-каталог кластера с версией), `foreign_servers` (чужие ragent — [Ф] В1),
-`orphan_managers` (осиротевший rmngr без своего ragent — [Ф] А3). Эта задача
-(T-08.12) добавляет сами эффекты запуска и остановки: `start` (§6.4 —
-второй ragent на каталоге кластера, уже занятом совпавшим процессом
-последнего снимка, не запускается нами никогда) и `stop`/`stop_orphans`
-(остановка дерева целиком, [Ф] Б2: `TerminateProcess` не убивает детей,
-поэтому список детей снимается ДО завершения родителя). Эта задача (T-08.13)
+каталог кластера с версией) и `foreign_servers` (чужие ragent — [Ф] В1).
+Эта задача (T-08.12) добавляет сами эффекты запуска и остановки: `start`
+(§6.4 — второй ragent на каталоге кластера, уже занятом совпавшим процессом
+последнего снимка, не запускается нами никогда) и `stop`. Эта задача (T-08.13)
 добавляет смену версии консоли администрирования: `current_console_version`
 (чтение — версия из пути зарегистрированной `radmin.dll`, без UAC),
 `register_console` (эффект — `run_elevated("regsvr32", ...)`, §7: отказ
@@ -23,30 +20,54 @@
 (см. `_registered_radmin`/`_run_elevated`/`_open_file` — только сохранены
 в конструкторе, эффекты живут в методах этой задачи).
 
-T-10 (задача 4) переводит запуск на дочерний жизненный цикл: спека §12,
+T-10 (задача 4) перевела запуск на дочерний жизненный цикл: спека §12,
 пересмотр решения 26.08.2026 — исходная редакция «отвязанный процесс,
-переживает закрытие» ДЕЙСТВОВАЛА в T-08 и БОЛЬШЕ НЕ действует. Теперь
-`start` порождает сервер через `server_spawn` (инъекция, `Callable[[LaunchCommand,
-Path], int]` — `platform_1c/server_spawn.py::spawn_server`, запечённый
-Job Object'ом в проводке `app.py`, задача 7; сам Job в `services` не
-протекает ни импортом, ни параметром) — закрытие OneCStarter (или его
-крах) гасит дерево серверов вместе с лаунчером ([Ф] Б1/Б2 T-09). Второй
-эффект задачи — журнал профиля (`services/server_journal.py`): `start`
-ротирует прошлый запуск (BEST-EFFORT — правка финального ревью ветки
-T-10, п.1: `Path.replace` внутри `rotate_journal` падает `PermissionError
-[WinError 32]`, если журнал ещё держит открытым процесс прошлого запуска —
-`dbgs`/`rmngr`, переживший `ragent`, снятый из Диспетчера задач без
-штатной остановки; Python `open()` не даёт `FILE_SHARE_DELETE`. Отказ
-ротации пишет событие в журнал и НЕ прерывает запуск — записи просто
-продолжаются в тот же файл; полноценное решение, открытие с явным
-`FILE_SHARE_DELETE`, — долг вехи, см. `docs/tasks.md`), пишет событие
-`запуск: …` до порождения процесса и `порождён PID …` после успешного
-`server_spawn`; `stop`/`stop_orphans` — событие успеха или `отказ
-остановки: …` перед `ServerStopError`, `log_event` — точка входа для
-событий снаружи координатора (UI, задача 5, исход §8). `logs_dir` — новый
-обязательный параметр конструктора, каталог журналов профилей
-(`%APPDATA%\\OneCStarter\\logs\\servers`, спека §12.6, собирается
-в `app.py`).
+переживает закрытие» ДЕЙСТВОВАЛА в T-08 и БОЛЬШЕ НЕ действует. `start`
+порождает сервер через `server_spawn` (инъекция) — закрытие OneCStarter
+(или его крах) гасит дерево серверов вместе с лаунчером ([Ф] Б1/Б2 T-09).
+Второй эффект той задачи — журнал профиля (`services/server_journal.py`):
+`start` ротирует прошлый запуск (BEST-EFFORT — правка финального ревью
+ветки T-10, п.1: `Path.replace` внутри `rotate_journal` падает
+`PermissionError [WinError 32]`, если журнал ещё держит открытым процесс
+прошлого запуска — `dbgs`/`rmngr`, переживший `ragent`, снятый из
+Диспетчера задач без штатной остановки; Python `open()` не даёт
+`FILE_SHARE_DELETE`. Отказ ротации пишет событие в журнал и НЕ прерывает
+запуск — записи просто продолжаются в тот же файл; полноценное решение,
+открытие с явным `FILE_SHARE_DELETE`, — долг вехи, см. `docs/tasks.md`),
+пишет событие `запуск: …` до порождения процесса и `порождён PID …` после
+успешного `server_spawn`; `stop` — событие успеха или `отказ остановки: …`
+перед отказом; `log_event` — точка входа для событий снаружи координатора
+(UI, исход §8). `logs_dir` — обязательный параметр конструктора, каталог
+журналов профилей (`%APPDATA%\\OneCStarter\\logs\\servers`, спека §12.6,
+собирается в `app.py`).
+
+T-12 (задача 3) меняет саму модель владения процессами: истина о НАШЕМ
+сервере — не снимок и не сопоставление по командной строке, а Windows Job
+Object НА КАЖДЫЙ ЗАПУСК ПРОФИЛЯ (спека T-12 §3, `platform_1c/job.py`).
+Координатор получает `job_factory` (инъекция, `Callable[[], Job]`) и держит
+по одному живому Job на профиль (`_jobs`) плюс PID порождённого нами
+`ragent` (`_spawned`): `start` заводит новый Job и отдаёт его
+`server_spawn` (`Callable[[LaunchCommand, Path, Job], int]`), `stop` — это
+`job.close()`, и всё дерево гасит сама ОС по kill-on-close ([Ф] Б2 T-09 на
+живом дереве `ragent`, [Ф] 29.08.2026 на остатках). `running_count`
+и `log_shutdown` спрашивают Job, а не снимок, — этим закрыт долг T-10
+«вопрос о выходе считает чужие процессы».
+
+Отсюда три следствия, каждое — решение заказчика 29.08.2026.
+Первое (решение 4): ЧУЖИМ процессом мы не управляем никогда — совпавший
+по каталогу кластера `ragent`, запущенный не лаунчером, виден на карточке,
+но `stop` для него честно отказывает: Job у профиля нет и взяться ему
+неоткуда. Второе (решения 2 и 3): остатки НАШЕГО прошлого дерева (`ragent`
+снят извне, дети живы в Job) гасит сам `start` — закрывает старый Job ДО
+порождения нового; удаление работающего профиля сначала останавливает его.
+Третье (спека T-12 §4): чужие держатели портов профиля
+(`domain/server_match.py::port_holders`, [Ф] А3 T-07 — `rmngr` переживает
+`ragent` и держит его `regport`) — вопрос диагностики, а не «сироты,
+которые мы гасим»: `start` на них отказывает ДО ротации журнала и spawn,
+а действия «погасить чужое» больше нет вовсе. Вместе с этим ушли
+`platform_1c/process_control.py` (`TerminateProcess` по PID со сверкой
+`create_time`), гонка PID §6.2 и `ServerStopError`: гасит теперь ОС,
+а сверять PID со снимком незачем — Job отвечает об одном и том же дереве.
 
 Приём инъекции эффектов и отката состояния в памяти при отказе записи —
 тот же, что в `services/workspace.py::Workspace` (см. её докстринг
@@ -79,20 +100,16 @@ from onecstarter.domain.server_match import (
     ForeignServer,
     MatchResult,
     RagentProcess,
-    extract_ragent_params,
     match_profiles,
     normalize_cluster_dir,
+    port_holders,
+    port_holders_text,
     version_from_exe_path,
 )
 from onecstarter.domain.version import VersionNumber
 from onecstarter.platform_1c import console, elevation
 from onecstarter.platform_1c.elevation import ElevationDeclinedError
-from onecstarter.platform_1c.job import JobError
-from onecstarter.platform_1c.process_control import (
-    ProcessAccessError,
-    ProcessControl,
-    ProcessMismatchError,
-)
+from onecstarter.platform_1c.job import Job, JobError
 from onecstarter.platform_1c.process_scan import ProcessInfo, ProcessScanner
 from onecstarter.platform_1c.server_discovery import ServerInstallation, console_path
 from onecstarter.services import server_journal
@@ -100,7 +117,6 @@ from onecstarter.services.errors import (
     ConsoleRegistrationDeclinedError,
     ConsoleRegistrationError,
     ServerError,
-    ServerStopError,
     UnknownItemError,
 )
 from onecstarter.services.server_store import load_profiles, save_profiles
@@ -120,8 +136,9 @@ __all__ = [
     "scan_servers",
 ]
 
-# rmngr нужен для поиска сирот ([Ф] А3, t07-protocol.md): осиротевший rmngr  # noqa: RUF003
-# держит regport агента, даже когда сам ragent уже не жив. rphost и dbda
+# rmngr нужен для поиска ЧУЖИХ держателей портов ([Ф] А3, t07-protocol.md):  # noqa: RUF003
+# переживший своего ragent rmngr держит его regport, и новый ragent поверх  # noqa: RUF003
+# такого держателя поднимается полумёртвым (спека T-12 §4). rphost и dbda
 # сканировать незачем — они запускаются без -d (нет каталога кластера для
 # сопоставления с профилем), и для статуса «запущен/остановлен» профиля  # noqa: RUF003
 # не нужны ([Ф] Б1, t07-protocol.md).
@@ -166,6 +183,16 @@ def _snapshot_agents(snapshot: ScanSnapshot) -> tuple[RagentProcess, ...]:
     )
 
 
+def _snapshot_processes(snapshot: ScanSnapshot) -> tuple[RagentProcess, ...]:
+    """Все процессы снимка (ragent и rmngr) как `RagentProcess` — вход `port_holders`."""  # noqa: RUF002
+    return tuple(
+        RagentProcess(
+            pid=info.pid, executable=info.executable, argv=info.argv, create_time=info.create_time
+        )
+        for info in (*snapshot.agents, *snapshot.managers)
+    )
+
+
 def scan_servers(scanner: ProcessScanner) -> ScanSnapshot:
     """Один снимок ragent/rmngr, разложенный по `name.casefold()`.
 
@@ -186,16 +213,31 @@ class ServerStatus:
 
     `resolved` — версия, разрешённая по маске/точному номеру профиля против
     установленных платформ (`resolve_server_version`); `None`, если версии
-    ещё нет или маска не разбирается. `processes` — живые ragent этого
-    профиля из последнего снимка. `orphans` — осиротевшие rmngr без своего
-    ragent ([Ф] А3). `dir_mismatch` — эвристика спеки §3.2: каталог кластера
-    похож на заведённый под другую версию.
+    ещё нет или маска не разбирается.
+
+    Дальше — два независимых источника, и путать их нельзя (T-12 §3).
+    `processes` — совпавшие по каталогу кластера `ragent` ПОСЛЕДНЕГО СНИМКА:
+    и наши, и чужие, потому что по командной строке они неразличимы.
+    `job_pids` — всё дерево НАШЕГО Job этого профиля (`()`, если Job нет или
+    он пуст), `spawned_pid` — PID `ragent`, порождённого нами (`None`, если
+    запускали не мы либо `ragent` завершился извне). Только эти два поля
+    говорят, чем мы вправе управлять: непустой `job_pids` без `spawned_pid`
+    внутри — остатки нашего прошлого дерева.
+
+    `port_holders` — чужие процессы снимка, держащие порты профиля
+    (`domain/server_match.py`, спека T-12 §4); пусто, пока снимка не было
+    и пока у профиля есть совпавший `ragent` (живой `ragent` на нашем
+    каталоге уже описан состоянием карточки, красная строка была бы шумом).
+    `dir_mismatch` — эвристика спеки §3.2: каталог кластера похож на
+    заведённый под другую версию.
     """  # noqa: RUF002
 
     profile: ServerProfile
     resolved: VersionNumber | None
     processes: tuple[RagentProcess, ...]
-    orphans: tuple[ProcessInfo, ...]
+    job_pids: tuple[int, ...]
+    spawned_pid: int | None
+    port_holders: tuple[RagentProcess, ...]
     dir_mismatch: bool
 
 
@@ -224,8 +266,8 @@ class ServersWorkspace:
         self,
         store_path: Path,
         *,
-        control: ProcessControl,
-        server_spawn: Callable[[LaunchCommand, Path], int],
+        job_factory: Callable[[], Job],
+        server_spawn: Callable[[LaunchCommand, Path, Job], int],
         logs_dir: Path,
         run_elevated: Callable[[str, str], int] = elevation.run_elevated,
         open_file: Callable[[str], None] = os.startfile,
@@ -238,11 +280,11 @@ class ServersWorkspace:
         # сохранены здесь; конструктор их не вызывает. `_run_elevated`
         # зовётся только из `register_console` — по явному действию UI,
         # никогда отсюда, из `apply_scan` или `statuses` (§7, докстринг
-        # модуля). `server_spawn`/`logs_dir` обязательные и без дефолта
-        # (T-10, задача 4): дефолт вида `functools.partial(spawn_server,
-        # job=...)` держал бы Job внутри services, а он запечён проводкой  # noqa: RUF003
-        # `app.py` (задача 7) — см. докстринг модуля.
-        self._control = control
+        # модуля). `job_factory`/`server_spawn`/`logs_dir` обязательные
+        # и без дефолта (T-12, задача 3): какой Job настоящий, решает
+        # проводка `app.py` (`ServerJob` в проде, `NullJob` в самопроверке),
+        # а не слой services — здесь Job виден только контрактом `Job`.  # noqa: RUF003
+        self._job_factory = job_factory
         self._server_spawn = server_spawn
         self._logs_dir = logs_dir
         self._run_elevated = run_elevated
@@ -258,6 +300,14 @@ class ServersWorkspace:
         # см. `scan_pending`.
         self._snapshot: ScanSnapshot | None = None
         self._match: MatchResult | None = None
+        # T-12: один живой Job на профиль плюс PID порождённого нами
+        # `ragent`. Оба словаря — ЕДИНСТВЕННЫЙ источник истины о том, чем  # noqa: RUF003
+        # мы вправе управлять (докстринг модуля); снимок процессов в этот
+        # вопрос не входит. Ключ обоих — `profile.id`; профиля может уже
+        # не быть в `_profiles` (удалён), поэтому `remove_profile`
+        # обязана освободить Job сама, не надеясь на сборщик мусора.
+        self._jobs: dict[str, Job] = {}
+        self._spawned: dict[str, int] = {}
 
     def profiles(self) -> list[ServerProfile]:
         return list(self._profiles)
@@ -290,9 +340,29 @@ class ServersWorkspace:
         self._save(updated)
 
     def remove_profile(self, profile_id: str) -> None:
-        """Удалить профиль по `id`. Неизвестный `id` — ошибка."""
+        """Удалить профиль по `id`, сначала остановив его сервер. Неизвестный `id` — ошибка.
+
+        Решение заказчика 3 (29.08.2026): удаление РАБОТАЮЩЕГО профиля —
+        это и остановка тоже. Раньше (T-08, решение 8) профиль просто
+        пропадал из списка, а его `ragent` оставался жить — и увидеть его
+        было уже негде, кроме как в «Других серверах на машине». С Job
+        такого выбора нет вовсе: хендл принадлежал профилю, и, если бы мы
+        просто забыли о нём, дерево пережило бы удаление только до выхода
+        лаунчера (kill-on-close), то есть умерло бы всё равно, но без
+        единой строки в журнале.
+
+        Поэтому непустой Job останавливается через `stop` (события журнала
+        и `ServerError` — его; отказ закрытия НЕ удаляет профиль: он
+        остаётся в списке вместе со своим Job, и пользователю есть что
+        повторить). Пустой Job — тихо освобождается: закрывать хендл, за
+        которым уже никого нет, незачем сообщать.
+        """  # noqa: RUF002
         if not any(existing.id == profile_id for existing in self._profiles):
             raise ServerError(f"Профиля с id «{profile_id}» нет в списке")  # noqa: RUF001
+        if self._job_pids(profile_id):
+            self.stop(profile_id)
+        else:
+            self._forget_job(profile_id)
         updated = [existing for existing in self._profiles if existing.id != profile_id]
         self._save(updated)
 
@@ -322,11 +392,12 @@ class ServersWorkspace:
         return self._snapshot is None
 
     def statuses(self, installed: Sequence[VersionNumber]) -> list[ServerStatus]:
-        """Статус каждого профиля: версия, живые процессы, сироты, каталог.
+        """Статус каждого профиля: версия, процессы снимка, наш Job, держатели портов.
 
-        До первого `apply_scan` — `processes=()` и `orphans=()` у всех
-        профилей (см. `scan_pending`), `resolved`/`dir_mismatch` от снимка
-        не зависят и считаются всегда.
+        До первого `apply_scan` — `processes=()` и `port_holders=()` у всех
+        профилей (см. `scan_pending`); `job_pids`/`spawned_pid` от снимка
+        не зависят вовсе (T-12: наш Job знает о себе сам, снимка не ждёт),
+        `resolved`/`dir_mismatch` — тоже, они считаются всегда.
         """  # noqa: RUF002
         result: list[ServerStatus] = []
         for profile in self._profiles:
@@ -337,7 +408,9 @@ class ServersWorkspace:
                     profile=profile,
                     resolved=resolved,
                     processes=processes,
-                    orphans=self._orphans_for(profile, processes),
+                    job_pids=self._job_pids(profile.id),
+                    spawned_pid=self._spawned.get(profile.id),
+                    port_holders=self._port_holders_for(profile, processes),
                     dir_mismatch=_dir_mismatch(profile.cluster_dir, resolved),
                 )
             )
@@ -347,53 +420,53 @@ class ServersWorkspace:
         """Ragent, не сопоставленные ни с одним профилем ([Ф] В1). До снимка — `[]`."""  # noqa: RUF002
         return list(self._match.foreign) if self._match is not None else []
 
-    def orphan_managers(self, profile_id: str) -> list[ProcessInfo]:
-        """Сироты конкретного профиля — тот же расчёт, что в `statuses`.
+    def port_holders(self, profile_id: str) -> list[RagentProcess]:
+        """Чужие держатели портов профиля — тот же расчёт, что в `statuses`.
 
         Неизвестный `profile_id` — `UnknownItemError` (см. `_profile_or_raise`).
         """
         profile = self._profile_or_raise(profile_id)
-        processes = self._matched_processes(profile)
-        return list(self._orphans_for(profile, processes))
+        return list(self._port_holders_for(profile, self._matched_processes(profile)))
 
     def running_count(self) -> int:
-        """Число профилей с хотя бы одним живым процессом по последнему снимку.
+        """Число профилей с НЕПУСТЫМ Job — то есть запущенных нами и ещё живых.
 
-        `0` до первого `apply_scan` (см. `scan_pending`) — та же семантика,
-        что у `statuses`: «снимка ещё не было» не равно «серверов нет». Тому,
-        для кого это писалось (проводка T-10, задача 6 — подтверждение
-        выхода при работающих серверах), нужно именно число профилей,
-        а не число процессов: профиль с двумя ragent на одном каталоге
-        (§6.4 — такого мы сами не создаём, но снимок мог застать чужую
-        ситуацию) считается один раз.
+        T-12 закрывает долг T-10: считалось по последнему снимку, и чужой
+        `ragent`, случайно оказавшийся на каталоге кластера нашего профиля,
+        поднимал вопрос «Остановить N серверов и выйти?» о процессе,
+        который мы всё равно не остановим (решение 4 — чужим не управляем).
+        Теперь снимок в этом вопросе не участвует вовсе: считаются профили,
+        у которых есть свой Job и в нём кто-то жив. Дерево из десятка
+        процессов — по-прежнему один профиль: спрашивающему (гейт выхода,
+        `ui/app.py::_confirm_quit_with_servers`) нужно число серверов,
+        а не число процессов.
         """  # noqa: RUF002
-        if self._match is None:
-            return 0
-        return sum(1 for processes in self._match.by_profile.values() if processes)
+        return sum(1 for profile_id in self._jobs if self._job_pids(profile_id))
 
     def log_shutdown(self) -> int:
         """Отметить в журнале каждого РАБОТАЮЩЕГО профиля выход лаунчера. Возвращает их число.
 
         НАХОДКА 4 ручного чек-листа T-10 (Minor): дерево серверов гасит
-        сама ОС (Job kill-on-close, задача 7) — кода остановки при выходе
-        нет и не появится (спека §12.4, решение заказчика), поэтому
-        последняя строка журнала работающего профиля до этой правки — либо
-        баннер платформы, либо вовсе `запуск: …`; конец сессии читателю
-        журнала не виден. Зовётся из `ui/app.py` ПОСЛЕ согласия
-        пользователя (или сразу, если серверов нет и спрашивать нечего) —
-        ДО `application.quit()`, одним путём на `request_quit` и
-        `closeEvent` (`_build_confirm_quit`).
+        сама ОС (Job kill-on-close) — кода остановки при выходе нет
+        и не появится (спека §12.4, решение заказчика), поэтому последняя
+        строка журнала работающего профиля до этой правки — либо баннер
+        платформы, либо вовсе `запуск: …`; конец сессии читателю журнала
+        не виден. Зовётся из `ui/app.py` ПОСЛЕ согласия пользователя (или
+        сразу, если серверов нет и спрашивать нечего) — ДО
+        `application.quit()`, одним путём на `request_quit` и `closeEvent`
+        (`_build_confirm_quit`).
 
-        Та же семантика, что у `running_count`: профиль «работает», если
-        по ПОСЛЕДНЕМУ снимку у него есть хотя бы один живой процесс
-        (`_matched_processes`) — до первого `apply_scan` ни один профиль
-        не работает, событие не пишется никому, возвращается `0`.
+        Та же семантика «работает», что у `running_count` (T-12): непустой
+        Job профиля, а не совпавший процесс снимка. Разница не косметическая
+        — «сервер будет остановлен вместе с ним» правда только про наш Job;
+        чужому `ragent` на нашем каталоге кластера выход лаунчера ничего
+        не сделает, и обещать это в его журнале было бы враньём.
         `log_event` сам глотает `OSError` (её докстринг) — отказ записи
         одного журнала не мешает дойти до остальных профилей.
         """  # noqa: RUF002
         count = 0
         for profile in self._profiles:
-            if self._matched_processes(profile):
+            if self._job_pids(profile.id):
                 self.log_event(
                     profile.id, "выход лаунчера — сервер будет остановлен вместе с ним"  # noqa: RUF001
                 )
@@ -412,9 +485,8 @@ class ServersWorkspace:
         единственное место во всём модуле, где отказ ФС не мешает вызывающему:
         журнал — вспомогательный канал наблюдения (T-10), а не условие
         успеха операции. Везде в этом файле OSError либо переводится
-        в `ServerError`/`ServerStopError` (см. `_save`, `_terminate_or_raise`,
-        `open_console`, `start`), либо (здесь) глотается — но никогда не
-        уходит наружу голым.
+        в `ServerError` (см. `_save`, `open_console`, `start`), либо (здесь)
+        глотается — но никогда не уходит наружу голым.
         """  # noqa: RUF002
         self._profile_or_raise(profile_id)
         path = server_journal.journal_path(self._logs_dir, profile_id)
@@ -428,60 +500,88 @@ class ServersWorkspace:
         profile_id: str,
         server_installations: Sequence[ServerInstallation],
     ) -> int:
-        """Запустить `ragent` профиля дочерним процессом. Отказ — `ServerError` ДО порождения.
+        """Запустить `ragent` профиля в НОВОМ Job. Отказ — `ServerError` ДО порождения.
 
-        Порядок проверок: неизвестный `profile_id` → `UnknownItemError`;
-        версия профиля (точная или маска) не разрешилась ни на одну из
-        `server_installations` → `ServerError`; §6.4 — по последнему снимку
-        у профиля уже есть совпавший процесс → `ServerError`, второй
-        `ragent` на том же каталоге кластера мы не запускаем никогда
-        (платформа не гарантирует безопасное поведение при этом, [Р]).
-        Только когда все проверки пройдены — журнал и `server_spawn`.
+        Порядок (спека T-12 §3, дословно): неизвестный `profile_id` →
+        `UnknownItemError`; версия профиля (точная или маска) не разрешилась
+        ни на одну из `server_installations` → `ServerError`; НАШ `ragent`
+        жив в Job профиля (`spawned_pid` есть в `job.pids()`) → `ServerError`;
+        §6.4 — по последнему снимку у профиля уже есть совпавший процесс
+        (наш или чужой, по командной строке они неразличимы) → `ServerError`,
+        второй `ragent` на том же каталоге кластера мы не запускаем никогда
+        (платформа не гарантирует безопасное поведение при этом, [Р]); чужой
+        держатель портов профиля (T-12 §4) → событие `отказ запуска: <текст
+        port_holders_text>` и `ServerError` — ДО ротации журнала и spawn,
+        чтобы отказ не съел прошлый журнал ротацией.
 
-        T-10, задача 4, правка финального ревью ветки (п.1): сразу после
-        проверок, ДО порождения процесса, журнал профиля ротируется
-        (`server_journal.rotate_journal` — прошлый запуск сохраняется как
-        `.1.log`, спека §12.6) — BEST-EFFORT, в СВОЁМ ОТДЕЛЬНОМ
-        `try/except OSError`: файл прошлого запуска может ещё держать
-        открытым переживший `ragent` процесс (`dbgs`/`rmngr`, снятый из
-        Диспетчера задач без штатной остановки), и `Path.replace` падает
-        `PermissionError [WinError 32]` (Python `open()` не даёт
-        `FILE_SHARE_DELETE`). Раньше эта ошибка стояла в общем `try` со
-        spawn и глушила запуск целиком «отказом» без понятной причины —
-        теперь отказ ротации только пишет событие `ротация журнала не
-        удалась (<текст исключения>), записи продолжаются в тот же файл`
-        (правка координатора: текст исключения — ФАКТИЧЕСКАЯ причина
-        от ОС, `str(error)`, а не наша ДОГАДКА о ней; для занятого файла
-        Windows сама скажет «[WinError 32] Процесс не может получить
-        доступ к файлу…», но `OSError` тут может быть и другим — например,
-        нет прав на сам `logs_dir`) и запуск идёт как обычно (полноценное
-        решение — открытие с явным `FILE_SHARE_DELETE` — долг вехи,
-        `docs/tasks.md`). Дальше журнал получает событие `запуск: <командная
-        строка>`; только затем зовётся `server_spawn` с путём к ЭТОМУ
-        (текущему) журналу — тем же файлом, в который `spawn_server`
-        (`platform_1c/server_spawn.py`) перенаправит stdout дерева процессов
-        (два независимых писателя одного файла, докстринг
-        `server_journal.py`). После успешного `server_spawn` в журнал
-        пишется событие `порождён PID <pid>` (pid — то, что вернул
-        `server_spawn`, спека §12.1: «PID-ы дерева по скану»). Сервер
-        запущен дочерним — закрытие или крах OneCStarter гасит его вместе
-        с лаунчером через Job Object, запечённый проводкой `app.py`
-        (задача 7); `services` этого не видит и не обязан — исходная
-        редакция «отвязанный процесс, переживает закрытие» реализовывалась
-        T-08 и здесь больше не действует (спека §12, пересмотр 28.08.2026).
+        Первая проверка нужна именно по Job, а не по снимку: между запуском
+        и следующим сканом (до 5 с, спека §4.4) снимок ещё не знает о нашем
+        `ragent`, и повторное нажатие «Запустить» подняло бы второй сервер
+        на том же каталоге кластера. Job знает о нём сразу.
+
+        Дальше — остатки НАШЕГО прошлого дерева (решение 2 заказчика
+        29.08.2026): если Job профиля непуст, а наш `ragent` в нём уже
+        не значится, значит его сняли извне, а дети (`rmngr`/`rphost`/`dbgs`)
+        живы и держат порты. Такой Job закрывается ЗДЕСЬ, до порождения
+        нового: kill-on-close гасит остатки целиком ([Ф] 29.08.2026). Отказ
+        `close()` (`JobError`) — отказ ЗАПУСКА: старый Job возвращается
+        в учёт (остатки обязаны остаться видимыми на карточке), в журнал
+        идёт `отказ запуска: не удалось погасить остатки прошлого запуска
+        (…)`, наружу — `ServerError`. Порождать новый `ragent` поверх живых
+        остатков нельзя: он поднимется полумёртвым на занятых портах
+        (находка 5 чек-листа T-10).
+
+        Событие УСПЕШНОГО гашения (`погашены остатки прошлого запуска:
+        PID …`) пишется ПОСЛЕ ротации журнала, а не сразу после `close()`
+        (находка задачи 3 T-12; спека §3 и план предписывали обратный
+        порядок, они правлены вслед): ротация переименовывает текущий файл
+        в `.1.log`, и событие, записанное до неё, уехало бы в журнал
+        ПРОШЛОГО запуска — ровно туда, куда читатель не смотрит. Пункт 3
+        живого чек-листа спеки (§10) требует видеть `погашены остатки…`
+        и следом штатный старт в ОДНОМ (текущем) журнале. Отказ гашения при
+        этом остаётся ДО ротации: несостоявшийся запуск не имеет права
+        трогать прошлый журнал — то же правило, что и у чужих держателей
+        портов выше.
+
+        Ротация — BEST-EFFORT, в СВОЁМ ОТДЕЛЬНОМ `try/except OSError`
+        (правка финального ревью ветки T-10, п.1): файл прошлого запуска
+        может ещё держать открытым переживший `ragent` процесс
+        (`dbgs`/`rmngr`, снятый из Диспетчера задач без штатной остановки),
+        и `Path.replace` падает `PermissionError [WinError 32]` (Python
+        `open()` не даёт `FILE_SHARE_DELETE`). Раньше эта ошибка стояла
+        в общем `try` со spawn и глушила запуск целиком «отказом» без
+        понятной причины — теперь отказ ротации только пишет событие
+        `ротация журнала не удалась (<текст исключения>), записи продолжаются
+        в тот же файл` (текст исключения — ФАКТИЧЕСКАЯ причина от ОС,
+        `str(error)`, а не наша ДОГАДКА о ней: `OSError` тут может быть
+        и другим — например, нет прав на сам `logs_dir`) и запуск идёт как
+        обычно (полноценное решение — открытие с явным `FILE_SHARE_DELETE` —
+        долг вехи, `docs/tasks.md`).
+
+        Дальше журнал получает событие `запуск: <командная строка>`; только
+        затем зовётся `server_spawn` с путём к ЭТОМУ (текущему) журналу —
+        тем же файлом, в который `spawn_server` перенаправит stdout дерева
+        процессов (два независимых писателя одного файла, докстринг
+        `server_journal.py`), — и с СВЕЖИМ Job, куда `spawn_server` кладёт
+        порождённый процесс сразу после `Popen`. После успеха в журнал
+        пишется `порождён PID <pid>`, а Job и PID запоминаются за профилем:
+        с этого момента `stop`, `running_count` и статус карточки отвечают
+        по ним.
 
         `OSError` ИЛИ `JobError` из записи события `запуск: …`/`server_spawn`
-        (CRITICAL 1a, финальное ревью ветки T-08, расширено задачей 4 T-10 —
-        `JobError` из отказа `job.assign()` внутри `spawn_server`, платформа
-        `platform_1c/job.py`) переводятся в `ServerError` с командной строкой
-        — тем же приёмом, что `services/launch.py::launch_infobase`:
-        секретов в команде запуска сервера нет (кластерные пароли этой
-        вехой не поддерживаются, §8 спеки), поэтому команду можно показать
-        пользователю целиком. Перед `raise` в журнал профиля пишется событие
-        `отказ запуска: <текст ошибки>` — через `log_event`, чтобы отказ
-        самой записи (тот же диск/антивирус) не подменил собой настоящую
-        причину отказа старта. Отказ ротации в этот путь НЕ попадает —
-        он не блокирует запуск (см. выше).
+        (CRITICAL 1a, финальное ревью ветки T-08; `JobError` — отказ
+        `job.assign()` внутри `spawn_server`) переводятся в `ServerError`
+        с командной строкой — тем же приёмом, что
+        `services/launch.py::launch_infobase`: секретов в команде запуска
+        сервера нет (кластерные пароли этой вехой не поддерживаются, §8
+        спеки), поэтому команду можно показать пользователю целиком. Свежий
+        Job при этом закрывается и в учёт НЕ попадает: держать хендл, за
+        которым никого нет, незачем, а `spawn_server` при отказе `assign`
+        уже убил порождённый процесс сам. Перед `raise` в журнал профиля
+        пишется `отказ запуска: <текст ошибки>` — через `log_event`, чтобы
+        отказ самой записи (тот же диск/антивирус) не подменил собой
+        настоящую причину отказа старта. Отказ ротации в этот путь НЕ
+        попадает — он не блокирует запуск (см. выше).
         """  # noqa: RUF002
         profile = self._profile_or_raise(profile_id)
         resolved = resolve_server_version(
@@ -503,6 +603,13 @@ class ServersWorkspace:
             raise ServerError(
                 f"Версия «{resolved}» разрешилась, но установка для неё не найдена"
             )
+        job_pids = self._job_pids(profile_id)
+        spawned = self._spawned.get(profile_id)
+        if spawned is not None and spawned in job_pids:
+            raise ServerError(
+                f"Сервер «{profile.name}» уже работает, PID {spawned} — второй ragent "
+                "на этом каталоге кластера не запускается"
+            )
         processes = self._matched_processes(profile)
         if processes:
             pids = ", ".join(str(p.pid) for p in processes)
@@ -510,6 +617,30 @@ class ServersWorkspace:
                 f"Сервер «{profile.name}» уже работает, PID {pids} — второй ragent "
                 "на этом каталоге кластера не запускается"
             )
+        holders = self._port_holders_for(profile, processes)
+        if holders:
+            message = port_holders_text(profile, holders)
+            self.log_event(profile_id, f"отказ запуска: {message}")
+            raise ServerError(
+                f"Не удалось запустить сервер «{profile.name}»: {message}"  # noqa: RUF001
+            )
+        old_job = self._jobs.pop(profile_id, None)
+        self._spawned.pop(profile_id, None)
+        pids_text = ", ".join(str(pid) for pid in job_pids)
+        if old_job is not None:
+            try:
+                old_job.close()
+            except JobError as error:
+                self._jobs[profile_id] = old_job  # остатки остаются видимыми
+                self.log_event(
+                    profile_id,
+                    f"отказ запуска: не удалось погасить остатки прошлого запуска ({error})",
+                )
+                raise ServerError(
+                    f"Не удалось запустить сервер «{profile.name}»: остатки прошлого "  # noqa: RUF001
+                    f"запуска (PID {pids_text}) не погашены — {error}"
+                ) from error
+        job = self._job_factory()
         command = LaunchCommand(
             executable=installation.ragent, arguments=build_ragent_arguments(profile)
         )
@@ -524,82 +655,84 @@ class ServersWorkspace:
             # (Python open() не даёт FILE_SHARE_DELETE). Это не отказ
             # запуска: записи продолжаются в тот же (текущий) файл журнала,
             # см. докстринг метода. Текст события — фактический str(error)
-            # от системы (правка координатора после волны исправлений),
-            # а не наша догадка о причине: OSError здесь мог быть и другим  # noqa: RUF003
-            # (например, нет прав на сам logs_dir), и предполагать занятость
-            # файла в тексте события было бы враньём в общем случае.
+            # от системы, а не наша догадка о причине: OSError здесь мог  # noqa: RUF003
+            # быть и другим (например, нет прав на сам logs_dir).
             self.log_event(
                 profile_id,
                 f"ротация журнала не удалась ({error}), записи продолжаются в тот же файл",
             )
+        if old_job is not None and job_pids:
+            # ПОСЛЕ ротации (см. докстринг метода): до неё событие уехало бы
+            # в журнал прошлого запуска (.1.log) вместе с переименованным  # noqa: RUF003
+            # файлом, а читателю оно нужно рядом со стартом, который оно  # noqa: RUF003
+            # объясняет (спека §10, п.3 живого чек-листа).
+            self.log_event(profile_id, f"погашены остатки прошлого запуска: PID {pids_text}")
         try:
             server_journal.append_event(journal, f"запуск: {command.command_line}", self._now())
-            pid = self._server_spawn(command, journal)
+            pid = self._server_spawn(command, journal, job)
         except (OSError, JobError) as error:
+            try:
+                job.close()
+            except JobError:
+                _log.warning("не удалось закрыть Job после отказа запуска профиля %s", profile_id)
             self.log_event(profile_id, f"отказ запуска: {error}")
             raise ServerError(
                 f"Не удалось запустить сервер «{profile.name}»: {error}.\n"  # noqa: RUF001
                 f"Команда: {command.command_line}"
             ) from error
+        self._jobs[profile_id] = job
+        self._spawned[profile_id] = pid
         self.log_event(profile_id, f"порождён PID {pid}")
         return pid
 
     def stop(self, profile_id: str) -> None:
-        """Остановить дерево процессов профиля целиком: агент(ы) и их дети.
+        """Остановить сервер профиля: закрыть его Job — дерево гасит ОС.
 
-        [Ф] Б2, t07-protocol.md: `TerminateProcess` не убивает детей — `rmngr`
-        и `rphost` продолжают жить и держать порты после смерти `ragent`,
-        поэтому на каждый совпавший процесс список детей снимается ДО его
-        завершения (иначе можно упустить ребёнка, порождённого в интервале
-        между снимком и убийством родителя), а сами дети завершаются уже
-        после родителя. Жёсткое завершение безопасно: тот же замер показал,
-        что кластер переживает его и поднимается с тем же `clstid`.
+        T-12, спека §3: `stop` — это `job.close()`, и всё. Kill-on-close
+        гасит ВСЁ дерево процессов Job разом ([Ф] Б2 T-09 на живом дереве
+        `ragent`, [Ф] 29.08.2026 на остатках без родителя), поэтому ни
+        обхода детей, ни сверки `create_time`, ни гонки PID §6.2 здесь
+        больше нет: они существовали ровно потому, что `TerminateProcess`
+        не убивает детей ([Ф] Б2 T-07) и приходилось гасить дерево вручную
+        по PID из снимка.
 
-        §6.2, гонка PID: `ProcessControl.terminate` сверяет `create_time` из
-        снимка с фактическим временем создания процесса; несовпадение
-        означает, что Windows успела переиспользовать PID под другой
-        процесс, — `stop` немедленно поднимает `ServerStopError` и не идёт
-        дальше (ни к оставшимся детям того же агента, ни к следующему
-        совпавшему процессу). Процессы других профилей и чужие ragent того
-        же снимка вообще не читаются: цикл идёт только по процессам,
-        сопоставленным именно этому профилю.
+        Нечего останавливать — если Job профиля нет или он пуст. Это,
+        в частности, и есть случай ЧУЖОГО `ragent`, совпавшего с профилем
+        по каталогу кластера (решение 4 заказчика 29.08.2026): он виден
+        в статусе, но не наш, Job у него неоткуда взяться, и мы его не
+        трогаем — отказ прямо это и говорит. Пустой Job при отказе
+        освобождается (`_forget_job`): дерево умерло само, держать хендл
+        не за чем.
 
-        T-10, задача 4: успешная остановка пишет в журнал профиля событие
-        `остановка по команде пользователя`; отказ (`ServerStopError`) пишет
-        `отказ остановки: …` ДО `raise` — см. `_terminate_or_raise`.
+        Отказ `close()` (`JobError` — `CloseHandle` вернул ошибку) —
+        `ServerError`; Job при этом ОСТАЁТСЯ в учёте, потому что
+        `ServerJob.close()` на неудаче не теряет хендл (докстринг
+        `platform_1c/job.py`) и `pids()` продолжает отвечать: остатки видны
+        на карточке, попытку можно повторить. Перед `raise` в журнал
+        профиля пишется `отказ остановки: <текст ошибки>` — через
+        `log_event` (глотает свой собственный `OSError`), так что отказ
+        записи журнала не подменяет собой настоящую причину.
         """  # noqa: RUF002
         profile = self._profile_or_raise(profile_id)
-        processes = self._matched_processes(profile)
-        if not processes:
+        job = self._jobs.get(profile_id)
+        pids = self._job_pids(profile_id)
+        if job is None or not pids:
+            self._forget_job(profile_id)  # пустой Job — освободить хендл
             raise ServerError(
-                f"Нечего останавливать — по последнему снимку сервер «{profile.name}» "
-                "не запущен; обновите список процессов и повторите"
+                f"Нечего останавливать — сервер «{profile.name}» не запущен лаунчером "
+                "(процессы, запущенные не лаунчером, не останавливаются)"
             )
-        for proc in processes:
-            kids = self._control.children(proc.pid)
-            self._terminate_or_raise(profile_id, proc.pid, proc.create_time)
-            for kid in kids:
-                self._terminate_or_raise(profile_id, kid.pid, kid.create_time)
+        try:
+            job.close()
+        except JobError as error:
+            stop_error = ServerError(
+                f"Не удалось остановить сервер «{profile.name}»: {error}"  # noqa: RUF001
+            )
+            self.log_event(profile_id, f"отказ остановки: {stop_error}")
+            raise stop_error from error
+        del self._jobs[profile_id]
+        self._spawned.pop(profile_id, None)
         self.log_event(profile_id, "остановка по команде пользователя")
-
-    def stop_orphans(self, profile_id: str) -> None:
-        """Погасить осиротевшие `rmngr` профиля ([Ф] А3) без живого `ragent`.
-
-        Пустой список сирот — не ошибка, а no-op: чаще всего сирот и не
-        было, и вызывающему не нужно проверять `orphan_managers` заранее —
-        и событие в журнал в этом случае не пишется (гасить было нечего).
-        Успешное гашение непустого списка пишет одно событие
-        `гашение сирот: PID …` со всеми завершёнными PID; отказ —
-        `отказ остановки: …` ДО `raise`, см. `_terminate_or_raise`.
-        """  # noqa: RUF002
-        profile = self._profile_or_raise(profile_id)
-        processes = self._matched_processes(profile)
-        orphans = self._orphans_for(profile, processes)
-        for orphan in orphans:
-            self._terminate_or_raise(profile_id, orphan.pid, orphan.create_time)
-        if orphans:
-            pids = ", ".join(str(orphan.pid) for orphan in orphans)
-            self.log_event(profile_id, f"гашение сирот: PID {pids}")
 
     def current_console_version(self) -> VersionNumber | None:
         """Версия консоли, зарегистрированной СЕЙЧАС в реестре; `None` — не зарегистрирована.
@@ -650,7 +783,7 @@ class ServersWorkspace:
         вызов — см. `current_console_version`/`register_console`. `OSError`
         `os.startfile` (файл `.msc` отсутствует, нет ассоциации) переводится
         в `ServerError` (CRITICAL 1c, финальное ревью ветки) — тем же
-        приёмом, что и `start`/`_terminate_or_raise`.
+        приёмом, что и `start`/`_save`.
         """
         path = console_path(root, convention)
         try:
@@ -678,93 +811,67 @@ class ServersWorkspace:
     def _matched_processes(self, profile: ServerProfile) -> tuple[RagentProcess, ...]:
         return self._match.by_profile.get(profile.id, ()) if self._match else ()
 
-    def _terminate_or_raise(
-        self, profile_id: str, pid: int, expected_create_time: float
-    ) -> None:
-        """`control.terminate`, переводящее гонку PID (§6.2) и отказ прав в честный отказ слоя.
+    def _job_pids(self, profile_id: str) -> tuple[int, ...]:
+        """PID всего дерева Job профиля; `()`, если Job у профиля нет.
 
-        `ProcessMismatchError`/`ProcessAccessError` — исключения слоя
-        `platform_1c`, наружу `ServersWorkspace` не выпускает их голыми (тот
-        же довод, что у `errors.py`: вызывающему нечем отличить нашу
-        диагностику от чужой). `ProcessAccessError` (CRITICAL 1b, финальное
-        ревью ветки) — `psutil.AccessDenied` из `PsutilControl.terminate`:
-        процесс, совпавший с профилем по каталогу кластера, но запущенный
-        другим пользователем или как служба, — нам его не завершить.
-
-        T-10, задача 4: перед `raise` в журнал профиля пишется событие
-        `отказ остановки: <текст ServerStopError>` — через `log_event`
-        (глотает свой собственный `OSError`, см. его докстринг), так что
-        отказ записи журнала не подменяет собой настоящий `ServerStopError`.
+        `JobError` (`QueryInformationJobObject` отказал) переводится
+        в `ServerError`: `services` не выпускает наружу голых исключений
+        `platform_1c` — вызывающему нечем отличить нашу диагностику
+        от чужой (докстринг `errors.py`).
         """  # noqa: RUF002
+        job = self._jobs.get(profile_id)
+        if job is None:
+            return ()
         try:
-            self._control.terminate(pid, expected_create_time)
-        except ProcessMismatchError as error:
-            stop_error = ServerStopError(
-                f"PID {pid} переиспользован системой — обновите список процессов "
-                "и повторите"
-            )
-            self.log_event(profile_id, f"отказ остановки: {stop_error}")
-            raise stop_error from error
-        except ProcessAccessError as error:
-            stop_error = ServerStopError(
-                f"PID {pid}: нет прав на завершение — возможно, процесс запущен "
-                "другим пользователем или службой"
-            )
-            self.log_event(profile_id, f"отказ остановки: {stop_error}")
-            raise stop_error from error
+            return job.pids()
+        except JobError as error:
+            raise ServerError(
+                f"Не удалось прочитать процессы сервера: {error}"  # noqa: RUF001
+            ) from error
 
-    def _orphans_for(
+    def _all_job_pids(self) -> set[int]:
+        """Все PID всех наших Job — исключающий набор для `port_holders`.
+
+        Держатель порта, оказавшийся в ЛЮБОМ нашем Job, — не чужой, а наш
+        остаток (спека T-12 §4): о нём карточка говорит своей строкой
+        «остатки прошлого запуска», и предлагать его же как чужого
+        держателя было бы двойным учётом одного факта.
+        """  # noqa: RUF002
+        pids: set[int] = set()
+        for profile_id in self._jobs:
+            pids.update(self._job_pids(profile_id))
+        return pids
+
+    def _forget_job(self, profile_id: str) -> None:
+        """Убрать Job профиля из учёта, закрыв хендл; отказ close — только в лог.
+
+        Зовётся там, где закрывать НЕЧЕГО по существу (Job пуст, дерево
+        умерло само) или профиль уходит из списка: пользователю сообщать
+        не о чем, а хендл держать незачем. Отказ `close()` здесь не может
+        стать отказом операции — сама операция от него не зависит, — поэтому
+        уходит в `_log`, тем же приёмом, что `OSError` в `log_event`.
+        """  # noqa: RUF002
+        job = self._jobs.pop(profile_id, None)
+        self._spawned.pop(profile_id, None)
+        if job is not None:
+            try:
+                job.close()
+            except JobError:
+                _log.warning("не удалось закрыть Job профиля %s", profile_id)
+
+    def _port_holders_for(
         self, profile: ServerProfile, processes: tuple[RagentProcess, ...]
-    ) -> tuple[ProcessInfo, ...]:
-        """rmngr снимка на regport/каталоге профиля при отсутствии его ragent.
+    ) -> tuple[RagentProcess, ...]:
+        """Чужие держатели портов профиля по последнему снимку (спека T-12 §4).
 
-        [Ф] А3, t07-protocol.md: rmngr переживает смерть ragent и продолжает
-        держать порт регистрации — следующий запуск того же профиля молча
-        упадёт на этот порт, если сирота не найдена заранее. У rmngr
-        собственный `-port` равен `-regport` агента, поэтому сравниваем
-        именно так, а не с `-regport` самого rmngr (такого ключа у него
-        может и не быть). Второе условие — совпавший каталог кластера
-        (тот же `-d`, если он у rmngr есть). `argv=None` — процесс
-        непрозрачен ([Ф] В1) и пропускается: сопоставить нечем, придумывать
-        нельзя.
-
-        IMPORTANT 5 (финальное ревью ветки): кандидат исключается из сирот,
-        если его СОБСТВЕННЫЙ `-d` совпадает с каталогом ЛЮБОГО живого агента
-        текущего снимка (`self._snapshot.agents`, не только процессов ЭТОГО
-        профиля) — иначе `-port`-эвристика предлагала бы «Погасить» rmngr
-        живого ЧУЖОГО кластера только потому, что он случайно совпал
-        с нашим `regport` (коллизия портов между профилем и чужим ragent),
-        хотя rmngr принадлежит живому дереву и гасить его нельзя.
+        Пусто до первого снимка и когда у профиля есть совпавший `ragent`:
+        живой `ragent` на нашем каталоге кластера — наш или чужой — уже
+        описан состоянием карточки, и красная строка о занятых портах рядом
+        с ним была бы шумом (порты держит именно он, это нормально).
         """  # noqa: RUF002
         if self._snapshot is None or processes:
             return ()
-        own_dir = normalize_cluster_dir(profile.cluster_dir)
-        live_agent_dirs: set[str] = set()
-        for agent in self._snapshot.agents:
-            if agent.argv is None:
-                continue
-            agent_dir = extract_ragent_params(agent.argv).cluster_dir
-            if agent_dir is not None:
-                live_agent_dirs.add(normalize_cluster_dir(agent_dir))
-        orphans: list[ProcessInfo] = []
-        for manager in self._snapshot.managers:
-            if manager.argv is None:
-                continue
-            params = extract_ragent_params(manager.argv)
-            manager_dir = (
-                normalize_cluster_dir(params.cluster_dir)
-                if params.cluster_dir is not None
-                else None
-            )
-            if manager_dir is not None and manager_dir in live_agent_dirs:
-                # rmngr сидит на каталоге ЖИВОГО агента (не обязательно
-                # нашего профиля) — не сирота, даже если совпал по -port.
-                continue
-            port_matches = params.port == profile.regport
-            dir_matches = manager_dir == own_dir
-            if port_matches or dir_matches:
-                orphans.append(manager)
-        return tuple(orphans)
+        return port_holders(profile, _snapshot_processes(self._snapshot), self._all_job_pids())
 
     def _validate(self, profile: ServerProfile, others: list[ServerProfile]) -> None:
         errors = validate_profile(profile, others, normalize=normalize_cluster_dir)

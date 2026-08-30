@@ -2,6 +2,7 @@
 
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -12,8 +13,7 @@ from onecstarter.domain.launch import LaunchCommand
 from onecstarter.domain.server import ServerConvention, ServerProfile
 from onecstarter.domain.version import Arch, Installation, parse_version
 from onecstarter.platform_1c.elevation import ElevationDeclinedError
-from onecstarter.platform_1c.job import JobError
-from onecstarter.platform_1c.process_control import ProcessAccessError, ProcessMismatchError
+from onecstarter.platform_1c.job import Job, JobError
 from onecstarter.platform_1c.process_scan import ProcessInfo
 from onecstarter.platform_1c.server_discovery import ServerInstallation, console_path
 from onecstarter.services import server_journal
@@ -21,7 +21,6 @@ from onecstarter.services.errors import (
     ConsoleRegistrationDeclinedError,
     ConsoleRegistrationError,
     ServerError,
-    ServerStopError,
     UnknownItemError,
 )
 from onecstarter.services.server_store import load_profiles
@@ -33,59 +32,68 @@ CONV = ServerConvention(
 
 
 @dataclass
-class FakeControl:
-    """ProcessControl с детьми по словарю `pid -> [ProcessInfo]` и журналом вызовов.
+class FakeJob:
+    """Job с управляемым списком PID (T-12): `pids_value` — что «живёт» в Job;
+    `close()` опустошает список и ставит `closed`; `close_error` — `JobError`,
+    который поднимает `close()` вместо закрытия."""  # noqa: RUF002
 
-    `mismatched` — pid-ы, на которых `terminate` кидает `ProcessMismatchError`
-    (гонка PID, §6.2) вместо обычного успеха. `access_denied` — pid-ы, на
-    которых `terminate` кидает `ProcessAccessError` (CRITICAL 1b, финальное
-    ревью ветки: `psutil.AccessDenied` — процесс другого пользователя или
-    службы). Запись в `calls` для `terminate` добавляется ДО проверки на
-    несовпадение/отказ прав — так тест видит, что попытка была (ровно одна),
-    а не просто отсутствие последствий.
-    """  # noqa: RUF002
+    pids_value: tuple[int, ...] = ()
+    closed: bool = False
+    close_error: JobError | None = None
+    assigned: list[int] = field(default_factory=list)
 
-    children_map: dict[int, list[ProcessInfo]] = field(default_factory=dict)
-    mismatched: frozenset[int] = field(default_factory=frozenset)
-    access_denied: frozenset[int] = field(default_factory=frozenset)
-    calls: list[tuple[str, int]] = field(default_factory=list)
+    def assign(self, process_handle: int) -> None:
+        self.assigned.append(process_handle)
 
-    def children(self, pid: int) -> list[ProcessInfo]:
-        self.calls.append(("children", pid))
-        return list(self.children_map.get(pid, []))
+    def pids(self) -> tuple[int, ...]:
+        return () if self.closed else self.pids_value
 
-    def terminate(self, pid: int, expected_create_time: float) -> None:
-        self.calls.append(("terminate", pid))
-        if pid in self.mismatched:
-            raise ProcessMismatchError(
-                f"pid {pid}: create_time не совпадает с ожидаемым — PID переиспользован"  # noqa: RUF001
-            )
-        if pid in self.access_denied:
-            raise ProcessAccessError(f"pid {pid}: нет прав на завершение процесса")
+    def close(self) -> None:
+        if self.close_error is not None:
+            raise self.close_error
+        self.closed = True
+
+    def is_empty(self) -> bool:
+        return not self.pids()
+
+
+@dataclass
+class FakeJobFactory:
+    """`job_factory`: новый пустой `FakeJob` на каждый вызов, все созданные — в `created`."""
+
+    created: list[FakeJob] = field(default_factory=list)
+
+    def __call__(self) -> FakeJob:
+        job = FakeJob()
+        self.created.append(job)
+        return job
 
 
 @dataclass
 class FakeServerSpawn:
-    """Журнал `(command_line, log_path)`, с которыми звали `server_spawn`; отдаёт `pid`.
+    """Журнал вызовов `server_spawn` (T-12: третий аргумент — Job запуска).
 
-    Сигнатура — `Callable[[LaunchCommand, Path], int]` (T-10, задача 4):
-    журнал хранит `command.command_line` (строку), а не сам `LaunchCommand`
-    — так тест сравнивает байт-в-байт собранную командную строку, не завися
-    от идентичности объекта. `error`, если задан, — исключение, которое
-    `__call__` поднимает вместо возврата `pid`: `OSError` (CRITICAL 1a,
-    финальное ревью ветки T-08 — обязан переводиться в `ServerError`) или
-    `JobError` (T-10, задача 2 — отказ `job.assign()` внутри `spawn_server`,
-    тот же перевод), тот же приём, что `FakeRunElevated`.
+    Как настоящий `spawn_server`, кладёт «порождённый» `pid` в переданный
+    `FakeJob` — после успешного вызова `job.pids()` содержит `pid`.
+    `probe`, если задан, вызывается В МОМЕНТ spawn, результат — в `probed`:
+    так тест проверяет состояние мира (например, «старый Job уже закрыт»)
+    именно на границе порождения, а не после возврата из `start()`.
     """  # noqa: RUF002
 
     pid: int = 4242
     error: Exception | None = None
-    calls: list[tuple[str, Path]] = field(default_factory=list)
+    probe: Callable[[], object] | None = None
+    calls: list[tuple[str, Path, Job]] = field(default_factory=list)
+    probed: list[object] = field(default_factory=list)
 
-    def __call__(self, command: LaunchCommand, log_path: Path) -> int:
-        self.calls.append((command.command_line, log_path))
+    def __call__(self, command: LaunchCommand, log_path: Path, job: Job) -> int:
+        self.calls.append((command.command_line, log_path, job))
+        if self.probe is not None:
+            self.probed.append(self.probe())
         if self.error is not None:
             raise self.error
+        if isinstance(job, FakeJob):
+            job.pids_value = (*job.pids_value, self.pid)
         return self.pid
 
 
@@ -95,7 +103,7 @@ class FakeRunElevated:
 
     `exit_code` — что вернуть при успехе; `error`, если задан, — исключение,
     которое `__call__` поднимает вместо возврата (имитация отказа UAC через
-    `ElevationDeclinedError`, тот же приём, что `FakeControl.terminate`).
+    `ElevationDeclinedError`, тот же приём, что `FakeServerSpawn.__call__`).
     """  # noqa: RUF002
 
     exit_code: int = 0
@@ -138,6 +146,12 @@ def _server_installation(
     )
 
 
+def _installation_in(tmp_path: Path) -> ServerInstallation:
+    return _server_installation(
+        "8.3.25.1633", tmp_path / "1cv8" / "8.3.25.1633" / "bin" / "ragent.exe"
+    )
+
+
 def _profile(**overrides: object) -> ServerProfile:
     values: dict[str, str | int | bool] = {
         "id": "",
@@ -156,7 +170,7 @@ def _profile(**overrides: object) -> ServerProfile:
 def _workspace(
     store_path: Path,
     new_id: object = None,
-    control: object = None,
+    job_factory: object = None,
     server_spawn: object = None,
     logs_dir: object = None,
     run_elevated: object = None,
@@ -165,7 +179,7 @@ def _workspace(
     now: object = None,
 ) -> ServersWorkspace:
     kwargs: dict[str, object] = {
-        "control": control if control is not None else FakeControl(),
+        "job_factory": job_factory if job_factory is not None else FakeJobFactory(),
         "server_spawn": server_spawn if server_spawn is not None else FakeServerSpawn(),
         "logs_dir": logs_dir if logs_dir is not None else store_path.parent / "logs",
     }
@@ -512,7 +526,8 @@ class TestScanPending:
         status = workspace.statuses([parse_version("8.3.25.1633")])[0]
 
         assert status.processes == ()
-        assert status.orphans == ()
+        assert status.port_holders == ()
+        assert status.job_pids == ()
         assert workspace.foreign_servers() == []
 
 
@@ -594,126 +609,6 @@ class TestForeignServers:
         assert foreign[201].params is None
 
 
-class TestOrphanManagers:
-    def test_orphan_manager_is_reported(self, tmp_path: Path) -> None:
-        """ЗАЩИТНЫЙ ТЕСТ.
-
-        rmngr, сидящий на regport профиля, без живого ragent обязан попасть
-        в orphans — иначе следующий запуск того же профиля молча умрёт
-        об уже занятый порт ([Ф] А3, t07-protocol.md).
-        """  # noqa: RUF002
-        store_path = tmp_path / "servers.json"
-        workspace = _workspace(store_path, new_id=lambda: "n" * 32)
-        workspace.add_profile(_profile())  # regport=1541
-        profile = workspace.profiles()[0]
-        manager = _manager(300, ("rmngr.exe", "-port", "1541"))
-
-        workspace.apply_scan(ScanSnapshot(agents=(), managers=(manager,)))
-        status = workspace.statuses([parse_version("8.3.25.1633")])[0]
-
-        assert [o.pid for o in status.orphans] == [300]
-        assert [o.pid for o in workspace.orphan_managers(profile.id)] == [300]
-
-    def test_orphan_managers_unknown_profile_raises(self, tmp_path: Path) -> None:
-        """Неизвестный `profile_id` — явный отказ, а не тихий `[]`.
-
-        Манера слоя services — `Workspace.find_by_name`/`_item`: тихая пустота
-        замаскировала бы программную ошибку вызывающего под честное «сирот
-        нет».
-        """  # noqa: RUF002
-        workspace = _workspace(tmp_path / "servers.json")
-        with pytest.raises(UnknownItemError):
-            workspace.orphan_managers("ghost" * 6)
-
-    def test_orphan_manager_matched_by_cluster_dir(self, tmp_path: Path) -> None:
-        store_path = tmp_path / "servers.json"
-        workspace = _workspace(store_path, new_id=lambda: "o" * 32)
-        workspace.add_profile(_profile())
-        profile = workspace.profiles()[0]
-        # Порт rmngr здесь не совпадает ни с чем — совпасть обязан каталог кластера.  # noqa: RUF003
-        manager = _manager(400, ("rmngr.exe", "-port", "9999", "-d", profile.cluster_dir))
-
-        workspace.apply_scan(ScanSnapshot(agents=(), managers=(manager,)))
-        status = workspace.statuses([parse_version("8.3.25.1633")])[0]
-
-        assert [o.pid for o in status.orphans] == [400]
-
-    def test_orphan_not_reported_when_agent_is_running(self, tmp_path: Path) -> None:
-        store_path = tmp_path / "servers.json"
-        workspace = _workspace(store_path, new_id=lambda: "p" * 32)
-        workspace.add_profile(_profile())
-        profile = workspace.profiles()[0]
-        agent = _agent(
-            500,
-            ("ragent.exe", "-port", "1540", "-regport", "1541", "-d", profile.cluster_dir),
-        )
-        manager = _manager(501, ("rmngr.exe", "-port", "1541"))
-
-        workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=(manager,)))
-        status = workspace.statuses([parse_version("8.3.25.1633")])[0]
-
-        assert status.orphans == ()
-
-    def test_manager_with_none_argv_is_skipped(self, tmp_path: Path) -> None:
-        store_path = tmp_path / "servers.json"
-        workspace = _workspace(store_path, new_id=lambda: "q" * 32)
-        workspace.add_profile(_profile())
-        manager = _manager(600, None)
-
-        workspace.apply_scan(ScanSnapshot(agents=(), managers=(manager,)))
-        status = workspace.statuses([parse_version("8.3.25.1633")])[0]
-
-        assert status.orphans == ()
-
-    def test_orphan_excluded_when_it_sits_on_a_live_foreign_agents_directory(
-        self, tmp_path: Path
-    ) -> None:
-        """ЗАЩИТНЫЙ ТЕСТ.
-
-        IMPORTANT 5 финального ревью: rmngr на НАШЕМ `regport`, чей `-d`
-        указывает на каталог ЖИВОГО чужого ragent того же снимка, не
-        сирота — он держит порт живого чужого кластера, а не забытый порт
-        нашего профиля. Раньше `-port`-эвристика предложила бы «Погасить»
-        такой rmngr только из-за коллизии портов, убив часть чужого
-        работающего дерева.
-        Мутация: убрать проверку `live_agent_dirs` в `_orphans_for` — тест
-        обязан упасть (rmngr снова попадёт в orphans).
-        """  # noqa: RUF002
-        store_path = tmp_path / "servers.json"
-        workspace = _workspace(store_path, new_id=lambda: "gg" * 16)
-        workspace.add_profile(_profile())  # regport=1541
-        foreign_dir = r"D:\foreign\cluster"
-        foreign_agent = _agent(700, ("ragent.exe", "-port", "9999", "-d", foreign_dir))
-        candidate = _manager(701, ("rmngr.exe", "-port", "1541", "-d", foreign_dir))
-
-        workspace.apply_scan(ScanSnapshot(agents=(foreign_agent,), managers=(candidate,)))
-        status = workspace.statuses([parse_version("8.3.25.1633")])[0]
-
-        assert status.orphans == ()
-
-    def test_regression_a3_orphan_still_reported_without_live_agents(
-        self, tmp_path: Path
-    ) -> None:
-        """Регресс-контроль IMPORTANT 5: измеренный сирота А3 остаётся сиротой.
-
-        rmngr на нашем `regport`, без `-d` вовсе, и БЕЗ живых агентов
-        в снимке — сценарий А3 (t07-protocol.md): `ragent` на занятом
-        порту умер, `rmngr` остался сиротой. Новая проверка «живых
-        каталогов» не должна поглотить этот случай — при пустом
-        `self._snapshot.agents` `live_agent_dirs` пуст, и старая
-        `-port`-эвристика обязана сработать как раньше.
-        """  # noqa: RUF002
-        store_path = tmp_path / "servers.json"
-        workspace = _workspace(store_path, new_id=lambda: "hh" * 16)
-        workspace.add_profile(_profile())  # regport=1541
-        manager = _manager(702, ("rmngr.exe", "-port", "1541"))
-
-        workspace.apply_scan(ScanSnapshot(agents=(), managers=(manager,)))
-        status = workspace.statuses([parse_version("8.3.25.1633")])[0]
-
-        assert [o.pid for o in status.orphans] == [702]
-
-
 class TestDirMismatch:
     def test_true_when_leaf_dir_version_differs_from_resolved(self, tmp_path: Path) -> None:
         store_path = tmp_path / "servers.json"
@@ -766,7 +661,7 @@ class TestStart:
 
         assert pid == 4242
         assert len(spawn.calls) == 1
-        command_line, log_path = spawn.calls[0]
+        command_line, log_path, _job = spawn.calls[0]
         assert command_line == (
             f'"{ragent}" -debug -http -port 1540 -regport 1541 '
             r"-range 1560:1591 -d E:\srv\srv_8.3.25.1633"
@@ -809,11 +704,9 @@ class TestStart:
         profile = workspace.profiles()[0]
         agent = _agent(700, ("ragent.exe", "-port", "1540", "-d", profile.cluster_dir))
         workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
-        ragent = tmp_path / "1cv8" / "8.3.25.1633" / "bin" / "ragent.exe"
-        installation = _server_installation("8.3.25.1633", ragent)
 
         with pytest.raises(ServerError):
-            workspace.start(profile.id, [installation])
+            workspace.start(profile.id, [_installation_in(tmp_path)])
 
         assert spawn.calls == []
 
@@ -853,11 +746,9 @@ class TestStart:
         workspace = _workspace(store_path, new_id=lambda: "bc" * 16, server_spawn=spawn)
         workspace.add_profile(_profile())
         profile = workspace.profiles()[0]
-        ragent = tmp_path / "1cv8" / "8.3.25.1633" / "bin" / "ragent.exe"
-        installation = _server_installation("8.3.25.1633", ragent)
 
         with pytest.raises(ServerError) as excinfo:
-            workspace.start(profile.id, [installation])
+            workspace.start(profile.id, [_installation_in(tmp_path)])
 
         assert "AssignProcessToJobObject" in str(excinfo.value)
 
@@ -987,15 +878,341 @@ class TestStart:
         )
         workspace.add_profile(_profile())
         profile = workspace.profiles()[0]
-        ragent = tmp_path / "1cv8" / "8.3.25.1633" / "bin" / "ragent.exe"
-        installation = _server_installation("8.3.25.1633", ragent)
 
         with pytest.raises(ServerError):
-            workspace.start(profile.id, [installation])
+            workspace.start(profile.id, [_installation_in(tmp_path)])
 
         content = server_journal.journal_path(logs_dir, profile.id).read_text(encoding="utf-8")
         assert "отказ запуска" in content
         assert "не удалось создать процесс" in content
+
+
+class TestStartWithJob:
+    def test_start_creates_a_job_per_launch_and_records_spawned_pid(self, tmp_path: Path) -> None:
+        factory = FakeJobFactory()
+        spawn = FakeServerSpawn(pid=4242)
+        workspace = _workspace(tmp_path / "servers.json", new_id=lambda: "ja" * 16,
+                               job_factory=factory, server_spawn=spawn)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+
+        pid = workspace.start(profile.id, [_installation_in(tmp_path)])
+
+        assert pid == 4242
+        assert len(factory.created) == 1
+        assert spawn.calls[0][2] is factory.created[0]
+        status = workspace.statuses([])[0]
+        assert status.job_pids == (4242,)
+        assert status.spawned_pid == 4242
+        assert workspace.running_count() == 1
+
+    def test_start_refuses_while_own_ragent_is_alive_in_job(self, tmp_path: Path) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ: истина о нашем ragent — Job, не снимок (спека T-12 §3).
+
+        Второй `start()` сразу после первого (снимка ещё не было) обязан
+        отказать по `spawned_pid in job.pids()`, не порождая второй ragent.
+        Мутация: убрать проверку живого ragent в Job — тест обязан упасть
+        (второй spawn состоится).
+        """  # noqa: RUF002
+        factory = FakeJobFactory()
+        spawn = FakeServerSpawn(pid=4242)
+        workspace = _workspace(tmp_path / "servers.json", new_id=lambda: "jb" * 16,
+                               job_factory=factory, server_spawn=spawn)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        installation = _installation_in(tmp_path)
+        workspace.start(profile.id, [installation])
+
+        with pytest.raises(ServerError) as excinfo:
+            workspace.start(profile.id, [installation])
+
+        assert "4242" in str(excinfo.value)
+        assert len(spawn.calls) == 1
+        assert len(factory.created) == 1
+
+    def test_start_with_remnants_closes_old_job_before_spawn_and_logs(self, tmp_path: Path) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ: решение 2 (29.08.2026) — «Запустить» при остатках
+        прошлого дерева гасит их САМ (закрывает старый Job) ДО spawn и пишет
+        `погашены остатки прошлого запуска: PID …`.
+        Мутация: перенести `old_job.close()` после `server_spawn` (или убрать) —
+        `spawn.probed[0]` станет `False`.
+        """  # noqa: RUF002
+        factory = FakeJobFactory()
+        logs_dir = tmp_path / "logs"
+        spawn = FakeServerSpawn(pid=4242)
+        workspace = _workspace(tmp_path / "servers.json", new_id=lambda: "jc" * 16,
+                               job_factory=factory, server_spawn=spawn, logs_dir=logs_dir)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        installation = _installation_in(tmp_path)
+        workspace.start(profile.id, [installation])
+        old = factory.created[0]
+        old.pids_value = (4300, 4301)  # ragent 4242 снят извне, дети остались
+        spawn.pid = 4343
+        spawn.probe = lambda: old.closed
+
+        pid = workspace.start(profile.id, [installation])
+
+        assert pid == 4343
+        assert spawn.probed == [True]
+        assert spawn.calls[1][2] is factory.created[1]
+        content = server_journal.journal_path(logs_dir, profile.id).read_text(encoding="utf-8")
+        assert "погашены остатки прошлого запуска: PID 4300, 4301" in content
+        assert content.index("погашены остатки") < content.index("запуск:")
+        status = workspace.statuses([])[0]
+        assert status.job_pids == (4343,)
+        assert status.spawned_pid == 4343
+
+    def test_start_refuses_when_a_foreign_process_holds_the_profile_port(
+        self, tmp_path: Path
+    ) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ: чужой держатель порта (спека T-12 §4) — отказ ДО
+        ротации и spawn, событие `отказ запуска: порт регистрации …`.
+        Мутация: убрать проверку `port_holders` в `start` — тест обязан упасть
+        (spawn состоится, прошлый журнал уедет в `.1.log`).
+        """  # noqa: RUF002
+        factory = FakeJobFactory()
+        logs_dir = tmp_path / "logs"
+        spawn = FakeServerSpawn()
+        workspace = _workspace(tmp_path / "servers.json", new_id=lambda: "jd" * 16,
+                               job_factory=factory, server_spawn=spawn, logs_dir=logs_dir)
+        workspace.add_profile(_profile())  # regport=1541
+        profile = workspace.profiles()[0]
+        current = server_journal.journal_path(logs_dir, profile.id)
+        current.parent.mkdir(parents=True, exist_ok=True)
+        current.write_text("прошлый запуск\n", encoding="utf-8")
+        holder = _manager(300, ("rmngr.exe", "-port", "1541"))
+        workspace.apply_scan(ScanSnapshot(agents=(), managers=(holder,)))
+
+        with pytest.raises(ServerError) as excinfo:
+            workspace.start(profile.id, [_installation_in(tmp_path)])
+
+        expected = "порт регистрации 1541 занят PID 300 (запущен не лаунчером)"
+        assert expected in str(excinfo.value)
+        assert spawn.calls == []
+        assert factory.created == []
+        assert not server_journal.previous_journal_path(logs_dir, profile.id).exists()
+        content = current.read_text(encoding="utf-8")
+        assert "прошлый запуск" in content
+        assert f"отказ запуска: {expected}" in content
+
+    def test_start_does_not_treat_own_remnants_as_port_holders(self, tmp_path: Path) -> None:
+        """Остаток НАШЕГО дерева (PID в нашем Job) в снимке с нашим regport —
+        не чужой держатель: запуск проходит, остатки гасятся (решение 2)."""  # noqa: RUF002
+        factory = FakeJobFactory()
+        spawn = FakeServerSpawn(pid=4242)
+        workspace = _workspace(tmp_path / "servers.json", new_id=lambda: "je" * 16,
+                               job_factory=factory, server_spawn=spawn)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        installation = _installation_in(tmp_path)
+        workspace.start(profile.id, [installation])
+        factory.created[0].pids_value = (4300,)
+        remnant = _manager(4300, ("rmngr.exe", "-port", "1541"))
+        workspace.apply_scan(ScanSnapshot(agents=(), managers=(remnant,)))
+        assert workspace.port_holders(profile.id) == []
+
+        workspace.start(profile.id, [installation])
+
+        assert factory.created[0].closed is True
+        assert len(spawn.calls) == 2
+
+    def test_start_spawn_failure_closes_the_fresh_job_and_forgets_it(self, tmp_path: Path) -> None:
+        factory = FakeJobFactory()
+        spawn = FakeServerSpawn(error=OSError("не удалось создать процесс"))
+        workspace = _workspace(tmp_path / "servers.json", new_id=lambda: "jf" * 16,
+                               job_factory=factory, server_spawn=spawn)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+
+        with pytest.raises(ServerError):
+            workspace.start(profile.id, [_installation_in(tmp_path)])
+
+        assert factory.created[0].closed is True
+        assert workspace.statuses([])[0].job_pids == ()
+        assert workspace.running_count() == 0
+
+    def test_start_reports_failed_remnant_close_and_keeps_remnants(self, tmp_path: Path) -> None:
+        factory = FakeJobFactory()
+        logs_dir = tmp_path / "logs"
+        spawn = FakeServerSpawn(pid=4242)
+        workspace = _workspace(tmp_path / "servers.json", new_id=lambda: "jg" * 16,
+                               job_factory=factory, server_spawn=spawn, logs_dir=logs_dir)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        installation = _installation_in(tmp_path)
+        workspace.start(profile.id, [installation])
+        old = factory.created[0]
+        old.pids_value = (4300,)
+        old.close_error = JobError("CloseHandle отказал")
+
+        with pytest.raises(ServerError) as excinfo:
+            workspace.start(profile.id, [installation])
+
+        assert "CloseHandle отказал" in str(excinfo.value)
+        assert len(spawn.calls) == 1
+        assert workspace.statuses([])[0].job_pids == (4300,)
+        content = server_journal.journal_path(logs_dir, profile.id).read_text(encoding="utf-8")
+        assert "отказ запуска: не удалось погасить остатки прошлого запуска" in content
+
+
+class TestStopWithJob:
+    def test_stop_closes_only_this_profiles_job(self, tmp_path: Path) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ: `stop()` закрывает Job ИМЕННО этого профиля; сосед
+        жив. Мутация: закрывать все Job — тест обязан упасть.
+        """  # noqa: RUF002
+        factory = FakeJobFactory()
+        logs_dir = tmp_path / "logs"
+        ids = iter(["ka" * 16, "kb" * 16])
+        spawn = FakeServerSpawn(pid=4242)
+        workspace = _workspace(tmp_path / "servers.json", new_id=lambda: next(ids),
+                               job_factory=factory, server_spawn=spawn, logs_dir=logs_dir)
+        workspace.add_profile(_profile())
+        workspace.add_profile(
+            _profile(name="сосед", port=2540, regport=2541, cluster_dir=r"E:\srv\other")
+        )
+        first, second = workspace.profiles()
+        installation = _installation_in(tmp_path)
+        workspace.start(first.id, [installation])
+        spawn.pid = 4343
+        workspace.start(second.id, [installation])
+
+        workspace.stop(first.id)
+
+        assert factory.created[0].closed is True
+        assert factory.created[1].closed is False
+        statuses = {s.profile.id: s for s in workspace.statuses([])}
+        assert statuses[first.id].job_pids == ()
+        assert statuses[first.id].spawned_pid is None
+        assert statuses[second.id].job_pids == (4343,)
+        content = server_journal.journal_path(logs_dir, first.id).read_text(encoding="utf-8")
+        assert "остановка по команде пользователя" in content
+
+    def test_stop_without_job_raises(self, tmp_path: Path) -> None:
+        workspace = _workspace(tmp_path / "servers.json", new_id=lambda: "kc" * 16)
+        workspace.add_profile(_profile())
+        with pytest.raises(ServerError):
+            workspace.stop(workspace.profiles()[0].id)
+
+    def test_stop_ignores_a_foreign_matched_ragent(self, tmp_path: Path) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ: решение 4 — совпавший по каталогу ЧУЖОЙ ragent не
+        останавливается: Job нет → `ServerError`, ни одного Job не создано.
+        Мутация: вернуть остановку по совпавшим процессам снимка — упадёт.
+        """  # noqa: RUF002
+        factory = FakeJobFactory()
+        workspace = _workspace(
+            tmp_path / "servers.json", new_id=lambda: "kd" * 16, job_factory=factory
+        )
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        agent = _agent(700, ("ragent.exe", "-port", "1540", "-d", profile.cluster_dir))
+        workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
+
+        with pytest.raises(ServerError):
+            workspace.stop(profile.id)
+
+        assert factory.created == []
+
+    def test_stop_with_empty_job_raises_and_forgets_it(self, tmp_path: Path) -> None:
+        factory = FakeJobFactory()
+        spawn = FakeServerSpawn(pid=4242)
+        workspace = _workspace(tmp_path / "servers.json", new_id=lambda: "ke" * 16,
+                               job_factory=factory, server_spawn=spawn)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        workspace.start(profile.id, [_installation_in(tmp_path)])
+        factory.created[0].pids_value = ()  # дерево умерло целиком
+
+        with pytest.raises(ServerError):
+            workspace.stop(profile.id)
+
+        assert factory.created[0].closed is True
+        assert workspace.running_count() == 0
+
+    def test_stop_close_failure_logs_refusal_and_raises_server_error(self, tmp_path: Path) -> None:
+        factory = FakeJobFactory()
+        logs_dir = tmp_path / "logs"
+        spawn = FakeServerSpawn(pid=4242)
+        workspace = _workspace(tmp_path / "servers.json", new_id=lambda: "kf" * 16,
+                               job_factory=factory, server_spawn=spawn, logs_dir=logs_dir)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        workspace.start(profile.id, [_installation_in(tmp_path)])
+        factory.created[0].close_error = JobError("CloseHandle отказал")
+
+        with pytest.raises(ServerError):
+            workspace.stop(profile.id)
+
+        content = server_journal.journal_path(logs_dir, profile.id).read_text(encoding="utf-8")
+        assert "отказ остановки" in content
+        assert "CloseHandle отказал" in content
+        assert workspace.statuses([])[0].job_pids == (4242,)  # Job остался — остатки видны
+
+
+class TestRemoveProfileStopsJob:
+    def test_remove_running_profile_closes_its_job(self, tmp_path: Path) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ: решение 3 — удаление работающего профиля = остановка.
+        Мутация: убрать `stop()` из `remove_profile` — Job останется открытым.
+        """  # noqa: RUF002
+        factory = FakeJobFactory()
+        spawn = FakeServerSpawn(pid=4242)
+        workspace = _workspace(tmp_path / "servers.json", new_id=lambda: "la" * 16,
+                               job_factory=factory, server_spawn=spawn)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        workspace.start(profile.id, [_installation_in(tmp_path)])
+
+        workspace.remove_profile(profile.id)
+
+        assert factory.created[0].closed is True
+        assert workspace.profiles() == []
+        assert workspace.running_count() == 0
+
+    def test_remove_profile_keeps_it_when_job_close_fails(self, tmp_path: Path) -> None:
+        factory = FakeJobFactory()
+        spawn = FakeServerSpawn(pid=4242)
+        workspace = _workspace(tmp_path / "servers.json", new_id=lambda: "lb" * 16,
+                               job_factory=factory, server_spawn=spawn)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        workspace.start(profile.id, [_installation_in(tmp_path)])
+        factory.created[0].close_error = JobError("CloseHandle отказал")
+
+        with pytest.raises(ServerError):
+            workspace.remove_profile(profile.id)
+
+        assert [p.id for p in workspace.profiles()] == [profile.id]
+
+
+class TestPortHoldersInWorkspace:
+    def test_empty_before_scan(self, tmp_path: Path) -> None:
+        workspace = _workspace(tmp_path / "servers.json", new_id=lambda: "ma" * 16)
+        workspace.add_profile(_profile())
+        assert workspace.port_holders(workspace.profiles()[0].id) == []
+
+    def test_foreign_rmngr_on_regport_is_a_holder(self, tmp_path: Path) -> None:
+        workspace = _workspace(tmp_path / "servers.json", new_id=lambda: "mb" * 16)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        holder = _manager(300, ("rmngr.exe", "-port", "1541"))
+        workspace.apply_scan(ScanSnapshot(agents=(), managers=(holder,)))
+        assert [h.pid for h in workspace.port_holders(profile.id)] == [300]
+        assert [h.pid for h in workspace.statuses([])[0].port_holders] == [300]
+
+    def test_holders_suppressed_while_a_matched_ragent_is_alive(self, tmp_path: Path) -> None:
+        workspace = _workspace(tmp_path / "servers.json", new_id=lambda: "mc" * 16)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        agent = _agent(
+            700, ("ragent.exe", "-port", "1540", "-regport", "1541", "-d", profile.cluster_dir)
+        )
+        manager = _manager(701, ("rmngr.exe", "-port", "1541"))
+        workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=(manager,)))
+        assert workspace.port_holders(profile.id) == []
+
+    def test_unknown_profile_raises(self, tmp_path: Path) -> None:
+        with pytest.raises(UnknownItemError):
+            _workspace(tmp_path / "servers.json").port_holders("ghost" * 6)
 
 
 class TestStop:
@@ -1004,239 +1221,21 @@ class TestStop:
         with pytest.raises(UnknownItemError):
             workspace.stop("ghost" * 6)
 
-    def test_stop_without_snapshot_raises(self, tmp_path: Path) -> None:
-        store_path = tmp_path / "servers.json"
-        workspace = _workspace(store_path, new_id=lambda: "x" * 32)
-        workspace.add_profile(_profile())
-        profile = workspace.profiles()[0]
-
-        with pytest.raises(ServerError):
-            workspace.stop(profile.id)
-
-    def test_stop_without_matched_process_raises(self, tmp_path: Path) -> None:
-        store_path = tmp_path / "servers.json"
-        workspace = _workspace(store_path, new_id=lambda: "y" * 32)
-        workspace.add_profile(_profile())
-        profile = workspace.profiles()[0]
-        workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
-
-        with pytest.raises(ServerError):
-            workspace.stop(profile.id)
-
-    def test_stop_kills_exactly_matched_pid_and_children(self, tmp_path: Path) -> None:
-        """ЗАЩИТНЫЙ ТЕСТ.
-
-        [Ф] Б2: `TerminateProcess` не убивает детей — дерево обязано
-        гаситься целиком. Проверяем и состав (ровно PID профиля + его
-        дети из `children()`, чужой ragent из того же снимка не тронут),
-        и порядок (снимок детей ДО убийства родителя — иначе можно
-        упустить ребёнка, порождённого между снимком и `terminate`).
-        Мутация: поменять местами вызовы `children()`/`terminate()`
-        или тронуть чужой PID — тест обязан упасть.
-        """  # noqa: RUF002
-        store_path = tmp_path / "servers.json"
-        agent_pid = 800
-        child = ProcessInfo(
-            pid=801, name="rmngr.exe", executable=None, argv=None, create_time=555.0
-        )
-        control = FakeControl(children_map={agent_pid: [child]})
-        workspace = _workspace(store_path, new_id=lambda: "z" * 32, control=control)
-        workspace.add_profile(_profile())
-        profile = workspace.profiles()[0]
-        agent = _agent(agent_pid, ("ragent.exe", "-port", "1540", "-d", profile.cluster_dir))
-        # Чужой ragent того же снимка — другой каталог, профилю не сопоставлен.
-        foreign = _agent(900, ("ragent.exe", "-port", "9999", "-d", r"D:\other\cluster"))
-        workspace.apply_scan(ScanSnapshot(agents=(agent, foreign), managers=()))
-
-        workspace.stop(profile.id)
-
-        assert control.calls == [
-            ("children", agent_pid),
-            ("terminate", agent_pid),
-            ("terminate", child.pid),
-        ]
-
-    def test_stop_mismatched_create_time_raises_and_kills_nobody(self, tmp_path: Path) -> None:
-        """ЗАЩИТНЫЙ ТЕСТ.
-
-        §6.2, гонка PID: `create_time` агента разошёлся со снимком — PID
-        переиспользован системой. `ServerStopError`, не завершение чужого
-        процесса; терминация агента упала ДО детей, поэтому реальных
-        убийств — ровно 0, и журнал `terminate` содержит только одну
-        (неудавшуюся) попытку — по агенту, дети вообще не тронуты.
-        Мутация: заменить `raise` на `pass`/`continue` в обработчике
-        `ProcessMismatchError` — тест обязан упасть.
-        """  # noqa: RUF002
-        store_path = tmp_path / "servers.json"
-        agent_pid = 850
-        child = ProcessInfo(
-            pid=851, name="rmngr.exe", executable=None, argv=None, create_time=555.0
-        )
-        control = FakeControl(
-            children_map={agent_pid: [child]}, mismatched=frozenset({agent_pid})
-        )
-        workspace = _workspace(store_path, new_id=lambda: "aa" * 16, control=control)
-        workspace.add_profile(_profile())
-        profile = workspace.profiles()[0]
-        agent = _agent(agent_pid, ("ragent.exe", "-port", "1540", "-d", profile.cluster_dir))
-        workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
-
-        with pytest.raises(ServerStopError):
-            workspace.stop(profile.id)
-
-        assert control.calls == [("children", agent_pid), ("terminate", agent_pid)]
-
-    def test_stop_mismatched_child_also_raises_honestly(self, tmp_path: Path) -> None:
-        """Ребёнок, а не агент, попал под гонку PID — тоже честный отказ.
-
-        Спека: несовпадение `create_time` ребёнка тоже обязано дойти до
-        вызывающего как `ServerStopError`, а не проглатываться молча —
-        иначе пользователь решит, что дерево остановлено целиком, хотя
-        часть его жива.
-        """  # noqa: RUF002
-        store_path = tmp_path / "servers.json"
-        agent_pid = 860
-        child = ProcessInfo(
-            pid=861, name="rmngr.exe", executable=None, argv=None, create_time=555.0
-        )
-        control = FakeControl(
-            children_map={agent_pid: [child]}, mismatched=frozenset({child.pid})
-        )
-        workspace = _workspace(store_path, new_id=lambda: "bb" * 16, control=control)
-        workspace.add_profile(_profile())
-        profile = workspace.profiles()[0]
-        agent = _agent(agent_pid, ("ragent.exe", "-port", "1540", "-d", profile.cluster_dir))
-        workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
-
-        with pytest.raises(ServerStopError):
-            workspace.stop(profile.id)
-
-        # Агент успел завершиться (не в mismatched), ребёнок — нет.
-        assert control.calls == [
-            ("children", agent_pid),
-            ("terminate", agent_pid),
-            ("terminate", child.pid),
-        ]
-
-    def test_stop_access_denied_raises_server_stop_error(self, tmp_path: Path) -> None:
-        """ЗАЩИТНЫЙ ТЕСТ.
-
-        CRITICAL 1b финального ревью: `ProcessAccessError` (перевод
-        `psutil.AccessDenied` из `PsutilControl.terminate`, процесс другого
-        пользователя или службы) обязан переводиться в `ServerStopError`
-        слоя `services`, а не всплывать голым исключением `platform_1c` мимо
-        `ServicesError`-ловцов UI.
-        Мутация: убрать `except ProcessAccessError` из `_terminate_or_raise` —
-        тест обязан упасть непойманным `ProcessAccessError`.
-        """  # noqa: RUF002
-        store_path = tmp_path / "servers.json"
-        agent_pid = 870
-        control = FakeControl(access_denied=frozenset({agent_pid}))
-        workspace = _workspace(store_path, new_id=lambda: "ac" * 16, control=control)
-        workspace.add_profile(_profile())
-        profile = workspace.profiles()[0]
-        agent = _agent(agent_pid, ("ragent.exe", "-port", "1540", "-d", profile.cluster_dir))
-        workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
-
-        with pytest.raises(ServerStopError) as excinfo:
-            workspace.stop(profile.id)
-
-        assert str(agent_pid) in str(excinfo.value)
-        assert control.calls == [("children", agent_pid), ("terminate", agent_pid)]
-
     def test_stop_success_logs_event(self, tmp_path: Path) -> None:
         store_path = tmp_path / "servers.json"
         logs_dir = tmp_path / "logs"
-        agent_pid = 880
-        workspace = _workspace(store_path, new_id=lambda: "ad" * 16, logs_dir=logs_dir)
+        spawn = FakeServerSpawn(pid=4242)
+        workspace = _workspace(
+            store_path, new_id=lambda: "ad" * 16, server_spawn=spawn, logs_dir=logs_dir
+        )
         workspace.add_profile(_profile())
         profile = workspace.profiles()[0]
-        agent = _agent(agent_pid, ("ragent.exe", "-port", "1540", "-d", profile.cluster_dir))
-        workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
+        workspace.start(profile.id, [_installation_in(tmp_path)])
 
         workspace.stop(profile.id)
 
         content = server_journal.journal_path(logs_dir, profile.id).read_text(encoding="utf-8")
         assert "остановка по команде пользователя" in content
-
-    def test_stop_failure_logs_refusal_before_raise(self, tmp_path: Path) -> None:
-        """Отказ остановки (гонка PID, §6.2) обязан попасть в журнал ДО
-        `raise` — иначе панель «Журнал профиля» (T-10, задача 5) не покажет
-        причину отказа."""
-        store_path = tmp_path / "servers.json"
-        logs_dir = tmp_path / "logs"
-        agent_pid = 890
-        control = FakeControl(mismatched=frozenset({agent_pid}))
-        workspace = _workspace(
-            store_path, new_id=lambda: "ae" * 16, control=control, logs_dir=logs_dir
-        )
-        workspace.add_profile(_profile())
-        profile = workspace.profiles()[0]
-        agent = _agent(agent_pid, ("ragent.exe", "-port", "1540", "-d", profile.cluster_dir))
-        workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
-
-        with pytest.raises(ServerStopError):
-            workspace.stop(profile.id)
-
-        content = server_journal.journal_path(logs_dir, profile.id).read_text(encoding="utf-8")
-        assert "отказ остановки" in content
-        assert str(agent_pid) in content
-
-
-class TestStopOrphans:
-    def test_stop_orphans_terminates_only_this_profiles_orphans(self, tmp_path: Path) -> None:
-        store_path = tmp_path / "servers.json"
-        control = FakeControl()
-        ids = iter(["cc" * 16, "dd" * 16])
-        workspace = _workspace(store_path, new_id=lambda: next(ids), control=control)
-        workspace.add_profile(_profile())  # regport=1541
-        workspace.add_profile(
-            _profile(name="сосед", port=2540, regport=2541, cluster_dir=r"E:\srv\other")
-        )
-        profile, _other = workspace.profiles()
-        own_orphan = _manager(950, ("rmngr.exe", "-port", "1541"))
-        other_orphan = _manager(951, ("rmngr.exe", "-port", "2541"))
-        workspace.apply_scan(ScanSnapshot(agents=(), managers=(own_orphan, other_orphan)))
-
-        workspace.stop_orphans(profile.id)
-
-        assert control.calls == [("terminate", 950)]
-
-    def test_stop_orphans_empty_is_noop(self, tmp_path: Path) -> None:
-        store_path = tmp_path / "servers.json"
-        logs_dir = tmp_path / "logs"
-        control = FakeControl()
-        workspace = _workspace(
-            store_path, new_id=lambda: "ee" * 16, control=control, logs_dir=logs_dir
-        )
-        workspace.add_profile(_profile())
-        profile = workspace.profiles()[0]
-        workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
-
-        workspace.stop_orphans(profile.id)  # без апасений — сирот нет, значит нет и вызовов
-
-        assert control.calls == []
-        # Гасить было нечего — событие в журнал не пишется (нет даже файла).
-        assert not server_journal.journal_path(logs_dir, profile.id).exists()
-
-    def test_stop_orphans_unknown_profile_raises(self, tmp_path: Path) -> None:
-        workspace = _workspace(tmp_path / "servers.json")
-        with pytest.raises(UnknownItemError):
-            workspace.stop_orphans("ghost" * 6)
-
-    def test_stop_orphans_success_logs_event_with_pids(self, tmp_path: Path) -> None:
-        store_path = tmp_path / "servers.json"
-        logs_dir = tmp_path / "logs"
-        workspace = _workspace(store_path, new_id=lambda: "ge" * 16, logs_dir=logs_dir)
-        workspace.add_profile(_profile())  # regport=1541
-        profile = workspace.profiles()[0]
-        orphan = _manager(960, ("rmngr.exe", "-port", "1541"))
-        workspace.apply_scan(ScanSnapshot(agents=(), managers=(orphan,)))
-
-        workspace.stop_orphans(profile.id)
-
-        content = server_journal.journal_path(logs_dir, profile.id).read_text(encoding="utf-8")
-        assert "гашение сирот: PID 960" in content
 
 
 class TestJournalPath:
@@ -1297,8 +1296,9 @@ class TestLogShutdown:
     """НАХОДКА 4 ручного чек-листа T-10 (Minor): выход не оставлял следа в
     журнале — дерево гасит ОС (Job kill-on-close), кода остановки нет
     (§12.4), и конец сессии читателю журнала не виден. `log_shutdown`
-    закрывает эту дыру: пишет одно событие в журнал КАЖДОГО профиля,
-    у которого по последнему снимку есть хотя бы один живой процесс.
+    закрывает эту дыру: пишет одно событие в журнал КАЖДОГО профиля
+    с НЕПУСТЫМ Job (T-12 — «работает» значит «запущен нами и жив», снимок
+    в этом вопросе не участвует).
     """  # noqa: RUF002
 
     def test_writes_only_to_running_profiles_and_returns_their_count(
@@ -1306,24 +1306,26 @@ class TestLogShutdown:
     ) -> None:
         """ЗАЩИТНЫЙ ТЕСТ.
 
-        Два профиля, из них один работает (совпавший `ragent` в снимке) —
-        `log_shutdown` обязан дописать событие ТОЛЬКО в его журнал и
-        вернуть `1`, не создавая журнал у профиля без процессов.
-        Мутация: перебирать `self._profiles` без проверки `_matched_processes`
+        Два профиля, из них один запущен нами (непустой Job) — `log_shutdown`
+        обязан дописать событие ТОЛЬКО в его журнал и вернуть `1`, не
+        создавая журнал у профиля без Job.
+        Мутация: перебирать `self._profiles` без проверки `_job_pids`
         (писать всем без разбора) — тест обязан упасть на `not exists()`
         журнала простаивающего профиля.
         """  # noqa: RUF002
         store_path = tmp_path / "servers.json"
         logs_dir = tmp_path / "logs"
         ids = iter(["ha" * 16, "hb" * 16])
-        workspace = _workspace(store_path, new_id=lambda: next(ids), logs_dir=logs_dir)
+        spawn = FakeServerSpawn(pid=4242)
+        workspace = _workspace(
+            store_path, new_id=lambda: next(ids), server_spawn=spawn, logs_dir=logs_dir
+        )
         workspace.add_profile(_profile())  # cluster_dir E:\srv\srv_8.3.25.1633
         workspace.add_profile(
             _profile(name="сосед", port=2540, regport=2541, cluster_dir=r"E:\srv\other")
         )
         running, idle = workspace.profiles()
-        agent = _agent(981, ("ragent.exe", "-port", "1540", "-d", running.cluster_dir))
-        workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
+        workspace.start(running.id, [_installation_in(tmp_path)])
 
         count = workspace.log_shutdown()
 
@@ -1334,11 +1336,26 @@ class TestLogShutdown:
         assert "выход лаунчера — сервер будет остановлен вместе с ним" in running_journal  # noqa: RUF001
         assert not server_journal.journal_path(logs_dir, idle.id).exists()
 
+    def test_ignores_a_foreign_matched_ragent(self, tmp_path: Path) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ: долг T-10 — событие выхода писалось и ЧУЖОМУ
+        процессу, совпавшему по каталогу; мы его не останавливаем, значит
+        и «будет остановлен вместе с ним» о нём — неправда.
+        Мутация: считать по `_matched_processes` — тест обязан упасть.
+        """  # noqa: RUF002
+        store_path = tmp_path / "servers.json"
+        logs_dir = tmp_path / "logs"
+        workspace = _workspace(store_path, new_id=lambda: "he" * 16, logs_dir=logs_dir)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        agent = _agent(700, ("ragent.exe", "-port", "1540", "-d", profile.cluster_dir))
+        workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
+
+        assert workspace.log_shutdown() == 0
+        assert not server_journal.journal_path(logs_dir, profile.id).exists()
+
     def test_returns_zero_before_any_scan(self, tmp_path: Path) -> None:
-        """До первого `apply_scan` — та же семантика, что у `running_count`
-        (`scan_pending`): «снимка не было» не равно «серверы не работают»,
-        но и писать в журнал ДО первого снимка нечего — нет ни одного
-        подтверждённого живого процесса.
+        """До первого `apply_scan` — та же семантика, что у `running_count`:
+        Job ни у кого нет, писать в журнал некому.
         """  # noqa: RUF002
         store_path = tmp_path / "servers.json"
         workspace = _workspace(store_path, new_id=lambda: "hc" * 16)
@@ -1357,33 +1374,38 @@ class TestLogShutdown:
 
 
 class TestRunningCount:
-    def test_zero_before_scan(self, tmp_path: Path) -> None:
-        workspace = _workspace(tmp_path / "servers.json")
+    def test_zero_without_jobs(self, tmp_path: Path) -> None:
+        workspace = _workspace(tmp_path / "servers.json", new_id=lambda: "na" * 16)
+        workspace.add_profile(_profile())
+        workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
         assert workspace.running_count() == 0
 
-    def test_counts_profiles_with_at_least_one_process(self, tmp_path: Path) -> None:
-        store_path = tmp_path / "servers.json"
-        ids = iter(["gm" * 16, "gn" * 16])
-        workspace = _workspace(store_path, new_id=lambda: next(ids))
-        workspace.add_profile(_profile())  # cluster_dir E:\srv\srv_8.3.25.1633
+    def test_counts_profiles_with_a_non_empty_job(self, tmp_path: Path) -> None:
+        factory = FakeJobFactory()
+        ids = iter(["nb" * 16, "nc" * 16])
+        spawn = FakeServerSpawn(pid=4242)
+        workspace = _workspace(tmp_path / "servers.json", new_id=lambda: next(ids),
+                               job_factory=factory, server_spawn=spawn)
+        workspace.add_profile(_profile())
         workspace.add_profile(
             _profile(name="сосед", port=2540, regport=2541, cluster_dir=r"E:\srv\other")
         )
-        profile, _other = workspace.profiles()
-        # Два процесса на ОДНОМ профиле считаются один раз — число профилей,
-        # не процессов; второй профиль без процессов не учитывается.
-        agent1 = _agent(970, ("ragent.exe", "-port", "1540", "-d", profile.cluster_dir))
-        agent2 = _agent(971, ("ragent.exe", "-port", "1540", "-d", profile.cluster_dir + "\\"))
-        workspace.apply_scan(ScanSnapshot(agents=(agent1, agent2), managers=()))
-
+        first, _second = workspace.profiles()
+        workspace.start(first.id, [_installation_in(tmp_path)])
         assert workspace.running_count() == 1
+        factory.created[0].pids_value = ()
+        assert workspace.running_count() == 0
 
-    def test_zero_after_scan_with_nothing_running(self, tmp_path: Path) -> None:
-        store_path = tmp_path / "servers.json"
-        workspace = _workspace(store_path, new_id=lambda: "go" * 16)
+    def test_ignores_a_foreign_matched_ragent(self, tmp_path: Path) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ: долг T-10 — вопрос выхода считал ЧУЖИЕ процессы,
+        совпавшие по каталогу; мы их не остановим, считать нельзя.
+        Мутация: считать по `_match.by_profile` — тест обязан упасть.
+        """  # noqa: RUF002
+        workspace = _workspace(tmp_path / "servers.json", new_id=lambda: "nd" * 16)
         workspace.add_profile(_profile())
-        workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
-
+        profile = workspace.profiles()[0]
+        agent = _agent(700, ("ragent.exe", "-port", "1540", "-d", profile.cluster_dir))
+        workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
         assert workspace.running_count() == 0
 
 

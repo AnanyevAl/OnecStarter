@@ -88,10 +88,6 @@ class ServersUnavailableError(ServerError):
     """Файл профилей серверов существует, но прочитать или убрать его не удалось."""  # noqa: RUF002
 
 
-class ServerStopError(ServerError):
-    """Остановить сервер не удалось: PID переиспользован или нет прав."""
-
-
 class ConsoleRegistrationError(ServerError):
     """Регистрация консоли администрирования серверов не удалась."""
 
