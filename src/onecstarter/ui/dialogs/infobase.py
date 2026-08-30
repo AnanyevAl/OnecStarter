@@ -510,6 +510,11 @@ class InfobaseDialog(QDialog):
         for field in self._placement_widgets().values():
             field.textChanged.connect(self._refresh_ok_state)
         self._kind_box.currentIndexChanged.connect(self._refresh_ok_state)
+        # T-11, п. 6: имя из каталога / имени в кластере, если поле имени
+        # пустое. editingFinished, не textChanged: по textChanged имя
+        # подставилось бы на первом же символе и дальше не обновлялось.
+        self._file_path.editingFinished.connect(self._suggest_name_from_path)
+        self._ref.editingFinished.connect(self._suggest_name_from_ref)
         self._refresh_ok_state()
 
     @classmethod
@@ -852,8 +857,24 @@ class InfobaseDialog(QDialog):
         """  # noqa: RUF002
         self.set_kind(ConnectKind.FILE)
         self._file_path.setText(path)
-        if not self._name.text().strip():
-            self._name.setText(Path(path).name)
+        self._suggest_name(Path(path).name)
+
+    def _suggest_name_from_path(self) -> None:
+        self._suggest_name(Path(self._file_path.text().strip()).name)
+
+    def _suggest_name_from_ref(self) -> None:
+        self._suggest_name(self._ref.text().strip())
+
+    def _suggest_name(self, candidate: str) -> None:
+        """Подставить имя, только если поле пустое — одно правило на «Обзор…», drag&drop и ввод.
+
+        Введённое или уже подставленное имя при смене пути не перезаписывается:
+        второе правило («обновлять авто-подставленное») потребовало бы помнить,
+        откуда имя взялось, и удивляло бы при правке пути у уже названной базы.
+        Пустой кандидат (`D:\\`, пустое поле) — ничего не подставляется.
+        """  # noqa: RUF002
+        if candidate and not self._name.text().strip():
+            self._name.setText(candidate)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
         if dropped_directory(event.mimeData()) is not None:
