@@ -1,9 +1,14 @@
 """Раздел «Серверы»: список профилей и чужие серверы (T-08, задача 14).
 
 Воркспейс — настоящий `ServersWorkspace` на `tmp_path` с локальными фейками
-`FakeControl`/`FakeSpawn` (тот же приём, что и в `tests/unit/test_servers.py`,
-но не импортируется оттуда — там классы модульные, а не для переиспользования
-извне, и раздувать связь между unit- и ui-наборами незачем). Снимок процессов
+`FakeJob`/`FakeJobFactory`/`FakeSpawn` (тот же приём, что и в
+`tests/unit/test_servers.py`, но не импортируется оттуда — там классы
+модульные, а не для переиспользования извне, и раздувать связь между unit-
+и ui-наборами незачем). T-12: «работает» для профиля — это НАШ непустой Job
+(хелпер `_start`), а не совпавший процесс снимка; часть тестов этого файла
+ещё делает профиль работающим через `apply_scan` — карточка до задачи 5
+считает статус и кнопку по `status.processes`, и они остаются верными.
+Снимок процессов
 кладётся напрямую через `ServersWorkspace.apply_scan(ScanSnapshot(...))` —
 конструировать `ProcessScanner` ради одного снимка в каждом тесте избыточно,
 сама функция `scan_servers` уже покрыта юнит-тестами.
@@ -24,12 +29,12 @@ from typing import Any
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QDialog, QPushButton
+from PySide6.QtWidgets import QApplication, QDialog, QLabel, QPushButton
 
 from onecstarter.domain.launch import LaunchCommand
 from onecstarter.domain.server import ServerProfile
 from onecstarter.domain.version import Arch, Installation, parse_version
-from onecstarter.platform_1c.process_control import ProcessMismatchError
+from onecstarter.platform_1c.job import Job, JobError
 from onecstarter.platform_1c.process_scan import ProcessInfo
 from onecstarter.platform_1c.server_discovery import ServerInstallation
 from onecstarter.services.servers import ScanSnapshot, ServersWorkspace
@@ -42,34 +47,55 @@ FOREIGN_RAGENT = r"C:\Program Files\1cv8\8.3.22.1923\bin\ragent.exe"
 
 
 @dataclass
-class FakeControl:
-    """`ProcessControl` с детьми по словарю и журналом вызовов (см. `test_servers.py`)."""  # noqa: RUF002
+class FakeJob:
+    """Job с управляемым списком PID (T-12, см. `test_servers.py`)."""  # noqa: RUF002
 
-    children_map: dict[int, list[ProcessInfo]] = field(default_factory=dict)
-    mismatched: frozenset[int] = field(default_factory=frozenset)
-    calls: list[tuple[str, int]] = field(default_factory=list)
+    pids_value: tuple[int, ...] = ()
+    closed: bool = False
+    close_error: JobError | None = None
 
-    def children(self, pid: int) -> list[ProcessInfo]:
-        self.calls.append(("children", pid))
-        return list(self.children_map.get(pid, []))
+    def assign(self, process_handle: int) -> None:
+        pass
 
-    def terminate(self, pid: int, expected_create_time: float) -> None:
-        self.calls.append(("terminate", pid))
-        if pid in self.mismatched:
-            raise ProcessMismatchError(
-                f"pid {pid}: create_time не совпадает с ожидаемым — PID переиспользован"  # noqa: RUF001
-            )
+    def pids(self) -> tuple[int, ...]:
+        return () if self.closed else self.pids_value
+
+    def close(self) -> None:
+        if self.close_error is not None:
+            raise self.close_error
+        self.closed = True
+
+    def is_empty(self) -> bool:
+        return not self.pids()
+
+
+@dataclass
+class FakeJobFactory:
+    """`job_factory`: новый пустой `FakeJob` на каждый вызов, все созданные — в `created`."""
+
+    created: list[FakeJob] = field(default_factory=list)
+
+    def __call__(self) -> FakeJob:
+        job = FakeJob()
+        self.created.append(job)
+        return job
 
 
 @dataclass
 class FakeSpawn:
-    """`server_spawn` — сигнатура `Callable[[LaunchCommand, Path], int]` (T-10, задача 4)."""
+    """`server_spawn` — `Callable[[LaunchCommand, Path, Job], int]` (T-12: третий аргумент — Job).
+
+    Как настоящий `spawn_server`, кладёт «порождённый» `pid` в переданный
+    Job — после вызова профиль «работает» с точки зрения координатора.
+    """  # noqa: RUF002
 
     pid: int = 4242
     calls: list[LaunchCommand] = field(default_factory=list)
 
-    def __call__(self, command: LaunchCommand, log_path: Path) -> int:
+    def __call__(self, command: LaunchCommand, log_path: Path, job: Job) -> int:
         self.calls.append(command)
+        if isinstance(job, FakeJob):
+            job.pids_value = (*job.pids_value, self.pid)
         return self.pid
 
 
@@ -118,12 +144,12 @@ def _workspace(
     tmp_path: Path,
     profiles: tuple[ServerProfile, ...] = (),
     *,
-    control: FakeControl | None = None,
     spawn: FakeSpawn | None = None,
+    job_factory: FakeJobFactory | None = None,
     registered_radmin: object = None,
 ) -> ServersWorkspace:
     kwargs: dict[str, object] = {
-        "control": control if control is not None else FakeControl(),
+        "job_factory": job_factory if job_factory is not None else FakeJobFactory(),
         "server_spawn": spawn if spawn is not None else FakeSpawn(),
         "logs_dir": tmp_path / "logs",
     }
@@ -142,6 +168,11 @@ def _installation(version: str = "8.3.25.1633") -> ServerInstallation:
         ragent=root / "bin" / "ragent.exe",
         radmin=root / "bin" / "radmin.dll",
     )
+
+
+def _start(workspace: ServersWorkspace, profile: ServerProfile) -> None:
+    """Профиль «работает» через наш Job (T-12), не через снимок."""
+    workspace.start(profile.id, [_installation()])
 
 
 @pytest.fixture
@@ -547,13 +578,14 @@ def test_start_button_click_spawns_and_triggers_rescan(
     assert rescans == [1]
 
 
-def test_stop_button_click_terminates_and_triggers_rescan(
+def test_stop_button_click_closes_the_job_and_triggers_rescan(
     application: QApplication, tmp_path: Path
 ) -> None:
     profile = _profile()
-    control = FakeControl()
-    workspace = _workspace(tmp_path, (profile,), control=control)
-    workspace.apply_scan(ScanSnapshot(agents=(_agent(100, profile.cluster_dir),), managers=()))
+    factory = FakeJobFactory()
+    workspace = _workspace(tmp_path, (profile,), job_factory=factory)
+    _start(workspace, profile)
+    workspace.apply_scan(ScanSnapshot(agents=(_agent(4242, profile.cluster_dir),), managers=()))
     rescans: list[int] = []
 
     view = ServersView(
@@ -565,16 +597,18 @@ def test_stop_button_click_terminates_and_triggers_rescan(
 
     view.profile_button(0).click()
 
-    assert ("terminate", 100) in control.calls
+    assert factory.created[0].closed is True
     assert rescans == [1]
 
 
 def test_stop_failure_is_shown_via_show_error(application: QApplication, tmp_path: Path) -> None:
-    """Гонка PID (§6.2): `ProcessMismatchError` доходит до пользователя через `show_error`."""
+    """Отказ `CloseHandle` (`JobError`) доходит до пользователя через `show_error`."""
     profile = _profile()
-    control = FakeControl(mismatched=frozenset({100}))
-    workspace = _workspace(tmp_path, (profile,), control=control)
-    workspace.apply_scan(ScanSnapshot(agents=(_agent(100, profile.cluster_dir),), managers=()))
+    factory = FakeJobFactory()
+    workspace = _workspace(tmp_path, (profile,), job_factory=factory)
+    _start(workspace, profile)
+    workspace.apply_scan(ScanSnapshot(agents=(_agent(4242, profile.cluster_dir),), managers=()))
+    factory.created[0].close_error = JobError("CloseHandle отказал")
     errors: list[str] = []
 
     view = ServersView(
@@ -587,7 +621,7 @@ def test_stop_failure_is_shown_via_show_error(application: QApplication, tmp_pat
     view.profile_button(0).click()
 
     assert errors
-    assert "PID 100" in errors[0]
+    assert "CloseHandle" in errors[0]
 
 
 # -- задача 16, §8: подтверждающий скан после «Запустить» --------------------
@@ -758,9 +792,9 @@ def test_stop_does_not_arm_the_confirmation_check(
     в ожидание подтверждения (он и так только что остановлен намеренно).
     """
     profile = _profile()
-    control = FakeControl()
-    workspace = _workspace(tmp_path, (profile,), control=control)
-    workspace.apply_scan(ScanSnapshot(agents=(_agent(100, profile.cluster_dir),), managers=()))
+    workspace = _workspace(tmp_path, (profile,))
+    _start(workspace, profile)
+    workspace.apply_scan(ScanSnapshot(agents=(_agent(4242, profile.cluster_dir),), managers=()))
     errors: list[str] = []
 
     view = ServersView(
@@ -777,7 +811,7 @@ def test_stop_does_not_arm_the_confirmation_check(
     assert errors == []
 
 
-# -- предупреждения под карточкой: dir_mismatch и сироты ---------------------
+# -- предупреждения под карточкой: dir_mismatch, остатки, держатели портов ---
 
 
 def test_dir_mismatch_warning_shown_under_card(application: QApplication, tmp_path: Path) -> None:
@@ -791,20 +825,18 @@ def test_dir_mismatch_warning_shown_under_card(application: QApplication, tmp_pa
     assert any("8.3.25.1633" in text and "другую версию" in text for text in warnings)
 
 
-def test_orphans_warning_offers_extinguish_button(
+def test_remnants_row_offers_extinguish_button_that_closes_the_job(
     application: QApplication, tmp_path: Path
 ) -> None:
+    """Остатки НАШЕГО дерева (Job непуст, порождённого `ragent` в нём нет) —
+
+    красная строка и кнопка «Погасить», закрывающая именно этот Job (T-12).
+    """
     profile = _profile()
-    control = FakeControl()
-    manager = ProcessInfo(
-        pid=321,
-        name="rmngr.exe",
-        executable=None,
-        argv=("rmngr.exe", "-port", str(profile.regport)),
-        create_time=50.0,
-    )
-    workspace = _workspace(tmp_path, (profile,), control=control)
-    workspace.apply_scan(ScanSnapshot(agents=(), managers=(manager,)))
+    factory = FakeJobFactory()
+    workspace = _workspace(tmp_path, (profile,), job_factory=factory)
+    _start(workspace, profile)
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
     rescans: list[int] = []
 
     view = ServersView(
@@ -813,14 +845,16 @@ def test_orphans_warning_offers_extinguish_button(
         palette=theme.DARK,
         request_scan=lambda: rescans.append(1),
     )
+    factory.created[0].pids_value = (4300,)  # ragent снят извне, дети живы
+    view.rebuild()
 
-    assert any("321" in text for text in view.profile_warnings(0))
+    assert any("Остатки прошлого запуска" in text for text in view.profile_warnings(0))
     button = view.profile_extinguish_button(0)
     assert button is not None
 
     button.click()
 
-    assert ("terminate", 321) in control.calls
+    assert factory.created[0].closed is True
     assert rescans == [1]
 
 
@@ -835,6 +869,39 @@ def test_no_orphans_means_no_extinguish_button(
 
     assert view.profile_extinguish_button(0) is None
     assert view.profile_warnings(0) == []
+
+
+def test_port_holder_line_is_red_and_has_no_button(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Чужой держатель порта — только красная строка, без кнопки (решение 4).
+
+    Чужим процессом мы не управляем: «Погасить» относится к остаткам НАШЕГО
+    Job, а не к тому, что запущено не лаунчером.
+    """  # noqa: RUF002
+    profile = _profile()
+    holder = ProcessInfo(
+        pid=321,
+        name="rmngr.exe",
+        executable=None,
+        argv=("rmngr.exe", "-port", str(profile.regport)),
+        create_time=50.0,
+    )
+    workspace = _workspace(tmp_path, (profile,))
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=(holder,)))
+
+    view = ServersView(workspace, installed=lambda: [_installation()], palette=theme.DARK)
+
+    expected = "порт регистрации 1541 занят PID 321 (запущен не лаунчером)"
+    assert expected in view.profile_warnings(0)
+    assert view.profile_extinguish_button(0) is None
+    labels = [
+        label
+        for label in view.profile_card(0).findChildren(QLabel)
+        if label.text() == expected
+    ]
+    assert len(labels) == 1
+    assert theme.DARK.problem in labels[0].styleSheet()
 
 
 # -- шапка и строка пути -------------------------------------------------------

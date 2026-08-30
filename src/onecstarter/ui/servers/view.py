@@ -6,7 +6,14 @@ assets/2026-08-26-v2-servers-mockup.html), секция «Раздел „Сер
 и производные от него `statuses`/`foreign_servers`. Задача 14 добавила показ
 и локальные действия карточки (запуск/остановка/удаление профиля, гашение
 сирот) — диалоги «Консоль администрирования…»/«+ Профиль»/«Свойства…» тогда
-были инъекциями с безопасным дефолтом `lambda: None`.
+были инъекциями с безопасным дефолтом `lambda: None`. **Пересмотрено T-12
+(задача 5 этого плана):** «сирот» больше нет как понятия — кнопка «Погасить»
+относится к остаткам НАШЕГО Job (`stop()`), а чужие держатели портов
+(`status.port_holders`) показываются красной строкой БЕЗ кнопки, потому что
+чужим процессом мы не управляем (решение заказчика 4 от 29.08.2026).
+Задача 3 T-12 сделала здесь минимум — два блока предупреждений под карточкой
+и `_extinguish` на `stop()`; таблицу четырёх состояний карточки и диалоги
+удаления по Job доделывает задача 5.
 
 **Задача 15** подключает `ServerProfileDialog` (`ui/servers/dialog.py`):
 `on_add_profile`/`on_edit_profile` теперь по умолчанию открывают настоящий
@@ -44,7 +51,13 @@ assets/2026-08-26-v2-servers-mockup.html), секция «Раздел „Сер
 Удаление профиля предупреждает отдельно, если сервер запущен (решение
 заказчика 8, `_removal_question`): профиль пропадает из списка, но процесс
 `ragent`, если он жив, никто не трогает — молчание об этом стоило бы
-пользователю потерянного из виду, но работающего сервера. После
+пользователю потерянного из виду, но работающего сервера. **Пересмотрено
+T-12 (задача 5 этого плана):** решение 3 от 29.08.2026 — удаление профиля,
+запущенного НАМИ, теперь его и останавливает (`ServersWorkspace.
+remove_profile` зовёт `stop`), и текст вопроса обязан говорить именно это;
+прежняя формулировка «продолжит работать» остаётся верной только для чужого
+`ragent`, совпавшего с профилем по каталогу кластера. Сам текст правит
+задача 5, здесь он ещё прежний. После
 подтверждённого удаления карточка обязана позвать `request_scan()`, как
 и запуск/остановка (круг правок 1 ревью задачи 14): без пересчёта снимка
 процессов работающий сервер молча пропадает из показа целиком, вместо того
@@ -106,7 +119,7 @@ from PySide6.QtWidgets import (
 )
 
 from onecstarter.domain.server import ServerProfile
-from onecstarter.domain.server_match import ForeignServer
+from onecstarter.domain.server_match import ForeignServer, port_holders_text
 from onecstarter.platform_1c.server_discovery import ServerInstallation
 from onecstarter.services.errors import ServicesError
 from onecstarter.services.servers import ServerStatus, ServersWorkspace
@@ -624,24 +637,27 @@ class ServersView(QWidget):
             card_layout.addWidget(mismatch_label)
 
         extinguish_button: QPushButton | None = None
-        if status.orphans:
-            pids = ", ".join(str(orphan.pid) for orphan in status.orphans)
-            text = (
-                f"Осиротевшие процессы без ragent: PID {pids} — держат "
-                "порт регистрации"
-            )
+        if status.job_pids and status.spawned_pid not in status.job_pids:
+            text = "Остатки прошлого запуска держат порты — погасите их или запустите сервер заново"
             warnings.append(text)
-            orphan_row = QHBoxLayout()
-            orphan_label = QLabel(text)
-            orphan_label.setWordWrap(True)
-            orphan_label.setStyleSheet(f"color: {palette.problem};")
+            remnants_row = QHBoxLayout()
+            remnants_label = QLabel(text)
+            remnants_label.setWordWrap(True)
+            remnants_label.setStyleSheet(f"color: {palette.problem};")
             extinguish_button = QPushButton("Погасить")
             extinguish_button.clicked.connect(
                 lambda _checked=False, pid=profile.id: self._extinguish(pid)
             )
-            orphan_row.addWidget(orphan_label, 1)
-            orphan_row.addWidget(extinguish_button)
-            card_layout.addLayout(orphan_row)
+            remnants_row.addWidget(remnants_label, 1)
+            remnants_row.addWidget(extinguish_button)
+            card_layout.addLayout(remnants_row)
+        if status.port_holders:
+            text = port_holders_text(profile, status.port_holders)
+            warnings.append(text)
+            holders_label = QLabel(text)
+            holders_label.setWordWrap(True)
+            holders_label.setStyleSheet(f"color: {palette.problem};")
+            card_layout.addWidget(holders_label)
 
         self._cards_layout.addWidget(card)
         self._profile_rows.append(
@@ -771,7 +787,7 @@ class ServersView(QWidget):
 
     def _extinguish(self, profile_id: str) -> None:
         try:
-            self._workspace.stop_orphans(profile_id)
+            self._workspace.stop(profile_id)
         except ServicesError as error:
             self._show_error(str(error))
         self._request_scan()

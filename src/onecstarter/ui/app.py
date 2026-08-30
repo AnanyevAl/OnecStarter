@@ -36,8 +36,7 @@ from onecstarter.domain.server import ServerConvention
 from onecstarter.domain.version import Installation, VersionNumber
 from onecstarter.platform_1c import console
 from onecstarter.platform_1c.discovery import cfg_paths, find_installations
-from onecstarter.platform_1c.job import NullJob, ServerJob
-from onecstarter.platform_1c.process_control import NullControl, ProcessControl, PsutilControl
+from onecstarter.platform_1c.job import Job, NullJob, ServerJob
 from onecstarter.platform_1c.process_scan import NullScanner, ProcessScanner, PsutilScanner
 from onecstarter.platform_1c.registry import load_conventions, load_server_conventions
 from onecstarter.platform_1c.server_discovery import ServerInstallation, server_installations
@@ -288,15 +287,16 @@ def run_smoke(
     # Реестр — заглушка, а не настоящий HKCU (долг №8): `SettingsView` читает  # noqa: RUF003
     # его прямо в конструкторе, и самопроверка собранного экземпляра иначе  # noqa: RUF003
     # зависела бы от того, включён ли автозапуск на машине сборщика.
-    # `NullScanner`/`NullControl` — тот же довод для раздела «Серверы»
-    # (T-08, задача 16): самопроверка не должна сканировать и трогать
-    # процессы серверов 1С на машине сборщика. `registered_radmin` —  # noqa: RUF003
-    # рядом: `ServersView.__init__` безусловно читает HKLM через
-    # `current_console_version()` уже при сборке окна (см. докстринг
-    # `_build_main_window`), самопроверка отвечает «не зарегистрирована».
-    # `NullJob` — та же осторожность для Job Object'а (T-10, задача 7):  # noqa: RUF003
-    # самопроверка не запускает серверов, но и создавать kernel-объект,
-    # которого некому будет закрыть, ей ни к чему.
+    # `NullScanner` — тот же довод для раздела «Серверы» (T-08, задача 16):
+    # самопроверка не должна сканировать процессы серверов 1С на машине  # noqa: RUF003
+    # сборщика. `registered_radmin` — рядом: `ServersView.__init__`
+    # безусловно читает HKLM через `current_console_version()` уже при
+    # сборке окна (см. докстринг `_build_main_window`), самопроверка
+    # отвечает «не зарегистрирована». `job_factory=NullJob` — та же
+    # осторожность для Job Object'а (T-12): самопроверка серверов не  # noqa: RUF003
+    # запускает, и создавать kernel-объект, которого некому будет
+    # закрыть, ей ни к чему. Передаётся сам класс, не экземпляр:
+    # `job_factory` — фабрика, координатор зовёт её на каждый запуск.
     try:
         window, built_tasks, _monitor = _build_main_window(
             application,
@@ -304,9 +304,8 @@ def run_smoke(
             env,
             autostart_registry=autostart.NullRegistry(),
             process_scanner=NullScanner(),
-            process_control=NullControl(),
             registered_radmin=lambda: None,
-            server_job=NullJob(),
+            job_factory=NullJob,
         )
     except ServerError:
         # CRITICAL 2, финальное ревью ветки: конструктор ServersWorkspace
@@ -385,9 +384,9 @@ class _ConsoleWorkspace(Protocol):
     """Часть `ServersWorkspace`, которую действительно использует `_console_flow`.
 
     Протокол, а не сам `ServersWorkspace` — тот же довод, что у
-    `ProcessScanner`/`ProcessControl` (`platform_1c/process_scan.py`,
-    `process_control.py`): узкая структурная зависимость вместо конкретного
-    класса делает функцию тестируемой фейком без наследования от реального
+    `ProcessScanner` (`platform_1c/process_scan.py`): узкая структурная
+    зависимость вместо конкретного класса делает функцию тестируемой
+    фейком без наследования от реального
     `ServersWorkspace` (у него собственный конструктор с эффектами) и без
     `# type: ignore` на границе теста.
     """  # noqa: RUF002
@@ -544,10 +543,9 @@ def _build_main_window(
     *,
     autostart_registry: autostart.Registry | None = None,
     process_scanner: ProcessScanner | None = None,
-    process_control: ProcessControl | None = None,
     registered_radmin: Callable[[], Path | None] | None = None,
     quit_dialog: Callable[[QWidget, str], bool] | None = None,
-    server_job: ServerJob | NullJob | None = None,
+    job_factory: Callable[[], Job] | None = None,
 ) -> tuple[MainWindow, StartupTasks, ServerMonitor]:
     """Собрать окно, трей, хоткей, watcher и фоновые задачи, не запуская их.
 
@@ -559,11 +557,11 @@ def _build_main_window(
     к `Workspace`/`BasesView`/`ServersWorkspace`/`ServersView`, `start()`
     не вызывается ни разу («собрать, не запуская», T-08, задача 16).
 
-    `process_scanner`/`process_control` — та же инъекция для `run_smoke`,
-    что и `autostart_registry`: `None` собирает настоящие `PsutilScanner`/
-    `PsutilControl`, а самопроверка сборки подставляет `NullScanner`/
-    `NullControl` — она поднимает настоящее окно и не должна сканировать
-    процессы машины сборщика (тот же довод, что у долга №8 T-04.7).
+    `process_scanner` — та же инъекция для `run_smoke`, что и
+    `autostart_registry`: `None` собирает настоящий `PsutilScanner`,
+    а самопроверка сборки подставляет `NullScanner` — она поднимает
+    настоящее окно и не должна сканировать процессы машины сборщика
+    (тот же довод, что у долга №8 T-04.7).
 
     `registered_radmin` — та же инъекция, но для ЧТЕНИЯ HKLM: находка этой
     задачи (не входила в план дословно) — `ServersView.__init__` зовёт
@@ -572,11 +570,10 @@ def _build_main_window(
     ([Ф] Г2, `platform_1c/console.py::registered_radmin_path`) при КАЖДОЙ
     сборке окна, не только по явному действию пользователя над консолью —
     в отличие от процессов серверов, этого чтения не избежать инъекцией
-    `process_scanner`/`process_control` в `ServersWorkspace`. `None` —
-    настоящий `console.registered_radmin_path`, самопроверка сборки
-    подставляет `lambda: None` (тот же довод, что у `NullScanner`/
-    `NullControl` — долг №8: чтение HKLM машины сборщика не должно решать,
-    что покажет self-test).
+    `process_scanner` в `ServersWorkspace`. `None` — настоящий
+    `console.registered_radmin_path`, самопроверка сборки подставляет
+    `lambda: None` (тот же довод, что у `NullScanner` — долг №8: чтение
+    HKLM машины сборщика не должно решать, что покажет self-test).
 
     `quit_dialog` — та же по духу инъекция, но найденная не при написании,
     а при мутационной проверке (T-10, задача 6, находка координатора):
@@ -590,14 +587,17 @@ def _build_main_window(
     только `main()` (`quit_dialog=_ask_quit_confirmation`) — единственное
     место, откуда реальный диалог вообще может появиться.
 
-    `server_job` — тот же приём инъекции, что `process_scanner`/`process_control`,
-    но для Job Object'а (T-10, задача 7, `platform_1c/job.py`): `None`
-    собирает настоящий `ServerJob()` — это безопасно и для тестов, и для
-    сборки окна как таковой, потому что создание kernel-объекта в нём
-    ленивое (только при первом `assign()`, а не в конструкторе). `run_smoke`
-    всё равно подставляет `NullJob()` явной инъекцией, тем же доводом, что
-    `NullScanner`/`NullControl` (долг №8): самопроверка не должна создавать
-    Job вовсе, а не полагаться на то, что лень конструктора её не выдаст.
+    `job_factory` — тот же приём инъекции, что `process_scanner`, но для
+    Job Object'а (T-12, `platform_1c/job.py`). Именно ФАБРИКА, а не готовый
+    Job: с T-12 Job заводится на КАЖДЫЙ запуск профиля и закрывается его
+    остановкой, поэтому владеет ими координатор (`ServersWorkspace`),
+    а проводка решает только, какого они рода. `None` — настоящий класс
+    `ServerJob`; при сборке окна он не создаёт ничего (`ServersWorkspace`
+    зовёт фабрику только из `start()`), так что и для тестов это безопасно.
+    `run_smoke` всё равно подставляет `NullJob` явной инъекцией, тем же
+    доводом, что `NullScanner` (долг №8): самопроверка не должна создавать
+    kernel-объектов вовсе, а не полагаться на то, что до `start()` дело
+    не дойдёт.
 
     Значок приложения ставится здесь же, до создания трея (замечание
     заказчика на контрольной точке 16.08.2026): `setWindowIcon` до этой
@@ -635,20 +635,21 @@ def _build_main_window(
     # lambda:` у BasesView) собраны раньше самого раздела: конструктору  # noqa: RUF003
     # ServersView нужны и воркспейс, и живой снимок установок сразу.
     # T-10, задача 4: конструктор ServersWorkspace лишился дефолта у spawn —  # noqa: RUF003
-    # `server_spawn`/`logs_dir` теперь обязательны. T-10, задача 7: НАСТОЯЩИЙ
-    # Job Object — `job` живёт длиной с сам процесс лаунчера (`server_job`  # noqa: RUF003
-    # параметр функции; `None` собирает `ServerJob()`, `run_smoke` подставляет
-    # `NullJob()`), `spawn_server` кладёт в него каждый запущенный сервер
-    # сразу после `Popen` (`platform_1c/server_spawn.py`). [Ф] Б2 T-09:
-    # закрытие/крах лаунчера закрывает хендл Job, и это гасит всё дерево
-    # серверов вместе с ним — явного кода остановки серверов при выходе  # noqa: RUF003
-    # приложения не требуется и здесь нет.
+    # `server_spawn`/`logs_dir` обязательны. T-12: Job заводится на КАЖДЫЙ
+    # запуск профиля, поэтому сюда идёт фабрика (`job_factory` параметр
+    # функции; `None` — настоящий класс `ServerJob`, `run_smoke`
+    # подставляет `NullJob`), а владеет живыми Job координатор.  # noqa: RUF003
+    # `spawn_server` передаётся модульным атрибутом, не обёрткой: Job
+    # третьим аргументом даёт ему сам координатор, а тестам нужно уметь  # noqa: RUF003
+    # подменить `spawn_server` в этом модуле ДО сборки окна.
+    # [Ф] Б2 T-09: закрытие/крах лаунчера закрывает хендлы всех Job,
+    # и это гасит деревья серверов вместе с ним — явного кода остановки  # noqa: RUF003
+    # серверов при выходе приложения не требуется и здесь нет.
     logs_dir = runtime.servers.parent / "logs" / "servers"
-    job = server_job if server_job is not None else ServerJob()
     servers_workspace = ServersWorkspace(
         runtime.servers,
-        control=process_control if process_control is not None else PsutilControl(),
-        server_spawn=lambda command, log: spawn_server(command, log, job),
+        job_factory=job_factory if job_factory is not None else ServerJob,
+        server_spawn=spawn_server,
         logs_dir=logs_dir,
         registered_radmin=(
             registered_radmin if registered_radmin is not None else console.registered_radmin_path

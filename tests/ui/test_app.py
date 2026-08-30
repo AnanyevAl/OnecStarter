@@ -30,13 +30,13 @@ from PySide6.QtWidgets import (
 from onecstarter.domain.launch import LaunchCommand
 from onecstarter.domain.server import ServerConvention, ServerProfile
 from onecstarter.domain.version import Arch, Installation, VersionNumber, parse_version
-from onecstarter.platform_1c.process_control import NullControl
+from onecstarter.platform_1c.job import NullJob
 from onecstarter.platform_1c.process_scan import NullScanner, ProcessInfo
 from onecstarter.platform_1c.server_discovery import ServerInstallation
 from onecstarter.services.catalog import EMPTY_COMMON_DATA
 from onecstarter.services.errors import ConsoleRegistrationDeclinedError, ConsoleRegistrationError
 from onecstarter.services.hotkeys import parse_hotkey
-from onecstarter.services.servers import ScanSnapshot
+from onecstarter.services.servers import ScanSnapshot, ServersWorkspace
 from onecstarter.services.settings import (
     DEFAULT_HOTKEY,
     DefaultClient,
@@ -62,6 +62,50 @@ from onecstarter.ui.theme_controller import ThemeController
 from onecstarter.ui.watcher import FileWatcher
 
 from .conftest import CONVENTIONS, FIXTURE, INSTALLED
+
+
+@dataclass
+class _FakeJob:
+    """Job для тестов проводки (T-12): «работает» — это непустой `pids()`."""
+
+    pids_value: tuple[int, ...] = ()
+    closed: bool = False
+
+    def assign(self, process_handle: int) -> None:
+        pass
+
+    def pids(self) -> tuple[int, ...]:
+        return () if self.closed else self.pids_value
+
+    def close(self) -> None:
+        self.closed = True
+
+    def is_empty(self) -> bool:
+        return not self.pids()
+
+
+_SERVER_INSTALLATION = ServerInstallation(
+    installation=Installation(
+        parse_version("8.3.25.1633"), Path(r"C:\1cv8\8.3.25.1633"), Arch.X64
+    ),
+    ragent=Path(r"C:\1cv8\8.3.25.1633\bin\ragent.exe"),
+    radmin=Path(r"C:\1cv8\8.3.25.1633\bin\radmin.dll"),
+)
+
+
+def _start_fake_server(servers_view: ServersView, tmp_path: Any, pid: int = 4646) -> ServerProfile:
+    """Профиль «работает» через Job (T-12). Требует `job_factory=lambda: _FakeJob((pid,))`
+    и подменённого `app_module.spawn_server` ДО `_build_main_window`."""
+    servers_view._workspace.add_profile(
+        ServerProfile(
+            id="", name="Тест", version="8.3.25.1633", port=1540, regport=1541,
+            range_start=1560, range_end=1591, cluster_dir=str(tmp_path / "srv"),
+        )
+    )
+    profile = servers_view._workspace.profiles()[0]
+    assert servers_view._workspace.start(profile.id, [_SERVER_INSTALLATION]) == pid
+    assert servers_view._workspace.running_count() == 1
+    return profile
 
 
 def test_runtime_builds_on_empty_machine(tmp_path):
@@ -1390,25 +1434,22 @@ def test_run_smoke_uses_null_scanner(tmp_path: Any, monkeypatch: Any, qtbot: Any
 
 
 def test_run_smoke_uses_null_job(tmp_path: Any, monkeypatch: Any, qtbot: Any) -> None:
-    """ЗАЩИТНЫЙ ТЕСТ: самопроверка не создаёт kernel-объект Job и никого туда не кладёт.
-
-    `ServerJob` сам по себе ленив (`platform_1c/job.py`: kernel-объект
-    создаётся не в конструкторе, а при первом `assign()`) — сборка окна
-    настоящим `ServerJob()` безопасна и без этой инъекции. Но самопроверка
-    собранного экземпляра не должна создавать его вовсе, тем же доводом,
-    что `NullScanner`/`NullControl` (долг №8, T-04.7): `run_smoke` обязан
-    подставить `NullJob()` явной инъекцией, а не полагаться на лень
-    конструктора. Образец — `test_run_smoke_uses_null_scanner`. Мутация
-    «`run_smoke` берёт `server_job=None` (дефолтный `ServerJob()`) вместо
-    инъекции» обязана уронить этот тест.
+    """ЗАЩИТНЫЙ ТЕСТ: самопроверка подставляет `job_factory=NullJob` — kernel-объектов
+    Job она не создаёт даже при запуске профиля (T-12: фабрика на запуск, `ServerJob`
+    в конструкторе окна больше не вызывается, поэтому «бомба» на `ServerJob`
+    ничего не ловит — проверяем сам аргумент конструктора `ServersWorkspace`).
+    Мутация «`run_smoke` не передаёт `job_factory`» обязана уронить тест.
     """  # noqa: RUF002
     monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
     captured = _capture_window(monkeypatch)
+    workspace_kwargs: dict[str, Any] = {}
 
-    def bomb(*_args: Any, **_kwargs: Any) -> Any:
-        raise AssertionError("smoke не должен создавать ServerJob")
+    class _CapturingServersWorkspace(ServersWorkspace):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            workspace_kwargs.update(kwargs)
+            super().__init__(*args, **kwargs)
 
-    monkeypatch.setattr(app_module, "ServerJob", bomb)
+    monkeypatch.setattr(app_module, "ServersWorkspace", _CapturingServersWorkspace)
     appdata = tmp_path / "appdata"
     target = tmp_path / "out"
     target.mkdir()
@@ -1416,6 +1457,7 @@ def test_run_smoke_uses_null_job(tmp_path: Any, monkeypatch: Any, qtbot: Any) ->
     assert run_smoke(str(target), {"APPDATA": str(appdata)}) == 0
 
     qtbot.addWidget(captured["window"])
+    assert workspace_kwargs["job_factory"] is NullJob
 
 
 def test_on_installations_populates_server_installed_and_rebuilds_the_view(
@@ -1429,15 +1471,8 @@ def test_on_installations_populates_server_installed_and_rebuilds_the_view(
     предмет — проводка, а не повторная проверка фильтра.
     """  # noqa: RUF002
     monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
-    fake_server_installation = ServerInstallation(
-        installation=Installation(
-            parse_version("8.3.25.1633"), Path(r"C:\1cv8\8.3.25.1633"), Arch.X64
-        ),
-        ragent=Path(r"C:\1cv8\8.3.25.1633\bin\ragent.exe"),
-        radmin=Path(r"C:\1cv8\8.3.25.1633\bin\radmin.dll"),
-    )
     monkeypatch.setattr(
-        app_module, "server_installations", lambda found, conventions: [fake_server_installation]
+        app_module, "server_installations", lambda found, conventions: [_SERVER_INSTALLATION]
     )
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
@@ -1458,7 +1493,7 @@ def test_on_installations_populates_server_installed_and_rebuilds_the_view(
 
     tasks.installations_ready.emit(INSTALLED)
 
-    assert servers_view._installed() == [fake_server_installation]
+    assert servers_view._installed() == [_SERVER_INSTALLATION]
     assert rebuilds == [1]
 
 
@@ -1475,7 +1510,7 @@ def test_monitor_wires_scan_into_servers_workspace_and_view(
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
     window, _tasks, monitor = _build_main_window(
-        qapp, runtime, env, process_scanner=NullScanner(), process_control=NullControl()
+        qapp, runtime, env, process_scanner=NullScanner()
     )
     qtbot.addWidget(window)
     assert isinstance(monitor, ServerMonitor)
@@ -2184,8 +2219,8 @@ def test_settings_view_reads_the_registry_when_frozen(
     окна с `ServersWorkspace`): второе обращение — не автозапуск, а
     `ServersView.__init__` → `rebuild()` → безусловный
     `ServersWorkspace.current_console_version()` ([Ф] Г2, `platform_1c/
-    console.py`) — тоже настоящий HKLM, раз ни `process_control`, ни
-    `registered_radmin` здесь не подменены (`run_smoke`, в отличие от этого
+    console.py`) — тоже настоящий HKLM, раз
+    `registered_radmin` здесь не подменён (`run_smoke`, в отличие от этого
     прямого вызова `_build_main_window`, подставляет `lambda: None` — см.
     негативный контроль выше). Оба обращения независимы друг от друга и
     от `sys.frozen`: у `ServersWorkspace` условия «из исходников — не
@@ -2548,45 +2583,29 @@ def test_close_with_running_server_and_declined_dialog_keeps_confirm_quit_false(
 ) -> None:
     """Проводка `_build_main_window` с реальным работающим сервером и отказом в диалоге.
 
-    Профиль + снимок с совпавшим `ragent` — тот же приём, что
-    `test_monitor_wires_scan_into_servers_workspace_and_view`:
-    `running_count()` обязан вернуть `1`, фейковый `quit_dialog` (отвечает
-    «Нет») обязан быть вызван ровно один раз с верным текстом, а
-    `window.confirm_quit()` — вернуть `False`.
+    Профиль, запущенный через наш Job (T-12: `running_count()` считает
+    именно Job, а не совпавшие процессы снимка), обязан дать `1`; фейковый
+    `quit_dialog` (отвечает «Нет») обязан быть вызван ровно один раз
+    с верным текстом, а `window.confirm_quit()` — вернуть `False`.
     """  # noqa: RUF002
     monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    monkeypatch.setattr(app_module, "spawn_server", lambda command, log, job: 4646)
     asked: list[str] = []
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
     window, _tasks, _monitor = _build_main_window(
-        qapp, runtime, env, quit_dialog=_fake_quit_dialog(asked, answer=False)
+        qapp,
+        runtime,
+        env,
+        quit_dialog=_fake_quit_dialog(asked, answer=False),
+        job_factory=lambda: _FakeJob((4646,)),
     )
     qtbot.addWidget(window)
     labels = [button.text() for button in window.section_buttons()]
     window.show_section(labels.index("Серверы"))
     servers_view = window.current_section()
     assert isinstance(servers_view, ServersView)
-    servers_view._workspace.add_profile(
-        ServerProfile(
-            id="",
-            name="Тест",
-            version="8.3.25.1633",
-            port=1540,
-            regport=1541,
-            range_start=1560,
-            range_end=1591,
-            cluster_dir=str(tmp_path / "srv"),
-        )
-    )
-    agent = ProcessInfo(
-        pid=4242,
-        name="ragent.exe",
-        executable=None,
-        argv=("ragent.exe", "-d", str(tmp_path / "srv"), "-port", "1540", "-regport", "1541"),
-        create_time=1.0,
-    )
-    servers_view._workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
-    assert servers_view._workspace.running_count() == 1
+    _start_fake_server(servers_view, tmp_path)
 
     assert window.confirm_quit is not None
     assert window.confirm_quit() is False
@@ -2611,38 +2630,22 @@ def test_confirm_quit_true_logs_shutdown_event_for_running_profile(
     — тест обязан упасть (строки в журнале не будет).
     """  # noqa: RUF002
     monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    monkeypatch.setattr(app_module, "spawn_server", lambda command, log, job: 4646)
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
     window, _tasks, _monitor = _build_main_window(
-        qapp, runtime, env, quit_dialog=_fake_quit_dialog([], answer=True)
+        qapp,
+        runtime,
+        env,
+        quit_dialog=_fake_quit_dialog([], answer=True),
+        job_factory=lambda: _FakeJob((4646,)),
     )
     qtbot.addWidget(window)
     labels = [button.text() for button in window.section_buttons()]
     window.show_section(labels.index("Серверы"))
     servers_view = window.current_section()
     assert isinstance(servers_view, ServersView)
-    servers_view._workspace.add_profile(
-        ServerProfile(
-            id="",
-            name="Тест",
-            version="8.3.25.1633",
-            port=1540,
-            regport=1541,
-            range_start=1560,
-            range_end=1591,
-            cluster_dir=str(tmp_path / "srv"),
-        )
-    )
-    profile = servers_view._workspace.profiles()[0]
-    agent = ProcessInfo(
-        pid=4646,
-        name="ragent.exe",
-        executable=None,
-        argv=("ragent.exe", "-d", str(tmp_path / "srv"), "-port", "1540", "-regport", "1541"),
-        create_time=1.0,
-    )
-    servers_view._workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
-    assert servers_view._workspace.running_count() == 1
+    profile = _start_fake_server(servers_view, tmp_path)
 
     assert window.confirm_quit is not None
     assert window.confirm_quit() is True
@@ -2678,35 +2681,18 @@ def test_closing_window_without_quit_dialog_never_shows_a_confirmation_dialog(
         raise AssertionError("диалог не должен показываться")
 
     monkeypatch.setattr(QMessageBox, "exec", _forbidden_exec)
+    monkeypatch.setattr(app_module, "spawn_server", lambda command, log, job: 4646)
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, _tasks, _monitor = _build_main_window(qapp, runtime, env)
+    window, _tasks, _monitor = _build_main_window(
+        qapp, runtime, env, job_factory=lambda: _FakeJob((4646,))
+    )
     qtbot.addWidget(window)
     labels = [button.text() for button in window.section_buttons()]
     window.show_section(labels.index("Серверы"))
     servers_view = window.current_section()
     assert isinstance(servers_view, ServersView)
-    servers_view._workspace.add_profile(
-        ServerProfile(
-            id="",
-            name="Тест",
-            version="8.3.25.1633",
-            port=1540,
-            regport=1541,
-            range_start=1560,
-            range_end=1591,
-            cluster_dir=str(tmp_path / "srv"),
-        )
-    )
-    agent = ProcessInfo(
-        pid=4545,
-        name="ragent.exe",
-        executable=None,
-        argv=("ragent.exe", "-d", str(tmp_path / "srv"), "-port", "1540", "-regport", "1541"),
-        create_time=1.0,
-    )
-    servers_view._workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
-    assert servers_view._workspace.running_count() == 1
+    _start_fake_server(servers_view, tmp_path)
     assert window.confirm_quit is None
 
     assert window.close() is True
@@ -2739,37 +2725,22 @@ def test_request_quit_declined_does_not_quit_the_application(
         return None
 
     monkeypatch.setattr(app_module, "create_tray", fake_create_tray)
+    monkeypatch.setattr(app_module, "spawn_server", lambda command, log, job: 4646)
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
     window, _tasks, _monitor = _build_main_window(
-        qapp, runtime, env, quit_dialog=_fake_quit_dialog([], answer=False)
+        qapp,
+        runtime,
+        env,
+        quit_dialog=_fake_quit_dialog([], answer=False),
+        job_factory=lambda: _FakeJob((4646,)),
     )
     qtbot.addWidget(window)
     labels = [button.text() for button in window.section_buttons()]
     window.show_section(labels.index("Серверы"))
     servers_view = window.current_section()
     assert isinstance(servers_view, ServersView)
-    servers_view._workspace.add_profile(
-        ServerProfile(
-            id="",
-            name="Тест",
-            version="8.3.25.1633",
-            port=1540,
-            regport=1541,
-            range_start=1560,
-            range_end=1591,
-            cluster_dir=str(tmp_path / "srv"),
-        )
-    )
-    agent = ProcessInfo(
-        pid=4343,
-        name="ragent.exe",
-        executable=None,
-        argv=("ragent.exe", "-d", str(tmp_path / "srv"), "-port", "1540", "-regport", "1541"),
-        create_time=1.0,
-    )
-    servers_view._workspace.apply_scan(ScanSnapshot(agents=(agent,), managers=()))
-    assert servers_view._workspace.running_count() == 1
+    _start_fake_server(servers_view, tmp_path)
 
     captured["on_quit"]()
 
