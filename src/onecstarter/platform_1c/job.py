@@ -189,16 +189,25 @@ class ServerJob:
     def close(self) -> None:
         """Закрыть хендл Job — kill-on-close гасит всё, что в нём ([Ф] 29.08.2026).
 
-        Идемпотентно: если Job не создан или уже закрыт, второй и любой
-        следующий вызов — no-op, без исключения. После успешного закрытия
-        `pids()` снова отдаёт `()`.
-        """
+        Идемпотентно только на успешном пути: если Job не создан или уже
+        закрыт, второй и любой следующий вызов — no-op, без исключения.
+        После УСПЕШНОГО закрытия `pids()` снова отдаёт `()`.
+
+        Если `CloseHandle` отказал, `_handle` НЕ обнуляется (ревью задачи 1
+        T-12, Important 1): неудачный вызов не должен выглядеть как
+        успешный — `pids()`/`is_empty()` обязаны по-прежнему отвечать по
+        живому хендлу (координатору `services` это нужно, чтобы после
+        отказавшего `close()` остатки дерева оставались видны), а сам
+        `close()` остаётся вызываемым повторно, а не превращается в no-op
+        из-за потерянного хендла.
+        """  # noqa: RUF002
         if self._handle is None:
             return
-        handle, self._handle = self._handle, None
+        handle = self._handle
         if not _k32.CloseHandle(handle):
             error = ctypes.get_last_error()
             raise JobError(f"CloseHandle не смог закрыть Job: GetLastError={error}")
+        self._handle = None
 
     def is_empty(self) -> bool:
         return not self.pids()

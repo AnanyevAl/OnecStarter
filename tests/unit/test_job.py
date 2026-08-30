@@ -151,6 +151,46 @@ class TestServerJob:
         finally:
             job.close()
 
+    def test_close_raises_and_keeps_handle_when_close_handle_fails(self) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ: отказ `CloseHandle` не должен выглядеть как успешное
+        закрытие (ревью задачи 1 T-12, Important 1).
+
+        [Ф] 29.08.2026, эта машина: `CloseHandle` на заведомо невалидном
+        хендле `0x7FFFFFFF` отказывает с `GetLastError() == 6`
+        (`ERROR_INVALID_HANDLE`) — проверено отдельным скриптом перед
+        написанием теста.
+
+        Мутация «`close()` обнуляет `_handle` ДО проверки `CloseHandle`»
+        уронит этот тест: после отказа `_handle` обязан остаться прежним
+        (иначе повторный `close()` станет no-op, а `pids()`/`is_empty()`
+        начнут врать, что Job пуст, хотя настоящий хендл никогда не был
+        закрыт и утёк).
+        """  # noqa: RUF002
+        job = ServerJob()
+        job._handle = 0x7FFFFFFF  # заведомо невалидный хендл — CloseHandle отказывает
+        try:
+            with pytest.raises(JobError):
+                job.close()
+            assert job._handle == 0x7FFFFFFF, "close() потерял хендл при отказе CloseHandle"
+        finally:
+            job._handle = None  # ничего реально не открыто — просто снять фейковое значение
+
+    def test_pids_raises_job_error_when_query_fails_for_other_reason(self) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ: отказ `QueryInformationJobObject` не по `ERROR_MORE_DATA`
+        обязан всплыть `JobError`, а не тихо превратиться в пустой список.
+
+        [Ф] 29.08.2026, эта машина: тот же невалидный хендл `0x7FFFFFFF`
+        валит `QueryInformationJobObject` с `GetLastError() == 6`
+        (`ERROR_INVALID_HANDLE`, не 234) — ветка «иначе» в `pids()`.
+        """  # noqa: RUF002
+        job = ServerJob()
+        job._handle = 0x7FFFFFFF
+        try:
+            with pytest.raises(JobError):
+                job.pids()
+        finally:
+            job._handle = None
+
 
 class TestNullJob:
     def test_null_job_is_a_no_op(self) -> None:
