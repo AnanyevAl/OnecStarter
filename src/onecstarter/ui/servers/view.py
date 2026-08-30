@@ -551,7 +551,7 @@ class ServersView(QWidget):
 
         self._console_note_text = self._read_console_note()
         self._path_label.setText(
-            f"{self._workspace.store_path} · статус — по живым процессам · "
+            f"{self._workspace.store_path} · статус — по Job Object запуска · "
             f"консоль: {self._console_note_text}"
         )
 

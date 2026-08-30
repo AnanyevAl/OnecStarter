@@ -1134,9 +1134,17 @@ def test_port_holder_line_is_red_and_has_no_button(
 
 
 def test_path_row_shows_store_path(application: QApplication, tmp_path: Path) -> None:
+    """Строка пути: где лежит `servers.json` и откуда берётся статус карточек.
+
+    Волна финального ревью ветки T-12, п. 3: источник статуса — Job Object
+    запуска, а не снимок процессов (`_card_state`: Job спрашивается первым,
+    снимок — последним). Прежний текст «статус — по живым процессам»
+    остался от T-08 и после T-12 лжёт читателю о том, чему верит раздел.
+    """  # noqa: RUF002
     workspace = _workspace(tmp_path, ())
     view = ServersView(workspace, installed=lambda: [], palette=theme.DARK)
     assert str(workspace.store_path) in view.path_text()
+    assert "статус — по Job Object запуска" in view.path_text()
 
 
 def test_console_note_shows_not_registered_by_default(
