@@ -1608,7 +1608,7 @@ def _removal_question(profile: ServerProfile, state: CardState) -> str:
         ...  # дальше как раньше: сброс списков, _build_card по statuses, _build_foreign_row по foreign, строка пути
 ```
 
-`on_scan_snapshot()`: `self.rebuild()`; если после него `self._status_problem is not None` — `return` без `_check_pending_confirmation` (ожидание §8 сохраняется до следующего снимка); иначе — как раньше. Аксессоры: `status_problem() -> str | None`, `path_label_style() -> str` (`self._path_label.styleSheet()`).
+`on_scan_snapshot()`: `self.rebuild()`; если после него `self._status_problem is not None` — `return` без `_check_pending_confirmation` (ожидание §8 сохраняется до следующего снимка); иначе `_check_pending_confirmation(self._last_statuses)`, где `_last_statuses: list[ServerStatus]` — результат `statuses()` из ЭТОГО же успешного `rebuild()` (правка вслед за находкой исполнителя задачи 5: второй вызов `statuses()` вне `try/except` сводил бы страховку на нет — тот же слот Qt, тот же `ServerError`). Свежесть `_last_statuses` держится на порядке «читать сразу после `rebuild()` в том же вызове» — единственный писатель `rebuild()`, единственный читатель `on_scan_snapshot()`. Аксессоры: `status_problem() -> str | None`, `path_label_style() -> str` (`self._path_label.styleSheet()`).
 
 В `_build_card`: `button_text, button_enabled, button_tooltip = _button_state(status)` (в слепом окне до первого снимка — как раньше, свои значения); `state = _card_state(status)`; `running = state is CardState.RUNNING`; `self._profile_menu_args.append((profile.id, state))`; меню/`_remove` получают `state`; `_remove` зовёт `_removal_question(profile, state)` и `remove_profile` (остановка — внутри воркспейса, задача 3). `_check_pending_confirmation` — как в Interfaces. Докстринги модуля/`_status_text`/`_removal_question`/`_remove` переписать: решение 8 отменено (T-12, решение 3), решение 5 отменено (решение 4), «сироты» → «остатки в Job» и «чужие держатели портов»; IMPORTANT 3 (процессы главнее версии) сохраняется — теперь «Job главнее версии».
 
@@ -1648,7 +1648,7 @@ def _removal_question(profile: ServerProfile, state: CardState) -> str:
 
 - [ ] **Step 1: Гейты на итоговом дереве** — `uv run pytest -q` (обычный режим; число тестов и время — в отчёт), `uv run ruff check .`, `uv run mypy` — 0/0/0. После прогона: `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'time.sleep\(' }` — пусто (подставные процессы прибраны).
 - [ ] **Step 2: Сборка** — `build/build.ps1` БЕЗ редиректа `2>&1` (PowerShell 5.1 оборачивает stderr native-команд в `NativeCommandError`); собранный exe закрыт заранее. Smoke собранного экземпляра — `OK`, размер dist — в отчёт.
-- [ ] **Step 3: Мутации** — по протоколу: правка → ТОЛЬКО названный тест → дословный результат (`FAILED …::… - AssertionError: …`) → `git checkout -- <файл>` → `git status --short` пуст. Все 14:
+- [ ] **Step 3: Мутации** — по протоколу: правка → ТОЛЬКО названный тест → дословный результат (`FAILED …::… - AssertionError: …`) → `git checkout -- <файл>` → `git status --short` пуст. Все 16:
 
 | # | Мутация | Файл | Тест |
 | --- | --- | --- | --- |
@@ -1666,6 +1666,8 @@ def _removal_question(profile: ServerProfile, state: CardState) -> str:
 | 12 | `_button_state` считает `FOREIGN` активной «Остановить» | `ui/servers/view.py` | `test_foreign_matched_ragents_are_show_only` |
 | 13 | `port_holders` игнорирует `exclude_pids` | `domain/server_match.py` | `test_own_job_pids_are_excluded` |
 | 14 | `rebuild()` без `try/except ServicesError` вокруг `statuses()` | `ui/servers/view.py` | `test_rebuild_survives_a_job_that_cannot_be_read` |
+| 15 | `_status_text`/`_button_state` проверяют `resolved is None` РАНЬШЕ состояния Job (версия главнее Job) | `ui/servers/view.py` | `test_running_process_wins_over_unresolved_version` |
+| 16 | `on_scan_snapshot()` зовёт `_check_pending_confirmation` и при `_status_problem` (убран ранний `return`) | `ui/servers/view.py` | `test_scan_snapshot_with_unreadable_job_keeps_pending_confirmation` |
 
 Мутации 1–2 поднимают подставные python-процессы — после каждой проверить, что живых не осталось (команда из Step 1).
 - [ ] **Step 4: `docs/tasks.md`** — в разделе T-12: число тестов, коды гейтов, итог сборки/smoke, таблица «# | Мутация | Файл | Тест | Результат» с дословными результатами; статус раздела — «код готов, ждёт финального ревью ветки и живого чек-листа (спека T-12 §10)».
