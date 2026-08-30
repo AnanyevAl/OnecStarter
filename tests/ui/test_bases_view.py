@@ -2818,6 +2818,51 @@ def test_alphabetical_mode_disables_keyboard_reorder(qtbot, workspace_factory, m
     assert ALPHABETICAL_REORDER_NOTE in str(errors[0])
 
 
+def test_alt_up_without_selection_in_alphabetical_mode_is_silent(
+    qtbot, workspace_factory, monkeypatch
+):
+    """ЗАЩИТНЫЙ ТЕСТ (находка ре-ревью волны 30.08.2026): без выбора Alt+↑ молчит и здесь.
+
+    Мутация: проверка режима первой строкой метода (до isValid/
+    _is_in_file_tree) — тогда без текущей строки подсказка
+    `ALPHABETICAL_REORDER_NOTE` показалась бы, хотя FILE-режим здесь тоже
+    ничего не делает (`index.isValid()` — первый `return` в `_move_current`).
+    Падает на `errors == []`.
+    """  # noqa: RUF002
+    view, _, errors, _ = _view(qtbot, workspace_factory, list_order=lambda: ListOrder.ALPHABETICAL)
+    _show_exposed(qtbot, view)
+    moves = _spy_on(monkeypatch, view.workspace(), "move_within_group")
+    view.tree().setCurrentIndex(QModelIndex())
+
+    qtbot.keyClick(view, Qt.Key.Key_Up, Qt.KeyboardModifier.AltModifier)
+
+    assert moves == []
+    assert errors == []
+
+
+def test_alt_up_in_a_virtual_branch_in_alphabetical_mode_is_silent(
+    qtbot, workspace_factory, monkeypatch
+):
+    """ЗАЩИТНЫЙ ТЕСТ (находка ре-ревью волны 30.08.2026): виртуальная ветка молчит и здесь.
+
+    Мутация: проверка режима первой строкой метода (до isValid/
+    _is_in_file_tree) — тогда курсор в «Избранное» получил бы подсказку
+    `ALPHABETICAL_REORDER_NOTE`, хотя FILE-режим тут тоже молчит
+    (`test_alt_up_in_a_virtual_branch_is_a_no_op`). Падает на `errors == []`.
+    """  # noqa: RUF002
+    view, _, errors, _ = _view(qtbot, workspace_factory, list_order=lambda: ListOrder.ALPHABETICAL)
+    view.toggle_favorite(_DEMO_ACCOUNTING_KEY)
+    _show_exposed(qtbot, view)
+    moves = _spy_on(monkeypatch, view.workspace(), "move_within_group")
+    _select_key(view, _DEMO_ACCOUNTING_KEY)  # «Избранное» стоит первой веткой
+    assert "Избранное" in _current_path(view)
+
+    qtbot.keyClick(view, Qt.Key.Key_Up, Qt.KeyboardModifier.AltModifier)
+
+    assert moves == []
+    assert errors == []
+
+
 def test_alphabetical_mode_drop_within_group_does_not_reorder(
     qtbot, workspace_factory, monkeypatch
 ):

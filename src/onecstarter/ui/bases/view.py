@@ -1727,23 +1727,37 @@ class BasesView(QWidget):
         `handle_drop`/`_reorder`, наоборот, всегда берут соседа из полного
         порядка — там цель уже найдена курсором, а не соседством в списке.
 
-        Виртуальные ветки (Избранное/Недавние/Общие списки) не переставляются:
-        их порядок не хранится в `OrderInList` (`_is_in_file_tree`).
-        В алфавитном режиме перестановки нет вовсе (T-11, п. 2) — отказ идёт
-        через `_on_error`/`ALPHABETICAL_REORDER_NOTE`, не молча (находка
-        финального ревью ветки: голый `return` повторял дефект smoke №2).
+        Виртуальные ветки (Избранное/Недавние/Общие списки) и пустой выбор
+        не переставляются в ЛЮБОМ режиме показа: там нет ни соседа по файлу,
+        ни смысла в подсказке (`index.isValid()`, `_is_in_file_tree`).
+        Поэтому проверка алфавитного режима стоит ПОСЛЕ этих ранних `return`
+        и после проверки вида строки, а не первой строкой метода: находка
+        ре-ревью волны 30.08.2026 — с проверкой первой строкой подсказка
+        `ALPHABETICAL_REORDER_NOTE` показывалась бы и там, где FILE-режим
+        тоже молчит (нет выбора, курсор в виртуальной ветке, заголовок
+        раздела), ложно намекая, что переключение на «Как в файле» решило
+        бы дело.
+
+        В алфавитном режиме, когда курсор стоит на настоящей записи/группе
+        дерева файла (ровно там, где FILE-режим выполнил бы перестановку),
+        перестановки нет вовсе (T-11, п. 2) — отказ идёт через `_on_error`/
+        `ALPHABETICAL_REORDER_NOTE`, не молча (находка финального ревью
+        ветки: голый `return` повторял дефект smoke №2).
         """  # noqa: RUF002
-        if self._list_order() is ListOrder.ALPHABETICAL:
-            # Порядок задаёт алфавит, а не OrderInList: писать в файл нечего  # noqa: RUF003
-            # и незачем (T-11, п. 2, вариант а) — но отказ обязан быть виден.  # noqa: RUF003
-            self._on_error(InvalidRequestError(ALPHABETICAL_REORDER_NOTE))
-            return
         index = self._tree.currentIndex().siblingAtColumn(0)
         if not index.isValid() or not self._is_in_file_tree(index):
             return
         kind = index.data(KIND_ROLE)
         key = index.data(KEY_ROLE)
         if kind not in (RowKind.BASE.value, RowKind.GROUP.value) or not isinstance(key, str):
+            return
+        if self._list_order() is ListOrder.ALPHABETICAL:
+            # Порядок задаёт алфавит, а не OrderInList: писать в файл нечего  # noqa: RUF003
+            # и незачем (T-11, п. 2, вариант а) — но отказ обязан быть виден,  # noqa: RUF003
+            # и только для строки, которую FILE-режим и правда переставил бы
+            # (ре-ревью волны 30.08.2026: проверка была первой строкой метода  # noqa: RUF003
+            # и ловила пустой выбор/виртуальные ветки тоже).
+            self._on_error(InvalidRequestError(ALPHABETICAL_REORDER_NOTE))
             return
         model = self._tree.model()
         parent = index.parent()
