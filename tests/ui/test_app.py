@@ -1200,7 +1200,7 @@ def test_main_start_hidden_with_tray_and_close_to_tray_off_keeps_the_window_hidd
     assert assembled.shown == [], "скрываться было чем — окно не показывается"
 
 
-def test_store_changed_rebuilds_the_tree_only_on_recent_limit_change(
+def test_store_changed_rebuilds_the_tree_only_on_list_settings_change(
     assembled: _Assembly,
 ) -> None:
     """Круг исправлений 1, находка 2: `store.changed` не должен всегда рвать дерево.
@@ -1210,9 +1210,9 @@ def test_store_changed_rebuilds_the_tree_only_on_recent_limit_change(
     apply_palette → rebuild()`, плюс новая безусловная `store.changed`-
     проводка), а `close_to_tray`/хоткей дёргали полную перестройку, хотя
     к дереву отношения не имеют. Решение заказчика 20.08.2026: перестройка
-    только когда изменился `recent_limit`. Проверяем три сценария счётчиком
-    `_RecordingView.rebuild_calls` (считает и прямой `rebuild()`, и
-    косвенный через `apply_palette`).
+    только когда изменился `recent_limit` или `list_order`. Проверяем три
+    сценария счётчиком `_RecordingView.rebuild_calls` (считает и прямой
+    `rebuild()`, и косвенный через `apply_palette`).
     """  # noqa: RUF002
     view = assembled.view
     store = assembled.store
