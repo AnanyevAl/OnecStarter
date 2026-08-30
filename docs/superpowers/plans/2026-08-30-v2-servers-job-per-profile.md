@@ -1460,6 +1460,7 @@ class TestReconcileOnScan:
   - `_removal_question(profile, state: CardState) -> str`: `RUNNING` → `Сервер «{name}» работает — остановить его и удалить профиль?`; `REMNANTS` → `У профиля «{name}» остались процессы прошлого запуска — погасить их и удалить профиль?`; `FOREIGN` → `Удалить профиль «{name}»? Сервер запущен не лаунчером и продолжит работать — он перейдёт в «Другие серверы на машине».`; `STOPPED` → `Удалить профиль «{name}» из списка серверов?`.
   - `ProfileRow` — без изменений; `_profile_menu_args: list[tuple[str, CardState]]`; `_build_card_menu(profile_id, state)`; `_remove(profile_id, state)`; `_toggle(profile_id, installations, running: bool)` — `running = state is CardState.RUNNING`.
   - `_check_pending_confirmation`: положительный исход — `status.spawned_pid is not None and status.spawned_pid in status.job_pids` → `log_event(id, f"работает · PID {status.spawned_pid}")`; иначе — прежнее сообщение «завершился сразу после запуска» (`show_error` + `log_event`). Снимок (`status.processes`) в решении не участвует.
+  - **Страховка `rebuild()` (ревью задачи 3, Important 1):** с T-12 `workspace.statuses()` может поднять `ServerError` (`JobError` из `Job.pids()` → `ServerError`, спека T-12 §7), а `rebuild()` зовётся из слота скана каждые 5 с и после каждого действия — необработанное исключение в слоте Qt оставило бы раздел неперерисовываемым. `rebuild()` читает `statuses()`/`foreign_servers()` ДО `_clear(...)`; при `ServicesError` карточки прошлого `rebuild()` остаются как есть, строка пути показывает `{store_path} · статус недоступен: {error}` цветом `palette.problem`, аксессор `status_problem() -> str | None` отдаёт текст (`None`, когда всё в порядке — и строка пути возвращается к обычному виду/цвету). `on_scan_snapshot()` при том же исключении делает `rebuild()` и НЕ трогает `_pending_confirmation` (проверка §8 откладывается до следующего снимка). Операции (`_toggle`/`_remove`/`_extinguish`) по-прежнему показывают `ServicesError` через `show_error`.
 
 - [ ] **Step 1: Падающие тесты (`tests/ui/test_servers_view.py`)**
 
@@ -1503,6 +1504,7 @@ def test_card_state_table(status: ServerStatus, expected: CardState) -> None:
 - Удаление: `test_removal_of_running_profile_asks_to_stop_and_refusal_keeps_it_running` (ЗАЩИТНЫЙ: `_start`; `refuse` собирает вопрос; `_trigger_delete`; `"остановить его и удалить" in questions[0]`; `factory.created[0].closed is False`; профиль на месте. Мутация: удалять/останавливать до вопроса — упадёт); `test_removal_of_running_profile_confirmed_stops_and_removes` (`closed is True`, `profiles() == []`); `test_removal_of_remnants_profile_asks_to_extinguish` (`"погасить их и удалить" in questions[0]`); `test_removal_of_foreign_running_profile_warns_it_keeps_running` (совпавший агент, Job нет: `"продолжит работать" in questions[0]`, отказ → профиль на месте); `test_removal_of_stopped_profile_uses_plain_question` — как есть; `test_removal_confirmed_triggers_rescan` — через `_start`.
 - §8: `test_start_that_dies_silently_is_reported` — после клика `factory.created[0].pids_value = ()` (ragent умер), `apply_scan(пустой)` + `on_scan_snapshot()` → `errors` с именем и портом; `test_start_confirmed_running_reports_nothing` — после клика Job уже содержит 4242 (FakeSpawn), `apply_scan(пустой)` + `on_scan_snapshot()` → `errors == []`; `test_start_followed_by_unrelated_rebuild_does_not_falsely_report_death` — так же, со снимком без агентов; `test_confirmed_running_is_also_written_to_the_journal` → `"работает · PID 4242" in journal_text`; `test_death_after_start_is_also_written_to_the_journal` → `pids_value = ()`; новый `test_start_that_dies_leaving_remnants_reports_death_and_shows_remnants`: после клика `pids_value = (4300,)`, `apply_scan` + `on_scan_snapshot()` → `errors` не пуст, `row.status_text` начинается с `"остановлен · остатки прошлого запуска"`, в журнале есть и `ragent завершился извне`, и `завершился сразу после запуска`.
 - `test_stop_does_not_arm_the_confirmation_check` — `_start`, клик «Остановить», `apply_scan` + `on_scan_snapshot()` → `errors == []`.
+- Страховка `rebuild()` (ревью задачи 3): `FakeJob` получает поле `pids_error: JobError | None = None` — `pids()` поднимает его, если задано. `test_rebuild_survives_a_job_that_cannot_be_read` (ЗАЩИТНЫЙ: мутация «убрать `try/except ServicesError` в `rebuild()`» — тест упадёт необработанным `ServerError`): `_start`, `view` построен (карточка «работает · PID 4242» есть), затем `factory.created[0].pids_error = JobError("QueryInformationJobObject отказал")`, `view.rebuild()` — исключения нет, `view.profile_rows()` по-прежнему одна строка с прежним текстом, `"статус недоступен" in view.path_text()`, `theme.DARK.problem` в `view.path_label_style()` (новый аксессор — `styleSheet()` строки пути), `view.status_problem()` содержит `"QueryInformationJobObject"`; `test_rebuild_clears_the_problem_when_statuses_recover` — после `pids_error = None` и `rebuild()` `status_problem() is None`, строка пути без «статус недоступен»; `test_scan_snapshot_with_unreadable_job_keeps_pending_confirmation` — после клика «Запустить» (профиль в ожидании §8) `pids_error` задан, `apply_scan` + `on_scan_snapshot()` → `errors == []`, затем `pids_error = None`, `apply_scan` + `on_scan_snapshot()` → проверка §8 сработала (журнал содержит `работает · PID 4242`).
 
 - [ ] **Step 2: RED** — `uv run pytest tests/ui/test_servers_view.py -q` (`ImportError: CardState`).
 
@@ -1581,6 +1583,33 @@ def _removal_question(profile: ServerProfile, state: CardState) -> str:
     return f"Удалить профиль «{profile.name}» из списка серверов?"
 ```
 
+Страховка `rebuild()` (ревью задачи 3, Important 1):
+
+```python
+    def rebuild(self) -> None:
+        server_installations = self._installed()
+        installed_versions = [si.installation.version for si in server_installations]
+        try:
+            statuses = self._workspace.statuses(installed_versions)
+            foreign = self._workspace.foreign_servers()
+        except ServicesError as error:
+            # T-12: statuses() читает Job.pids() — отказ WinAPI (JobError → ServerError)
+            # не должен оставить раздел неперерисовываемым: карточки прошлого
+            # rebuild() остаются, строка пути показывает причину.
+            self._status_problem = str(error)
+            self._path_label.setText(
+                f"{self._workspace.store_path} · статус недоступен: {error}"
+            )
+            self._path_label.setStyleSheet(f"color: {self._palette.problem};")
+            return
+        self._status_problem = None
+        self._path_label.setStyleSheet("")
+        self._clear(self._cards_layout)
+        ...  # дальше как раньше: сброс списков, _build_card по statuses, _build_foreign_row по foreign, строка пути
+```
+
+`on_scan_snapshot()`: `self.rebuild()`; если после него `self._status_problem is not None` — `return` без `_check_pending_confirmation` (ожидание §8 сохраняется до следующего снимка); иначе — как раньше. Аксессоры: `status_problem() -> str | None`, `path_label_style() -> str` (`self._path_label.styleSheet()`).
+
 В `_build_card`: `button_text, button_enabled, button_tooltip = _button_state(status)` (в слепом окне до первого снимка — как раньше, свои значения); `state = _card_state(status)`; `running = state is CardState.RUNNING`; `self._profile_menu_args.append((profile.id, state))`; меню/`_remove` получают `state`; `_remove` зовёт `_removal_question(profile, state)` и `remove_profile` (остановка — внутри воркспейса, задача 3). `_check_pending_confirmation` — как в Interfaces. Докстринги модуля/`_status_text`/`_removal_question`/`_remove` переписать: решение 8 отменено (T-12, решение 3), решение 5 отменено (решение 4), «сироты» → «остатки в Job» и «чужие держатели портов»; IMPORTANT 3 (процессы главнее версии) сохраняется — теперь «Job главнее версии».
 
 - [ ] **Step 4: GREEN** — `uv run pytest tests/ui/test_servers_view.py -q`; полный suite, `ruff`, `mypy` — 0. Коммит `feat: T-12 — карточка: таблица состояний, чужой ragent только показ, удаление = остановка (задача 5)`.
@@ -1619,7 +1648,7 @@ def _removal_question(profile: ServerProfile, state: CardState) -> str:
 
 - [ ] **Step 1: Гейты на итоговом дереве** — `uv run pytest -q` (обычный режим; число тестов и время — в отчёт), `uv run ruff check .`, `uv run mypy` — 0/0/0. После прогона: `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'time.sleep\(' }` — пусто (подставные процессы прибраны).
 - [ ] **Step 2: Сборка** — `build/build.ps1` БЕЗ редиректа `2>&1` (PowerShell 5.1 оборачивает stderr native-команд в `NativeCommandError`); собранный exe закрыт заранее. Smoke собранного экземпляра — `OK`, размер dist — в отчёт.
-- [ ] **Step 3: Мутации** — по протоколу: правка → ТОЛЬКО названный тест → дословный результат (`FAILED …::… - AssertionError: …`) → `git checkout -- <файл>` → `git status --short` пуст. Все 13:
+- [ ] **Step 3: Мутации** — по протоколу: правка → ТОЛЬКО названный тест → дословный результат (`FAILED …::… - AssertionError: …`) → `git checkout -- <файл>` → `git status --short` пуст. Все 14:
 
 | # | Мутация | Файл | Тест |
 | --- | --- | --- | --- |
@@ -1636,6 +1665,7 @@ def _removal_question(profile: ServerProfile, state: CardState) -> str:
 | 11 | `run_smoke` не передаёт `job_factory` | `ui/app.py` | `test_run_smoke_uses_null_job` |
 | 12 | `_button_state` считает `FOREIGN` активной «Остановить» | `ui/servers/view.py` | `test_foreign_matched_ragents_are_show_only` |
 | 13 | `port_holders` игнорирует `exclude_pids` | `domain/server_match.py` | `test_own_job_pids_are_excluded` |
+| 14 | `rebuild()` без `try/except ServicesError` вокруг `statuses()` | `ui/servers/view.py` | `test_rebuild_survives_a_job_that_cannot_be_read` |
 
 Мутации 1–2 поднимают подставные python-процессы — после каждой проверить, что живых не осталось (команда из Step 1).
 - [ ] **Step 4: `docs/tasks.md`** — в разделе T-12: число тестов, коды гейтов, итог сборки/smoke, таблица «# | Мутация | Файл | Тест | Результат» с дословными результатами; статус раздела — «код готов, ждёт финального ревью ветки и живого чек-листа (спека T-12 §10)».
