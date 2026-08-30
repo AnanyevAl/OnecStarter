@@ -30,11 +30,15 @@ from PySide6.QtWidgets import (
 from onecstarter.domain.launch import LaunchCommand
 from onecstarter.domain.server import ServerConvention, ServerProfile
 from onecstarter.domain.version import Arch, Installation, VersionNumber, parse_version
-from onecstarter.platform_1c.job import NullJob
+from onecstarter.platform_1c.job import JobError, NullJob
 from onecstarter.platform_1c.process_scan import NullScanner, ProcessInfo
 from onecstarter.platform_1c.server_discovery import ServerInstallation
 from onecstarter.services.catalog import EMPTY_COMMON_DATA
-from onecstarter.services.errors import ConsoleRegistrationDeclinedError, ConsoleRegistrationError
+from onecstarter.services.errors import (
+    ConsoleRegistrationDeclinedError,
+    ConsoleRegistrationError,
+    ServerError,
+)
 from onecstarter.services.hotkeys import parse_hotkey
 from onecstarter.services.servers import ScanSnapshot, ServersWorkspace
 from onecstarter.services.settings import (
@@ -66,15 +70,26 @@ from .conftest import CONVENTIONS, FIXTURE, INSTALLED
 
 @dataclass
 class _FakeJob:
-    """Job для тестов проводки (T-12): «работает» — это непустой `pids()`."""
+    """Job для тестов проводки (T-12): «работает» — это непустой `pids()`.
+
+    `pids_error` (волна финального ревью ветки, п. 1): заданный `JobError`
+    поднимается вместо ответа — так воспроизводится отказ
+    `QueryInformationJobObject` на живом хендле, который `services`
+    переводит в `ServerError` (`ServersWorkspace._job_pids`). Ровно этим
+    отказом ветка T-12 научилась ронять слоты Qt, поэтому фейк обязан
+    уметь его изображать.
+    """  # noqa: RUF002
 
     pids_value: tuple[int, ...] = ()
     closed: bool = False
+    pids_error: JobError | None = None
 
     def assign(self, process_handle: int) -> None:
         pass
 
     def pids(self) -> tuple[int, ...]:
+        if self.pids_error is not None:
+            raise self.pids_error
         return () if self.closed else self.pids_value
 
     def close(self) -> None:
@@ -2483,6 +2498,65 @@ def test_console_flow_cancel_does_nothing(qapp: Any) -> None:
     assert workspace.opened == []
 
 
+def test_console_flow_survives_unreadable_job(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ (волна финального ревью, п. 1): отказ Job — сообщение, не крах слота.
+
+    `on_console` (замыкание `_build_main_window`) спрашивает `statuses()`,
+    чтобы отдать в `ConsoleDialog` версии работающих профилей; с T-12 этот
+    вызов доходит до `Job.pids()` и может отказать. Без страховки исключение
+    уходит из слота `clicked` кнопки «Консоль администрирования…»: диалог
+    не открывается, а под `pythonw` (без консоли) пользователь не видит
+    вообще ничего. Правильное поведение — показать причину и НЕ открывать
+    диалог со списком, собранным наполовину.
+
+    `QMessageBox.exec` подменена журналом текста (тот же приём, что
+    у страховки `_assemble` в этом файле, только записывающий, а не
+    кидающий): `_show_servers_error` строит настоящий `QMessageBox`,
+    и под offscreen его `exec()` повис бы модально навсегда.
+
+    Мутация: убрать `try/except ServicesError` вокруг `statuses()`
+    в `on_console` — тест обязан упасть на `ServerError` из клика.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    monkeypatch.setattr(app_module, "spawn_server", lambda command, log, job: 4646)
+    shown: list[str] = []
+
+    def _recording_exec(self: QMessageBox) -> int:
+        shown.append(self.text())
+        return 0
+
+    monkeypatch.setattr(QMessageBox, "exec", _recording_exec)
+    flow_calls: list[Any] = []
+    monkeypatch.setattr(
+        app_module, "_console_flow", lambda *args, **kwargs: flow_calls.append(args)
+    )
+    jobs: list[_FakeJob] = []
+
+    def job_factory() -> _FakeJob:
+        job = _FakeJob((4646,))
+        jobs.append(job)
+        return job
+
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+    window, _tasks, _monitor = _build_main_window(qapp, runtime, env, job_factory=job_factory)
+    qtbot.addWidget(window)
+    labels = [button.text() for button in window.section_buttons()]
+    window.show_section(labels.index("Серверы"))
+    servers_view = window.current_section()
+    assert isinstance(servers_view, ServersView)
+    _start_fake_server(servers_view, tmp_path)
+    jobs[0].pids_error = JobError("QueryInformationJobObject отказал")
+
+    servers_view.console_button().click()
+
+    assert flow_calls == [], "диалог консоли не должен открываться на неизвестном состоянии"
+    assert len(shown) == 1
+    assert "QueryInformationJobObject отказал" in shown[0]
+
+
 # -- T-10, задача 6: подтверждение выхода при работающих серверах ------------
 #
 # `_confirm_quit_with_servers`/`_servers_word` — чистые функции уровня модуля
@@ -2542,6 +2616,33 @@ def test_confirm_quit_with_servers_declined_returns_false() -> None:
     result = app_module._confirm_quit_with_servers(lambda: 2, lambda _message: False)
 
     assert result is False
+
+
+def test_confirm_quit_with_servers_asks_when_state_is_unreadable() -> None:
+    """Отказ `running_count()` — не крах слота, а вопрос с фактом отказа в тексте.
+
+    Волна финального ревью ветки, п. 1 (Important 1): с T-12
+    `running_count()` читает Job у ОС и может поднять `ServerError`
+    (`QueryInformationJobObject` отказал). Молчаливый `True` увёл бы
+    пользователя из приложения, не сказав, что состояние серверов
+    неизвестно; исключение из слота — оставило бы окно незакрываемым.
+    Гейт поэтому спрашивает тем же диалогом с дефолтом «Нет», а причина
+    отказа стоит в тексте вопроса — гадать пользователю не по чему.
+    """  # noqa: RUF002
+    asked: list[str] = []
+
+    def running_count() -> int:
+        raise ServerError("Не удалось прочитать процессы сервера: Job не читается")  # noqa: RUF001
+
+    def ask(message: str) -> bool:
+        asked.append(message)
+        return False
+
+    assert app_module._confirm_quit_with_servers(running_count, ask) is False
+    assert len(asked) == 1
+    assert "Всё равно выйти?" in asked[0]
+    assert "Job не читается" in asked[0]
+    assert app_module._confirm_quit_with_servers(running_count, lambda _message: True) is True
 
 
 @pytest.mark.parametrize(
@@ -2652,6 +2753,105 @@ def test_confirm_quit_true_logs_shutdown_event_for_running_profile(
 
     journal_text = servers_view._workspace.journal_path(profile.id).read_text(encoding="utf-8")
     assert "выход лаунчера — сервер будет остановлен вместе с ним" in journal_text  # noqa: RUF001
+
+
+def test_confirm_quit_survives_unreadable_job(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ (волна финального ревью, п. 1): нечитаемый Job не рушит гейт выхода.
+
+    Проводка целиком: настоящий `ServersWorkspace` с профилем, запущенным
+    через фейковый Job, которому ПОСЛЕ старта задан отказ `pids()`.
+    Без страховки `running_count()` внутри `_confirm_quit_with_servers`
+    `ServerError` уходит из `window.confirm_quit()` — то есть из
+    `MainWindow.closeEvent` (виртуальный метод: `event.ignore()` не
+    зовётся, окно закрывается БЕЗ вопроса) и из слота трея «Выход»
+    (приложение не выходит вовсе, и так на каждую попытку).
+
+    Мутация: убрать `try/except ServicesError` вокруг `running_count()`
+    в `_confirm_quit_with_servers` — тест обязан упасть на `ServerError`,
+    поднятом из `window.confirm_quit()`.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    monkeypatch.setattr(app_module, "spawn_server", lambda command, log, job: 4646)
+    asked: list[str] = []
+    jobs: list[_FakeJob] = []
+
+    def job_factory() -> _FakeJob:
+        job = _FakeJob((4646,))
+        jobs.append(job)
+        return job
+
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+    window, _tasks, _monitor = _build_main_window(
+        qapp,
+        runtime,
+        env,
+        quit_dialog=_fake_quit_dialog(asked, answer=False),
+        job_factory=job_factory,
+    )
+    qtbot.addWidget(window)
+    labels = [button.text() for button in window.section_buttons()]
+    window.show_section(labels.index("Серверы"))
+    servers_view = window.current_section()
+    assert isinstance(servers_view, ServersView)
+    _start_fake_server(servers_view, tmp_path)
+    jobs[0].pids_error = JobError("QueryInformationJobObject отказал")
+
+    assert window.confirm_quit is not None
+    assert window.confirm_quit() is False
+    assert len(asked) == 1
+    assert "Всё равно выйти?" in asked[0]
+    assert "QueryInformationJobObject отказал" in asked[0]
+
+
+def test_confirm_quit_accepted_survives_unreadable_job_in_log_shutdown(
+    qtbot: Any, caplog: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ (волна финального ревью, п. 1): отказ `log_shutdown()` не отменяет выход.
+
+    Второй незащищённый вызов той же ветки: после согласия пользователя
+    `log_shutdown()` идёт по тем же `_job_pids` и падает тем же
+    `ServerError`. Согласие уже дано — отказ отметки в журнале не повод
+    ни ронять слот, ни оставлять приложение работающим вопреки ответу
+    пользователя: он уходит в `_log.warning`, а `confirm_quit()`
+    возвращает `True`.
+
+    Мутация: убрать `try/except ServicesError` вокруг `log_shutdown()`
+    в `_build_confirm_quit` — тест обязан упасть на `ServerError`.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    monkeypatch.setattr(app_module, "spawn_server", lambda command, log, job: 4646)
+    jobs: list[_FakeJob] = []
+
+    def job_factory() -> _FakeJob:
+        job = _FakeJob((4646,))
+        jobs.append(job)
+        return job
+
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+    window, _tasks, _monitor = _build_main_window(
+        qapp,
+        runtime,
+        env,
+        quit_dialog=_fake_quit_dialog([], answer=True),
+        job_factory=job_factory,
+    )
+    qtbot.addWidget(window)
+    labels = [button.text() for button in window.section_buttons()]
+    window.show_section(labels.index("Серверы"))
+    servers_view = window.current_section()
+    assert isinstance(servers_view, ServersView)
+    _start_fake_server(servers_view, tmp_path)
+    jobs[0].pids_error = JobError("QueryInformationJobObject отказал")
+
+    assert window.confirm_quit is not None
+    with caplog.at_level(logging.WARNING, logger="onecstarter.startup"):
+        assert window.confirm_quit() is True
+
+    assert "не удалось отметить выход в журналах серверов" in caplog.text
 
 
 def test_closing_window_without_quit_dialog_never_shows_a_confirmation_dialog(

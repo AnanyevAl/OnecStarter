@@ -497,12 +497,31 @@ def _confirm_quit_with_servers(
     (или крах) лаунчера гасит их вместе с ним через Job Object (задача 7).
     Молчаливый выход без вопроса потерял бы работающие кластеры без
     предупреждения, поэтому `n == 0` (`running_count` — обычно
-    `ServersWorkspace.running_count`, число профилей с живым процессом по
-    последнему снимку, `0` и до первого скана) — единственный случай, когда
-    подтверждение не нужно и `ask` не зовётся вовсе. `_servers_word` даёт
-    верное склонение числительного в тексте вопроса.
+    `ServersWorkspace.running_count`, с T-12 это число профилей с НЕПУСТЫМ
+    Job, а не с процессом по последнему снимку: снимок в вопросе о выходе
+    не участвует вовсе, и `0` до первого скана больше не значит «мы ещё
+    не смотрели») — единственный случай, когда подтверждение не нужно
+    и `ask` не зовётся вовсе. `_servers_word` даёт верное склонение
+    числительного в тексте вопроса.
+
+    Волна финального ревью ветки T-12 (Important 1): `running_count()`
+    читает Job у ОС и может отказать (`QueryInformationJobObject` →
+    `JobError` → `ServerError`, тот же отказ, ради которого застрахован
+    `ServersView.rebuild()`). Отказ здесь — не повод ни выйти молча
+    (пользователь не узнал бы, что состояние серверов неизвестно), ни
+    упасть исключением из слота: `MainWindow.closeEvent` — виртуальный
+    метод, исключение в нём не даёт дойти до `event.ignore()`, и окно
+    закрывается БЕЗ вопроса; трею «Выход» оно мешает выйти вовсе.
+    Поэтому неизвестное состояние — тот же вопрос с дефолтом «Нет»,
+    но с фактом отказа в тексте, а не с догадкой о числе серверов.
     """  # noqa: RUF002
-    n = running_count()
+    try:
+        n = running_count()
+    except ServicesError as error:
+        return ask(
+            f"Не удалось проверить состояние серверов ({error}). "  # noqa: RUF001
+            "Всё равно выйти?"
+        )
     if n == 0:
         return True
     return ask(f"Остановить {n} {_servers_word(n)} и выйти?")
@@ -681,11 +700,21 @@ def _build_main_window(
         # [Ф] Г3: консоль требует точного совпадения сборки с сервером —  # noqa: RUF003
         # версии профилей, у которых сейчас есть живой процесс, идут  # noqa: RUF003
         # в ConsoleDialog как «работает» (её докстринг, ui/servers/dialog.py).
-        running_versions = [
-            status.resolved
-            for status in servers_workspace.statuses(installed_versions)
-            if status.processes and status.resolved is not None
-        ]
+        # Волна финального ревью ветки T-12 (Important 1): `statuses()`
+        # доходит до `Job.pids()` и может отказать — без этой страховки
+        # исключение уходит из слота `clicked`, диалог не открывается,
+        # а под `pythonw` пользователь не видит вообще ничего.  # noqa: RUF003
+        # Показываем причину и НЕ открываем диалог со списком,  # noqa: RUF003
+        # собранным наполовину.
+        try:
+            running_versions = [
+                status.resolved
+                for status in servers_workspace.statuses(installed_versions)
+                if status.processes and status.resolved is not None
+            ]
+        except ServicesError as error:
+            _show_servers_error(str(error))
+            return
         convention = load_server_conventions()[0]
         _console_flow(
             servers_workspace,
@@ -781,7 +810,18 @@ def _build_main_window(
                 # вызывающих (`request_quit` и `MainWindow.closeEvent` —
                 # оба зовут именно этот `confirm_quit`), ДО `application.  # noqa: RUF003
                 # quit()`: после согласия, но раньше самого выхода.
-                servers_workspace.log_shutdown()
+                #
+                # Волна финального ревью ветки T-12 (Important 1):
+                # `log_shutdown()` идёт по тем же `_job_pids` и отказывает
+                # тем же `ServerError`. Согласие уже получено — отменять
+                # его из-за ненаписанной строки журнала было бы  # noqa: RUF003
+                # враньём пользователю о его же ответе, поэтому  # noqa: RUF003
+                # отказ уходит
+                # в лог, тем же приёмом, что `OSError` в `log_event`.
+                try:
+                    servers_workspace.log_shutdown()
+                except ServicesError as error:
+                    _log.warning("не удалось отметить выход в журналах серверов: %s", error)
             return confirmed
 
         return confirm_quit
