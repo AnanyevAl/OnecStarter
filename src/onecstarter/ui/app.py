@@ -637,6 +637,7 @@ def _build_main_window(
         installations=None,
         cfg_rules=runtime.cfg_rules,
         recent_limit=lambda: store.settings.recent_limit,
+        list_order=lambda: store.settings.list_order,
         palette=controller.palette,
         cache_env=env,
     )
@@ -913,21 +914,20 @@ def _build_main_window(
         _set_tray_tooltip(tray, text, busy=True)
         return f"Сочетание {text} занято другим приложением"
 
-    recent_limit_seen = store.settings.recent_limit
+    list_settings_seen = (store.settings.recent_limit, store.settings.list_order)
 
-    def rebuild_if_recent_limit_changed() -> None:
-        # Круг исправлений 1, находка 2: `store.changed` эмитируется на  # noqa: RUF003
-        # любую настройку, а дереву есть дело только до `recent_limit`  # noqa: RUF003
-        # («Недавние» строятся по этому числу). Смена темы уже перестраивает
-        # дерево своим путём (controller.changed → on_theme_changed →
-        # view.apply_palette → rebuild()) — безусловная перестройка здесь
-        # дублировала бы её, а close_to_tray/хоткей к дереву отношения  # noqa: RUF003
-        # не имеют вовсе (решение заказчика 20.08.2026).
-        nonlocal recent_limit_seen
-        current = store.settings.recent_limit
-        if current == recent_limit_seen:
+    def rebuild_if_list_settings_changed() -> None:
+        # Круг исправлений 1, находка 2 (T-04.7): `store.changed` эмитируется  # noqa: RUF003
+        # на любую настройку, а дереву есть дело только до тех, по которым  # noqa: RUF003
+        # оно строится: `recent_limit` («Недавние») и, с T-11 п. 2,  # noqa: RUF003
+        # `list_order`. Смена темы перестраивает дерево своим путём
+        # (controller.changed → apply_palette → rebuild()), остальные
+        # настройки к дереву отношения не имеют.
+        nonlocal list_settings_seen
+        current = (store.settings.recent_limit, store.settings.list_order)
+        if current == list_settings_seen:
             return
-        recent_limit_seen = current
+        list_settings_seen = current
         view.rebuild()
 
     def apply_default_client() -> None:
@@ -937,7 +937,7 @@ def _build_main_window(
     apply_default_client()
     store.changed.connect(apply_close_to_tray)
     store.changed.connect(apply_default_client)
-    store.changed.connect(rebuild_if_recent_limit_changed)
+    store.changed.connect(rebuild_if_list_settings_changed)
     settings_view.set_hotkey_handler(apply_hotkey)
 
     problem = apply_hotkey(store.settings.hotkey)

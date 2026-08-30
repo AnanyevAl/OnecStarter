@@ -69,6 +69,7 @@ from onecstarter.services.errors import (
 from onecstarter.services.groups import GroupRemoval
 from onecstarter.services.model import InfobaseItem, InfobaseSource
 from onecstarter.services.paths import ROOT, group_path, normalize_folder, render_folder
+from onecstarter.services.settings import ListOrder
 from onecstarter.services.workspace import Workspace
 from onecstarter.ui import errors as error_ui
 from onecstarter.ui import theme
@@ -341,6 +342,7 @@ class BasesView(QWidget):
         installations: Sequence[Installation] | None,
         cfg_rules: Sequence[DefaultVersionRule],
         recent_limit: Callable[[], int],
+        list_order: Callable[[], ListOrder],
         on_error: Callable[[ServicesError], None] | None = None,
         confirm_removal: Callable[[QWidget | None, InfobaseItem], bool] = confirm_removal,
         ask_group_removal: Callable[
@@ -368,6 +370,8 @@ class BasesView(QWidget):
         # пересборка обязана взять новое значение (тот же приём, что
         # `theme_mode=lambda: controller.mode` у трея).  # noqa: RUF003
         self._recent_limit = recent_limit
+        # T-11, п. 2: режим показа — тот же провайдер, что recent_limit.
+        self._list_order = list_order
         self._on_error = on_error or (lambda error: error_ui.show_service_error(self, error))
         # Инъекция, а не вызов функции модуля напрямую (тот же приём, что  # noqa: RUF003
         # у `open_directory` в ConnectionPanel и `choose_directory`  # noqa: RUF003
@@ -538,6 +542,7 @@ class BasesView(QWidget):
             self._workspace.tree(),
             self._workspace.common_errors(),
             recent_limit=self._recent_limit(),
+            order=self._list_order(),
         )
         query = self._search.text()
         self._rows = filter_rows(forest, query)
@@ -1590,6 +1595,8 @@ class BasesView(QWidget):
             if target is not None and normalize_folder(source.folder) == normalize_folder(
                 target.folder
             ):
+                if self._list_order() is ListOrder.ALPHABETICAL:
+                    return  # перестановка внутри группы в алфавитном режиме не имеет смысла
                 self._reorder(source_key, target.key, where)
                 return
         folder = self._folder_of_drop(target_key, where)
@@ -1704,7 +1711,12 @@ class BasesView(QWidget):
 
         Виртуальные ветки (Избранное/Недавние/Общие списки) не переставляются:
         их порядок не хранится в `OrderInList` (`_is_in_file_tree`).
+        В алфавитном режиме перестановки нет вовсе (T-11, п. 2).
         """  # noqa: RUF002
+        if self._list_order() is ListOrder.ALPHABETICAL:
+            # Порядок задаёт алфавит, а не OrderInList: писать в файл нечего  # noqa: RUF003
+            # и незачем (T-11, п. 2, вариант а).  # noqa: RUF003
+            return
         index = self._tree.currentIndex().siblingAtColumn(0)
         if not index.isValid() or not self._is_in_file_tree(index):
             return

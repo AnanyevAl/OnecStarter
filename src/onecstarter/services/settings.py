@@ -43,6 +43,7 @@ __all__ = [
     "RECENT_MIN",
     "SCHEMA_VERSION",
     "DefaultClient",
+    "ListOrder",
     "Settings",
     "ThemeMode",
     "load_settings",
@@ -83,6 +84,20 @@ class DefaultClient(Enum):
 _APP_VALUES = {DefaultClient.THICK: "ThickClient"}
 
 
+class ListOrder(Enum):
+    """Порядок записей в дереве «Баз» (T-11, п. 2; решение заказчика 29.08.2026 — вариант а).
+
+    Режим ПОКАЗА: файл `.v8i` не трогается, `OrderInList` не переписывается,
+    штатный стартер порядка не видит. `FILE` — как в файле (дефолт, поведение
+    прежних установок); `ALPHABETICAL` — группы перед базами, `display.
+    collation_key`. Разовое действие «переписать OrderInList по алфавиту»
+    (вариант б) заказчиком отклонено.
+    """  # noqa: RUF002
+
+    FILE = "file"
+    ALPHABETICAL = "alphabetical"
+
+
 @dataclass(frozen=True)
 class Settings:
     theme: ThemeMode = ThemeMode.AUTO
@@ -101,6 +116,9 @@ class Settings:
     # На запуск серверного профиля не действует (решение (а)); без трея  # noqa: RUF003
     # не действует (решение (б)) — это решает проводка ui/app.py, не модель.  # noqa: RUF003
     hide_on_launch: bool = False
+    # T-11, п. 2 (решение заказчика 29.08.2026, вариант а): режим показа,  # noqa: RUF003
+    # файл `.v8i` не трогается никогда. Дефолт — поведение прежних установок.
+    list_order: ListOrder = ListOrder.FILE
 
 
 def load_settings(path: Path) -> Settings:
@@ -128,6 +146,7 @@ def load_settings(path: Path) -> Settings:
         default_client=_client_of(payload.get("default_client")),
         servers_root=_servers_root_of(payload.get("servers_root")),
         hide_on_launch=_bool_of(payload.get("hide_on_launch"), default=False),
+        list_order=_order_of(payload.get("list_order")),
     )
 
 
@@ -143,6 +162,7 @@ def save_settings(path: Path, settings: Settings) -> None:
         "default_client": settings.default_client.value,
         "servers_root": settings.servers_root,
         "hide_on_launch": settings.hide_on_launch,
+        "list_order": settings.list_order.value,
     }
     text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
     atomic_write(path, text.encode("utf-8"))
@@ -162,6 +182,14 @@ def _client_of(value: Any) -> DefaultClient:
         return DefaultClient(value)
     except ValueError:
         return DefaultClient.THIN
+
+
+def _order_of(value: Any) -> ListOrder:
+    """Незнакомое значение — не порча: более новая версия могла записать свой режим."""
+    try:
+        return ListOrder(value)
+    except ValueError:
+        return ListOrder.FILE
 
 
 def _servers_root_of(value: Any) -> str:

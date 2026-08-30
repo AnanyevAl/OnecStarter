@@ -44,6 +44,7 @@ from onecstarter.services.servers import ScanSnapshot, ServersWorkspace
 from onecstarter.services.settings import (
     DEFAULT_HOTKEY,
     DefaultClient,
+    ListOrder,
     Settings,
     ThemeMode,
     save_settings,
@@ -1254,6 +1255,26 @@ def test_recent_limit_provider_is_live_from_settings(assembled: _Assembly) -> No
     store.update(recent_limit=store.settings.recent_limit + 7)
 
     assert view._recent_limit() == store.settings.recent_limit
+
+
+def test_store_changed_rebuilds_the_tree_on_list_order_change(assembled: _Assembly) -> None:
+    """T-11, п. 2: смена порядка — перестройка дерева ровно раз, как у recent_limit."""  # noqa: RUF002
+    view = assembled.view
+    store = assembled.store
+
+    view.rebuild_calls = 0
+    store.update(list_order=ListOrder.ALPHABETICAL)
+    assert view.rebuild_calls == 1
+
+    view.rebuild_calls = 0
+    store.update(hide_on_launch=True)
+    assert view.rebuild_calls == 0, "hide_on_launch к дереву отношения не имеет"
+
+
+def test_list_order_provider_is_live_from_settings(assembled: _Assembly) -> None:
+    assert assembled.view._list_order() is ListOrder.FILE
+    assembled.store.update(list_order=ListOrder.ALPHABETICAL)
+    assert assembled.view._list_order() is ListOrder.ALPHABETICAL
 
 
 # -- CRITICAL 2 финального ревью: ServersWorkspace-отказ в main() -----------

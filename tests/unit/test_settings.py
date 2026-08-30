@@ -10,6 +10,7 @@ from onecstarter.services.settings import (
     DEFAULT_RECENT_LIMIT,
     SCHEMA_VERSION,
     DefaultClient,
+    ListOrder,
     Settings,
     ThemeMode,
     load_settings,
@@ -47,6 +48,7 @@ def test_schema_is_written(tmp_path: Path) -> None:
         "default_client": "thin",
         "servers_root": "",
         "hide_on_launch": False,
+        "list_order": "file",
     }
 
 
@@ -125,6 +127,7 @@ def test_defaults_of_new_fields() -> None:
     assert DEFAULT_RECENT_LIMIT == 10
     assert DEFAULT_HOTKEY == "Ctrl+Alt+B"
     assert settings.hide_on_launch is False
+    assert settings.list_order is ListOrder.FILE
 
 
 def test_old_file_without_new_keys_reads_with_defaults(tmp_path: Path) -> None:
@@ -143,6 +146,7 @@ def test_round_trip_keeps_all_fields(tmp_path: Path) -> None:
         hotkey="Win+F9",
         recent_limit=0,
         hide_on_launch=True,
+        list_order=ListOrder.ALPHABETICAL,
     )
     save_settings(path, settings)
     assert load_settings(path) == settings
@@ -305,3 +309,22 @@ class TestHideOnLaunch:
         path = tmp_path / "settings.json"
         path.write_text(json.dumps({"schema": 1, "hide_on_launch": value}), encoding="utf-8")
         assert load_settings(path).hide_on_launch is False
+
+
+class TestListOrder:
+    """T-11, п. 2 (решение заказчика 29.08.2026, вариант а): режим показа, файл не трогается."""  # noqa: RUF002
+
+    def test_default_is_file_order(self) -> None:
+        assert Settings().list_order is ListOrder.FILE
+
+    def test_round_trip(self, tmp_path: Path) -> None:
+        path = tmp_path / "settings.json"
+        save_settings(path, Settings(list_order=ListOrder.ALPHABETICAL))
+        assert load_settings(path).list_order is ListOrder.ALPHABETICAL
+
+    @pytest.mark.parametrize("value", ["по алфавиту", 1, None, [], {}])
+    def test_unknown_list_order_falls_back_to_file(self, tmp_path: Path, value: object) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ. Мутация: `_order_of` отдаёт `ALPHABETICAL` на незнакомое значение."""  # noqa: RUF002
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps({"schema": 1, "list_order": value}), encoding="utf-8")
+        assert load_settings(path).list_order is ListOrder.FILE

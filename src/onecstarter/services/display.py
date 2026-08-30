@@ -15,6 +15,7 @@ from onecstarter.domain.selection import ResolutionSource, resolve_version
 from onecstarter.domain.version import Arch, Installation
 from onecstarter.services.catalog import CommonListError, TreeNode, build_tree
 from onecstarter.services.model import InfobaseItem, InfobaseSource
+from onecstarter.services.settings import ListOrder
 
 CONTENT_NAME_LIMIT = 10
 # Помечает подгруппу в плоском списке имён `group_contents`: без пометки
@@ -74,6 +75,7 @@ def display_forest(
     common_errors: Sequence[CommonListError],
     *,
     recent_limit: int,
+    order: ListOrder,
 ) -> list[Row]:
     """Собрать лес раздела: Избранное, Недавние, дерево файла, Общие списки.
 
@@ -84,13 +86,19 @@ def display_forest(
     `recent_limit` — обязательный аргумент, а не константа с умолчанием:
     это пользовательская настройка (спека §5), и значение по умолчанию
     здесь было бы вторым источником истины рядом с
-    `settings.DEFAULT_RECENT_LIMIT`. `0` гасит ветку целиком.
+    `settings.DEFAULT_RECENT_LIMIT`. `0` гасит ветку целиком. `order` —
+    так же обязателен и по той же причине; `ALPHABETICAL` сортирует дерево
+    файла, «Избранное» и «Общие списки» (`sort_rows`), «Недавние» всегда
+    по времени.
     """  # noqa: RUF002
+    alphabetical = order is ListOrder.ALPHABETICAL
     forest: list[Row] = []
     bases = [item for item in items if not item.is_group]
-    favorites = tuple(_base_row(item) for item in bases if item.favorite)
+    favorites = [_base_row(item) for item in bases if item.favorite]
+    if alphabetical:
+        favorites = _sorted_siblings(favorites)
     if favorites:
-        forest.append(Row(RowKind.SECTION, "Избранное", None, favorites))
+        forest.append(Row(RowKind.SECTION, "Избранное", None, tuple(favorites)))
     launched = sorted(
         (item for item in bases if item.last_launched_at is not None),
         key=lambda item: item.last_launched_at or _EPOCH,
@@ -99,9 +107,12 @@ def display_forest(
     recent = tuple(_base_row(item) for item in launched[:recent_limit])
     if recent:
         forest.append(Row(RowKind.SECTION, "Недавние", None, recent))
-    forest.extend(_row_of(node) for node in tree)
+    file_rows = [_row_of(node) for node in tree]
+    forest.extend(sort_rows(file_rows) if alphabetical else file_rows)
     common = [item for item in items if item.source is InfobaseSource.COMMON]
     common_rows = [_row_of(node) for node in build_tree(common)]
+    if alphabetical:
+        common_rows = sort_rows(common_rows)
     common_rows.extend(
         Row(RowKind.NOTE, f"{error.path}: {error.message}", None)
         for error in common_errors
@@ -131,6 +142,41 @@ def filter_rows(rows: Sequence[Row], query: str) -> list[Row]:
         if children:
             kept.append(replace(row, children=tuple(children)))
     return kept
+
+
+def collation_key(text: str) -> tuple[str, str]:
+    """Ключ алфавитного порядка (T-11, п. 2): без учёта регистра, «ё» как «е».
+
+    [Р] Детерминированное правило вместо `locale.strxfrm`: результат
+    не зависит от локали машины и проверяется таблично. Латиница идёт
+    перед кириллицей — как в Проводнике Windows; «ё» приравнена к «е»,
+    как в словарях (по кодам она стояла бы после «я»). Второй элемент —
+    полный casefold — делает порядок «Ель»/«Ёль» устойчивым.
+    """  # noqa: RUF002
+    folded = text.casefold()
+    return (folded.replace("ё", "е"), folded)  # noqa: RUF001
+
+
+def _sorted_siblings(rows: Sequence[Row]) -> list[Row]:
+    """Группы (и неявные узлы) перед базами, внутри класса — по `collation_key`; NOTE — в конце."""
+    groups = sorted(
+        (row for row in rows if row.kind in (RowKind.GROUP, RowKind.IMPLICIT_GROUP)),
+        key=lambda row: collation_key(row.label),
+    )
+    bases = sorted(
+        (row for row in rows if row.kind is RowKind.BASE),
+        key=lambda row: collation_key(row.label),
+    )
+    notes = [row for row in rows if row.kind is RowKind.NOTE]
+    return [*groups, *bases, *notes]
+
+
+def sort_rows(rows: Sequence[Row]) -> list[Row]:
+    """Алфавитный порядок всего поддерева, рекурсивно (режим `ListOrder.ALPHABETICAL`)."""
+    return [
+        replace(row, children=tuple(sort_rows(row.children)))
+        for row in _sorted_siblings(rows)
+    ]
 
 
 def row_label(row: Row) -> str:

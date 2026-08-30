@@ -24,7 +24,8 @@ v1, вставлена сразу ПОСЛЕ «ОКНО И ЗАПУСК» и п�
 подаётся инъекцией — тесты не трогают живой HKCU.
 """  # noqa: RUF002
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from typing import Any
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QShowEvent
@@ -43,7 +44,13 @@ from PySide6.QtWidgets import (
 )
 
 from onecstarter.services import autostart
-from onecstarter.services.settings import RECENT_MAX, RECENT_MIN, DefaultClient, ThemeMode
+from onecstarter.services.settings import (
+    RECENT_MAX,
+    RECENT_MIN,
+    DefaultClient,
+    ListOrder,
+    ThemeMode,
+)
 from onecstarter.ui.hotkey_edit import HotkeyEdit
 from onecstarter.ui.settings_store import SettingsStore
 from onecstarter.ui.shortcuts import BASES_SHORTCUTS
@@ -58,6 +65,11 @@ CHOICES = (
 CLIENT_CHOICES = (
     (DefaultClient.THIN, "Тонкий"),
     (DefaultClient.THICK, "Толстый"),
+)
+
+ORDER_CHOICES = (
+    (ListOrder.FILE, "Как в файле"),
+    (ListOrder.ALPHABETICAL, "По алфавиту"),
 )
 
 NOT_FROZEN_NOTE = "Доступно в установленной версии — из исходников ссылка в реестре протухнет"
@@ -112,6 +124,7 @@ class SettingsView(QWidget):
         self._choose_directory = choose_directory
         self._buttons: list[QPushButton] = []
         self._client_buttons: list[QPushButton] = []
+        self._order_buttons: list[QPushButton] = []
         self._group_labels: list[str] = []
         self._row_notes: dict[str, QLabel] = {}
         self._row_controls: dict[str, QWidget] = {}
@@ -221,6 +234,12 @@ class SettingsView(QWidget):
             "0 — ветка «Недавние» не показывается вовсе",
             self._recent,
         )
+        self._add_row(
+            "Порядок списка",
+            "«По алфавиту» — только показ: файл списка и штатный стартер порядка "
+            "не видят, перестановка Alt+↑/↓ и мышью отключена",
+            self._build_order_segment(),
+        )
 
         layout.addWidget(self._status)
         layout.addStretch(1)
@@ -312,7 +331,14 @@ class SettingsView(QWidget):
             self._buttons.append(button)
         return seg
 
-    def _build_client_segment(self) -> QWidget:
+    def _build_segment(
+        self,
+        choices: Sequence[tuple[Any, str]],
+        is_current: Callable[[Any], bool],
+        choose: Callable[[Any], None],
+        registry: list[QPushButton],
+    ) -> QWidget:
+        """Сегментный переключатель — один билдер на клиента и порядок списка (T-11)."""
         seg = QWidget()
         seg.setObjectName("ThemeSeg")
         seg_layout = QHBoxLayout(seg)
@@ -320,15 +346,31 @@ class SettingsView(QWidget):
         seg_layout.setSpacing(0)
         buttons = QButtonGroup(self)
         buttons.setExclusive(True)
-        for client, label in CLIENT_CHOICES:
+        for value, label in choices:
             button = QPushButton(label)
             button.setCheckable(True)
-            button.setChecked(client is self._store.settings.default_client)
-            button.clicked.connect(lambda _checked=False, c=client: self._choose_client(c))
+            button.setChecked(is_current(value))
+            button.clicked.connect(lambda _checked=False, v=value: choose(v))
             buttons.addButton(button)
             seg_layout.addWidget(button)
-            self._client_buttons.append(button)
+            registry.append(button)
         return seg
+
+    def _build_client_segment(self) -> QWidget:
+        return self._build_segment(
+            CLIENT_CHOICES,
+            lambda client: client is self._store.settings.default_client,
+            self._choose_client,
+            self._client_buttons,
+        )
+
+    def _build_order_segment(self) -> QWidget:
+        return self._build_segment(
+            ORDER_CHOICES,
+            lambda order: order is self._store.settings.list_order,
+            self._choose_order,
+            self._order_buttons,
+        )
 
     def _build_servers_root_control(self, current: str) -> QWidget:
         row = QWidget()
@@ -352,6 +394,9 @@ class SettingsView(QWidget):
 
     def client_buttons(self) -> list[QPushButton]:
         return list(self._client_buttons)
+
+    def order_buttons(self) -> list[QPushButton]:
+        return list(self._order_buttons)
 
     def tray_checkbox(self) -> QCheckBox:
         return self._tray
@@ -439,6 +484,9 @@ class SettingsView(QWidget):
 
     def _choose_client(self, client: DefaultClient) -> None:
         self._store.update(default_client=client)
+
+    def _choose_order(self, order: ListOrder) -> None:
+        self._store.update(list_order=order)
 
     def _choose_tray(self, checked: bool) -> None:
         self._store.update(close_to_tray=checked)
@@ -560,6 +608,9 @@ class SettingsView(QWidget):
             self._client_buttons, CLIENT_CHOICES, strict=True
         ):
             button.setChecked(client is settings.default_client)
+
+        for button, (order, _label) in zip(self._order_buttons, ORDER_CHOICES, strict=True):
+            button.setChecked(order is settings.list_order)
 
         blocked = self._tray.blockSignals(True)
         self._tray.setChecked(settings.close_to_tray)

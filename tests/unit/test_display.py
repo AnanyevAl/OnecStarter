@@ -16,15 +16,17 @@ from onecstarter.services.display import (
     IMPLICIT_NOTE,
     Row,
     RowKind,
+    collation_key,
     display_forest,
     filter_rows,
     group_contents,
     is_degraded_group,
     row_label,
+    sort_rows,
     version_cell,
 )
 from onecstarter.services.model import InfobaseItem, InfobaseSource
-from onecstarter.services.settings import DEFAULT_RECENT_LIMIT
+from onecstarter.services.settings import DEFAULT_RECENT_LIMIT, ListOrder
 from onecstarter.services.user_data import BaseUserData
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "anonymized.v8i"
@@ -41,9 +43,13 @@ def _items(entries: dict[str, BaseUserData] | None = None) -> list[InfobaseItem]
     return items_from_document(document, InfobaseSource.USER, entries or {})
 
 
-def _forest(entries: dict[str, BaseUserData] | None = None) -> list[Row]:
+def _forest(
+    entries: dict[str, BaseUserData] | None = None, *, order: ListOrder = ListOrder.FILE
+) -> list[Row]:
     items = _items(entries)
-    return display_forest(items, build_tree(items), [], recent_limit=DEFAULT_RECENT_LIMIT)
+    return display_forest(
+        items, build_tree(items), [], recent_limit=DEFAULT_RECENT_LIMIT, order=order
+    )
 
 
 def test_forest_without_user_data_has_no_virtual_sections() -> None:
@@ -94,7 +100,7 @@ def test_recent_limit_zero_hides_the_branch() -> None:
         _base_item(name=f"База {index}", last_launched_at=_stamp(index))
         for index in range(3)
     ]
-    forest = display_forest(items, build_tree(items), [], recent_limit=0)
+    forest = display_forest(items, build_tree(items), [], recent_limit=0, order=ListOrder.FILE)
     assert all(row.label != "Недавние" for row in forest)
 
 
@@ -103,7 +109,7 @@ def test_recent_limit_cuts_the_branch() -> None:
         _base_item(name=f"База {index}", last_launched_at=_stamp(index))
         for index in range(5)
     ]
-    forest = display_forest(items, build_tree(items), [], recent_limit=2)
+    forest = display_forest(items, build_tree(items), [], recent_limit=2, order=ListOrder.FILE)
     recent = next(row for row in forest if row.label == "Недавние")
     assert len(recent.children) == 2
 
@@ -122,7 +128,9 @@ def test_broken_record_note_carries_parse_error() -> None:
     item = _broken_item()
     problem = item.parse_error
     assert problem is not None
-    (row,) = display_forest([item], build_tree([item]), [], recent_limit=DEFAULT_RECENT_LIMIT)
+    (row,) = display_forest(
+        [item], build_tree([item]), [], recent_limit=DEFAULT_RECENT_LIMIT, order=ListOrder.FILE
+    )
     assert row.note is not None
     assert problem in row.note
 
@@ -132,7 +140,9 @@ def test_broken_record_label_is_visibly_marked() -> None:
     # с клавиатуры — пометка обязана быть в самой метке строки  # noqa: RUF003
     # (находка финального ревью 07.08.2026).
     item = _broken_item()
-    (row,) = display_forest([item], build_tree([item]), [], recent_limit=DEFAULT_RECENT_LIMIT)
+    (row,) = display_forest(
+        [item], build_tree([item]), [], recent_limit=DEFAULT_RECENT_LIMIT, order=ListOrder.FILE
+    )
     assert row_label(row) == f"Битая {BROKEN_SUFFIX}"
 
 
@@ -152,7 +162,9 @@ def test_filter_matches_name_without_the_marker() -> None:
     # Пометка — свойство показа, а не имени: поиск идёт по row.label,  # noqa: RUF003
     # поэтому суффикс не мешает найти базу и не находится сам.
     item = _broken_item()
-    forest = display_forest([item], build_tree([item]), [], recent_limit=DEFAULT_RECENT_LIMIT)
+    forest = display_forest(
+        [item], build_tree([item]), [], recent_limit=DEFAULT_RECENT_LIMIT, order=ListOrder.FILE
+    )
     assert [row.label for row in filter_rows(forest, "битая")] == ["Битая"]
     assert filter_rows(forest, "не разобрано") == []
 
@@ -175,7 +187,11 @@ def test_common_branch_collects_items_and_errors() -> None:
     )
     error = CommonListError(Path(r"C:\нет.v8i"), "нет файла")
     forest = display_forest(
-        items + common, build_tree(items), [error], recent_limit=DEFAULT_RECENT_LIMIT
+        items + common,
+        build_tree(items),
+        [error],
+        recent_limit=DEFAULT_RECENT_LIMIT,
+        order=ListOrder.FILE,
     )
     branch = next(row for row in forest if row.label == "Общие списки")
     labels = [row.label for row in branch.children]
@@ -405,5 +421,70 @@ def test_degraded_group_row_carries_a_warning() -> None:
         build_tree([_group_item(connect="")]),
         [],
         recent_limit=DEFAULT_RECENT_LIMIT,
+        order=ListOrder.FILE,
     )
     assert EMPTY_CONNECT_NOTE in (rows[0].note or "")
+
+
+# -- T-11, п. 2: алфавитный режим показа ---------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("names", "expected"),
+    [
+        (["Портал", "база", "Архив"], ["Архив", "база", "Портал"]),
+        (["Ёлка", "Дом", "Еда", "Жук"], ["Дом", "Еда", "Ёлка", "Жук"]),
+        (["Яблоко", "Zed", "апрель", "Beta"], ["Beta", "Zed", "апрель", "Яблоко"]),
+        (["б2", "Б1", "б10"], ["Б1", "б10", "б2"]),  # noqa: RUF001
+    ],
+)
+def test_collation_key_table(names: list[str], expected: list[str]) -> None:
+    """Регистр не важен, «ё» как «е», латиница перед кириллицей, цифры — как строки ([Р])."""  # noqa: RUF002
+    assert sorted(names, key=collation_key) == expected
+
+
+def test_file_order_is_untouched_by_default() -> None:
+    labels = [row.label for row in _forest()]
+    assert labels == [row.label for row in _forest(order=ListOrder.FILE)]
+    assert (
+        labels.index("Учёт серверный") < labels.index("Портал") < labels.index("Без идентификатора")
+    )
+
+
+def test_alphabetical_order_puts_groups_first_then_bases_by_name() -> None:
+    forest = _forest(order=ListOrder.ALPHABETICAL)
+    assert [row.label for row in forest] == [
+        "Клиенты", "Нет такой группы", "Пустая группа",
+        "Без идентификатора", "Портал", "Учёт серверный",
+    ]
+    clients = forest[0]
+    assert [row.label for row in clients.children] == ["Розница", "Демо Бухгалтерия"]
+    assert [row.kind for row in forest[:3]] == [
+        RowKind.GROUP, RowKind.IMPLICIT_GROUP, RowKind.GROUP
+    ]
+
+
+def test_alphabetical_order_sorts_favorites_but_not_recent() -> None:
+    stamp = datetime(2026, 8, 1, tzinfo=UTC)
+    entries = {
+        "id:44444444-4444-4444-4444-444444444444": BaseUserData(
+            favorite=True, last_launched_at=stamp.replace(day=2), launch_count=1
+        ),
+        "id:55555555-5555-5555-5555-555555555555": BaseUserData(
+            favorite=True, last_launched_at=stamp.replace(day=3), launch_count=2
+        ),
+    }
+    forest = _forest(entries, order=ListOrder.ALPHABETICAL)
+    favorites = next(row for row in forest if row.label == "Избранное")
+    recent = next(row for row in forest if row.label == "Недавние")
+    assert [row.label for row in favorites.children] == ["Демо Бухгалтерия", "Демо Розница"]
+    assert [row.label for row in recent.children] == ["Демо Розница", "Демо Бухгалтерия"]
+
+
+def test_sort_rows_keeps_note_rows_last() -> None:
+    rows = [
+        Row(RowKind.NOTE, "ошибка", None),
+        Row(RowKind.BASE, "Яблоко", None),
+        Row(RowKind.GROUP, "Архив", None),
+    ]
+    assert [row.label for row in sort_rows(rows)] == ["Архив", "Яблоко", "ошибка"]

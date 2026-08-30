@@ -7,7 +7,13 @@ import pytest
 from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton
 
 from onecstarter.services.autostart import VALUE_NAME, autostart_command
-from onecstarter.services.settings import DefaultClient, Settings, ThemeMode, save_settings
+from onecstarter.services.settings import (
+    DefaultClient,
+    ListOrder,
+    Settings,
+    ThemeMode,
+    save_settings,
+)
 from onecstarter.ui.hotkey_edit import HotkeyEdit
 from onecstarter.ui.settings_store import SettingsStore
 from onecstarter.ui.settings_view import (
@@ -426,6 +432,27 @@ def test_recent_spinbox_bounds_and_persistence(
     spin.setValue(0)
 
     assert store.settings.recent_limit == 0
+
+
+def test_order_segment_offers_two_modes_with_file_selected(
+    application: QApplication, tmp_path: Path
+) -> None:
+    view, _ = _view(application, tmp_path)
+    assert [button.text() for button in view.order_buttons()] == ["Как в файле", "По алфавиту"]
+    assert view.order_buttons()[0].isChecked()
+    assert view.row_note("Порядок списка").text() != ""
+
+
+def test_order_choice_updates_store(application: QApplication, tmp_path: Path) -> None:
+    view, store = _view(application, tmp_path)
+    view.order_buttons()[1].click()
+    assert store.settings.list_order is ListOrder.ALPHABETICAL
+
+
+def test_order_segment_syncs_from_store(application: QApplication, tmp_path: Path) -> None:
+    view, store = _view(application, tmp_path)
+    store.update(list_order=ListOrder.ALPHABETICAL)
+    assert view.order_buttons()[1].isChecked()
 
 
 def test_sync_does_not_bounce_external_settings_changes_back_into_the_store(

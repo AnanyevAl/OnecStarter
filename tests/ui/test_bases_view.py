@@ -37,7 +37,7 @@ from onecstarter.services.groups import GroupRemoval
 from onecstarter.services.launch import LaunchOutcome
 from onecstarter.services.model import InfobaseItem, InfobaseSource
 from onecstarter.services.paths import ROOT, group_path, normalize_folder, render_folder
-from onecstarter.services.settings import DEFAULT_RECENT_LIMIT
+from onecstarter.services.settings import DEFAULT_RECENT_LIMIT, ListOrder
 from onecstarter.ui import theme
 from onecstarter.ui.bases.icons import placement_icon
 from onecstarter.ui.bases.tree_model import KEY_ROLE, KIND_ROLE
@@ -73,6 +73,7 @@ def _view(
     cache_ops: Any | None = None,
     confirm_cache_clear: Callable[[QWidget | None, str], bool] | None = None,
     show_cache_report: Callable[[QWidget | None, str], None] | None = None,
+    list_order: Callable[[], ListOrder] | None = None,
 ) -> tuple[BasesView, list[LaunchCommand], list[ServicesError], list[str]]:
     # По умолчанию — INSTALLED, не None: большинство тестов файла ничего
     # не знают про фоновое обнаружение и ждут готовых версий сразу.
@@ -113,6 +114,7 @@ def _view(
         installations=installations,
         cfg_rules=[],
         recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+        list_order=list_order or (lambda: ListOrder.FILE),
         on_error=recorded.append,
         **kwargs,
     )
@@ -857,6 +859,7 @@ def test_panel_follows_selection(qtbot, workspace_factory):
         installations=INSTALLED,
         cfg_rules=[],
         recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+        list_order=lambda: ListOrder.FILE,
     )
     qtbot.addWidget(view)
     index = _first_base_index(view)
@@ -1014,6 +1017,7 @@ def test_f3_launches_in_default_mode(qtbot: Any, workspace_factory: Any) -> None
         installations=INSTALLED,
         cfg_rules=[],
         recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+        list_order=lambda: ListOrder.FILE,
     )
     qtbot.addWidget(view)
     _show_exposed(qtbot, view)
@@ -1032,6 +1036,7 @@ def test_f4_launches_designer(qtbot: Any, workspace_factory: Any) -> None:
         installations=INSTALLED,
         cfg_rules=[],
         recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+        list_order=lambda: ListOrder.FILE,
     )
     qtbot.addWidget(view)
     _show_exposed(qtbot, view)
@@ -1117,6 +1122,7 @@ def test_f4_does_nothing_for_web_base(qtbot: Any, workspace_factory: Any) -> Non
         installations=INSTALLED,
         cfg_rules=[],
         recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+        list_order=lambda: ListOrder.FILE,
     )
     qtbot.addWidget(view)
     _show_exposed(qtbot, view)
@@ -1135,6 +1141,7 @@ def test_f3_opens_browser_for_web_base(qtbot: Any, workspace_factory: Any) -> No
         installations=INSTALLED,
         cfg_rules=[],
         recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+        list_order=lambda: ListOrder.FILE,
     )
     qtbot.addWidget(view)
     _show_exposed(qtbot, view)
@@ -1161,6 +1168,7 @@ def test_f3_and_f4_shortcuts_are_registered_on_view(qtbot: Any, workspace_factor
         installations=INSTALLED,
         cfg_rules=[],
         recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+        list_order=lambda: ListOrder.FILE,
     )
     qtbot.addWidget(view)
 
@@ -1210,6 +1218,7 @@ def test_theme_switch_leaves_no_stale_colours(qtbot: Any, workspace_factory: Any
         installations=INSTALLED,
         cfg_rules=[],
         recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+        list_order=lambda: ListOrder.FILE,
         palette=theme.DARK,
     )
     qtbot.addWidget(view)
@@ -1243,6 +1252,7 @@ def test_ctrl_n_shortcut_is_registered_on_view(qtbot: Any, workspace_factory: An
         installations=INSTALLED,
         cfg_rules=[],
         recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+        list_order=lambda: ListOrder.FILE,
     )
     qtbot.addWidget(view)
 
@@ -2688,6 +2698,7 @@ def test_alt_up_and_alt_down_shortcuts_are_registered_on_view(
         installations=INSTALLED,
         cfg_rules=[],
         recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+        list_order=lambda: ListOrder.FILE,
     )
     qtbot.addWidget(view)
 
@@ -2762,6 +2773,80 @@ def test_alt_up_in_a_virtual_branch_is_a_no_op(qtbot: Any, workspace_factory: An
 
     assert _clients_children(view) == before
     assert errors == []
+
+
+# -- T-11, п. 2: алфавитный режим показа отключает перестановку ----------
+
+
+def test_alphabetical_mode_disables_keyboard_reorder(qtbot, workspace_factory, monkeypatch):
+    """ЗАЩИТНЫЙ ТЕСТ (T-11, п. 2, вариант а): в алфавитном режиме Alt+↑ не пишет файл.
+
+    Мутация: убрать проверку `self._list_order() is ListOrder.ALPHABETICAL`
+    в `_move_current` — `move_within_group` перепишет `OrderInList`, который
+    в этом режиме не показывается.
+
+    Ключ и направление — как в `test_alt_up_moves_the_current_record_before_
+    its_neighbor` (реальная перестановка в режиме FILE): «Демо Бухгалтерия» —
+    ВТОРОЙ (последний) ребёнок «Клиенты» что в файловом, что в алфавитном
+    порядке (группа «Розница» встаёт первой в обоих). Alt+↓ отсюда — не
+    перестановка вовсе (соседа снизу нет), и не отличил бы отсутствие
+    перестановки от списанного гварда; Alt+↑ имеет настоящего соседа сверху
+    и действительно упёрся бы в `move_within_group`, не будь проверки.
+    """  # noqa: RUF002
+    view, _, _, _ = _view(qtbot, workspace_factory, list_order=lambda: ListOrder.ALPHABETICAL)
+    _show_exposed(qtbot, view)
+    moves = _spy_on(monkeypatch, view.workspace(), "move_within_group")
+    before = view.workspace().paths.ibases.read_bytes()
+    _select_key(view, _DEMO_ACCOUNTING_KEY)
+
+    qtbot.keyClick(view, Qt.Key.Key_Up, Qt.KeyboardModifier.AltModifier)
+
+    assert moves == []
+    assert view.workspace().paths.ibases.read_bytes() == before
+
+
+def test_alphabetical_mode_drop_within_group_does_not_reorder(
+    qtbot, workspace_factory, monkeypatch
+):
+    view, _, errors, _ = _view(qtbot, workspace_factory, list_order=lambda: ListOrder.ALPHABETICAL)
+    moves = _spy_on(monkeypatch, view.workspace(), "move_within_group")
+    updates = _spy_on(monkeypatch, view.workspace(), "update_infobase")
+    siblings = [
+        i for i in view.workspace().items()
+        if not i.is_group and normalize_folder(i.folder) == ROOT
+    ]
+    assert len(siblings) >= 2
+
+    view.handle_drop(siblings[0].key, siblings[1].key, DropTarget.AFTER)
+
+    assert moves == []
+    assert updates == []
+    assert errors == []
+
+
+def test_alphabetical_mode_drop_into_another_group_still_moves(
+    qtbot, workspace_factory, monkeypatch
+):
+    view, _, errors, _ = _view(qtbot, workspace_factory, list_order=lambda: ListOrder.ALPHABETICAL)
+    updates = _spy_on(monkeypatch, view.workspace(), "update_infobase")
+    root_base = next(
+        i for i in view.workspace().items()
+        if not i.is_group and normalize_folder(i.folder) == ROOT
+    )
+
+    view.handle_drop(root_base.key, _CLIENTS_KEY, DropTarget.INTO)
+
+    assert len(updates) == 1
+    assert errors == []
+
+
+def test_alphabetical_mode_shows_groups_first(qtbot, workspace_factory):
+    view, _, _, _ = _view(qtbot, workspace_factory, list_order=lambda: ListOrder.ALPHABETICAL)
+    top = [
+        view.model().index(row, 0).data()
+        for row in range(view.model().rowCount())
+    ]
+    assert top[:3] == ["Клиенты", "Нет такой группы", "Пустая группа"]
 
 
 # -- dropEvent: перевод Qt-события в примитивы handle_drop ---------------
