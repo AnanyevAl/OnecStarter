@@ -2,8 +2,8 @@ import logging
 import shutil
 import sys
 import winreg
-from collections.abc import Iterator
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, ClassVar
@@ -24,25 +24,42 @@ from PySide6.QtWidgets import (
     QProgressDialog,
     QPushButton,
     QSystemTrayIcon,
+    QWidget,
 )
 
 from onecstarter.domain.launch import LaunchCommand
+from onecstarter.domain.server import ServerConvention, ServerProfile
+from onecstarter.domain.version import Arch, Installation, VersionNumber, parse_version
+from onecstarter.platform_1c.job import JobError, NullJob
+from onecstarter.platform_1c.process_scan import NullScanner, ProcessInfo
+from onecstarter.platform_1c.server_discovery import ServerInstallation
 from onecstarter.services.catalog import EMPTY_COMMON_DATA
+from onecstarter.services.errors import (
+    ConsoleRegistrationDeclinedError,
+    ConsoleRegistrationError,
+    ServerError,
+)
 from onecstarter.services.hotkeys import parse_hotkey
+from onecstarter.services.servers import ScanSnapshot, ServersWorkspace
 from onecstarter.services.settings import (
     DEFAULT_HOTKEY,
     DefaultClient,
+    ListOrder,
     Settings,
     ThemeMode,
     save_settings,
 )
 from onecstarter.services.workspace import Workspace, WorkspacePaths
 from onecstarter.ui import app as app_module
-from onecstarter.ui import theme
+from onecstarter.ui import rail_icons, theme
 from onecstarter.ui.app import _build_main_window, build_runtime, run_launch, run_smoke
 from onecstarter.ui.background import StartupTasks
 from onecstarter.ui.bases.view import BasesView
 from onecstarter.ui.hotkey import GlobalHotkey
+from onecstarter.ui.servers.dialog import ConsoleDialog
+from onecstarter.ui.servers.journal_panel import JournalPanel
+from onecstarter.ui.servers.monitor import ServerMonitor
+from onecstarter.ui.servers.view import ServersView
 from onecstarter.ui.settings_store import SettingsStore
 from onecstarter.ui.settings_view import SettingsView
 from onecstarter.ui.shell import MainWindow
@@ -50,6 +67,61 @@ from onecstarter.ui.theme_controller import ThemeController
 from onecstarter.ui.watcher import FileWatcher
 
 from .conftest import CONVENTIONS, FIXTURE, INSTALLED
+
+
+@dataclass
+class _FakeJob:
+    """Job для тестов проводки (T-12): «работает» — это непустой `pids()`.
+
+    `pids_error` (волна финального ревью ветки, п. 1): заданный `JobError`
+    поднимается вместо ответа — так воспроизводится отказ
+    `QueryInformationJobObject` на живом хендле, который `services`
+    переводит в `ServerError` (`ServersWorkspace._job_pids`). Ровно этим
+    отказом ветка T-12 научилась ронять слоты Qt, поэтому фейк обязан
+    уметь его изображать.
+    """  # noqa: RUF002
+
+    pids_value: tuple[int, ...] = ()
+    closed: bool = False
+    pids_error: JobError | None = None
+
+    def assign(self, process_handle: int) -> None:
+        pass
+
+    def pids(self) -> tuple[int, ...]:
+        if self.pids_error is not None:
+            raise self.pids_error
+        return () if self.closed else self.pids_value
+
+    def close(self) -> None:
+        self.closed = True
+
+    def is_empty(self) -> bool:
+        return not self.pids()
+
+
+_SERVER_INSTALLATION = ServerInstallation(
+    installation=Installation(
+        parse_version("8.3.25.1633"), Path(r"C:\1cv8\8.3.25.1633"), Arch.X64
+    ),
+    ragent=Path(r"C:\1cv8\8.3.25.1633\bin\ragent.exe"),
+    radmin=Path(r"C:\1cv8\8.3.25.1633\bin\radmin.dll"),
+)
+
+
+def _start_fake_server(servers_view: ServersView, tmp_path: Any, pid: int = 4646) -> ServerProfile:
+    """Профиль «работает» через Job (T-12). Требует `job_factory=lambda: _FakeJob((pid,))`
+    и подменённого `app_module.spawn_server` ДО `_build_main_window`."""
+    servers_view._workspace.add_profile(
+        ServerProfile(
+            id="", name="Тест", version="8.3.25.1633", port=1540, regport=1541,
+            range_start=1560, range_end=1591, cluster_dir=str(tmp_path / "srv"),
+        )
+    )
+    profile = servers_view._workspace.profiles()[0]
+    assert servers_view._workspace.start(profile.id, [_SERVER_INSTALLATION]) == pid
+    assert servers_view._workspace.running_count() == 1
+    return profile
 
 
 def test_runtime_builds_on_empty_machine(tmp_path):
@@ -130,6 +202,7 @@ def runtime_with(monkeypatch, workspace_factory, tmp_path):
             cfg_rules=[],
             conventions=[],
             settings=tmp_path / "settings.json",
+            servers=tmp_path / "servers.json",
         )
         monkeypatch.setattr(app_module, "build_runtime", lambda env: runtime)
         return workspace, calls, opened
@@ -240,7 +313,11 @@ def test_run_launch_waits_for_pending_workspace(monkeypatch, tmp_path, qapp):
     """  # noqa: RUF002
     workspace, calls = _pending_workspace(tmp_path)
     runtime = app_module.Runtime(
-        workspace=workspace, cfg_rules=[], conventions=[], settings=tmp_path / "settings.json"
+        workspace=workspace,
+        cfg_rules=[],
+        conventions=[],
+        settings=tmp_path / "settings.json",
+        servers=tmp_path / "servers.json",
     )
     monkeypatch.setattr(app_module, "build_runtime", lambda env: runtime)
 
@@ -274,7 +351,11 @@ def test_run_launch_cancel_returns_one_without_launch(monkeypatch, tmp_path, qap
     """  # noqa: RUF002
     workspace, calls = _pending_workspace(tmp_path)
     runtime = app_module.Runtime(
-        workspace=workspace, cfg_rules=[], conventions=[], settings=tmp_path / "settings.json"
+        workspace=workspace,
+        cfg_rules=[],
+        conventions=[],
+        settings=tmp_path / "settings.json",
+        servers=tmp_path / "servers.json",
     )
     monkeypatch.setattr(app_module, "build_runtime", lambda env: runtime)
 
@@ -535,6 +616,32 @@ class _FakeStartupTasks(QObject):
         self.started = True
 
 
+class _FakeServerMonitor(QObject):
+    """Двойник `ServerMonitor` — тот же довод, что `_FakeStartupTasks` выше:
+
+    настоящий поднимает `QTimer` и поток-демон со сканом процессов машины,
+    недопустимый в модульном тесте (и опасный тем же способом: `_assemble`
+    разбирает дерево виджетов вручную сразу после `main()`). Сигнал настоящий
+    (та же причина, что у `_FakeStartupTasks`/`_StyleHintsStub`) — проводку
+    `snapshot_ready` → `servers_workspace.apply_scan`/`servers_view.rebuild`
+    проверяет отдельный тест, зовущий `_build_main_window` напрямую; здесь
+    важен только факт вызова `start()` (T-08, задача 16).
+    """  # noqa: RUF002
+
+    snapshot_ready = Signal(object)  # ScanSnapshot
+
+    def __init__(self, scanner: Any, *, parent: Any = None, **_kwargs: Any) -> None:
+        super().__init__(parent)
+        self.scanner = scanner
+        self.started = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def scan_now(self) -> None:
+        pass
+
+
 @dataclass
 class _Assembly:
     code: int
@@ -550,6 +657,7 @@ class _Assembly:
     tray: _FakeTray | None
     stylesheets_before_controller: list[str]
     tasks: _FakeStartupTasks
+    monitor: _FakeServerMonitor
     store: SettingsStore
     shown: list[int]
 
@@ -582,6 +690,7 @@ def _assemble(
         cfg_rules=[],
         conventions=[],
         settings=tmp_path / "settings.json",
+        servers=tmp_path / "servers.json",
     )
     monkeypatch.setattr(app_module, "build_runtime", lambda env: runtime)
 
@@ -642,6 +751,11 @@ def _assemble(
         captured["tasks"] = tasks
         return tasks
 
+    def fake_server_monitor(scanner: Any, **kwargs: Any) -> _FakeServerMonitor:
+        monitor = _FakeServerMonitor(scanner, **kwargs)
+        captured["monitor"] = monitor
+        return monitor
+
     monkeypatch.setattr(app_module, "SettingsStore", _CapturingStore)
     monkeypatch.setattr(app_module, "ThemeController", _CapturingController)
     monkeypatch.setattr(app_module, "BasesView", _CapturingView)
@@ -650,6 +764,7 @@ def _assemble(
     monkeypatch.setattr(app_module, "create_tray", fake_create_tray)
     monkeypatch.setattr(app_module, "GlobalHotkey", fake_hotkey)
     monkeypatch.setattr(app_module, "StartupTasks", fake_startup_tasks)
+    monkeypatch.setattr(app_module, "ServerMonitor", fake_server_monitor)
     # QApplication уже создан фикстурой qtbot; второй экземпляр PySide6
     # создать не даёт — main() получает живой.
     monkeypatch.setattr(app_module, "QApplication", lambda argv: qapp)
@@ -678,6 +793,30 @@ def _assemble(
     # тестами `ThemeController`; здесь проверяется только факт вызова.
     stylesheets: list[str] = []
     monkeypatch.setattr(qapp, "setStyleSheet", stylesheets.append)
+
+    # Fix-before-merge (финальное ревью ветки T-10, п.3): `main()` здесь
+    # получает настоящий `_ask_quit_confirmation` (в отличие от прямых
+    # тестов `_build_main_window`, которые его не передают вовсе) — до сих  # noqa: RUF003
+    # пор безопасно только потому, что ни один тест на этой фикстуре не
+    # поднимает `running_count() > 0` перед закрытием окна. Будущий тест
+    # с живым сервером на `_assemble` без этой страховки повиснет на  # noqa: RUF003
+    # настоящем модальном диалоге под offscreen-платформой (диалог не
+    # показывается, но и не отвечает сам), а не упадёт — тот же приём, что  # noqa: RUF003
+    # `test_closing_window_without_quit_dialog_never_shows_a_
+    # confirmation_dialog`: подмена кидает `AssertionError` вместо показа,
+    # так что попытка позвать диалог явно упадёт тестом.
+    #
+    # Волна исправлений по чек-листу T-10 (находка 3): `_ask_quit_confirmation`
+    # теперь зовёт `ask_confirmation` (`ui/dialogs/buttons.py`) — тот сам
+    # строит `QMessageBox` и зовёт его `exec()`, `QMessageBox.question` этим  # noqa: RUF003
+    # путём больше не вызывается вовсе. Страховка переориентирована на
+    # `QMessageBox.exec` — иначе, разойдясь с реальным путём вызова, она  # noqa: RUF003
+    # перестала бы ловить зависание (подмена `.question` осталась бы
+    # неиспользуемой, а настоящий `.exec()` вешал бы teardown, как раньше).  # noqa: RUF003
+    def _forbidden_exec(self: QMessageBox) -> int:
+        raise AssertionError("диалог выхода не должен показываться в тестах")
+
+    monkeypatch.setattr(QMessageBox, "exec", _forbidden_exec)
 
     name_before = qapp.applicationName()
     try:
@@ -708,6 +847,7 @@ def _assemble(
         tray=tray,
         stylesheets_before_controller=captured["stylesheets_before_controller"],
         tasks=captured["tasks"],
+        monitor=captured["monitor"],
         store=captured["store"],
         shown=captured["shown"],
     )
@@ -798,6 +938,18 @@ def test_main_starts_the_background_tasks(assembled: _Assembly) -> None:
     колонка версии молчала бы «…» вечно.
     """  # noqa: RUF002
     assert assembled.tasks.started is True
+
+
+def test_main_starts_the_server_monitor(assembled: _Assembly) -> None:
+    """main() обязан звать monitor.start() рядом с tasks.start() (T-08, задача 16).
+
+    `_build_main_window` сама `start()` монитора не вызывает («собрать, не
+    запуская», её докстринг) — тот же довод и тот же сторож, что у
+    `test_main_starts_the_background_tasks` выше, только для раздела
+    «Серверы»: без вызова окно поднялось бы, но список процессов не
+    обновлялся бы никогда, даже по первому тику.
+    """  # noqa: RUF002
+    assert assembled.monitor.started is True
 
 
 def test_main_repaints_the_bases_view_on_theme_change(assembled: _Assembly) -> None:
@@ -963,6 +1115,39 @@ def test_main_does_not_hide_the_window_into_a_missing_tray(assembled: _Assembly)
     assert assembled.window.close_to_tray is False
 
 
+_DEMO_ACCOUNTING_KEY = "id:44444444-4444-4444-4444-444444444444"
+
+
+def test_launch_hides_the_window_when_the_setting_is_on(assembled_with_tray: _Assembly) -> None:
+    """T-11, п. 9: успешный запуск базы при включённой настройке прячет окно в трей."""
+    assembled_with_tray.store.update(hide_on_launch=True)
+    assert assembled_with_tray.window.isHidden() is False
+
+    assembled_with_tray.view.launch_key(_DEMO_ACCOUNTING_KEY)
+
+    assert len(assembled_with_tray.launch_calls) == 1
+    assert assembled_with_tray.window.isHidden() is True
+
+
+def test_launch_keeps_the_window_when_the_setting_is_off(assembled_with_tray: _Assembly) -> None:
+    assembled_with_tray.view.launch_key(_DEMO_ACCOUNTING_KEY)
+    assert assembled_with_tray.window.isHidden() is False
+
+
+def test_launch_keeps_the_window_without_tray(assembled: _Assembly) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ: без трея окно не прячется (решение заказчика 29.08.2026, б).
+
+    Мутация: `hide_after_launch` без `tray is not None` — окно исчезнет,
+    вернуть его сможет только глобальный хоткей.
+    """  # noqa: RUF002
+    assembled.store.update(hide_on_launch=True)
+
+    assembled.view.launch_key(_DEMO_ACCOUNTING_KEY)
+
+    assert len(assembled.launch_calls) == 1
+    assert assembled.window.isHidden() is False
+
+
 def test_main_start_hidden_with_tray_keeps_the_window_hidden(
     assembled_hidden_start_with_tray: _Assembly,
 ) -> None:
@@ -1015,7 +1200,7 @@ def test_main_start_hidden_with_tray_and_close_to_tray_off_keeps_the_window_hidd
     assert assembled.shown == [], "скрываться было чем — окно не показывается"
 
 
-def test_store_changed_rebuilds_the_tree_only_on_recent_limit_change(
+def test_store_changed_rebuilds_the_tree_only_on_list_settings_change(
     assembled: _Assembly,
 ) -> None:
     """Круг исправлений 1, находка 2: `store.changed` не должен всегда рвать дерево.
@@ -1025,9 +1210,9 @@ def test_store_changed_rebuilds_the_tree_only_on_recent_limit_change(
     apply_palette → rebuild()`, плюс новая безусловная `store.changed`-
     проводка), а `close_to_tray`/хоткей дёргали полную перестройку, хотя
     к дереву отношения не имеют. Решение заказчика 20.08.2026: перестройка
-    только когда изменился `recent_limit`. Проверяем три сценария счётчиком
-    `_RecordingView.rebuild_calls` (считает и прямой `rebuild()`, и
-    косвенный через `apply_palette`).
+    только когда изменился `recent_limit` или `list_order`. Проверяем три
+    сценария счётчиком `_RecordingView.rebuild_calls` (считает и прямой
+    `rebuild()`, и косвенный через `apply_palette`).
     """  # noqa: RUF002
     view = assembled.view
     store = assembled.store
@@ -1070,6 +1255,74 @@ def test_recent_limit_provider_is_live_from_settings(assembled: _Assembly) -> No
     store.update(recent_limit=store.settings.recent_limit + 7)
 
     assert view._recent_limit() == store.settings.recent_limit
+
+
+def test_store_changed_rebuilds_the_tree_on_list_order_change(assembled: _Assembly) -> None:
+    """T-11, п. 2: смена порядка — перестройка дерева ровно раз, как у recent_limit."""  # noqa: RUF002
+    view = assembled.view
+    store = assembled.store
+
+    view.rebuild_calls = 0
+    store.update(list_order=ListOrder.ALPHABETICAL)
+    assert view.rebuild_calls == 1
+
+    view.rebuild_calls = 0
+    store.update(hide_on_launch=True)
+    assert view.rebuild_calls == 0, "hide_on_launch к дереву отношения не имеет"
+
+
+def test_list_order_provider_is_live_from_settings(assembled: _Assembly) -> None:
+    assert assembled.view._list_order() is ListOrder.FILE
+    assembled.store.update(list_order=ListOrder.ALPHABETICAL)
+    assert assembled.view._list_order() is ListOrder.ALPHABETICAL
+
+
+# -- CRITICAL 2 финального ревью: ServersWorkspace-отказ в main() -----------
+
+
+def test_main_reports_servers_workspace_unavailable_instead_of_crashing(
+    monkeypatch: pytest.MonkeyPatch,
+    qapp: Any,
+    tmp_path: Any,
+    shown_errors: list[str],
+) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ.
+
+    CRITICAL 2 финального ревью: `try` вокруг `build_runtime` в `main()`
+    не покрывал конструктор `ServersWorkspace` внутри `_build_main_window` —
+    `ServersUnavailableError` (наследник `ServerError`, поднимается
+    `load_profiles`, `services/server_store.py`) уходила бы наружу голой
+    трассировкой мимо обеих веток `except` выше (они ловят только отказ
+    самого `build_runtime`), хотя тот же класс отказов у `Workspace`
+    (`UserDataUnavailableError`) уже обработан по соседству образцовым
+    способом. Каталог на месте `servers.json` — тот же честный приём
+    падения `OSError`, что `TestFailedSaveRollsBackMemory` в
+    `test_servers.py`: `Path.read_text()` каталога отказывает без
+    подмены реального доступа к диску.
+
+    `_build_main_window` здесь настоящий, не через `_assemble` (та
+    подменяет слишком много, включая создание `_build_main_window`
+    целиком) — исключение происходит ДО `GlobalHotkey`/`create_tray`/
+    `StartupTasks`/`ServerMonitor`, конструировать их фейками незачем.
+
+    Мутация: убрать `try/except ServerError` вокруг `_build_main_window`
+    в `main()` — тест обязан упасть непойманным исключением.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "QApplication", lambda argv: qapp)
+    # Тот же приём, что `_assemble` (см. её комментарий про access violation):
+    # реальный `setStyleSheet` поверх дерева виджетов, уничтожаемого сразу
+    # после теста, оставляет следы в кэшах Qt, из-за которых падает
+    # СЛЕДУЮЩИЙ чужой вызов — здесь применение таблицы не предмет теста.
+    monkeypatch.setattr(qapp, "setStyleSheet", lambda _sheet: None)
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    servers_path = tmp_path / "OneCStarter" / "servers.json"
+    servers_path.parent.mkdir(parents=True)
+    servers_path.mkdir()  # каталог на месте файла — load_profiles упадёт OSError'ом
+
+    code = app_module.main([])
+
+    assert code == 1
+    assert shown_errors, "отказ обязан дойти до пользователя окном, не трассировкой"
 
 
 # -- _build_main_window напрямую: сборка окна отдельно от main() (T-04.6) ----
@@ -1127,7 +1380,7 @@ def test_build_main_window_wires_background_results(
     assert runtime.workspace.installations_pending
     assert runtime.workspace.common_lists_pending
 
-    window, tasks = _build_main_window(qapp, runtime, env)
+    window, tasks, _monitor = _build_main_window(qapp, runtime, env)
     qtbot.addWidget(window)
     view = window.current_section()
     assert isinstance(view, BasesView)
@@ -1159,10 +1412,252 @@ def test_build_main_window_sets_the_application_icon(
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
 
-    window, _tasks = _build_main_window(qapp, runtime, env)
+    window, _tasks, _monitor = _build_main_window(qapp, runtime, env)
     qtbot.addWidget(window)
 
     assert qapp.windowIcon().availableSizes()
+
+
+# -- задача 16 (T-08): раздел «Серверы» в сборке приложения ------------------
+
+
+def test_build_main_window_has_three_sections_in_mockup_order(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """[Ф] мокап: «Базы, Серверы, Настройки» — «Серверы» встали между ними."""
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+
+    window, _tasks, _monitor = _build_main_window(qapp, runtime, env)
+    qtbot.addWidget(window)
+
+    labels = [button.text() for button in window.section_buttons()]
+    assert labels == ["Базы", "Серверы", "Настройки"]
+    assert isinstance(window.current_section(), BasesView)  # «Базы» остались первым разделом
+    window.show_section(labels.index("Серверы"))
+    assert isinstance(window.current_section(), ServersView)
+
+
+def test_servers_section_has_an_icon(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """У раздела «Серверы» есть значок рельсы, как у «Баз»/«Настроек»."""  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+
+    window, _tasks, _monitor = _build_main_window(qapp, runtime, env)
+    qtbot.addWidget(window)
+
+    labels = [button.text() for button in window.section_buttons()]
+    servers_index = labels.index("Серверы")
+    assert window._icon_factories[servers_index] is rail_icons.servers_icon
+
+
+def test_build_main_window_creates_servers_view_with_journal_panel(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """T-10, задача 7: раздел «Серверы» несёт панель «Журнал профиля» (задача 5).
+
+    Панель встроена ВНУТРЬ `ServersView` самой задачей 5 — `_build_main_window`
+    её отдельно не компонует. Проверка фиксирует именно это: собранное окно
+    действительно содержит `ServersView`, и её `journal_panel()` (аксессор
+    задачи 5) отдаёт настоящую `JournalPanel`, а не `None` и не заглушку.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+
+    window, _tasks, _monitor = _build_main_window(qapp, runtime, env)
+    qtbot.addWidget(window)
+
+    labels = [button.text() for button in window.section_buttons()]
+    window.show_section(labels.index("Серверы"))
+    servers_view = window.current_section()
+    assert isinstance(servers_view, ServersView)
+    assert isinstance(servers_view.journal_panel(), JournalPanel)
+
+
+def test_run_smoke_uses_null_scanner(tmp_path: Any, monkeypatch: Any, qtbot: Any) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ: smoke не создаёт `PsutilScanner` — не сканирует машину
+
+    сборщика (долг №8, T-04.7, тот же довод, что у `NullRegistry`). Мутация
+    «`run_smoke` берёт настоящий `PsutilScanner()` вместо инъекции» обязана
+    уронить этот тест (Task 17, мутационная стадия, пункт 10).
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+
+    def bomb(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("smoke не должен создавать PsutilScanner")
+
+    monkeypatch.setattr(app_module, "PsutilScanner", bomb)
+    appdata = tmp_path / "appdata"
+    target = tmp_path / "out"
+    target.mkdir()
+
+    assert run_smoke(str(target), {"APPDATA": str(appdata)}) == 0
+
+    qtbot.addWidget(captured["window"])
+
+
+def test_run_smoke_uses_null_job(tmp_path: Any, monkeypatch: Any, qtbot: Any) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ: самопроверка подставляет `job_factory=NullJob` — kernel-объектов
+    Job она не создаёт даже при запуске профиля (T-12: фабрика на запуск, `ServerJob`
+    в конструкторе окна больше не вызывается, поэтому «бомба» на `ServerJob`
+    ничего не ловит — проверяем сам аргумент конструктора `ServersWorkspace`).
+    Мутация «`run_smoke` не передаёт `job_factory`» обязана уронить тест.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    workspace_kwargs: dict[str, Any] = {}
+
+    class _CapturingServersWorkspace(ServersWorkspace):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            workspace_kwargs.update(kwargs)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(app_module, "ServersWorkspace", _CapturingServersWorkspace)
+    appdata = tmp_path / "appdata"
+    target = tmp_path / "out"
+    target.mkdir()
+
+    assert run_smoke(str(target), {"APPDATA": str(appdata)}) == 0
+
+    qtbot.addWidget(captured["window"])
+    assert workspace_kwargs["job_factory"] is NullJob
+
+
+def test_on_installations_populates_server_installed_and_rebuilds_the_view(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """`on_installations` дополняет `server_installed` и перестраивает раздел.
+
+    `app_module.server_installations` подменена фиксированным результатом —
+    сама функция-фильтр (реальные `ragent.exe`/`radmin.dll` на диске) уже
+    покрыта своим набором (`tests/unit/test_server_discovery.py`); здесь
+    предмет — проводка, а не повторная проверка фильтра.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    monkeypatch.setattr(
+        app_module, "server_installations", lambda found, conventions: [_SERVER_INSTALLATION]
+    )
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+    window, tasks, _monitor = _build_main_window(qapp, runtime, env)
+    qtbot.addWidget(window)
+    labels = [button.text() for button in window.section_buttons()]
+    window.show_section(labels.index("Серверы"))
+    servers_view = window.current_section()
+    assert isinstance(servers_view, ServersView)
+    rebuilds: list[int] = []
+    real_rebuild = servers_view.rebuild
+
+    def spy_rebuild() -> None:
+        rebuilds.append(1)
+        real_rebuild()
+
+    monkeypatch.setattr(servers_view, "rebuild", spy_rebuild)
+
+    tasks.installations_ready.emit(INSTALLED)
+
+    assert servers_view._installed() == [_SERVER_INSTALLATION]
+    assert rebuilds == [1]
+
+
+def test_monitor_wires_scan_into_servers_workspace_and_view(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """`monitor.snapshot_ready` → `servers_workspace.apply_scan` → `servers_view.rebuild()`.
+
+    Прямая эмиссия сигнала — тот же приём, что
+    `test_build_main_window_wires_background_results` для `StartupTasks`:
+    реальный поток-скан тут не нужен, только проводка.
+    """
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+    window, _tasks, monitor = _build_main_window(
+        qapp, runtime, env, process_scanner=NullScanner()
+    )
+    qtbot.addWidget(window)
+    assert isinstance(monitor, ServerMonitor)
+    labels = [button.text() for button in window.section_buttons()]
+    window.show_section(labels.index("Серверы"))
+    servers_view = window.current_section()
+    assert isinstance(servers_view, ServersView)
+    servers_view._workspace.add_profile(
+        ServerProfile(
+            id="",
+            name="Тест",
+            version="8.3.25.1633",
+            port=1540,
+            regport=1541,
+            range_start=1560,
+            range_end=1591,
+            cluster_dir=str(tmp_path / "srv"),
+        )
+    )
+    rebuilds: list[int] = []
+    real_rebuild = servers_view.rebuild
+
+    def spy_rebuild() -> None:
+        rebuilds.append(1)
+        real_rebuild()
+
+    monkeypatch.setattr(servers_view, "rebuild", spy_rebuild)
+    agent = ProcessInfo(
+        pid=4242,
+        name="ragent.exe",
+        executable=None,
+        argv=("ragent.exe", "-d", str(tmp_path / "srv"), "-port", "1540", "-regport", "1541"),
+        create_time=1.0,
+    )
+
+    monitor.snapshot_ready.emit(ScanSnapshot(agents=(agent,), managers=()))
+
+    assert rebuilds == [1]
+    assert servers_view._workspace.statuses([])[0].processes
+
+
+def test_build_main_window_repaints_the_servers_view_on_theme_change(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """Третье действие смены темы (T-08, задача 16) — по образцу теста
+
+    `test_main_repaints_the_window_rail_on_theme_change`: без `apply_palette`
+    карточки серверов остались бы раскрашены прежней палитрой.
+    """
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured: dict[str, Any] = {}
+
+    class _CapturingController(ThemeController):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            captured["controller"] = self
+
+    monkeypatch.setattr(app_module, "ThemeController", _CapturingController)
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+    window, _tasks, _monitor = _build_main_window(qapp, runtime, env)
+    qtbot.addWidget(window)
+    labels = [button.text() for button in window.section_buttons()]
+    window.show_section(labels.index("Серверы"))
+    servers_view = window.current_section()
+    assert isinstance(servers_view, ServersView)
+    palettes: list[Any] = []
+    real_apply_palette = servers_view.apply_palette
+
+    def spy_apply_palette(palette: Any) -> None:
+        palettes.append(palette)
+        real_apply_palette(palette)
+
+    monkeypatch.setattr(servers_view, "apply_palette", spy_apply_palette)
+
+    captured["controller"].set_mode(ThemeMode.LIGHT)
+
+    assert palettes == [captured["controller"].palette]
 
 
 def test_startup_log_has_no_connect_strings(
@@ -1180,11 +1675,15 @@ def test_startup_log_has_no_connect_strings(
     monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
     workspace, _calls, _opened = workspace_factory()
     runtime = app_module.Runtime(
-        workspace=workspace, cfg_rules=[], conventions=[], settings=tmp_path / "settings.json"
+        workspace=workspace,
+        cfg_rules=[],
+        conventions=[],
+        settings=tmp_path / "settings.json",
+        servers=tmp_path / "servers.json",
     )
 
     with caplog.at_level(logging.INFO):
-        window, _tasks = _build_main_window(qapp, runtime, {"APPDATA": str(tmp_path)})
+        window, _tasks, _monitor = _build_main_window(qapp, runtime, {"APPDATA": str(tmp_path)})
         window.show()
     qtbot.addWidget(window)
 
@@ -1207,8 +1706,9 @@ def test_default_client_change_reaches_workspace_without_rebuild(
     runtime = app_module.Runtime(
         workspace=workspace, cfg_rules=[], conventions=[],
         settings=tmp_path / "settings.json",
+        servers=tmp_path / "servers.json",
     )
-    window, _tasks = _build_main_window(qapp, runtime, {"APPDATA": str(tmp_path)})
+    window, _tasks, _monitor = _build_main_window(qapp, runtime, {"APPDATA": str(tmp_path)})
     qtbot.addWidget(window)
     key = workspace.items()[0].key
 
@@ -1249,7 +1749,7 @@ def test_build_main_window_installs_the_hotkey_native_filter(
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
 
-    window, _tasks = _build_main_window(qapp, runtime, env)
+    window, _tasks, _monitor = _build_main_window(qapp, runtime, env)
     qtbot.addWidget(window)
 
     assert installed == [window.global_hotkey]
@@ -1298,7 +1798,7 @@ def test_build_main_window_disposes_hotkey_and_removes_filter_together_on_quit(
 
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, _tasks = _build_main_window(qapp, runtime, env)
+    window, _tasks, _monitor = _build_main_window(qapp, runtime, env)
     qtbot.addWidget(window)
 
     dispose_hotkey = next(
@@ -1385,7 +1885,7 @@ def _window_with_settings(
     monkeypatch.setattr("onecstarter.ui.app.GlobalHotkey", make_hotkey)
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, _tasks = _build_main_window(qapp, runtime, env)
+    window, _tasks, _monitor = _build_main_window(qapp, runtime, env)
     return window
 
 
@@ -1467,7 +1967,9 @@ def test_clearing_a_busy_hotkey_resets_the_tooltip_to_plain(
     assert "занято" in tooltips[-1]
     balloons_after_start = len(messages)
 
-    window.show_section(1)
+    # Раздел «Настройки» — индекс 2 с задачи 16 (T-08): «Серверы» встали  # noqa: RUF003
+    # между «Базами» и «Настройками» (порядок мокапа).
+    window.show_section(2)
     settings_view = window.current_section()
     settings_view.hotkey_edit().captured.emit("")
 
@@ -1544,7 +2046,13 @@ def test_busy_hotkey_without_tray_opens_the_settings_section(
     )
     section = window.current_section()
     assert isinstance(section, SettingsView)
-    assert [button.isChecked() for button in window.section_buttons()] == [False, True]
+    # Три раздела с задачи 16 (T-08) — «Настройки» третьи по счёту («Серверы»  # noqa: RUF003
+    # между «Базами» и «Настройками», порядок мокапа); отмечена последняя.
+    assert [button.isChecked() for button in window.section_buttons()] == [
+        False,
+        False,
+        True,
+    ]
     assert "занято" in section.hotkey_note()
 
 
@@ -1650,9 +2158,9 @@ def _capture_window(monkeypatch: Any) -> dict[str, Any]:
     real_build = app_module._build_main_window
 
     def capturing(application: Any, runtime: Any, env: Any, **kwargs: Any) -> Any:
-        window, tasks = real_build(application, runtime, env, **kwargs)
+        window, tasks, monitor = real_build(application, runtime, env, **kwargs)
         captured["window"] = window
-        return window, tasks
+        return window, tasks, monitor
 
     monkeypatch.setattr(app_module, "_build_main_window", capturing)
     return captured
@@ -1775,6 +2283,18 @@ def test_settings_view_reads_the_registry_when_frozen(
     Здесь `sys.frozen` включён, реестр НЕ подменён на заглушку, и обращение
     к `winreg` обязано состояться. Пара тестов вместе утверждает то, что
     нужно: в сборке реестр читается, а самопроверка сборки — нет.
+
+    Две записи в `touched`, не одна (T-08, задача 16, находка при сборке
+    окна с `ServersWorkspace`): второе обращение — не автозапуск, а
+    `ServersView.__init__` → `rebuild()` → безусловный
+    `ServersWorkspace.current_console_version()` ([Ф] Г2, `platform_1c/
+    console.py`) — тоже настоящий HKLM, раз
+    `registered_radmin` здесь не подменён (`run_smoke`, в отличие от этого
+    прямого вызова `_build_main_window`, подставляет `lambda: None` — см.
+    негативный контроль выше). Оба обращения независимы друг от друга и
+    от `sys.frozen`: у `ServersWorkspace` условия «из исходников — не
+    читать» нет вовсе, поэтому даже без `sys.frozen=True` строкой выше
+    второй `OpenKey` состоялся бы всё равно.
     """  # noqa: RUF002
     monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
     monkeypatch.setattr(sys, "frozen", True, raising=False)
@@ -1784,6 +2304,7 @@ def test_settings_view_reads_the_registry_when_frozen(
         cfg_rules=[],
         conventions=[],
         settings=tmp_path / "settings.json",
+        servers=tmp_path / "servers.json",
     )
     touched: list[str] = []
 
@@ -1795,12 +2316,15 @@ def test_settings_view_reads_the_registry_when_frozen(
 
     application = QApplication.instance()
     assert isinstance(application, QApplication)
-    window, _tasks = app_module._build_main_window(
+    window, _tasks, _monitor = app_module._build_main_window(
         application, runtime, {"APPDATA": str(tmp_path / "appdata")}
     )
     window.close()
 
-    assert touched == ["OpenKey"], "в сборке раздел обязан читать настоящий реестр"
+    assert touched == ["OpenKey", "OpenKey"], (
+        "в сборке автозапуск и консоль администрирования обязаны читать "
+        "настоящий реестр"
+    )
 
 
 def test_run_smoke_times_out_without_background(
@@ -1835,3 +2359,703 @@ def test_run_smoke_times_out_without_background(
     assert code == 1
     assert not (target / "smoke.lnk").exists()
     qtbot.addWidget(captured["window"])
+
+
+# -- задача 16 (T-08): проводка «Консоль администрирования…» -----------------
+#
+# `_console_flow` — функция уровня модуля, вынесенная из `on_console`
+# специально ради инъекции `run_dialog` (её докстринг, `ui/app.py`):
+# настоящий исполнитель зовёт блокирующий `QDialog.exec()`, здесь —
+# программный клик по нужной кнопке диалога без модального цикла событий
+# (тот же приём, что `_accept`/`_reject` в `test_servers_view.py` для
+# `ServerProfileDialog`). `ConsoleDialog` строится по-настоящему (offscreen),
+# `ServersWorkspace` — фейком: предмет теста — сама проводка (какая кнопка
+# к какому эффекту), не хранение профилей или снимок процессов.
+
+
+@dataclass
+class _FakeConsoleWorkspace:
+    current: VersionNumber | None = None
+    decline: bool = False
+    fail: bool = False
+    registered: list[ServerInstallation] = field(default_factory=list)
+    opened: list[tuple[Path, ServerConvention]] = field(default_factory=list)
+
+    def current_console_version(self) -> VersionNumber | None:
+        return self.current
+
+    def register_console(self, installation: ServerInstallation) -> None:
+        if self.decline:
+            raise ConsoleRegistrationDeclinedError(
+                "Запрос прав администратора отклонён — версия консоли не изменена"
+            )
+        if self.fail:
+            raise ConsoleRegistrationError("Регистрация консоли не удалась — regsvr32 вернул код 5")
+        self.registered.append(installation)
+
+    def open_console(self, root: Path, convention: ServerConvention) -> None:
+        self.opened.append((root, convention))
+
+
+def _console_installation(version: str = "8.3.25.1633") -> ServerInstallation:
+    root = Path(r"C:\1cv8") / version
+    return ServerInstallation(
+        installation=Installation(parse_version(version), root, Arch.X64),
+        ragent=root / "bin" / "ragent.exe",
+        radmin=root / "bin" / "radmin.dll",
+    )
+
+
+def _console_convention() -> ServerConvention:
+    return ServerConvention(
+        min_version=parse_version("8.3"),
+        bin_dir="bin",
+        ragent="ragent.exe",
+        radmin="radmin.dll",
+        console="admin/1CV8Console.msc",
+    )
+
+
+def _explode_on_call(message: str) -> None:
+    raise AssertionError(f"не должно было быть вызвано: {message}")
+
+
+def test_console_flow_register_success_registers_and_opens_selected(qapp: Any) -> None:
+    other = _console_installation("8.3.22.1923")
+    target = _console_installation("8.3.25.1633")
+    workspace = _FakeConsoleWorkspace(current=other.installation.version)
+    convention = _console_convention()
+
+    def run_dialog(dialog: ConsoleDialog) -> int:
+        dialog.list_widget().setCurrentRow([other, target].index(target))
+        dialog.register_button().click()
+        return dialog.result()
+
+    app_module._console_flow(
+        workspace,
+        [other, target],
+        [],
+        convention,
+        show_error=_explode_on_call,
+        show_info=_explode_on_call,
+        run_dialog=run_dialog,
+    )
+
+    assert workspace.registered == [target]
+    assert workspace.opened == [(target.installation.path.parent, convention)]
+
+
+def test_console_flow_uac_decline_shows_info_not_error(qapp: Any) -> None:
+    """Штатный исход §7 спеки: отказ в UAC — информационное окно, не ошибка."""
+    target = _console_installation()
+    workspace = _FakeConsoleWorkspace(current=None, decline=True)
+    convention = _console_convention()
+    infos: list[str] = []
+    errors: list[str] = []
+
+    def run_dialog(dialog: ConsoleDialog) -> int:
+        dialog.list_widget().setCurrentRow(0)
+        dialog.register_button().click()
+        return dialog.result()
+
+    app_module._console_flow(
+        workspace,
+        [target],
+        [],
+        convention,
+        show_error=errors.append,
+        show_info=infos.append,
+        run_dialog=run_dialog,
+    )
+
+    assert infos
+    assert "не изменена" in infos[0]
+    assert errors == []
+    assert workspace.opened == [], "отказ регистрации — открывать нечего"
+
+
+def test_console_flow_registration_failure_shows_error(qapp: Any) -> None:
+    target = _console_installation()
+    workspace = _FakeConsoleWorkspace(current=None, fail=True)
+    convention = _console_convention()
+    infos: list[str] = []
+    errors: list[str] = []
+
+    def run_dialog(dialog: ConsoleDialog) -> int:
+        dialog.list_widget().setCurrentRow(0)
+        dialog.register_button().click()
+        return dialog.result()
+
+    app_module._console_flow(
+        workspace,
+        [target],
+        [],
+        convention,
+        show_error=errors.append,
+        show_info=infos.append,
+        run_dialog=run_dialog,
+    )
+
+    assert errors
+    assert "regsvr32" in errors[0]
+    assert infos == []
+    assert workspace.opened == []
+
+
+def test_console_flow_open_uses_the_currently_registered_version_root(qapp: Any) -> None:
+    current_install = _console_installation("8.3.22.1923")
+    other = _console_installation("8.3.25.1633")
+    workspace = _FakeConsoleWorkspace(current=current_install.installation.version)
+    convention = _console_convention()
+
+    def run_dialog(dialog: ConsoleDialog) -> int:
+        # «Открыть» не зависит от выбора строки в списке — то, что сейчас
+        # зарегистрировано, определяет реестр, не выделение (докстринг
+        # `_console_flow`).
+        dialog.open_button().click()
+        return dialog.result()
+
+    app_module._console_flow(
+        workspace,
+        [other, current_install],
+        [],
+        convention,
+        show_error=_explode_on_call,
+        show_info=_explode_on_call,
+        run_dialog=run_dialog,
+    )
+
+    assert workspace.registered == []
+    assert workspace.opened == [(current_install.installation.path.parent, convention)]
+
+
+def test_console_flow_cancel_does_nothing(qapp: Any) -> None:
+    target = _console_installation()
+    workspace = _FakeConsoleWorkspace()
+    convention = _console_convention()
+
+    def run_dialog(dialog: ConsoleDialog) -> int:
+        dialog.cancel_button().click()
+        return dialog.result()
+
+    app_module._console_flow(
+        workspace,
+        [target],
+        [],
+        convention,
+        show_error=_explode_on_call,
+        show_info=_explode_on_call,
+        run_dialog=run_dialog,
+    )
+
+    assert workspace.registered == []
+    assert workspace.opened == []
+
+
+def test_console_flow_survives_unreadable_job(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ (волна финального ревью, п. 1): отказ Job — сообщение, не крах слота.
+
+    `on_console` (замыкание `_build_main_window`) спрашивает `statuses()`,
+    чтобы отдать в `ConsoleDialog` версии работающих профилей; с T-12 этот
+    вызов доходит до `Job.pids()` и может отказать. Без страховки исключение
+    уходит из слота `clicked` кнопки «Консоль администрирования…»: диалог
+    не открывается, а под `pythonw` (без консоли) пользователь не видит
+    вообще ничего. Правильное поведение — показать причину и НЕ открывать
+    диалог со списком, собранным наполовину.
+
+    `QMessageBox.exec` подменена журналом текста (тот же приём, что
+    у страховки `_assemble` в этом файле, только записывающий, а не
+    кидающий): `_show_servers_error` строит настоящий `QMessageBox`,
+    и под offscreen его `exec()` повис бы модально навсегда.
+
+    Мутация: убрать `try/except ServicesError` вокруг `statuses()`
+    в `on_console` — тест обязан упасть на `ServerError` из клика.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    monkeypatch.setattr(app_module, "spawn_server", lambda command, log, job: 4646)
+    shown: list[str] = []
+
+    def _recording_exec(self: QMessageBox) -> int:
+        shown.append(self.text())
+        return 0
+
+    monkeypatch.setattr(QMessageBox, "exec", _recording_exec)
+    flow_calls: list[Any] = []
+    monkeypatch.setattr(
+        app_module, "_console_flow", lambda *args, **kwargs: flow_calls.append(args)
+    )
+    jobs: list[_FakeJob] = []
+
+    def job_factory() -> _FakeJob:
+        job = _FakeJob((4646,))
+        jobs.append(job)
+        return job
+
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+    window, _tasks, _monitor = _build_main_window(qapp, runtime, env, job_factory=job_factory)
+    qtbot.addWidget(window)
+    labels = [button.text() for button in window.section_buttons()]
+    window.show_section(labels.index("Серверы"))
+    servers_view = window.current_section()
+    assert isinstance(servers_view, ServersView)
+    _start_fake_server(servers_view, tmp_path)
+    jobs[0].pids_error = JobError("QueryInformationJobObject отказал")
+
+    servers_view.console_button().click()
+
+    assert flow_calls == [], "диалог консоли не должен открываться на неизвестном состоянии"
+    assert len(shown) == 1
+    assert "QueryInformationJobObject отказал" in shown[0]
+
+
+# -- T-10, задача 6: подтверждение выхода при работающих серверах ------------
+#
+# `_confirm_quit_with_servers`/`_servers_word` — чистые функции уровня модуля
+# (докстрины см. `ui/app.py`), проверены табличными тестами без единого
+# показа диалога. Тесты проводки (`window.confirm_quit`, трей `request_quit`)
+# зовут настоящий `_build_main_window` с ФЕЙКОВЫМ `quit_dialog` — журналом  # noqa: RUF003
+# сообщений и управляемым ответом (`_fake_quit_dialog`), а не подменой  # noqa: RUF003
+# `QMessageBox.question`: находка координатора при мутационной проверке
+# показала, что БЕЗУСЛОВНОЕ подключение настоящего диалога внутри
+# `_build_main_window` вешает teardown любого теста с работающим сервером  # noqa: RUF003
+# на модальное ожидание под offscreen-платформой навсегда (диалог там не
+# показывается, но и не отвечает сам). `_build_main_window` теперь собирает
+# гейт, только когда `quit_dialog` передан явно (см. её докстринг,
+# `ui/app.py`) — сторож этого контракта см. ниже,
+# `test_closing_window_without_quit_dialog_never_shows_a_confirmation_dialog`.
+
+
+def _fake_quit_dialog(messages: list[str], *, answer: bool) -> Callable[[QWidget, str], bool]:
+    """Фейковый `quit_dialog`: журнал показанных сообщений и фиксированный ответ."""
+
+    def dialog(_parent: QWidget, message: str) -> bool:
+        messages.append(message)
+        return answer
+
+    return dialog
+
+
+def test_confirm_quit_with_servers_no_running_returns_true_without_asking() -> None:
+    """0 работающих серверов — тихое `True`, `ask` не вызывается вовсе."""
+    asked: list[str] = []
+
+    def ask(message: str) -> bool:
+        asked.append(message)
+        return False
+
+    result = app_module._confirm_quit_with_servers(lambda: 0, ask)
+
+    assert result is True
+    assert asked == []
+
+
+def test_confirm_quit_with_servers_asks_with_declined_word_and_count() -> None:
+    """Текст вопроса — с верным склонением «сервера» для числа 3."""  # noqa: RUF002
+    asked: list[str] = []
+
+    def ask(message: str) -> bool:
+        asked.append(message)
+        return True
+
+    result = app_module._confirm_quit_with_servers(lambda: 3, ask)
+
+    assert result is True
+    assert asked == ["Остановить 3 сервера и выйти?"]
+
+
+def test_confirm_quit_with_servers_declined_returns_false() -> None:
+    result = app_module._confirm_quit_with_servers(lambda: 2, lambda _message: False)
+
+    assert result is False
+
+
+def test_confirm_quit_with_servers_asks_when_state_is_unreadable() -> None:
+    """Отказ `running_count()` — не крах слота, а вопрос с фактом отказа в тексте.
+
+    Волна финального ревью ветки, п. 1 (Important 1): с T-12
+    `running_count()` читает Job у ОС и может поднять `ServerError`
+    (`QueryInformationJobObject` отказал). Молчаливый `True` увёл бы
+    пользователя из приложения, не сказав, что состояние серверов
+    неизвестно; исключение из слота — оставило бы окно незакрываемым.
+    Гейт поэтому спрашивает тем же диалогом с дефолтом «Нет», а причина
+    отказа стоит в тексте вопроса — гадать пользователю не по чему.
+    """  # noqa: RUF002
+    asked: list[str] = []
+
+    def running_count() -> int:
+        raise ServerError("Не удалось прочитать процессы сервера: Job не читается")  # noqa: RUF001
+
+    def ask(message: str) -> bool:
+        asked.append(message)
+        return False
+
+    assert app_module._confirm_quit_with_servers(running_count, ask) is False
+    assert len(asked) == 1
+    assert "Всё равно выйти?" in asked[0]
+    assert "Job не читается" in asked[0]
+    assert app_module._confirm_quit_with_servers(running_count, lambda _message: True) is True
+
+
+@pytest.mark.parametrize(
+    ("n", "word"),
+    [(1, "сервер"), (2, "сервера"), (5, "серверов"), (11, "серверов"), (21, "сервер")],
+)
+def test_servers_word_declines_by_count(n: int, word: str) -> None:
+    assert app_module._servers_word(n) == word
+
+
+def test_close_without_servers_needs_no_confirmation(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """Проводка `_build_main_window`: без работающих серверов диалог не звался.
+
+    `window.confirm_quit` — настоящая проводка (не подмена): без единого
+    зарегистрированного профиля `ServersWorkspace.running_count()` — `0`,
+    и `_confirm_quit_with_servers` обязана вернуть `True`, ни разу не дойдя
+    до `quit_dialog` — иначе выход спрашивал бы всегда, даже когда гасить
+    нечего.
+    """
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    asked: list[str] = []
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+
+    window, _tasks, _monitor = _build_main_window(
+        qapp, runtime, env, quit_dialog=_fake_quit_dialog(asked, answer=False)
+    )
+    qtbot.addWidget(window)
+
+    assert window.confirm_quit is not None
+    assert window.confirm_quit() is True
+    assert asked == []
+
+
+def test_close_with_running_server_and_declined_dialog_keeps_confirm_quit_false(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """Проводка `_build_main_window` с реальным работающим сервером и отказом в диалоге.
+
+    Профиль, запущенный через наш Job (T-12: `running_count()` считает
+    именно Job, а не совпавшие процессы снимка), обязан дать `1`; фейковый
+    `quit_dialog` (отвечает «Нет») обязан быть вызван ровно один раз
+    с верным текстом, а `window.confirm_quit()` — вернуть `False`.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    monkeypatch.setattr(app_module, "spawn_server", lambda command, log, job: 4646)
+    asked: list[str] = []
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+    window, _tasks, _monitor = _build_main_window(
+        qapp,
+        runtime,
+        env,
+        quit_dialog=_fake_quit_dialog(asked, answer=False),
+        job_factory=lambda: _FakeJob((4646,)),
+    )
+    qtbot.addWidget(window)
+    labels = [button.text() for button in window.section_buttons()]
+    window.show_section(labels.index("Серверы"))
+    servers_view = window.current_section()
+    assert isinstance(servers_view, ServersView)
+    _start_fake_server(servers_view, tmp_path)
+
+    assert window.confirm_quit is not None
+    assert window.confirm_quit() is False
+    assert asked == ["Остановить 1 сервер и выйти?"]
+
+
+def test_confirm_quit_true_logs_shutdown_event_for_running_profile(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ: НАХОДКА 4 ручного чек-листа T-10 (Minor) — согласие
+    в диалоге выхода обязано оставить след в журнале работающего профиля
+    ДО самого выхода —
+    дерево серверов гасит сама ОС (Job kill-on-close, §12.4), кода
+    остановки нет, и без этого события конец сессии в журнале не виден.
+
+    `_build_confirm_quit` — один путь на `request_quit` и на гейт
+    `MainWindow.closeEvent` (оба зовут именно `window.confirm_quit()`),
+    поэтому проверка через `window.confirm_quit()` покрывает оба вызывающих
+    сразу.
+
+    Мутация: убрать `servers_workspace.log_shutdown()` из `_build_confirm_quit`
+    — тест обязан упасть (строки в журнале не будет).
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    monkeypatch.setattr(app_module, "spawn_server", lambda command, log, job: 4646)
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+    window, _tasks, _monitor = _build_main_window(
+        qapp,
+        runtime,
+        env,
+        quit_dialog=_fake_quit_dialog([], answer=True),
+        job_factory=lambda: _FakeJob((4646,)),
+    )
+    qtbot.addWidget(window)
+    labels = [button.text() for button in window.section_buttons()]
+    window.show_section(labels.index("Серверы"))
+    servers_view = window.current_section()
+    assert isinstance(servers_view, ServersView)
+    profile = _start_fake_server(servers_view, tmp_path)
+
+    assert window.confirm_quit is not None
+    assert window.confirm_quit() is True
+
+    journal_text = servers_view._workspace.journal_path(profile.id).read_text(encoding="utf-8")
+    assert "выход лаунчера — сервер будет остановлен вместе с ним" in journal_text  # noqa: RUF001
+
+
+def test_confirm_quit_survives_unreadable_job(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ (волна финального ревью, п. 1): нечитаемый Job не рушит гейт выхода.
+
+    Проводка целиком: настоящий `ServersWorkspace` с профилем, запущенным
+    через фейковый Job, которому ПОСЛЕ старта задан отказ `pids()`.
+    Без страховки `running_count()` внутри `_confirm_quit_with_servers`
+    `ServerError` уходит из `window.confirm_quit()` — то есть из
+    `MainWindow.closeEvent` (виртуальный метод: `event.ignore()` не
+    зовётся, окно закрывается БЕЗ вопроса) и из слота трея «Выход»
+    (приложение не выходит вовсе, и так на каждую попытку).
+
+    Мутация: убрать `try/except ServicesError` вокруг `running_count()`
+    в `_confirm_quit_with_servers` — тест обязан упасть на `ServerError`,
+    поднятом из `window.confirm_quit()`.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    monkeypatch.setattr(app_module, "spawn_server", lambda command, log, job: 4646)
+    asked: list[str] = []
+    jobs: list[_FakeJob] = []
+
+    def job_factory() -> _FakeJob:
+        job = _FakeJob((4646,))
+        jobs.append(job)
+        return job
+
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+    window, _tasks, _monitor = _build_main_window(
+        qapp,
+        runtime,
+        env,
+        quit_dialog=_fake_quit_dialog(asked, answer=False),
+        job_factory=job_factory,
+    )
+    qtbot.addWidget(window)
+    labels = [button.text() for button in window.section_buttons()]
+    window.show_section(labels.index("Серверы"))
+    servers_view = window.current_section()
+    assert isinstance(servers_view, ServersView)
+    _start_fake_server(servers_view, tmp_path)
+    jobs[0].pids_error = JobError("QueryInformationJobObject отказал")
+
+    assert window.confirm_quit is not None
+    assert window.confirm_quit() is False
+    assert len(asked) == 1
+    assert "Всё равно выйти?" in asked[0]
+    assert "QueryInformationJobObject отказал" in asked[0]
+
+
+def test_confirm_quit_accepted_survives_unreadable_job_in_log_shutdown(
+    qtbot: Any, caplog: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ (волна финального ревью, п. 1): отказ `log_shutdown()` не отменяет выход.
+
+    Второй незащищённый вызов той же ветки: после согласия пользователя
+    `log_shutdown()` идёт по тем же `_job_pids` и падает тем же
+    `ServerError`. Согласие уже дано — отказ отметки в журнале не повод
+    ни ронять слот, ни оставлять приложение работающим вопреки ответу
+    пользователя: он уходит в `_log.warning`, а `confirm_quit()`
+    возвращает `True`.
+
+    Мутация: убрать `try/except ServicesError` вокруг `log_shutdown()`
+    в `_build_confirm_quit` — тест обязан упасть на `ServerError`.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    monkeypatch.setattr(app_module, "spawn_server", lambda command, log, job: 4646)
+    jobs: list[_FakeJob] = []
+
+    def job_factory() -> _FakeJob:
+        job = _FakeJob((4646,))
+        jobs.append(job)
+        return job
+
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+    window, _tasks, _monitor = _build_main_window(
+        qapp,
+        runtime,
+        env,
+        quit_dialog=_fake_quit_dialog([], answer=True),
+        job_factory=job_factory,
+    )
+    qtbot.addWidget(window)
+    labels = [button.text() for button in window.section_buttons()]
+    window.show_section(labels.index("Серверы"))
+    servers_view = window.current_section()
+    assert isinstance(servers_view, ServersView)
+    _start_fake_server(servers_view, tmp_path)
+    jobs[0].pids_error = JobError("QueryInformationJobObject отказал")
+
+    assert window.confirm_quit is not None
+    with caplog.at_level(logging.WARNING, logger="onecstarter.startup"):
+        assert window.confirm_quit() is True
+
+    assert "не удалось отметить выход в журналах серверов" in caplog.text
+
+
+def test_closing_window_without_quit_dialog_never_shows_a_confirmation_dialog(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """СТОРОЖ против зависания: без `quit_dialog` гейта нет — диалог не вызывается вовсе.
+
+    Регрессия, найденная координатором при мутационной проверке: первая
+    редакция ставила `window.confirm_quit` безусловно, с настоящим диалогом
+    выхода внутри замыкания — teardown ЛЮБОГО теста с работающим сервером
+    (`qtbot.addWidget` закрывает окно сам) вешался на модальный диалог под
+    offscreen-платформой навсегда: диалог там не показывается, но и не
+    отвечает сам. `QMessageBox.exec` здесь подменена на функцию, которая
+    КИДАЕТ `AssertionError` вместо показа — попытка её позвать обязана явно
+    УПАСТЬ тестом, а не повиснуть раннером (волна исправлений по чек-листу
+    T-10, находка 3: `_ask_quit_confirmation` теперь зовёт `ask_confirmation`
+    → `QMessageBox(...).exec()`, не `QMessageBox.question`, — страховка
+    переориентирована на фактический путь вызова).
+    `_build_main_window` без единого `quit_dialog` (как в этом тесте, как
+    у `run_smoke`, как у остальных прямых тестов файла) обязана оставить
+    `window.confirm_quit` пустым, и `window.close()` — просто закрыть окно,
+    несмотря на работающий сервер.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+
+    def _forbidden_exec(self: QMessageBox) -> int:
+        raise AssertionError("диалог не должен показываться")
+
+    monkeypatch.setattr(QMessageBox, "exec", _forbidden_exec)
+    monkeypatch.setattr(app_module, "spawn_server", lambda command, log, job: 4646)
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+    window, _tasks, _monitor = _build_main_window(
+        qapp, runtime, env, job_factory=lambda: _FakeJob((4646,))
+    )
+    qtbot.addWidget(window)
+    labels = [button.text() for button in window.section_buttons()]
+    window.show_section(labels.index("Серверы"))
+    servers_view = window.current_section()
+    assert isinstance(servers_view, ServersView)
+    _start_fake_server(servers_view, tmp_path)
+    assert window.confirm_quit is None
+
+    assert window.close() is True
+
+
+def test_request_quit_declined_does_not_quit_the_application(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """Трей «Выход»: отказ в подтверждении не гасит приложение (журнал фейка).
+
+    Настоящий `create_tray` под offscreen-платформой отдаёт `None`
+    (`QSystemTrayIcon.isSystemTrayAvailable()` там честно `False`) — сам
+    `request_quit`, переданный в `on_quit`, достать неоткуда, кроме как
+    подменой `create_tray`, перехватывающей аргумент (тот же приём, что
+    `fake_create_tray` в `_assemble`). `qapp.quit` подменена журналом вызовов
+    (`quit_calls`) — тем же приёмом, что `stylesheets`/`exec_calls` в
+    `_assemble`: настоящий `quit()` пометил бы сессионный `qapp` как
+    завершающийся для следующих тестов. `quit_dialog` — фейковый (журнал +
+    ответ «Нет»), не подмена `QMessageBox.question`.
+    """
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    quit_calls: list[None] = []
+    monkeypatch.setattr(qapp, "quit", lambda: quit_calls.append(None))
+    captured: dict[str, Any] = {}
+
+    def fake_create_tray(
+        window: Any, favorites: Any, on_launch: Any, on_quit: Any, **kwargs: Any
+    ) -> None:
+        captured["on_quit"] = on_quit
+        return None
+
+    monkeypatch.setattr(app_module, "create_tray", fake_create_tray)
+    monkeypatch.setattr(app_module, "spawn_server", lambda command, log, job: 4646)
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+    window, _tasks, _monitor = _build_main_window(
+        qapp,
+        runtime,
+        env,
+        quit_dialog=_fake_quit_dialog([], answer=False),
+        job_factory=lambda: _FakeJob((4646,)),
+    )
+    qtbot.addWidget(window)
+    labels = [button.text() for button in window.section_buttons()]
+    window.show_section(labels.index("Серверы"))
+    servers_view = window.current_section()
+    assert isinstance(servers_view, ServersView)
+    _start_fake_server(servers_view, tmp_path)
+
+    captured["on_quit"]()
+
+    assert quit_calls == [], "отказ в подтверждении не должен гасить приложение"
+
+
+def test_request_quit_without_quit_dialog_quits_immediately(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """Без `quit_dialog` (та же ветка, что у `run_smoke`) трей выходит сразу, без вопроса."""  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    quit_calls: list[None] = []
+    monkeypatch.setattr(qapp, "quit", lambda: quit_calls.append(None))
+    captured: dict[str, Any] = {}
+
+    def fake_create_tray(
+        window: Any, favorites: Any, on_launch: Any, on_quit: Any, **kwargs: Any
+    ) -> None:
+        captured["on_quit"] = on_quit
+        return None
+
+    monkeypatch.setattr(app_module, "create_tray", fake_create_tray)
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+    window, _tasks, _monitor = _build_main_window(qapp, runtime, env)
+    qtbot.addWidget(window)
+
+    captured["on_quit"]()
+
+    assert quit_calls == [None]
+
+
+def test_run_smoke_does_not_set_confirm_quit(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any
+) -> None:
+    """`run_smoke`: `confirm_quit` не ставится — `quit_dialog` не передаётся.
+
+    Self-test не может показать диалог и не должен пытаться: `run_smoke`
+    зовёт `_build_main_window` без `quit_dialog` (в отличие от `main()`,
+    которая передаёт `_ask_quit_confirmation`) — гейта нет вовсе, а не
+    выключен отдельным флагом.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    appdata = tmp_path / "appdata"
+    target = tmp_path / "out"
+    target.mkdir()
+
+    assert run_smoke(str(target), {"APPDATA": str(appdata)}) == 0
+
+    qtbot.addWidget(captured["window"])
+    assert captured["window"].confirm_quit is None
+
+
+def test_main_wires_the_quit_confirmation_gate(assembled: _Assembly) -> None:
+    """`main()` обязана передать `quit_dialog` — иначе прод потерял бы гейт задачи 6.
+
+    `_assemble` зовёт настоящий `main()` без подмены `_build_main_window` —
+    единственный способ потерять эту проводку незамеченным: убрать
+    `quit_dialog=_ask_quit_confirmation` из вызова внутри `main()`. Диалог
+    здесь не вызывается (`confirm_quit()` не зовём) — предмет теста
+    исключительно факт проводки, не поведение диалога (оно покрыто выше).
+    """
+    assert assembled.window.confirm_quit is not None

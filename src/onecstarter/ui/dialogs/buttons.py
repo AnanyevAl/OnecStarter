@@ -38,11 +38,24 @@ button box в него не вставить. Тот же дефект, что �
 приёмом, что и `InfobaseDialog.for_new`/`_build_add_dialog` в этой же задаче —
 обе ветки выбора и обе подписи теперь проверяются на настоящем виджете
 без блокирующего `exec()`.
+
+**`ask_confirmation` — находка 3 ручного чек-листа T-10 (Minor, 29.08.2026).**
+Диалог выхода при работающих серверах (`ui/app.py::_ask_quit_confirmation`)
+до этой правки звал `QMessageBox.question` со стандартными кнопками —
+без установленного `QTranslator` (см. выше) они пришли по-английски
+(«Yes»/«No» на скриншоте живого прогона), хотя весь остальной интерфейс
+русский. `ServersView._default_confirm_removal` (T-08) уже решала ровно
+ту же задачу — Да/Нет-подтверждение с дефолтной кнопкой «Нет» (страховка
+от случайного Enter/пробела на диалоге с дорогими последствиями) — своей
+копией той же сборки. `ask_confirmation` выносит этот приём в одно место
+(`build_confirm_box` → дефолт «Нет» → `exec()` → `is_confirmed`), и оба
+места теперь зовут её вместо собственных копий.
 """  # noqa: RUF002
 
 from enum import Enum
+from typing import cast
 
-from PySide6.QtWidgets import QDialogButtonBox, QMessageBox, QWidget
+from PySide6.QtWidgets import QDialogButtonBox, QMessageBox, QPushButton, QWidget
 
 
 class ButtonKind(Enum):
@@ -108,5 +121,30 @@ def is_confirmed(box: QMessageBox) -> bool:
 def russian_confirm(parent: QWidget | None, title: str, text: str) -> bool:
     """Да/Нет-подтверждение с русскими подписями кнопок. `True` — ответили «Да»."""  # noqa: RUF002
     box = build_confirm_box(parent, title, text)
+    box.exec()
+    return is_confirmed(box)
+
+
+def ask_confirmation(parent: QWidget | None, title: str, text: str) -> bool:
+    """Да/Нет-подтверждение с дефолтной кнопкой «Нет». `True` — ответили «Да».
+
+    Находка 3 ручного чек-листа T-10 (см. докстринг модуля): общий приём
+    для диалогов с дорогими последствиями — выход при работающих серверах
+    и удаление профиля. Отдельная функция от `russian_confirm` (задача 10)
+    намеренно: та дефолтную кнопку не ставит — подмена подписи в её месте
+    использования (смена вида размещения) не несёт того же риска
+    случайного согласия на Enter/пробел, что выход или удаление профиля.
+
+    `box.buttons()` типизирован в стабах PySide6 как `list[QAbstractButton]`,
+    но `setDefaultButton()` принимает только `QPushButton` — фактический
+    тип рантайма гарантирован тем, что `build_confirm_box` добавляет
+    кнопки только через `addButton(text, role)`.
+    """  # noqa: RUF002
+    box = build_confirm_box(parent, title, text)
+    no_button = cast(
+        QPushButton | None, next((b for b in box.buttons() if b.text() == "Нет"), None)
+    )
+    if no_button is not None:
+        box.setDefaultButton(no_button)
     box.exec()
     return is_confirmed(box)

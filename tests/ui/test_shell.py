@@ -65,6 +65,50 @@ def test_close_to_tray_hides_instead_of_closing(qtbot):
     assert not window.isHidden()
 
 
+def test_close_with_running_servers_and_declined_confirmation_keeps_window(qtbot):
+    """ЗАЩИТНЫЙ ТЕСТ: отказ в подтверждении не закрывает окно и не гасит серверы, §12.3.
+
+    Серверы — дочерние процессы лаунчера (T-10, задача 4: Job Object, задача 7):
+    настоящий выход гасит их вместе с окном, поэтому `confirm_quit` (проводка
+    `ui/app.py`, задача 6) обязан спросить пользователя, если что-то работает,
+    и отказ ("Нет") обязан оставить окно открытым — `event.ignore()`, а не
+    обычное закрытие.
+    """  # noqa: RUF002
+    window = MainWindow([("Базы", QLabel("заглушка"))])
+    qtbot.addWidget(window)
+    window.confirm_quit = lambda: False
+    window.show()
+
+    window.close()
+
+    assert window.isVisible(), "отказ в подтверждении обязан оставить окно открытым"
+
+
+def test_close_to_tray_hides_without_asking(qtbot):
+    """close_to_tray — сворачивание, не выход (§12.2): гейт confirm_quit не звать.
+
+    Ветка `close_to_tray` в `closeEvent` обязана вернуться раньше проверки
+    `confirm_quit` — простое скрытие окна серверы не трогает, спрашивать
+    пользователя не о чем.
+    """  # noqa: RUF002
+    calls: list[None] = []
+
+    def confirm_quit() -> bool:
+        calls.append(None)
+        return True
+
+    window = MainWindow([("Базы", QLabel("заглушка"))])
+    qtbot.addWidget(window)
+    window.close_to_tray = True
+    window.confirm_quit = confirm_quit
+    window.show()
+
+    window.close()
+
+    assert window.isHidden()
+    assert calls == [], "close_to_tray обязан вернуться раньше confirm_quit"
+
+
 def test_show_and_focus_search_calls_section_focus_search(qtbot):
     # Шов show_and_focus_search -> section.focus_search() не был покрыт:
     # остальные тесты файла используют QLabel, у которого focus_search нет,  # noqa: RUF003

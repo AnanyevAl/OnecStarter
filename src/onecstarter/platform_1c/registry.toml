@@ -12,3 +12,12 @@ bin_dir = "bin"
 thin = "1cv8c.exe"
 thick = "1cv8.exe"
 designer = "1cv8.exe"
+
+# Серверные компоненты ([Ф] Г1: во всех версиях 8.3.10…8.5.4 машины заказчика).
+[[server_conventions]]
+min_version = "8.2"
+bin_dir = "bin"
+ragent = "ragent.exe"
+radmin = "radmin.dll"
+# Путь от КОРНЯ 1cv8 (родителя каталогов версий), не от каталога версии ([Ф] Г1).
+console = "common/1CV8 Servers (x86-64).msc"

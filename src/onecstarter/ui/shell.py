@@ -41,6 +41,13 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("OneCStarter")
         self.resize(900, 600)
         self.close_to_tray = False
+        # T-10, задача 6: гейт подтверждения выхода при работающих серверах
+        # (спека §12.3) — проставляется сборкой (ui/app.py), как
+        # settings_store/global_hotkey ниже, но, в отличие от них,
+        # closeEvent реально его ЗОВЁТ: None — гейта нет (self-test,  # noqa: RUF003
+        # run_smoke), иначе отказ (False) обязан оставить окно открытым —
+        # см. closeEvent.
+        self.confirm_quit: Callable[[], bool] | None = None
         # Проставляются сборкой приложения (ui/app.py): окну они нужны
         # только как владельцу времени жизни, поведение их не читает.
         self.settings_store: object | None = None
@@ -146,5 +153,13 @@ class MainWindow(QMainWindow):
         if self.close_to_tray:
             event.ignore()
             self.hide()
+            return
+        # T-10, задача 6: серверы — дочерние процессы лаунчера (Job Object,
+        # задача 7) — настоящий выход гасит их вместе с окном. confirm_quit  # noqa: RUF003
+        # (проводка ui/app.py) спрашивает пользователя, если что-то ещё
+        # работает (§12.3); отказ — event.ignore(), окно остаётся, тем же
+        # приёмом, что и ветка close_to_tray выше.
+        if self.confirm_quit is not None and not self.confirm_quit():
+            event.ignore()
             return
         super().closeEvent(event)

@@ -5,6 +5,7 @@ from typing import Any
 from onecstarter.domain.connect import ConnectKind
 from onecstarter.services.model import InfobaseItem, InfobaseSource
 from onecstarter.ui.dialogs.group import GroupDialog
+from onecstarter.ui.dialogs.group_picker import INDENT
 
 
 def _group_item(name: str, folder: str = "/", connect: str | None = None) -> InfobaseItem:
@@ -35,6 +36,16 @@ def test_rename_dialog_starts_with_existing_name_and_folder(qtbot: Any) -> None:
     qtbot.addWidget(dialog)
     assert dialog.name_text() == "Розница"
     assert dialog.parent_path() == "Клиенты"
+
+
+def test_parent_picker_shows_groups_as_a_tree(qtbot: Any) -> None:
+    """Группы первого уровня — без отступа, второго — с одним `INDENT`; значения — пути."""  # noqa: RUF002
+    item = _group_item("Магазин", folder="/Клиенты/Розница")
+    dialog = GroupDialog(item, ["/", "Клиенты", "Клиенты/Розница"])
+    qtbot.addWidget(dialog)
+    assert dialog._parent_box.currentText() == f"{INDENT}Розница"
+    assert dialog.parent_path() == "Клиенты/Розница"
+    assert dialog._parent_box.paths() == ["/", "Клиенты", "Клиенты/Розница"]
 
 
 def test_ok_cancel_button_labels_are_russian(qtbot: Any) -> None:

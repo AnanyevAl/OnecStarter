@@ -1,11 +1,20 @@
-"""Раздел «Настройки»: четыре группы утверждённого мокапа.
+"""Раздел «Настройки»: четыре группы утверждённого мокапа v1 плюс СЕРВЕРЫ (v2).
 
-Порядок групп — мокапа: ВНЕШНИЙ ВИД, ОКНО И ЗАПУСК, ГОРЯЧИЕ КЛАВИШИ,
+Порядок групп v1-мокапа: ВНЕШНИЙ ВИД, ОКНО И ЗАПУСК, ГОРЯЧИЕ КЛАВИШИ,
 СПИСОК БАЗ. Собственных запечённых цветов нет, красит общий stylesheet
 (#ThemeSeg, #SettingsGroupLabel, #SettingsNote). Шестая настройка группы
 «ОКНО И ЗАПУСК» — «Клиент по умолчанию» (спека вехи «Завершение v1», §2):
 сегмент того же вида, что тема, только выбор идёт в `store`, а не в
 `ThemeController`.
+
+Группа СЕРВЕРЫ (спека §3.5, T-08 задача 7) — за пределами утверждённого мокапа
+v1, вставлена сразу ПОСЛЕ «ОКНО И ЗАПУСК» и перед «ГОРЯЧИЕ КЛАВИШИ»: спека §3.5
+требует соседства с существующими настройками запуска, круг исправлений 1
+ревью задачи 7 (место «последней группой» было ошибкой брифа-умолчания,
+спека главнее). Несёт «Корень каталогов серверов», от которого новый профиль
+сервера предлагает `<корень>\\srv_<версия>`. Поле пути + кнопка «Обзор…» —
+тем же приёмом инъекции диалога (`choose_directory`), что и `InfobaseDialog`
+в `dialogs/infobase.py`.
 
 Раздел не знает ни о `GlobalHotkey`, ни о том, как поднято окно: сочетание
 уходит наружу через `on_hotkey`, а обратно приходит текст отказа либо `None`.
@@ -15,15 +24,19 @@
 подаётся инъекцией — тесты не трогают живой HKCU.
 """  # noqa: RUF002
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from typing import TypeVar
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QShowEvent
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
+    QFileDialog,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
     QSpinBox,
     QVBoxLayout,
@@ -31,9 +44,16 @@ from PySide6.QtWidgets import (
 )
 
 from onecstarter.services import autostart
-from onecstarter.services.settings import RECENT_MAX, RECENT_MIN, DefaultClient, ThemeMode
+from onecstarter.services.settings import (
+    RECENT_MAX,
+    RECENT_MIN,
+    DefaultClient,
+    ListOrder,
+    ThemeMode,
+)
 from onecstarter.ui.hotkey_edit import HotkeyEdit
 from onecstarter.ui.settings_store import SettingsStore
+from onecstarter.ui.shortcuts import BASES_SHORTCUTS
 from onecstarter.ui.theme_controller import ThemeController
 
 CHOICES = (
@@ -46,6 +66,13 @@ CLIENT_CHOICES = (
     (DefaultClient.THIN, "Тонкий"),
     (DefaultClient.THICK, "Толстый"),
 )
+
+ORDER_CHOICES = (
+    (ListOrder.FILE, "Как в файле"),
+    (ListOrder.ALPHABETICAL, "По алфавиту"),
+)
+
+T = TypeVar("T")
 
 NOT_FROZEN_NOTE = "Доступно в установленной версии — из исходников ссылка в реестре протухнет"
 
@@ -63,6 +90,18 @@ AUTOSTART_ROW_NOTE = (
     "Отключённый в «Диспетчере задач» автозапуск включается только там же"
 )
 
+SERVERS_ROOT_ROW_NOTE = "Новые профили серверов предлагают каталог <корень>\\srv_<версия>"
+
+
+def browse_for_servers_root() -> str:
+    """Системный диалог выбора корня каталогов серверов. Пустая строка — отмена.
+
+    Инъекция, а не вызов модульного имени напрямую — тот же приём, что
+    у `browse_for_directory` в `dialogs/infobase.py`: настоящий `QFileDialog`
+    в офскрин-тесте не дождётся выбора каталога.
+    """  # noqa: RUF002
+    return QFileDialog.getExistingDirectory()
+
 
 class SettingsView(QWidget):
     def __init__(
@@ -74,6 +113,7 @@ class SettingsView(QWidget):
         frozen: bool = False,
         executable: str = "",
         on_hotkey: Callable[[str], str | None] | None = None,
+        choose_directory: Callable[[], str] = browse_for_servers_root,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -83,8 +123,10 @@ class SettingsView(QWidget):
         self._frozen = frozen
         self._executable = executable
         self._on_hotkey = on_hotkey
+        self._choose_directory = choose_directory
         self._buttons: list[QPushButton] = []
         self._client_buttons: list[QPushButton] = []
+        self._order_buttons: list[QPushButton] = []
         self._group_labels: list[str] = []
         self._row_notes: dict[str, QLabel] = {}
         self._row_controls: dict[str, QWidget] = {}
@@ -125,6 +167,17 @@ class SettingsView(QWidget):
             self._tray,
         )
 
+        # T-11, п. 9 (решение заказчика 29.08.2026): любой способ запуска базы
+        # прячет окно; на серверные профили не действует; без трея — не действует.
+        self._hide_on_launch = QCheckBox()
+        self._hide_on_launch.setChecked(store.settings.hide_on_launch)
+        self._hide_on_launch.toggled.connect(self._choose_hide_on_launch)
+        self._add_row(
+            "Запуск базы сворачивает окно в трей",
+            "Любой способ запуска: Enter, F3/F4, меню, поиск, трей. Без трея не действует",
+            self._hide_on_launch,
+        )
+
         self._autostart = QCheckBox()
         self._autostart_note = QLabel("")
         self._autostart_note.setObjectName("SettingsNote")
@@ -145,6 +198,13 @@ class SettingsView(QWidget):
             self._build_client_segment(),
         )
 
+        self._add_group("СЕРВЕРЫ")
+        self._add_row(
+            "Корень каталогов серверов",
+            SERVERS_ROOT_ROW_NOTE,
+            self._build_servers_root_control(store.settings.servers_root),
+        )
+
         self._add_group("ГОРЯЧИЕ КЛАВИШИ")
         self._hotkey = HotkeyEdit()
         self._hotkey.set_combination(store.settings.hotkey)
@@ -159,6 +219,13 @@ class SettingsView(QWidget):
             extra=self._hotkey_note,
         )
 
+        self._shortcut_rows: list[tuple[str, str]] = []
+        self._add_block(
+            "Сочетания раздела «Базы»",
+            "Зашиты в программу и не меняются (решение заказчика 29.08.2026)",
+            self._build_shortcut_reference(),
+        )
+
         self._add_group("СПИСОК БАЗ")
         self._recent = QSpinBox()
         self._recent.setRange(RECENT_MIN, RECENT_MAX)
@@ -168,6 +235,13 @@ class SettingsView(QWidget):
             "Записей в «Недавних»",
             "0 — ветка «Недавние» не показывается вовсе",
             self._recent,
+        )
+        self._add_row(
+            "Порядок списка",
+            "«По алфавиту» — только показ: файл списка и штатный стартер порядка "
+            "не видят, перестановка Alt+↑/↓ и мышью отвечает подсказкой, "
+            "а не меняет порядок",  # noqa: RUF001
+            self._build_order_segment(),
         )
 
         layout.addWidget(self._status)
@@ -206,7 +280,58 @@ class SettingsView(QWidget):
         row.addWidget(control, alignment=Qt.AlignmentFlag.AlignTop)
         self._layout.addLayout(row)
 
+    def _add_block(self, title: str, note: str, body: QWidget) -> None:
+        """Строка настроек во всю ширину: заголовок, подпись, тело под ними.
+
+        Для справочной таблицы `_add_row` не годится: та ставит орган
+        управления справа узкой колонкой, а таблице нужна ширина раздела.
+        Регистрируется в `_row_notes`/`_row_controls` так же, как строки
+        `_add_row`, — тесты находят её теми же аксессорами.
+        """  # noqa: RUF002
+        row_title = QLabel(title)
+        row_note = QLabel(note)
+        row_note.setObjectName("SettingsNote")
+        row_note.setWordWrap(True)
+        self._row_notes[title] = row_note
+        self._row_controls[title] = body
+        self._layout.addWidget(row_title)
+        self._layout.addWidget(row_note)
+        self._layout.addWidget(body)
+
+    def _build_shortcut_reference(self) -> QWidget:
+        """Таблица «сочетание — действие» по `BASES_SHORTCUTS` (T-11, п. 3, только чтение)."""
+        table = QWidget()
+        grid = QGridLayout(table)
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(18)
+        grid.setVerticalSpacing(2)
+        for row, spec in enumerate(BASES_SHORTCUTS):
+            keys = QLabel(spec.label)
+            keys_font = keys.font()
+            keys_font.setBold(True)
+            keys.setFont(keys_font)
+            grid.addWidget(keys, row, 0)
+            grid.addWidget(QLabel(spec.title), row, 1)
+            self._shortcut_rows.append((spec.label, spec.title))
+        grid.setColumnStretch(1, 1)
+        return table
+
     def _build_theme_segment(self) -> QWidget:
+        return self._build_segment(
+            CHOICES,
+            lambda mode: mode is self._controller.mode,
+            self._choose_theme,
+            self._buttons,
+        )
+
+    def _build_segment(
+        self,
+        choices: Sequence[tuple[T, str]],
+        is_current: Callable[[T], bool],
+        choose: Callable[[T], None],
+        registry: list[QPushButton],
+    ) -> QWidget:
+        """Сегментный переключатель — один билдер на тему, клиента и порядок списка."""
         seg = QWidget()
         seg.setObjectName("ThemeSeg")
         seg_layout = QHBoxLayout(seg)
@@ -214,33 +339,43 @@ class SettingsView(QWidget):
         seg_layout.setSpacing(0)
         buttons = QButtonGroup(self)
         buttons.setExclusive(True)
-        for mode, label in CHOICES:
+        for value, label in choices:
             button = QPushButton(label)
             button.setCheckable(True)
-            button.setChecked(mode is self._controller.mode)
-            button.clicked.connect(lambda _checked=False, m=mode: self._choose_theme(m))
+            button.setChecked(is_current(value))
+            button.clicked.connect(lambda _checked=False, v=value: choose(v))
             buttons.addButton(button)
             seg_layout.addWidget(button)
-            self._buttons.append(button)
+            registry.append(button)
         return seg
 
     def _build_client_segment(self) -> QWidget:
-        seg = QWidget()
-        seg.setObjectName("ThemeSeg")
-        seg_layout = QHBoxLayout(seg)
-        seg_layout.setContentsMargins(0, 0, 0, 0)
-        seg_layout.setSpacing(0)
-        buttons = QButtonGroup(self)
-        buttons.setExclusive(True)
-        for client, label in CLIENT_CHOICES:
-            button = QPushButton(label)
-            button.setCheckable(True)
-            button.setChecked(client is self._store.settings.default_client)
-            button.clicked.connect(lambda _checked=False, c=client: self._choose_client(c))
-            buttons.addButton(button)
-            seg_layout.addWidget(button)
-            self._client_buttons.append(button)
-        return seg
+        return self._build_segment(
+            CLIENT_CHOICES,
+            lambda client: client is self._store.settings.default_client,
+            self._choose_client,
+            self._client_buttons,
+        )
+
+    def _build_order_segment(self) -> QWidget:
+        return self._build_segment(
+            ORDER_CHOICES,
+            lambda order: order is self._store.settings.list_order,
+            self._choose_order,
+            self._order_buttons,
+        )
+
+    def _build_servers_root_control(self, current: str) -> QWidget:
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        self._servers_root = QLineEdit(current)
+        self._servers_root.editingFinished.connect(self._choose_servers_root)
+        self._servers_root_browse = QPushButton("Обзор…")
+        self._servers_root_browse.clicked.connect(self._browse_servers_root)
+        row_layout.addWidget(self._servers_root)
+        row_layout.addWidget(self._servers_root_browse)
+        return row
 
     # --- доступ для тестов ------------------------------------------------
 
@@ -253,8 +388,14 @@ class SettingsView(QWidget):
     def client_buttons(self) -> list[QPushButton]:
         return list(self._client_buttons)
 
+    def order_buttons(self) -> list[QPushButton]:
+        return list(self._order_buttons)
+
     def tray_checkbox(self) -> QCheckBox:
         return self._tray
+
+    def hide_on_launch_checkbox(self) -> QCheckBox:
+        return self._hide_on_launch
 
     def autostart_checkbox(self) -> QCheckBox:
         return self._autostart
@@ -264,6 +405,16 @@ class SettingsView(QWidget):
 
     def recent_spinbox(self) -> QSpinBox:
         return self._recent
+
+    def shortcut_reference_rows(self) -> list[tuple[str, str]]:
+        """Строки справочника сочетаний в порядке показа — что реально попало в таблицу."""
+        return list(self._shortcut_rows)
+
+    def servers_root_edit(self) -> QLineEdit:
+        return self._servers_root
+
+    def servers_root_browse_button(self) -> QPushButton:
+        return self._servers_root_browse
 
     def status_text(self) -> str:
         return self._status.text()
@@ -327,11 +478,38 @@ class SettingsView(QWidget):
     def _choose_client(self, client: DefaultClient) -> None:
         self._store.update(default_client=client)
 
+    def _choose_order(self, order: ListOrder) -> None:
+        self._store.update(list_order=order)
+
     def _choose_tray(self, checked: bool) -> None:
         self._store.update(close_to_tray=checked)
 
+    def _choose_hide_on_launch(self, checked: bool) -> None:
+        self._store.update(hide_on_launch=checked)
+
     def _choose_recent(self, value: int) -> None:
         self._store.update(recent_limit=value)
+
+    def _choose_servers_root(self) -> None:
+        self._store.update(servers_root=self._servers_root.text())
+
+    def _browse_servers_root(self) -> None:
+        """Обработчик «Обзор…»: заполнить поле и сохранить сразу.
+
+        Пустая строка от `self._choose_directory()` — пользователь отменил
+        выбор (контракт `QFileDialog.getExistingDirectory`, см.
+        `browse_for_servers_root`, тот же приём — `dialogs.infobase.
+        browse_for_directory`): поле не трогается, store не пишется.
+        Сохранение — явным вызовом `store.update`, а не через `editingFinished`:
+        `setText` его не эмитит (сигнал только по Enter/потере фокуса),
+        а поведение поля обязано быть тем же, что и у ручного ввода —
+        применяется сразу.
+        """  # noqa: RUF002
+        path = self._choose_directory()
+        if not path:
+            return
+        self._servers_root.setText(path)
+        self._store.update(servers_root=path)
 
     def _choose_hotkey(self, text: str) -> None:
         """Сохранить выбранное и показать, что ответила система.
@@ -424,13 +602,30 @@ class SettingsView(QWidget):
         ):
             button.setChecked(client is settings.default_client)
 
+        for button, (order, _label) in zip(self._order_buttons, ORDER_CHOICES, strict=True):
+            button.setChecked(order is settings.list_order)
+
         blocked = self._tray.blockSignals(True)
         self._tray.setChecked(settings.close_to_tray)
         self._tray.blockSignals(blocked)
+
+        blocked = self._hide_on_launch.blockSignals(True)
+        self._hide_on_launch.setChecked(settings.hide_on_launch)
+        self._hide_on_launch.blockSignals(blocked)
 
         blocked = self._recent.blockSignals(True)
         self._recent.setValue(settings.recent_limit)
         self._recent.blockSignals(blocked)
 
         self._hotkey.set_combination(settings.hotkey)
+
+        # `blockSignals`, как у `_tray`/`_recent`: `QLineEdit.setText` не эмитит  # noqa: RUF003
+        # `editingFinished` (тот срабатывает только по Enter/потере фокуса),
+        # так что здесь это защитный дубль на случай, если поле обрастёт ещё
+        # одним сигналом (`textChanged` и т. п.) — не подтверждено мутацией
+        # именно на этой паре сигналов, см. докстринг задачи.
+        blocked = self._servers_root.blockSignals(True)
+        self._servers_root.setText(settings.servers_root)
+        self._servers_root.blockSignals(blocked)
+
         self._status.setText(self._store.last_save_error or "")

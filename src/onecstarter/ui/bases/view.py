@@ -14,11 +14,12 @@ from enum import Enum
 from pathlib import Path
 from typing import cast
 
-from PySide6.QtCore import QModelIndex, QPoint, QStandardPaths, Qt
+from PySide6.QtCore import QModelIndex, QPoint, QStandardPaths, Qt, Signal
 from PySide6.QtGui import (
     QDragEnterEvent,
     QDragMoveEvent,
     QDropEvent,
+    QKeyEvent,
     QKeySequence,
     QShortcut,
     QStandardItemModel,
@@ -68,6 +69,7 @@ from onecstarter.services.errors import (
 from onecstarter.services.groups import GroupRemoval
 from onecstarter.services.model import InfobaseItem, InfobaseSource
 from onecstarter.services.paths import ROOT, group_path, normalize_folder, render_folder
+from onecstarter.services.settings import ListOrder
 from onecstarter.services.workspace import Workspace
 from onecstarter.ui import errors as error_ui
 from onecstarter.ui import theme
@@ -97,6 +99,30 @@ NO_CACHE_ID_NOTE = "У записи нет ID — каталог кэша не �
 # причины, и подсказка не должна путать одну с другой.  # noqa: RUF003
 NO_CACHE_ROOT_NOTE = "В окружении нет корня кэша (APPDATA/LOCALAPPDATA)"  # noqa: RUF001
 CACHE_EMPTY_NOTE = "кэш пуст"
+# Находка финального ревью ветки: отказ переставить запись в алфавитном режиме
+# (мышью и с клавиатуры) был молчаливым `return` — тот же дефект класса, что  # noqa: RUF003
+# customer сообщил в smoke №2 (09.08.2026): курсор обещает перенос, ничего не
+# происходит. §14 п. 5 решения заказчика — на такой жест нужна подсказка.
+ALPHABETICAL_REORDER_NOTE = (
+    "Порядок задан алфавитом — перестановка отключена. Переключите «Порядок списка» "
+    "в настройках на «Как в файле», чтобы менять порядок вручную"
+)
+
+
+def _is_read_only(item: InfobaseItem) -> bool:
+    """Порог «общий список — только для чтения» (спека §3.2): одно место на меню и клавиши.
+
+    По нему `_build_menu` гасит «Свойства…» и «Удалить из списка…»,
+    `_group_menu_for` отдаёт неактивное меню группы, `_current_editable_row`
+    отсеивает строку для `Alt+Enter`/`Delete`, `remove_group` держит
+    последний рубеж. Одно имя вместо пяти сравнений с
+    `InfobaseSource.COMMON`: правило отказа расширяется в одном месте.
+    Положительная форма `source is InfobaseSource.USER` (`_group_paths`,
+    `_previous_sibling_key`, `_target_of_drop`) — выбор строк файла
+    пользователя, а не порог отказа; с `not _is_read_only` она
+    совпадает лишь пока источников два (ревью 30.08.2026).
+    """  # noqa: RUF002
+    return item.source is InfobaseSource.COMMON
 
 
 def browse_for_shortcut_path(parent: QWidget | None, suggested: str) -> str:
@@ -175,6 +201,26 @@ class _BasesTree(QTreeView):
     def __init__(self, view: "BasesView", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._view = view
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        """`Insert`/`Delete` — операции над списком, но только при фокусе в дереве.
+
+        T-11, пп. 7–8: `QShortcut` уровня окна (как у F3/Ctrl+N) перехватил бы
+        `Delete` и в поле поиска, где это правка текста. Обработчик дерева
+        ограничивает клавиши структурно, без проверки «кто в фокусе».
+        Модификаторы не допускаются: `Ctrl+Insert`/`Shift+Delete` — чужие
+        соглашения (копировать/вырезать), их не перехватываем.
+        """  # noqa: RUF002
+        if event.modifiers() == Qt.KeyboardModifier.NoModifier:
+            if event.key() == Qt.Key.Key_Insert:
+                self._view._add_infobase_at_current()
+                event.accept()
+                return
+            if event.key() == Qt.Key.Key_Delete:
+                self._view._remove_current()
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
     def _rejects_drop_at(self, position: QPoint) -> bool:
         """Запрещён ли бросок в этой точке — то есть будет ли он немым.
@@ -308,6 +354,11 @@ class _BasesTree(QTreeView):
 
 
 class BasesView(QWidget):
+    # T-11, п. 9: ключ записи после УСПЕШНОГО запуска — проводка ui/app.py
+    # прячет окно в трей по настройке. Все пути запуска из UI (Enter/двойной  # noqa: RUF003
+    # клик, поиск, F3/F4/Ctrl+1-3, меню, трей) сходятся в launch_key.
+    launched = Signal(str)
+
     def __init__(
         self,
         workspace: Workspace,
@@ -315,6 +366,7 @@ class BasesView(QWidget):
         installations: Sequence[Installation] | None,
         cfg_rules: Sequence[DefaultVersionRule],
         recent_limit: Callable[[], int],
+        list_order: Callable[[], ListOrder],
         on_error: Callable[[ServicesError], None] | None = None,
         confirm_removal: Callable[[QWidget | None, InfobaseItem], bool] = confirm_removal,
         ask_group_removal: Callable[
@@ -342,6 +394,8 @@ class BasesView(QWidget):
         # пересборка обязана взять новое значение (тот же приём, что
         # `theme_mode=lambda: controller.mode` у трея).  # noqa: RUF003
         self._recent_limit = recent_limit
+        # T-11, п. 2: режим показа — тот же провайдер, что recent_limit.
+        self._list_order = list_order
         self._on_error = on_error or (lambda error: error_ui.show_service_error(self, error))
         # Инъекция, а не вызов функции модуля напрямую (тот же приём, что  # noqa: RUF003
         # у `open_directory` в ConnectionPanel и `choose_directory`  # noqa: RUF003
@@ -416,7 +470,7 @@ class BasesView(QWidget):
         self._tree.activated.connect(self._launch_index)
         self._tree.customContextMenuRequested.connect(self._show_menu)
         QShortcut(QKeySequence("Ctrl+D"), self, self._toggle_current_favorite)
-        QShortcut(QKeySequence("Ctrl+N"), self, self.add_infobase)
+        QShortcut(QKeySequence("Ctrl+N"), self, lambda: self.add_infobase())
         QShortcut(QKeySequence("Ctrl+1"), self, lambda: self._launch_current(ClientKind.THIN))
         QShortcut(QKeySequence("Ctrl+2"), self, lambda: self._launch_current(ClientKind.THICK))
         QShortcut(QKeySequence("Ctrl+3"), self, lambda: self._launch_current(ClientKind.DESIGNER))
@@ -430,6 +484,13 @@ class BasesView(QWidget):
         # (handle_drop/_reorder), только сосед не из-под курсора, а из модели.  # noqa: RUF003
         QShortcut(QKeySequence("Alt+Up"), self, lambda: self._move_current(-1))
         QShortcut(QKeySequence("Alt+Down"), self, lambda: self._move_current(1))
+        # T-11, п. 3 (решение заказчика 29.08.2026 — зашить, не keymap):
+        # Alt+Enter — «Свойства», как в Проводнике Windows. Return и Enter
+        # (цифровой блок) — разные клавиши Qt, регистрируются обе; справочник  # noqa: RUF003
+        # в настройках рисуется по ui/shortcuts.py, тест сверяет его с этими  # noqa: RUF003
+        # регистрациями.
+        QShortcut(QKeySequence("Alt+Return"), self, self._show_current_properties)
+        QShortcut(QKeySequence("Alt+Enter"), self, self._show_current_properties)
 
         self.rebuild()
 
@@ -445,6 +506,9 @@ class BasesView(QWidget):
 
     def search(self) -> QLineEdit:
         return self._search
+
+    def tree(self) -> QTreeView:
+        return self._tree
 
     def panel(self) -> ConnectionPanel:
         return self._panel
@@ -502,6 +566,7 @@ class BasesView(QWidget):
             self._workspace.tree(),
             self._workspace.common_errors(),
             recent_limit=self._recent_limit(),
+            order=self._list_order(),
         )
         query = self._search.text()
         self._rows = filter_rows(forest, query)
@@ -682,6 +747,8 @@ class BasesView(QWidget):
             self._workspace.launch(key, forced)
         except ServicesError as error:
             self._on_error(error)
+        else:
+            self.launched.emit(key)
         self.rebuild()
 
     def toggle_favorite(self, key: str) -> None:
@@ -868,6 +935,45 @@ class BasesView(QWidget):
         if key:
             self.toggle_favorite(key)
 
+    def _current_editable_row(self) -> tuple[str, str] | None:
+        """Текущая строка дерева как `(kind, key)`, если её можно править.
+
+        Единый порог клавиатурных действий (`Alt+Enter`, `Delete`; T-11,
+        пп. 3 и 8) — тот же, что у меню: запись или группа общего списка
+        (`_is_read_only`) даёт `None`, как `_build_menu` гасит «Свойства…»
+        и «Удалить из списка…», а `_group_menu_for` — всё меню группы.
+        Неявный узел, заголовок ветки, пустое дерево, неизвестный ключ —
+        тоже `None`: бездействие, а не диалог, который отвергнут при «ОК».
+        До 30.08.2026 этот пролог жил копией в каждом обработчике (долг
+        финального ревью T-11).
+        """  # noqa: RUF002
+        index = self._tree.currentIndex().siblingAtColumn(0)
+        if not index.isValid():
+            return None
+        kind = index.data(KIND_ROLE)
+        key = index.data(KEY_ROLE)
+        if not isinstance(kind, str) or not isinstance(key, str):
+            return None
+        item = next((i for i in self._workspace.items() if i.key == key), None)
+        if item is None or _is_read_only(item):
+            return None
+        return kind, key
+
+    def _show_current_properties(self) -> None:
+        """`Alt+Enter` — свойства текущей строки (T-11, п. 3).
+
+        Запись → `show_properties`, группа → диалог группы (`rename_group`);
+        порог — `_current_editable_row`.
+        """
+        row = self._current_editable_row()
+        if row is None:
+            return
+        kind, key = row
+        if kind == RowKind.BASE.value:
+            self.show_properties(key)
+        elif kind == RowKind.GROUP.value:
+            self.rename_group(key)
+
     def _build_menu(self, item: InfobaseItem, key: str) -> QMenu:
         """Собрать контекстное меню базы без показа (для тестов и _show_menu).
 
@@ -917,7 +1023,7 @@ class BasesView(QWidget):
         # Ярлык осмыслен и для веб-базы: он зовёт нашу программу
         # с `--ib-name`, а та открывает браузер (services/launch.py).  # noqa: RUF003
         menu.addAction("Создать ярлык…", lambda: self.create_shortcut(key))
-        properties = menu.addAction("Свойства…", lambda: self.show_properties(key))
+        properties = menu.addAction("Свойства…\tAlt+Enter", lambda: self.show_properties(key))
         self._add_cache_menu(menu, item)
         menu.addSeparator()
         star = "Убрать из избранного" if item.favorite else "В избранное"  # noqa: RUF001
@@ -927,7 +1033,7 @@ class BasesView(QWidget):
         # низу, как и в штатном стартере: разделяет обычные операции и то, что
         # трогает файл списка необратимо (remove_key спрашивает подтверждение).
         removal = menu.addAction("Удалить из списка…", lambda: self.remove_key(key))
-        if item.source is InfobaseSource.COMMON:
+        if _is_read_only(item):
             # `setToolTipsVisible(True)` обязателен: без него `QMenu`
             # на этой платформе подсказки пунктов не показывает вовсе —
             # тот же вывод, что и у `_build_disabled_group_menu`.  # noqa: RUF003
@@ -1054,7 +1160,7 @@ class BasesView(QWidget):
         normalized = normalize_folder(folder)
         return normalized if normalized in self._group_paths() else ROOT
 
-    def _build_add_dialog(self) -> InfobaseDialog:
+    def _build_add_dialog(self, folder: str = ROOT) -> InfobaseDialog:
         """Собрать диалог добавления записи без показа (для тестов и add_infobase).
 
         Тот же приём, что у `_build_menu`/`_build_properties_dialog`: `exec()`
@@ -1062,8 +1168,13 @@ class BasesView(QWidget):
         разделения `add_infobase` повторил бы дефект, который ревью задачи 8
         нашло у `show_properties`, — единственный пользовательский путь без
         покрытия (задача 10, урок 2).
+
+        `folder` — группа, предложенная диалогом (T-11, пп. 4 и 7), в форме
+        `_group_paths()`; вызывающие берут её оттуда же (`group_path` у меню
+        группы, `folder_for_dropped_directory` у `Insert`), поэтому
+        `set_folder` здесь не отказывает.
         """  # noqa: RUF002
-        return InfobaseDialog.for_new(
+        dialog = InfobaseDialog.for_new(
             groups=self._group_paths(),
             # Обнаружение платформ может быть ещё не закончено (первые
             # полсекунды старта, спека T-04.6, §3.4) — диалог честно не
@@ -1072,13 +1183,52 @@ class BasesView(QWidget):
             cfg_rules=self._cfg_rules,
             parent=self,
         )
+        dialog.set_folder(folder)
+        return dialog
 
-    def add_infobase(self) -> None:
-        """«Добавить базу…» — пункт меню пустого места дерева и `Ctrl+N`."""
-        dialog = self._build_add_dialog()
+    def add_infobase(self, folder: str = ROOT) -> None:
+        """«Добавить базу…» — пустое место дерева (корень), меню группы (в неё),
+        `Ctrl+N`, `Insert`.
+        """
+        dialog = self._build_add_dialog(folder)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         self._apply_new_infobase(dialog)
+
+    def _add_infobase_at_current(self) -> None:
+        """`Insert` — добавить базу в группу текущей строки (T-11, п. 7).
+
+        Цель — по тому же правилу, что у брошенного каталога
+        (`folder_for_dropped_directory`): группа → в неё, запись → её группа,
+        всё остальное (пусто, виртуальная ветка, неявный узел, запись общего
+        списка) — корень.
+        """  # noqa: RUF002
+        index = self._tree.currentIndex().siblingAtColumn(0)
+        key = index.data(KEY_ROLE) if index.isValid() else None
+        kind = index.data(KIND_ROLE) if index.isValid() else None
+        self.add_infobase(
+            self.folder_for_dropped_directory(
+                key if isinstance(key, str) else None,
+                kind if isinstance(kind, str) else None,
+            )
+        )
+
+    def _remove_current(self) -> None:
+        """`Delete` — удалить текущую запись или группу тем же путём, что пункт меню (T-11, п. 8).
+
+        Подтверждение — внутри `remove_key`/`remove_group`, здесь не
+        дублируется; порог — `_current_editable_row`. Запись в «Недавних»/
+        «Избранном» — удаление из списка (значение клавиши одно), не из ветки;
+        от неожиданности защищает подтверждение с именем записи.
+        """  # noqa: RUF002
+        row = self._current_editable_row()
+        if row is None:
+            return
+        kind, key = row
+        if kind == RowKind.BASE.value:
+            self.remove_key(key)
+        elif kind == RowKind.GROUP.value:
+            self.remove_group(key)
 
     def build_dialog_for_dropped_directory(
         self, directory: str, target_key: str | None, kind: str | None
@@ -1231,7 +1381,7 @@ class BasesView(QWidget):
     def _build_empty_space_menu(self) -> QMenu:
         """Меню пустого места дерева — добавление записи и создание группы в корне."""
         menu = QMenu(self)
-        menu.addAction("Добавить базу…", self.add_infobase)
+        menu.addAction("Добавить базу…", lambda: self.add_infobase(ROOT))
         menu.addAction("Создать группу…", lambda: self.add_group(ROOT))
         return menu
 
@@ -1245,9 +1395,12 @@ class BasesView(QWidget):
         `QMenu.exec`. Разрушительный пункт («Удалить группу…») — за отдельным
         разделителем, в самом низу, как и «Удалить из списка…» в
         `_build_menu` (задача 11).
+
+        Первый пункт — «Добавить базу…» с группой `own_path` (T-11, п. 4).
         """  # noqa: RUF002
         menu = QMenu(self)
         own_path = group_path(item.folder, item.name)
+        menu.addAction("Добавить базу…", lambda: self.add_infobase(own_path))
         menu.addAction("Создать группу…", lambda: self.add_group(own_path))
         menu.addAction("Переименовать группу…", lambda: self.rename_group(key))
         menu.addSeparator()
@@ -1255,22 +1408,31 @@ class BasesView(QWidget):
         return menu
 
     def _build_disabled_group_menu(self, note: str) -> QMenu:
-        """Меню группы без операций: три пункта видны, но недоступны — с пояснением.
+        """Меню группы без операций: четыре пункта видны, но недоступны — с пояснением.
 
         Общий билдер для двух случаев, у которых один и тот же результат
         (операции невозможны), но разная причина: неявный узел (`IMPLICIT_NOTE`
         — [Ф] T-05.7, нет ни секции, ни ключа) и группа из общего списка
         (`COMMON_NOTE` — источник только для чтения, `_group_menu_for`).
         До круга правок 1 задачи 12 у каждого случая было своё меню с одним
-        и тем же телом — вынесено в одно место, чтобы правило «эти три
+        и тем же телом — вынесено в одно место, чтобы правило «эти четыре
         пункта показываются неактивными с пояснением» не разошлось между
         копиями. `setToolTipsVisible(True)` обязателен: без него `QMenu`
         на этой платформе тултипы пунктов не показывает вовсе — сам факт
         наличия текста в `setToolTip` этого не гарантирует.
+
+        T-11, п. 4: «Добавить базу…» добавлен первым пунктом тем же правилом,
+        что и у `_build_group_menu`, — недоступное меню группы не должно
+        предлагать операцию, которую полное меню предлагает.
         """  # noqa: RUF002
         menu = QMenu(self)
         menu.setToolTipsVisible(True)
-        for label in ("Создать группу…", "Переименовать группу…", "Удалить группу…"):
+        for label in (
+            "Добавить базу…",
+            "Создать группу…",
+            "Переименовать группу…",
+            "Удалить группу…",
+        ):
             action = menu.addAction(label)
             action.setEnabled(False)
             action.setToolTip(note)
@@ -1295,7 +1457,7 @@ class BasesView(QWidget):
         последний рубеж (метод достижим напрямую, в обход меню — см. его
         докстринг), но эта проверка больше не единственная защита.
         """  # noqa: RUF002
-        if item.source is InfobaseSource.COMMON:
+        if _is_read_only(item):
             return self._build_disabled_group_menu(COMMON_NOTE)
         return self._build_group_menu(item, key)
 
@@ -1439,6 +1601,15 @@ class BasesView(QWidget):
         группами позиция по-прежнему не переносится — только сам факт
         переноса, тем же `update_group`/`update_infobase`, что и раньше
         ([Р] ограничение v1 плана 4b, §12).
+
+        В алфавитном режиме показа (`ListOrder.ALPHABETICAL`) перестановка
+        внутри группы отключена — `OrderInList` в этом режиме не читается
+        при показе, писать в него нечего и незачем (T-11, п. 2). Отказ идёт
+        через `_on_error`/`ALPHABETICAL_REORDER_NOTE`, а не молча: индикатор
+        drop продолжает рисовать «перенос разрешён», и без сообщения жест
+        выглядел бы принятым, но ничего не происходящим — тот же дефект,
+        что заказчик сообщил в smoke №2 (находка финального ревью ветки).
+        Файл в этом случае не трогается вовсе — до `_reorder` дело не доходит.
         """  # noqa: RUF002
         if target_is_implicit:
             self._on_error(
@@ -1464,6 +1635,9 @@ class BasesView(QWidget):
             if target is not None and normalize_folder(source.folder) == normalize_folder(
                 target.folder
             ):
+                if self._list_order() is ListOrder.ALPHABETICAL:
+                    self._on_error(InvalidRequestError(ALPHABETICAL_REORDER_NOTE))
+                    return
                 self._reorder(source_key, target.key, where)
                 return
         folder = self._folder_of_drop(target_key, where)
@@ -1576,8 +1750,22 @@ class BasesView(QWidget):
         `handle_drop`/`_reorder`, наоборот, всегда берут соседа из полного
         порядка — там цель уже найдена курсором, а не соседством в списке.
 
-        Виртуальные ветки (Избранное/Недавние/Общие списки) не переставляются:
-        их порядок не хранится в `OrderInList` (`_is_in_file_tree`).
+        Виртуальные ветки (Избранное/Недавние/Общие списки) и пустой выбор
+        не переставляются в ЛЮБОМ режиме показа: там нет ни соседа по файлу,
+        ни смысла в подсказке (`index.isValid()`, `_is_in_file_tree`).
+        Поэтому проверка алфавитного режима стоит ПОСЛЕ этих ранних `return`
+        и после проверки вида строки, а не первой строкой метода: находка
+        ре-ревью волны 30.08.2026 — с проверкой первой строкой подсказка
+        `ALPHABETICAL_REORDER_NOTE` показывалась бы и там, где FILE-режим
+        тоже молчит (нет выбора, курсор в виртуальной ветке, заголовок
+        раздела), ложно намекая, что переключение на «Как в файле» решило
+        бы дело.
+
+        В алфавитном режиме, когда курсор стоит на настоящей записи/группе
+        дерева файла (ровно там, где FILE-режим выполнил бы перестановку),
+        перестановки нет вовсе (T-11, п. 2) — отказ идёт через `_on_error`/
+        `ALPHABETICAL_REORDER_NOTE`, не молча (находка финального ревью
+        ветки: голый `return` повторял дефект smoke №2).
         """  # noqa: RUF002
         index = self._tree.currentIndex().siblingAtColumn(0)
         if not index.isValid() or not self._is_in_file_tree(index):
@@ -1585,6 +1773,14 @@ class BasesView(QWidget):
         kind = index.data(KIND_ROLE)
         key = index.data(KEY_ROLE)
         if kind not in (RowKind.BASE.value, RowKind.GROUP.value) or not isinstance(key, str):
+            return
+        if self._list_order() is ListOrder.ALPHABETICAL:
+            # Порядок задаёт алфавит, а не OrderInList: писать в файл нечего  # noqa: RUF003
+            # и незачем (T-11, п. 2, вариант а) — но отказ обязан быть виден,  # noqa: RUF003
+            # и только для строки, которую FILE-режим и правда переставил бы
+            # (ре-ревью волны 30.08.2026: проверка была первой строкой метода  # noqa: RUF003
+            # и ловила пустой выбор/виртуальные ветки тоже).
+            self._on_error(InvalidRequestError(ALPHABETICAL_REORDER_NOTE))
             return
         model = self._tree.model()
         parent = index.parent()
@@ -1672,7 +1868,7 @@ class BasesView(QWidget):
                 InvalidRequestError(f"«{item.name}» — не группа, а запись базы")  # noqa: RUF001
             )
             return
-        if item.source is InfobaseSource.COMMON:
+        if _is_read_only(item):
             self._on_error(
                 ReadOnlySourceError(
                     f"«{item.name}» — группа из общего списка, доступна только "

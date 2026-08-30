@@ -10,6 +10,7 @@ from onecstarter.services.settings import (
     DEFAULT_RECENT_LIMIT,
     SCHEMA_VERSION,
     DefaultClient,
+    ListOrder,
     Settings,
     ThemeMode,
     load_settings,
@@ -28,7 +29,7 @@ def test_round_trip(tmp_path: Path) -> None:
 
 
 def test_schema_is_written(tmp_path: Path) -> None:
-    """Файл несёт все шесть ключей, включая номер схемы.
+    """Файл несёт все семь ключей, включая номер схемы.
 
     Долг №3 вехи закрыт здесь: соседний `test_all_fields_are_written` проверял
     ровно то же самое на дефолтных настройках и удалён. Разница была
@@ -45,6 +46,9 @@ def test_schema_is_written(tmp_path: Path) -> None:
         "hotkey": "Ctrl+Alt+B",
         "recent_limit": 10,
         "default_client": "thin",
+        "servers_root": "",
+        "hide_on_launch": False,
+        "list_order": "file",
     }
 
 
@@ -122,6 +126,8 @@ def test_defaults_of_new_fields() -> None:
     assert settings.recent_limit == DEFAULT_RECENT_LIMIT
     assert DEFAULT_RECENT_LIMIT == 10
     assert DEFAULT_HOTKEY == "Ctrl+Alt+B"
+    assert settings.hide_on_launch is False
+    assert settings.list_order is ListOrder.FILE
 
 
 def test_old_file_without_new_keys_reads_with_defaults(tmp_path: Path) -> None:
@@ -135,7 +141,12 @@ def test_old_file_without_new_keys_reads_with_defaults(tmp_path: Path) -> None:
 def test_round_trip_keeps_all_fields(tmp_path: Path) -> None:
     path = tmp_path / "settings.json"
     settings = Settings(
-        theme=ThemeMode.DARK, close_to_tray=False, hotkey="Win+F9", recent_limit=0
+        theme=ThemeMode.DARK,
+        close_to_tray=False,
+        hotkey="Win+F9",
+        recent_limit=0,
+        hide_on_launch=True,
+        list_order=ListOrder.ALPHABETICAL,
     )
     save_settings(path, settings)
     assert load_settings(path) == settings
@@ -222,3 +233,98 @@ class TestDefaultClient:
     def test_default_app_thick_matches_v8i_app_key(self) -> None:
         """Толстый — явное значение в формате ключа `App`, его ждёт `choose_client`."""  # noqa: RUF002
         assert DefaultClient.THICK.default_app == "ThickClient"
+
+
+class TestServersRoot:
+    """Настройка «Корень каталогов серверов» (спека §3.5, T-08 задача 7).
+
+    Пустая строка — «корень не задан»: диалог профиля сервера в этом случае
+    требует указать каталог явно (докстринг спеки, раздел 3.5). Путь не
+    валидируется здесь — проверка существования каталога не наше дело
+    и уж точно не повод унести файл настроек в `.bad`.
+    """
+
+    def test_default_is_empty(self) -> None:
+        assert Settings().servers_root == ""
+
+    def test_round_trip(self, tmp_path: Path) -> None:
+        path = tmp_path / "settings.json"
+        save_settings(path, Settings(servers_root=r"E:\srv"))
+        assert load_settings(path).servers_root == r"E:\srv"
+
+    def test_old_file_without_servers_root_reads_with_defaults(
+        self, tmp_path: Path
+    ) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ: файл прошлой версии без ключа `servers_root` читается с дефолтом.
+
+        Не уезжает в `.bad` (спека §6.1) — схема не меняется при добавлении
+        необязательного поля. Кандидат мутации: сделать ключ `servers_root`
+        обязательным для схемы 1 — тест обязан упасть на `settings.json.bad`,
+        появившемся из файла, который раньше читался чисто.
+        """  # noqa: RUF002
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps({"schema": 1, "theme": "light"}), encoding="utf-8")
+        assert load_settings(path) == Settings(theme=ThemeMode.LIGHT)
+        assert not path.with_name("settings.json.bad").exists()
+
+    @pytest.mark.parametrize("value", [1, 3.5, True, None, [], {}])
+    def test_non_string_falls_back_to_empty(self, tmp_path: Path, value: object) -> None:
+        """Не-строка — не порча файла: дефолт поля, как у `recent_limit`/`hotkey`.
+
+        `bool` проверяется отдельно тем же поводом, что и у `_recent_of`:
+        `True`/`False` — подклассы `int`, но не путь и не должны молча
+        превращаться в него при менее строгой проверке.
+        """  # noqa: RUF002
+        path = tmp_path / "settings.json"
+        path.write_text(
+            json.dumps({"schema": 1, "servers_root": value}), encoding="utf-8"
+        )
+        assert load_settings(path).servers_root == ""
+
+
+class TestHideOnLaunch:
+    """T-11, п. 9: запуск базы сворачивает окно в трей; дефолт — выключено."""
+
+    def test_default_is_off(self) -> None:
+        assert Settings().hide_on_launch is False
+
+    def test_round_trip(self, tmp_path: Path) -> None:
+        path = tmp_path / "settings.json"
+        save_settings(path, Settings(hide_on_launch=True))
+        assert load_settings(path).hide_on_launch is True
+
+    def test_old_file_without_the_key_reads_off(self, tmp_path: Path) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ: файл прошлой версии без ключа — «выключено», не «включено».
+
+        Мутация: `_bool_of(payload.get("hide_on_launch"))` без `default=False` —
+        общий `_bool_of` отдаёт `True`, и у всех существующих установок окно
+        начало бы прятаться при каждом запуске.
+        """  # noqa: RUF002
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps({"schema": 1, "theme": "dark"}), encoding="utf-8")
+        assert load_settings(path).hide_on_launch is False
+
+    @pytest.mark.parametrize("value", ["да", 1, None, [], {}])
+    def test_broken_value_falls_back_to_off(self, tmp_path: Path, value: object) -> None:
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps({"schema": 1, "hide_on_launch": value}), encoding="utf-8")
+        assert load_settings(path).hide_on_launch is False
+
+
+class TestListOrder:
+    """T-11, п. 2 (решение заказчика 29.08.2026, вариант а): режим показа, файл не трогается."""  # noqa: RUF002
+
+    def test_default_is_file_order(self) -> None:
+        assert Settings().list_order is ListOrder.FILE
+
+    def test_round_trip(self, tmp_path: Path) -> None:
+        path = tmp_path / "settings.json"
+        save_settings(path, Settings(list_order=ListOrder.ALPHABETICAL))
+        assert load_settings(path).list_order is ListOrder.ALPHABETICAL
+
+    @pytest.mark.parametrize("value", ["по алфавиту", 1, None, [], {}])
+    def test_unknown_list_order_falls_back_to_file(self, tmp_path: Path, value: object) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ. Мутация: `_order_of` отдаёт `ALPHABETICAL` на незнакомое значение."""  # noqa: RUF002
+        path = tmp_path / "settings.json"
+        path.write_text(json.dumps({"schema": 1, "list_order": value}), encoding="utf-8")
+        assert load_settings(path).list_order is ListOrder.FILE

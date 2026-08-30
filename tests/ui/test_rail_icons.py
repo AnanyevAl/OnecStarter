@@ -10,7 +10,11 @@ from PySide6.QtWidgets import QApplication
 from onecstarter.ui import rail_icons, theme
 
 _Factory = Callable[[theme.Palette], QIcon]
-_FACTORIES: tuple[_Factory, ...] = (rail_icons.bases_icon, rail_icons.settings_icon)
+_FACTORIES: tuple[_Factory, ...] = (
+    rail_icons.bases_icon,
+    rail_icons.settings_icon,
+    rail_icons.servers_icon,
+)
 
 
 def _dominant(icon: QIcon, state: QIcon.State) -> str:
@@ -24,7 +28,7 @@ def _dominant(icon: QIcon, state: QIcon.State) -> str:
     return counts.most_common(1)[0][0]
 
 
-@pytest.mark.parametrize("factory", _FACTORIES, ids=("bases", "settings"))
+@pytest.mark.parametrize("factory", _FACTORIES, ids=("bases", "settings", "servers"))
 @pytest.mark.parametrize("palette", (theme.DARK, theme.LIGHT), ids=("dark", "light"))
 def test_off_state_is_dim_and_on_state_is_accent(
     qapp: QApplication, factory: _Factory, palette: theme.Palette
@@ -34,7 +38,7 @@ def test_off_state_is_dim_and_on_state_is_accent(
     assert _dominant(icon, QIcon.State.On) == palette.accent.casefold()
 
 
-def test_two_sections_have_different_icons(qapp: QApplication) -> None:
-    first = rail_icons.bases_icon(theme.DARK).pixmap(16, 16).toImage()
-    second = rail_icons.settings_icon(theme.DARK).pixmap(16, 16).toImage()
-    assert first.constBits().tobytes() != second.constBits().tobytes()  # type: ignore[union-attr]
+def test_all_sections_have_different_icons(qapp: QApplication) -> None:
+    images = [factory(theme.DARK).pixmap(16, 16).toImage() for factory in _FACTORIES]
+    blobs = [image.constBits().tobytes() for image in images]  # type: ignore[union-attr]
+    assert len(set(blobs)) == len(blobs)

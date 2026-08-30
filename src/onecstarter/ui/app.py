@@ -11,33 +11,57 @@
 import logging
 import os
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 from PySide6.QtCore import QEventLoop, QTimer
 from PySide6.QtGui import QGuiApplication
-from PySide6.QtWidgets import QApplication, QMessageBox, QProgressDialog, QSystemTrayIcon
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QMessageBox,
+    QProgressDialog,
+    QSystemTrayIcon,
+    QWidget,
+)
 
 from onecstarter.config.atomic import atomic_write
 from onecstarter.config.cestart_cfg import parse_cestart_cfg
 from onecstarter.config.shell_link import build_shell_link, shortcut_command
 from onecstarter.domain.default_version import DefaultVersionRule, default_version_rules
 from onecstarter.domain.launch import ClientConvention
-from onecstarter.domain.version import Installation
+from onecstarter.domain.server import ServerConvention
+from onecstarter.domain.version import Installation, VersionNumber
+from onecstarter.platform_1c import console
 from onecstarter.platform_1c.discovery import cfg_paths, find_installations
-from onecstarter.platform_1c.registry import load_conventions
+from onecstarter.platform_1c.job import Job, NullJob, ServerJob
+from onecstarter.platform_1c.process_scan import NullScanner, ProcessScanner, PsutilScanner
+from onecstarter.platform_1c.registry import load_conventions, load_server_conventions
+from onecstarter.platform_1c.server_discovery import ServerInstallation, server_installations
+from onecstarter.platform_1c.server_spawn import spawn_server
 from onecstarter.services import autostart
 from onecstarter.services.catalog import CommonListData, read_common_lists
-from onecstarter.services.errors import ServicesError, UserDataUnavailableError
+from onecstarter.services.errors import (
+    ConsoleRegistrationDeclinedError,
+    ServerError,
+    ServicesError,
+    UserDataUnavailableError,
+)
 from onecstarter.services.hotkeys import parse_hotkey
 from onecstarter.services.model import InfobaseItem
+from onecstarter.services.servers import ScanSnapshot, ServersWorkspace
 from onecstarter.services.settings import load_settings
 from onecstarter.services.workspace import Workspace, WorkspacePaths
 from onecstarter.ui import app_icon, rail_icons, theme
 from onecstarter.ui.background import StartupTasks
 from onecstarter.ui.bases.view import BasesView
+from onecstarter.ui.dialogs.buttons import ask_confirmation
 from onecstarter.ui.hotkey import GlobalHotkey
+from onecstarter.ui.servers.dialog import ConsoleDialog
+from onecstarter.ui.servers.monitor import ServerMonitor
+from onecstarter.ui.servers.view import ServersView
 from onecstarter.ui.settings_store import SettingsStore
 from onecstarter.ui.settings_view import SettingsView
 from onecstarter.ui.shell import MainWindow
@@ -54,6 +78,7 @@ class Runtime:
     cfg_rules: list[DefaultVersionRule]
     conventions: list[ClientConvention]
     settings: Path
+    servers: Path
 
 
 def build_runtime(env: Mapping[str, str]) -> Runtime:
@@ -86,7 +111,8 @@ def build_runtime(env: Mapping[str, str]) -> Runtime:
         cfg_rules=rules,
         default_app=settings.default_client.default_app,
     )
-    return Runtime(workspace, rules, list(conventions), settings_path)
+    servers_path = appdata / "OneCStarter" / "servers.json"
+    return Runtime(workspace, rules, list(conventions), settings_path, servers_path)
 
 
 def _complain(message: str) -> int:
@@ -261,9 +287,35 @@ def run_smoke(
     # Реестр — заглушка, а не настоящий HKCU (долг №8): `SettingsView` читает  # noqa: RUF003
     # его прямо в конструкторе, и самопроверка собранного экземпляра иначе  # noqa: RUF003
     # зависела бы от того, включён ли автозапуск на машине сборщика.
-    window, built_tasks = _build_main_window(
-        application, runtime, env, autostart_registry=autostart.NullRegistry()
-    )
+    # `NullScanner` — тот же довод для раздела «Серверы» (T-08, задача 16):
+    # самопроверка не должна сканировать процессы серверов 1С на машине  # noqa: RUF003
+    # сборщика. `registered_radmin` — рядом: `ServersView.__init__`
+    # безусловно читает HKLM через `current_console_version()` уже при
+    # сборке окна (см. докстринг `_build_main_window`), самопроверка
+    # отвечает «не зарегистрирована». `job_factory=NullJob` — та же
+    # осторожность для Job Object'а (T-12): самопроверка серверов не  # noqa: RUF003
+    # запускает, и создавать kernel-объект, которого некому будет
+    # закрыть, ей ни к чему. Передаётся сам класс, не экземпляр:
+    # `job_factory` — фабрика, координатор зовёт её на каждый запуск.
+    try:
+        window, built_tasks, _monitor = _build_main_window(
+            application,
+            runtime,
+            env,
+            autostart_registry=autostart.NullRegistry(),
+            process_scanner=NullScanner(),
+            registered_radmin=lambda: None,
+            job_factory=NullJob,
+        )
+    except ServerError:
+        # CRITICAL 2, финальное ревью ветки: конструктор ServersWorkspace
+        # внутри _build_main_window (load_profiles на servers.json) не был
+        # покрыт ничьим try — отказ уходил голой трассировкой мимо
+        # UserDataUnavailableError/OSError веткой выше, которая ловит только
+        # build_runtime. Самопроверка сборки обязана сообщить и вернуть 1,
+        # не падать.
+        _log.exception("smoke: окно не собралось")
+        return 1
     try:
         tasks = built_tasks if make_tasks is None else make_tasks()
         pending = {"installations": True, "common": True}
@@ -328,21 +380,243 @@ def _set_tray_tooltip(
         tray.setToolTip(f"OneCStarter — {combination}")
 
 
+class _ConsoleWorkspace(Protocol):
+    """Часть `ServersWorkspace`, которую действительно использует `_console_flow`.
+
+    Протокол, а не сам `ServersWorkspace` — тот же довод, что у
+    `ProcessScanner` (`platform_1c/process_scan.py`): узкая структурная
+    зависимость вместо конкретного класса делает функцию тестируемой
+    фейком без наследования от реального
+    `ServersWorkspace` (у него собственный конструктор с эффектами) и без
+    `# type: ignore` на границе теста.
+    """  # noqa: RUF002
+
+    def current_console_version(self) -> VersionNumber | None: ...
+
+    def register_console(self, target: ServerInstallation) -> None: ...
+
+    def open_console(self, root: Path, convention: ServerConvention) -> None: ...
+
+
+def _console_flow(
+    workspace: _ConsoleWorkspace,
+    installed: Sequence[ServerInstallation],
+    running_versions: Sequence[VersionNumber],
+    convention: ServerConvention,
+    *,
+    show_error: Callable[[str], None],
+    show_info: Callable[[str], None],
+    run_dialog: Callable[[ConsoleDialog], int] = lambda dialog: dialog.exec(),
+    parent: QWidget | None = None,
+) -> None:
+    """Проводка диалога «Консоль администрирования…» (T-08, задача 16, §7 спеки).
+
+    Вынесена из `on_console` (`_build_main_window`) в функцию уровня модуля
+    ради инъекции `run_dialog` — исполнителя диалога: настоящая реализация
+    зовёт блокирующий `QDialog.exec()`, тестовая — программно кликает по
+    нужной кнопке (`register_button()`/`open_button()`) и отдаёт
+    `dialog.result()`, ни разу не поднимая модальный цикл событий (тот же
+    приём, что `_accept`/`_reject` в тестах `ServerProfileDialog`,
+    `tests/ui/test_servers_view.py`).
+
+    `ConsoleDialog.register_button()`/`open_button()` сами диалог не закрывают
+    (задача 15, докстринг `ui/servers/dialog.py`: обработчики клика — забота
+    вызывающего кода этой задачи) — здесь они подключаются к `accept()` с
+    запоминанием, какая кнопка привела к принятию, чтобы отличить «Сделать
+    текущей и открыть» от простого «Открыть».
+
+    Отказ пользователя в UAC (`ConsoleRegistrationDeclinedError`) — штатный
+    исход §7 спеки, не ошибка программы: `show_info`, не `show_error`.
+    Перехватывается ДО общего `ServicesError` — `ConsoleRegistrationDeclinedError`
+    сама наследует `ServerError`/`ServicesError` (`services/errors.py`), и общий
+    перехват первым замаскировал бы штатный исход под отказ.
+    """  # noqa: RUF002
+    current = workspace.current_console_version()
+    dialog = ConsoleDialog.build(installed, current, running_versions, parent)
+    action: list[str] = []
+
+    def register() -> None:
+        action.append("register")
+        dialog.accept()
+
+    def open_current() -> None:
+        action.append("open")
+        dialog.accept()
+
+    dialog.register_button().clicked.connect(register)
+    dialog.open_button().clicked.connect(open_current)
+
+    if run_dialog(dialog) != QDialog.DialogCode.Accepted or not action:
+        return
+
+    if action[-1] == "register":
+        selected = dialog.selected_installation()
+        if selected is None:
+            return
+        try:
+            workspace.register_console(selected)
+        except ConsoleRegistrationDeclinedError as error:
+            show_info(str(error))
+            return
+        except ServicesError as error:
+            show_error(str(error))
+            return
+        root = selected.installation.path.parent
+    else:
+        match = next((si for si in installed if si.installation.version == current), None)
+        if match is None:
+            return
+        root = match.installation.path.parent
+
+    workspace.open_console(root, convention)
+
+
+def _servers_word(n: int) -> str:
+    """Склонение «сервер» под число `n` для вопроса гейта выхода (T-10, задача 6).
+
+    Стандартное русское правило числительных: 1 — «сервер», 2-4 — «сервера»,
+    иначе «серверов» — с исключением на 11-14 (родительный падеж множественного
+    числа даже при остатке 1-4 от деления на 10: «11 серверов», не «11 сервер»).
+    """  # noqa: RUF002
+    if 11 <= n % 100 <= 14:
+        return "серверов"
+    last_digit = n % 10
+    if last_digit == 1:
+        return "сервер"
+    if 2 <= last_digit <= 4:
+        return "сервера"
+    return "серверов"
+
+
+def _confirm_quit_with_servers(
+    running_count: Callable[[], int], ask: Callable[[str], bool]
+) -> bool:
+    """Гейт выхода: серверов нет — тихо `True`; иначе спросить пользователя (спека §12.3).
+
+    T-10, задача 4 перевела серверы на дочерний жизненный цикл: закрытие
+    (или крах) лаунчера гасит их вместе с ним через Job Object (задача 7).
+    Молчаливый выход без вопроса потерял бы работающие кластеры без
+    предупреждения, поэтому `n == 0` (`running_count` — обычно
+    `ServersWorkspace.running_count`, с T-12 это число профилей с НЕПУСТЫМ
+    Job, а не с процессом по последнему снимку: снимок в вопросе о выходе
+    не участвует вовсе, и `0` до первого скана больше не значит «мы ещё
+    не смотрели») — единственный случай, когда подтверждение не нужно
+    и `ask` не зовётся вовсе. `_servers_word` даёт верное склонение
+    числительного в тексте вопроса.
+
+    Волна финального ревью ветки T-12 (Important 1): `running_count()`
+    читает Job у ОС и может отказать (`QueryInformationJobObject` →
+    `JobError` → `ServerError`, тот же отказ, ради которого застрахован
+    `ServersView.rebuild()`). Отказ здесь — не повод ни выйти молча
+    (пользователь не узнал бы, что состояние серверов неизвестно), ни
+    упасть исключением из слота: `MainWindow.closeEvent` — виртуальный
+    метод, исключение в нём не даёт дойти до `event.ignore()`, и окно
+    закрывается БЕЗ вопроса; трею «Выход» оно мешает выйти вовсе.
+    Поэтому неизвестное состояние — тот же вопрос с дефолтом «Нет»,
+    но с фактом отказа в тексте, а не с догадкой о числе серверов.
+    """  # noqa: RUF002
+    try:
+        n = running_count()
+    except ServicesError as error:
+        return ask(
+            f"Не удалось проверить состояние серверов ({error}). "  # noqa: RUF001
+            "Всё равно выйти?"
+        )
+    if n == 0:
+        return True
+    return ask(f"Остановить {n} {_servers_word(n)} и выйти?")
+
+
+def _ask_quit_confirmation(parent: QWidget, message: str) -> bool:
+    """Обёртка `ask_confirmation` для гейта выхода — дефолт «Нет» (спека §12.3).
+
+    Модульная функция, не замыкание внутри `_build_main_window` (находка
+    ревью T-10, задача 6): `_build_main_window` собирает окно и для тестов
+    (тот же приём, что `run_smoke`), и внутри тестового набора offscreen
+    сам диалог всё равно не показывается по-настоящему, но БЕЗУСЛОВНОЕ
+    подключение настоящего диалога вешало бы teardown любого теста
+    с работающим сервером (`qtbot`/`_assemble` зовут `window.close()`)
+    в вечном модальном ожидании. Диалог поэтому передаётся СНАРУЖИ через
+    параметр `quit_dialog` — `None` (тесты, `run_smoke`) оставляет
+    `window.confirm_quit` пустым, реальным значением его наполняет только
+    `main()`.
+
+    Находка 3 ручного чек-листа T-10 (Minor, 29.08.2026): раньше здесь
+    стоял `QMessageBox.question` со стандартными кнопками — без
+    установленного `QTranslator` (`ui/dialogs/buttons.py`) они пришли
+    по-английски («Yes»/«No» на скриншоте живого прогона), хотя весь
+    остальной интерфейс русский. `ask_confirmation` — тот же приём
+    осторожности (дефолтная кнопка «Нет»: диалог, спрашивающий про
+    остановку РАБОТАЮЩИХ серверов, не должен позволять случайному
+    Enter/пробелу согласиться на неё), что у диалога удаления профиля
+    (`ServersView._default_confirm_removal`, `ui/servers/view.py`) —
+    теперь оба места зовут одну и ту же функцию (`ui/dialogs/buttons.py`).
+    """  # noqa: RUF002
+    return ask_confirmation(parent, "OneCStarter", message)
+
+
 def _build_main_window(
     application: QApplication,
     runtime: Runtime,
     env: Mapping[str, str],
     *,
     autostart_registry: autostart.Registry | None = None,
-) -> tuple[MainWindow, StartupTasks]:
+    process_scanner: ProcessScanner | None = None,
+    registered_radmin: Callable[[], Path | None] | None = None,
+    quit_dialog: Callable[[QWidget, str], bool] | None = None,
+    job_factory: Callable[[], Job] | None = None,
+) -> tuple[MainWindow, StartupTasks, ServerMonitor]:
     """Собрать окно, трей, хоткей, watcher и фоновые задачи, не запуская их.
 
     Вынесено из `main()` (спека T-04.6, §3.2): окно обязано появиться
     раньше, чем обнаружение платформ и чтение общих списков закончатся —
     обе задачи могут висеть минутами (антивирус, сетевые шары). `main()`
-    показывает окно и только затем зовёт `tasks.start()` — здесь задачи
-    только собираются и подключаются к `Workspace`/`BasesView`, `start()`
-    не вызывается ни разу.
+    показывает окно и только затем зовёт `tasks.start()`/`monitor.start()` —
+    здесь задачи и монитор серверов только собираются и подключаются
+    к `Workspace`/`BasesView`/`ServersWorkspace`/`ServersView`, `start()`
+    не вызывается ни разу («собрать, не запуская», T-08, задача 16).
+
+    `process_scanner` — та же инъекция для `run_smoke`, что и
+    `autostart_registry`: `None` собирает настоящий `PsutilScanner`,
+    а самопроверка сборки подставляет `NullScanner` — она поднимает
+    настоящее окно и не должна сканировать процессы машины сборщика
+    (тот же довод, что у долга №8 T-04.7).
+
+    `registered_radmin` — та же инъекция, но для ЧТЕНИЯ HKLM: находка этой
+    задачи (не входила в план дословно) — `ServersView.__init__` зовёт
+    `rebuild()` уже в конструкторе, а тот безусловно читает
+    `ServersWorkspace.current_console_version()`, то есть настоящий HKLM
+    ([Ф] Г2, `platform_1c/console.py::registered_radmin_path`) при КАЖДОЙ
+    сборке окна, не только по явному действию пользователя над консолью —
+    в отличие от процессов серверов, этого чтения не избежать инъекцией
+    `process_scanner` в `ServersWorkspace`. `None` — настоящий
+    `console.registered_radmin_path`, самопроверка сборки подставляет
+    `lambda: None` (тот же довод, что у `NullScanner` — долг №8: чтение
+    HKLM машины сборщика не должно решать, что покажет self-test).
+
+    `quit_dialog` — та же по духу инъекция, но найденная не при написании,
+    а при мутационной проверке (T-10, задача 6, находка координатора):
+    первая редакция ставила `window.confirm_quit` безусловно, с настоящим
+    `_ask_quit_confirmation` внутри замыкания — teardown ЛЮБОГО теста
+    с работающим сервером (`qtbot addWidget`/`_assemble` зовут
+    `window.close()`) вешался на модальный `QMessageBox.question` под
+    offscreen-платформой навсегда, потому что диалог там не показывается,
+    но и не отвечает сам. `None` (тесты этого файла, `run_smoke` — гейта
+    нет вовсе) оставляет `window.confirm_quit` пустым; значение передаёт
+    только `main()` (`quit_dialog=_ask_quit_confirmation`) — единственное
+    место, откуда реальный диалог вообще может появиться.
+
+    `job_factory` — тот же приём инъекции, что `process_scanner`, но для
+    Job Object'а (T-12, `platform_1c/job.py`). Именно ФАБРИКА, а не готовый
+    Job: с T-12 Job заводится на КАЖДЫЙ запуск профиля и закрывается его
+    остановкой, поэтому владеет ими координатор (`ServersWorkspace`),
+    а проводка решает только, какого они рода. `None` — настоящий класс
+    `ServerJob`; при сборке окна он не создаёт ничего (`ServersWorkspace`
+    зовёт фабрику только из `start()`), так что и для тестов это безопасно.
+    `run_smoke` всё равно подставляет `NullJob` явной инъекцией, тем же
+    доводом, что `NullScanner` (долг №8): самопроверка не должна создавать
+    kernel-объектов вовсе, а не полагаться на то, что до `start()` дело
+    не дойдёт.
 
     Значок приложения ставится здесь же, до создания трея (замечание
     заказчика на контрольной точке 16.08.2026): `setWindowIcon` до этой
@@ -363,6 +637,7 @@ def _build_main_window(
         installations=None,
         cfg_rules=runtime.cfg_rules,
         recent_limit=lambda: store.settings.recent_limit,
+        list_order=lambda: store.settings.list_order,
         palette=controller.palette,
         cache_env=env,
     )
@@ -375,22 +650,132 @@ def _build_main_window(
         frozen=bool(getattr(sys, "frozen", False)),
         executable=sys.executable,
     )
-    sections = [("Базы", view), ("Настройки", settings_view)]
+    # Раздел «Серверы» (T-08, задача 16). `servers_workspace`/`server_installed`
+    # (холдер — сеттера у ServersView нет, тот же приём, что `recent_limit=  # noqa: RUF003
+    # lambda:` у BasesView) собраны раньше самого раздела: конструктору  # noqa: RUF003
+    # ServersView нужны и воркспейс, и живой снимок установок сразу.
+    # T-10, задача 4: конструктор ServersWorkspace лишился дефолта у spawn —  # noqa: RUF003
+    # `server_spawn`/`logs_dir` обязательны. T-12: Job заводится на КАЖДЫЙ
+    # запуск профиля, поэтому сюда идёт фабрика (`job_factory` параметр
+    # функции; `None` — настоящий класс `ServerJob`, `run_smoke`
+    # подставляет `NullJob`), а владеет живыми Job координатор.  # noqa: RUF003
+    # `spawn_server` передаётся модульным атрибутом, не обёрткой: Job
+    # третьим аргументом даёт ему сам координатор, а тестам нужно уметь  # noqa: RUF003
+    # подменить `spawn_server` в этом модуле ДО сборки окна.
+    # [Ф] Б2 T-09: закрытие/крах лаунчера закрывает хендлы всех Job,
+    # и это гасит деревья серверов вместе с ним — явного кода остановки  # noqa: RUF003
+    # серверов при выходе приложения не требуется и здесь нет.
+    logs_dir = runtime.servers.parent / "logs" / "servers"
+    servers_workspace = ServersWorkspace(
+        runtime.servers,
+        job_factory=job_factory if job_factory is not None else ServerJob,
+        server_spawn=spawn_server,
+        logs_dir=logs_dir,
+        registered_radmin=(
+            registered_radmin if registered_radmin is not None else console.registered_radmin_path
+        ),
+    )
+    server_installed: list[ServerInstallation] = []
+
+    # Манера показа — та же, что `ServersView._default_show_error`/
+    # `_default_confirm_removal`: `QMessageBox` с иконкой, заголовком  # noqa: RUF003
+    # «OneCStarter» и `parent=servers_view`. Определены здесь (не внутри
+    # ServersView), потому что `_console_flow` — снаружи вьюхи и своего
+    # способа показать ошибку/информацию не имеет.
+    def _show_servers_error(message: str) -> None:
+        box = QMessageBox(servers_view)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("OneCStarter")
+        box.setText(message)
+        box.exec()
+
+    def _show_servers_info(message: str) -> None:
+        box = QMessageBox(servers_view)
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setWindowTitle("OneCStarter")
+        box.setText(message)
+        box.exec()
+
+    def on_console() -> None:
+        installed_versions = [si.installation.version for si in server_installed]
+        # [Ф] Г3: консоль требует точного совпадения сборки с сервером —  # noqa: RUF003
+        # версии профилей, у которых сейчас есть живой процесс, идут  # noqa: RUF003
+        # в ConsoleDialog как «работает» (её докстринг, ui/servers/dialog.py).
+        # Волна финального ревью ветки T-12 (Important 1): `statuses()`
+        # доходит до `Job.pids()` и может отказать — без этой страховки
+        # исключение уходит из слота `clicked`, диалог не открывается,
+        # а под `pythonw` пользователь не видит вообще ничего.  # noqa: RUF003
+        # Показываем причину и НЕ открываем диалог со списком,  # noqa: RUF003
+        # собранным наполовину.
+        try:
+            running_versions = [
+                status.resolved
+                for status in servers_workspace.statuses(installed_versions)
+                if status.processes and status.resolved is not None
+            ]
+        except ServicesError as error:
+            _show_servers_error(str(error))
+            return
+        convention = load_server_conventions()[0]
+        _console_flow(
+            servers_workspace,
+            list(server_installed),
+            running_versions,
+            convention,
+            show_error=_show_servers_error,
+            show_info=_show_servers_info,
+            parent=servers_view,
+        )
+
+    # `request_scan`/`monitor` — взаимная вперёдссылка внутри одной функции:
+    # `monitor` собирается ниже (ему нужен уже построенный `window` как
+    # родитель), а `servers_view` нужен `monitor.scan_now` уже сейчас.  # noqa: RUF003
+    # Обе лямбды не читают имя до первого настоящего вызова (клик/сигнал,  # noqa: RUF003
+    # много позже возврата из этой функции), поэтому порядок безопасен —
+    # тот же приём, что и у остальных обработчиков ниже (`tray`, `hotkey`).  # noqa: RUF003
+    servers_view = ServersView(
+        servers_workspace,
+        installed=lambda: list(server_installed),
+        palette=controller.palette,
+        request_scan=lambda: monitor.scan_now(),
+        show_error=_show_servers_error,
+        on_console=on_console,
+    )
+
+    sections = [("Базы", view), ("Серверы", servers_view), ("Настройки", settings_view)]
     # Ключ — сам объект вьюхи, а не подпись: подпись показывается пользователю  # noqa: RUF003
     # и однажды может быть переименована, и тогда поиск по ней уронил бы старт
     # `StopIteration` ещё до создания окна (находка ревью ветки 22.08.2026).
     bases_section = next(i for i, (_t, w) in enumerate(sections) if w is view)
+    servers_section = next(i for i, (_t, w) in enumerate(sections) if w is servers_view)
     settings_section = next(i for i, (_t, w) in enumerate(sections) if w is settings_view)
     window = MainWindow(sections, palette=controller.palette)
     window.set_section_icon(bases_section, rail_icons.bases_icon)
+    window.set_section_icon(servers_section, rail_icons.servers_icon)
     window.set_section_icon(settings_section, rail_icons.settings_icon)
+
+    monitor = ServerMonitor(
+        process_scanner if process_scanner is not None else PsutilScanner(), parent=window
+    )
+
+    def on_scan(snapshot: ScanSnapshot) -> None:
+        # Единственный путь, из которого зовётся on_scan_snapshot() (не
+        # rebuild()) — круг исправлений 1, ревью задачи 16: §8 обязан видеть
+        # именно СВЕЖИЙ снимок, а не любую перестройку карточек (докстринг  # noqa: RUF003
+        # ServersView.on_scan_snapshot).
+        servers_workspace.apply_scan(snapshot)
+        servers_view.on_scan_snapshot()
+
+    monitor.snapshot_ready.connect(on_scan)
 
     def on_theme_changed() -> None:
         # settings_view красится общим stylesheet (ThemeController._apply) —
         # у неё нет запечённых цветов и метода apply_palette. BasesView  # noqa: RUF003
-        # перекрашивать обязаны явно: цвета запечены в QBrush и в значки.
-        # И рельсу тоже: значки разделов — пара пиксмапов из палитры.
+        # и ServersView перекрашивать обязаны явно: цвета запечены в QBrush,
+        # в стили карточек и в значки. И рельсу тоже: значки разделов —
+        # пара пиксмапов из палитры.
         view.apply_palette(controller.palette)
+        servers_view.apply_palette(controller.palette)
         window.apply_palette(controller.palette)
 
     controller.changed.connect(on_theme_changed)
@@ -413,11 +798,69 @@ def _build_main_window(
             if not item.is_group and item.favorite
         ]
 
+    def _build_confirm_quit(dialog: Callable[[QWidget, str], bool]) -> Callable[[], bool]:
+        def confirm_quit() -> bool:
+            confirmed = _confirm_quit_with_servers(
+                servers_workspace.running_count, lambda message: dialog(window, message)
+            )
+            if confirmed:
+                # НАХОДКА 4 ручного чек-листа T-10 (Minor): дерево гасит
+                # сама ОС (Job kill-on-close) без единой строки кода  # noqa: RUF003
+                # остановки — до этой правки конец сессии не оставлял
+                # следа в журнале работающего профиля. Один путь на оба  # noqa: RUF003
+                # вызывающих (`request_quit` и `MainWindow.closeEvent` —
+                # оба зовут именно этот `confirm_quit`), ДО `application.  # noqa: RUF003
+                # quit()`: после согласия, но раньше самого выхода.
+                #
+                # Волна финального ревью ветки T-12 (Important 1):
+                # `log_shutdown()` идёт по тем же `_job_pids` и отказывает
+                # тем же `ServerError`. Согласие уже получено — отменять
+                # его из-за ненаписанной строки журнала было бы  # noqa: RUF003
+                # враньём пользователю о его же ответе, поэтому  # noqa: RUF003
+                # отказ уходит
+                # в лог, тем же приёмом, что `OSError` в `log_event`.
+                try:
+                    servers_workspace.log_shutdown()
+                except ServicesError as error:
+                    _log.warning("не удалось отметить выход в журналах серверов: %s", error)
+            return confirmed
+
+        return confirm_quit
+
+    # T-10, задача 6 (находка координатора, см. докстринг параметра
+    # `quit_dialog` выше): гейт собирается ТОЛЬКО когда снаружи дали диалог —
+    # без него `confirm_quit` остаётся `None`, и `MainWindow.closeEvent`
+    # никогда не дойдёт до настоящего диалога подтверждения, даже под
+    # offscreen, даже с работающим сервером.  # noqa: RUF003
+    confirm_quit = _build_confirm_quit(quit_dialog) if quit_dialog is not None else None
+    window.confirm_quit = confirm_quit
+
+    def request_quit() -> None:
+        """Пункт «Выход» трея — тот же гейт, что закрытие окна, плюс сам выход.
+
+        Дублирует `MainWindow.closeEvent` не проводом через него (трей не
+        закрывает окно, чтобы выйти — оно может быть уже скрыто в трее),
+        а прямым вызовом того же `confirm_quit`: отказ пользователя обязан
+        оставить приложение работающим, не только окно видимым. Без гейта
+        (`confirm_quit is None` — тесты, `run_smoke`, хотя тот трей вообще
+        не собирает) выход происходит сразу, без вопроса.
+
+        Выход после подтверждения — обычный `application.quit()`, без единой
+        строки, останавливающей серверы явно: [Ф] Б2 T-09 — дерево серверов
+        гасит сама смерть процесса лаунчера, закрывающая хендл Job Object'а
+        (kill-on-close, `platform_1c/job.py`), и до неё дело здесь не доходит
+        вообще — эффект наступает уже ПОСЛЕ `application.quit()`, снаружи
+        этой функции.
+        """  # noqa: RUF002
+        if confirm_quit is not None and not confirm_quit():
+            return
+        application.quit()
+
     tray = create_tray(
         window,
         favorites,
         view.launch_key,
-        application.quit,
+        on_quit=request_quit,
         theme_mode=lambda: controller.mode,
         on_theme=controller.set_mode,
     )
@@ -448,6 +891,16 @@ def _build_main_window(
         # программу с экрана.  # noqa: RUF003
         window.close_to_tray = store.settings.close_to_tray and tray is not None
 
+    def hide_after_launch(_key: str) -> None:
+        # T-11, п. 9. Без трея не скрывать (решение заказчика 29.08.2026, б):  # noqa: RUF003
+        # окно, спрятанное без значка в трее, нечем вернуть, кроме глобального
+        # хоткея — тот же довод, что у apply_close_to_tray. Серверный профиль  # noqa: RUF003
+        # (решение а) сюда не попадает: сигнал есть только у BasesView.  # noqa: RUF003
+        if store.settings.hide_on_launch and tray is not None:
+            window.hide()
+
+    view.launched.connect(hide_after_launch)
+
     def apply_hotkey(text: str) -> str | None:
         """Перевесить хоткей. Текст отказа либо None."""
         spec = parse_hotkey(text)
@@ -461,21 +914,20 @@ def _build_main_window(
         _set_tray_tooltip(tray, text, busy=True)
         return f"Сочетание {text} занято другим приложением"
 
-    recent_limit_seen = store.settings.recent_limit
+    list_settings_seen = (store.settings.recent_limit, store.settings.list_order)
 
-    def rebuild_if_recent_limit_changed() -> None:
-        # Круг исправлений 1, находка 2: `store.changed` эмитируется на  # noqa: RUF003
-        # любую настройку, а дереву есть дело только до `recent_limit`  # noqa: RUF003
-        # («Недавние» строятся по этому числу). Смена темы уже перестраивает
-        # дерево своим путём (controller.changed → on_theme_changed →
-        # view.apply_palette → rebuild()) — безусловная перестройка здесь
-        # дублировала бы её, а close_to_tray/хоткей к дереву отношения  # noqa: RUF003
-        # не имеют вовсе (решение заказчика 20.08.2026).
-        nonlocal recent_limit_seen
-        current = store.settings.recent_limit
-        if current == recent_limit_seen:
+    def rebuild_if_list_settings_changed() -> None:
+        # Круг исправлений 1, находка 2 (T-04.7): `store.changed` эмитируется  # noqa: RUF003
+        # на любую настройку, а дереву есть дело только до тех, по которым  # noqa: RUF003
+        # оно строится: `recent_limit` («Недавние») и, с T-11 п. 2,  # noqa: RUF003
+        # `list_order`. Смена темы перестраивает дерево своим путём
+        # (controller.changed → apply_palette → rebuild()), остальные
+        # настройки к дереву отношения не имеют.
+        nonlocal list_settings_seen
+        current = (store.settings.recent_limit, store.settings.list_order)
+        if current == list_settings_seen:
             return
-        recent_limit_seen = current
+        list_settings_seen = current
         view.rebuild()
 
     def apply_default_client() -> None:
@@ -485,7 +937,7 @@ def _build_main_window(
     apply_default_client()
     store.changed.connect(apply_close_to_tray)
     store.changed.connect(apply_default_client)
-    store.changed.connect(rebuild_if_recent_limit_changed)
+    store.changed.connect(rebuild_if_list_settings_changed)
     settings_view.set_hotkey_handler(apply_hotkey)
 
     problem = apply_hotkey(store.settings.hotkey)
@@ -514,6 +966,11 @@ def _build_main_window(
     def on_installations(found: list[Installation]) -> None:
         runtime.workspace.set_installations(found)
         view.apply_installations(found)
+        # Серверные установки — фильтр найденных версий (server_installations),
+        # не отдельное обнаружение: и ragent.exe, и radmin.dll должны реально
+        # лежать на диске (докстринг platform_1c/server_discovery.py).
+        server_installed[:] = server_installations(found, load_server_conventions())
+        servers_view.rebuild()
 
     def on_common(data: CommonListData) -> None:
         runtime.workspace.apply_common_lists(data)
@@ -522,7 +979,7 @@ def _build_main_window(
     tasks.installations_ready.connect(on_installations)
     tasks.common_lists_ready.connect(on_common)
 
-    return window, tasks
+    return window, tasks, monitor
 
 
 def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
@@ -557,11 +1014,28 @@ def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
         )
         return 1
 
-    window, tasks = _build_main_window(application, runtime, os.environ)
+    try:
+        window, tasks, monitor = _build_main_window(
+            application, runtime, os.environ, quit_dialog=_ask_quit_confirmation
+        )
+    except ServerError as error:
+        # CRITICAL 2, финальное ревью ветки: try вокруг build_runtime выше
+        # не покрывал конструктор ServersWorkspace внутри _build_main_window
+        # (load_profiles на servers.json) — ServersUnavailableError уходила
+        # голой трассировкой мимо обеих веток выше, которые ловят только
+        # отказ build_runtime. Тот же образец, что UserDataUnavailableError:
+        # сообщение с путём в окне, а не крах без объяснения.  # noqa: RUF003
+        QMessageBox.critical(None, "OneCStarter", str(error))
+        return 1
     if start_hidden and window.tray_available:
         _log.info("тихий старт: окно скрыто, программа в трее")
     else:
         window.show()
         _log.info("окно показано")
     tasks.start()
+    # Монитор серверов — рядом с tasks.start(), не внутри _build_main_window  # noqa: RUF003
+    # (её докстринг, «собрать, не запуская»): периодический скан обязан
+    # начаться только после того, как окно решило, показываться ему сразу
+    # или остаться скрытым в трее.
+    monitor.start()
     return application.exec()

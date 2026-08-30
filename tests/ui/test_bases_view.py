@@ -16,7 +16,7 @@ from PySide6.QtCore import (
     Qt,
     QUrl,
 )
-from PySide6.QtGui import QDragMoveEvent, QDropEvent, QKeyEvent, QShortcut
+from PySide6.QtGui import QDragMoveEvent, QDropEvent, QKeyEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication, QDialog, QTreeView, QWidget
 
 from onecstarter.config.shell_link import build_shell_link, safe_file_name, shortcut_command
@@ -37,14 +37,20 @@ from onecstarter.services.groups import GroupRemoval
 from onecstarter.services.launch import LaunchOutcome
 from onecstarter.services.model import InfobaseItem, InfobaseSource
 from onecstarter.services.paths import ROOT, group_path, normalize_folder, render_folder
-from onecstarter.services.settings import DEFAULT_RECENT_LIMIT
+from onecstarter.services.settings import DEFAULT_RECENT_LIMIT, ListOrder
 from onecstarter.ui import theme
 from onecstarter.ui.bases.icons import placement_icon
 from onecstarter.ui.bases.tree_model import KEY_ROLE, KIND_ROLE
-from onecstarter.ui.bases.view import NO_CACHE_ROOT_NOTE, BasesView, DropTarget
+from onecstarter.ui.bases.view import (
+    ALPHABETICAL_REORDER_NOTE,
+    NO_CACHE_ROOT_NOTE,
+    BasesView,
+    DropTarget,
+)
 from onecstarter.ui.dialogs.confirm import ask_group_removal, confirm_removal
 from onecstarter.ui.dialogs.group import GroupDialog
 from onecstarter.ui.dialogs.infobase import InfobaseDialog
+from onecstarter.ui.shortcuts import BASES_SHORTCUTS
 from tests.unit.test_cache import FakeCacheOps
 
 from .conftest import (
@@ -72,6 +78,7 @@ def _view(
     cache_ops: Any | None = None,
     confirm_cache_clear: Callable[[QWidget | None, str], bool] | None = None,
     show_cache_report: Callable[[QWidget | None, str], None] | None = None,
+    list_order: Callable[[], ListOrder] | None = None,
 ) -> tuple[BasesView, list[LaunchCommand], list[ServicesError], list[str]]:
     # По умолчанию — INSTALLED, не None: большинство тестов файла ничего
     # не знают про фоновое обнаружение и ждут готовых версий сразу.
@@ -112,6 +119,7 @@ def _view(
         installations=installations,
         cfg_rules=[],
         recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+        list_order=list_order or (lambda: ListOrder.FILE),
         on_error=recorded.append,
         **kwargs,
     )
@@ -326,6 +334,43 @@ def test_launch_error_goes_to_handler_not_up(qtbot, workspace_factory):
     assert isinstance(errors[0], LaunchError)
 
 
+def test_launched_is_emitted_after_a_successful_launch(qtbot, workspace_factory):
+    view, calls, _, _ = _view(qtbot, workspace_factory)
+    seen: list[str] = []
+    view.launched.connect(seen.append)
+
+    view.launch_key(_DEMO_ACCOUNTING_KEY)
+
+    assert len(calls) == 1
+    assert seen == [_DEMO_ACCOUNTING_KEY]
+
+
+def test_launched_is_not_emitted_when_launch_fails(qtbot, workspace_factory, monkeypatch):
+    """ЗАЩИТНЫЙ ТЕСТ: отказ запуска — окно обязано остаться, чтобы показать ошибку.
+
+    Мутация: `self.launched.emit(key)` до `self._workspace.launch(...)` или вне
+    `try` — сигнал уйдёт и при `LaunchError`. Отказ подстроен подменой
+    `Workspace.launch`: `workspace_factory` при `installations=None` сама
+    подставляет `INSTALLED` (см. её докстринг), pending-состояния через
+    `_view` не получить.
+    """  # noqa: RUF002
+    view, calls, errors, _ = _view(qtbot, workspace_factory)
+    seen: list[str] = []
+    view.launched.connect(seen.append)
+
+    def refuse(key: str, forced: object = None) -> None:
+        raise LaunchError("обнаружение платформ ещё не завершено")
+
+    monkeypatch.setattr(view.workspace(), "launch", refuse)
+
+    view.launch_key(_DEMO_ACCOUNTING_KEY)
+
+    assert calls == []
+    assert len(errors) == 1
+    assert isinstance(errors[0], LaunchError)
+    assert seen == []
+
+
 def test_favorite_toggle_shows_favorites_branch(qtbot, workspace_factory):
     view, _, _, _ = _view(qtbot, workspace_factory)
     key = "id:44444444-4444-4444-4444-444444444444"
@@ -377,7 +422,7 @@ def test_context_menu_has_properties_action(qtbot, workspace_factory):
     item = next(i for i in view.workspace().items() if i.key == key)
     menu = view._build_menu(item, key)
     texts = [action.text() for action in menu.actions()]
-    assert "Свойства…" in texts
+    assert "Свойства…\tAlt+Enter" in texts
 
 
 # -- отказ записи bases.json доходит до пользователя (финальное ревью, I9) ----
@@ -450,7 +495,7 @@ def test_common_record_menu_disables_the_writing_actions(
 
     actions = _menu_actions(view._build_menu(item, item.key))
 
-    for label in ("Свойства…", "Удалить из списка…"):
+    for label in ("Свойства…\tAlt+Enter", "Удалить из списка…"):
         assert not actions[label].isEnabled(), label
         assert actions[label].toolTip() == COMMON_NOTE, label
 
@@ -819,6 +864,7 @@ def test_panel_follows_selection(qtbot, workspace_factory):
         installations=INSTALLED,
         cfg_rules=[],
         recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+        list_order=lambda: ListOrder.FILE,
     )
     qtbot.addWidget(view)
     index = _first_base_index(view)
@@ -976,6 +1022,7 @@ def test_f3_launches_in_default_mode(qtbot: Any, workspace_factory: Any) -> None
         installations=INSTALLED,
         cfg_rules=[],
         recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+        list_order=lambda: ListOrder.FILE,
     )
     qtbot.addWidget(view)
     _show_exposed(qtbot, view)
@@ -994,6 +1041,7 @@ def test_f4_launches_designer(qtbot: Any, workspace_factory: Any) -> None:
         installations=INSTALLED,
         cfg_rules=[],
         recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+        list_order=lambda: ListOrder.FILE,
     )
     qtbot.addWidget(view)
     _show_exposed(qtbot, view)
@@ -1003,6 +1051,68 @@ def test_f4_launches_designer(qtbot: Any, workspace_factory: Any) -> None:
 
     assert len(calls) == 1
     assert "DESIGNER" in calls[0].arguments
+
+
+def test_shortcut_reference_matches_registered_shortcuts(qtbot, workspace_factory):
+    """Таблица `BASES_SHORTCUTS` — то, что вьюха реально регистрирует (T-11, п. 3).
+
+    Справочник в настройках (задача 3) рисуется по этой таблице; сочетание,
+    записанное в таблице, но не созданное вьюхой, было бы враньём в UI.
+    """
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    registered = {shortcut.key().toString() for shortcut in view.findChildren(QShortcut)}
+    expected = {
+        QKeySequence(sequence).toString()
+        for spec in BASES_SHORTCUTS
+        for sequence in spec.sequences
+    }
+    assert expected == registered, (expected - registered, registered - expected)
+
+
+def test_alt_enter_opens_properties_of_the_current_base(qtbot, workspace_factory, monkeypatch):
+    """`Alt+Enter` — «Свойства…» текущей записи (решение заказчика 29.08.2026: зашить)."""
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    _show_exposed(qtbot, view)
+    _select_key(view, _DEMO_ACCOUNTING_KEY)
+    shown: list[str] = []
+    monkeypatch.setattr(view, "show_properties", shown.append)
+
+    qtbot.keyClick(view, Qt.Key.Key_Return, Qt.KeyboardModifier.AltModifier)
+
+    assert shown == [_DEMO_ACCOUNTING_KEY]
+
+
+def test_alt_enter_on_a_group_opens_the_group_dialog(qtbot, workspace_factory, monkeypatch):
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    _show_exposed(qtbot, view)
+    _select_key(view, _CLIENTS_KEY)
+    shown: list[str] = []
+    monkeypatch.setattr(view, "rename_group", shown.append)
+
+    qtbot.keyClick(view, Qt.Key.Key_Return, Qt.KeyboardModifier.AltModifier)
+
+    assert shown == [_CLIENTS_KEY]
+
+
+def test_alt_enter_on_common_record_does_nothing(
+    qtbot, workspace_factory, common_base_cfg_paths, monkeypatch
+):
+    """ЗАЩИТНЫЙ ТЕСТ: запись общего списка — тот же порог, что у пункта меню.
+
+    Мутация: убрать `_is_read_only` из `_current_editable_row` (порог
+    `Alt+Enter`/`Delete`; до 30.08.2026 — копия в `_show_current_properties`)
+    — откроется диалог, чей «ОК» отвергнет `ReadOnlySourceError`
+    (`_build_menu` для таких записей гасит «Свойства…»).
+    """  # noqa: RUF002
+    view, _, _, _ = _view(qtbot, workspace_factory, cfg_paths=common_base_cfg_paths)
+    _show_exposed(qtbot, view)
+    _select_key(view, COMMON_BASE_KEY)
+    shown: list[str] = []
+    monkeypatch.setattr(view, "show_properties", shown.append)
+
+    qtbot.keyClick(view, Qt.Key.Key_Return, Qt.KeyboardModifier.AltModifier)
+
+    assert shown == []
 
 
 def test_f4_does_nothing_for_web_base(qtbot: Any, workspace_factory: Any) -> None:
@@ -1018,6 +1128,7 @@ def test_f4_does_nothing_for_web_base(qtbot: Any, workspace_factory: Any) -> Non
         installations=INSTALLED,
         cfg_rules=[],
         recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+        list_order=lambda: ListOrder.FILE,
     )
     qtbot.addWidget(view)
     _show_exposed(qtbot, view)
@@ -1036,6 +1147,7 @@ def test_f3_opens_browser_for_web_base(qtbot: Any, workspace_factory: Any) -> No
         installations=INSTALLED,
         cfg_rules=[],
         recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+        list_order=lambda: ListOrder.FILE,
     )
     qtbot.addWidget(view)
     _show_exposed(qtbot, view)
@@ -1062,6 +1174,7 @@ def test_f3_and_f4_shortcuts_are_registered_on_view(qtbot: Any, workspace_factor
         installations=INSTALLED,
         cfg_rules=[],
         recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+        list_order=lambda: ListOrder.FILE,
     )
     qtbot.addWidget(view)
 
@@ -1111,6 +1224,7 @@ def test_theme_switch_leaves_no_stale_colours(qtbot: Any, workspace_factory: Any
         installations=INSTALLED,
         cfg_rules=[],
         recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+        list_order=lambda: ListOrder.FILE,
         palette=theme.DARK,
     )
     qtbot.addWidget(view)
@@ -1144,6 +1258,7 @@ def test_ctrl_n_shortcut_is_registered_on_view(qtbot: Any, workspace_factory: An
         installations=INSTALLED,
         cfg_rules=[],
         recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+        list_order=lambda: ListOrder.FILE,
     )
     qtbot.addWidget(view)
 
@@ -1566,6 +1681,109 @@ def test_remove_key_reports_unknown_item_when_target_is_gone(
     assert isinstance(errors[0], UnknownItemError)
 
 
+def test_delete_key_asks_and_removes_the_current_base(qtbot, workspace_factory):
+    """T-11, п. 8: `Delete` в дереве — тот же путь, что «Удалить из списка…»."""
+    asked: list[str] = []
+
+    def _confirm(_parent: object, item: InfobaseItem) -> bool:
+        asked.append(item.key)
+        return True
+
+    view, _, errors, _ = _view(qtbot, workspace_factory, confirm_removal=_confirm)
+    _select_key(view, _DEMO_ACCOUNTING_KEY)
+
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Delete)
+
+    assert asked == [_DEMO_ACCOUNTING_KEY]
+    assert errors == []
+    assert all(i.key != _DEMO_ACCOUNTING_KEY for i in view.workspace().items())
+
+
+def test_delete_key_with_declined_confirmation_keeps_the_file(qtbot, workspace_factory):
+    """ЗАЩИТНЫЙ ТЕСТ: отказ подтверждения — файл списка не тронут.
+
+    Мутация: `_remove_current` зовёт `self._workspace.remove_infobase(key)`
+    напрямую, минуя `remove_key` с его подтверждением, — байты файла изменятся.
+    """  # noqa: RUF002
+    asked: list[int] = []
+
+    def _confirm(*_args: object) -> bool:
+        asked.append(1)
+        return False
+
+    view, _, errors, _ = _view(qtbot, workspace_factory, confirm_removal=_confirm)
+    before = view.workspace().paths.ibases.read_bytes()
+    _select_key(view, _DEMO_ACCOUNTING_KEY)
+
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Delete)
+
+    assert asked == [1]
+    assert view.workspace().paths.ibases.read_bytes() == before
+    assert errors == []
+
+
+def test_delete_key_on_a_group_goes_through_group_removal(qtbot, workspace_factory):
+    asked: list[str] = []
+
+    def _ask(_parent: object, name: str, *_rest: object) -> GroupRemoval | None:
+        asked.append(name)
+        return None
+
+    view, _, errors, _ = _view(qtbot, workspace_factory, ask_group_removal=_ask)
+    before = view.workspace().paths.ibases.read_bytes()
+    _select_key(view, _CLIENTS_KEY)
+
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Delete)
+
+    assert asked == ["Клиенты"]
+    assert view.workspace().paths.ibases.read_bytes() == before
+    assert errors == []
+
+
+def test_delete_key_on_common_record_does_nothing(
+    qtbot, workspace_factory, common_base_cfg_paths
+):
+    """ЗАЩИТНЫЙ ТЕСТ: запись общего списка — ни вопроса, ни ошибки (порог пункта меню).
+
+    Мутация: убрать `_is_read_only` из `_current_editable_row` (порог
+    `Alt+Enter`/`Delete`; до 30.08.2026 — копия в `_remove_current`) —
+    появится подтверждение, а за ним `ReadOnlySourceError`.
+    """  # noqa: RUF002
+    asked: list[int] = []
+
+    def _confirm(*_args: object) -> bool:
+        asked.append(1)
+        return True
+
+    view, _, errors, _ = _view(
+        qtbot, workspace_factory, confirm_removal=_confirm, cfg_paths=common_base_cfg_paths
+    )
+    _select_key(view, COMMON_BASE_KEY)
+
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Delete)
+
+    assert asked == []
+    assert errors == []
+
+
+def test_delete_in_search_field_edits_text_not_the_list(qtbot, workspace_factory):
+    asked: list[int] = []
+
+    def _confirm(*_args: object) -> bool:
+        asked.append(1)
+        return True
+
+    view, _, _, _ = _view(qtbot, workspace_factory, confirm_removal=_confirm)
+    _select_key(view, _DEMO_ACCOUNTING_KEY)
+    view.search().setText("abc")
+    view.search().setCursorPosition(0)
+
+    qtbot.keyClick(view.search(), Qt.Key.Key_Delete)
+
+    assert view.search().text() == "bc"
+    assert asked == []
+
+
 def test_view_defaults_to_the_real_confirm_removal_dialog(qtbot, workspace_factory):
     """Без явной инъекции конструктор обязан ссылаться на настоящий Qt-диалог.
 
@@ -1614,7 +1832,84 @@ def test_group_menu_for_user_group_offers_full_operations(qtbot, workspace_facto
     assert all(action.isEnabled() for action in menu.actions())
 
 
-def test_common_group_context_menu_disables_all_three_actions(
+def test_group_menu_offers_to_add_a_base_into_that_group(qtbot, workspace_factory, monkeypatch):
+    """T-11, п. 4: «Добавить базу…» в меню группы — база попадает в эту группу."""
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    item = next(i for i in view.workspace().items() if i.key == _CLIENTS_KEY)
+    folders: list[str] = []
+    monkeypatch.setattr(view, "add_infobase", folders.append)
+
+    menu = view._build_group_menu(item, _CLIENTS_KEY)
+    actions = {action.text(): action for action in menu.actions()}
+    assert next(iter(actions)) == "Добавить базу…"
+    actions["Добавить базу…"].trigger()
+
+    assert folders == ["Клиенты"]
+
+
+def test_add_dialog_is_prefilled_with_the_requested_group(qtbot, workspace_factory):
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    dialog = view._build_add_dialog("Клиенты")
+    qtbot.addWidget(dialog)
+    dialog.set_kind(ConnectKind.FILE)
+    dialog.set_file_path(r"D:\bases\new")
+    dialog.set_name("Новая")
+    assert dialog.new_record()[2] == "Клиенты"
+
+
+def test_empty_space_menu_add_goes_to_root(qtbot, workspace_factory, monkeypatch):
+    """`QAction.triggered` несёт `checked`; голая ссылка на метод получила бы его как `folder`."""  # noqa: RUF002
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    folders: list[str] = []
+    monkeypatch.setattr(view, "add_infobase", folders.append)
+
+    menu = view._build_empty_space_menu()
+    next(a for a in menu.actions() if a.text() == "Добавить базу…").trigger()
+
+    assert folders == [ROOT]
+
+
+def test_insert_adds_into_the_group_of_the_current_row(qtbot, workspace_factory, monkeypatch):
+    """ЗАЩИТНЫЙ ТЕСТ (T-11, п. 7): `Insert` в дереве — группа текущей строки, не корень.
+
+    Мутация: `_add_infobase_at_current` передаёт `ROOT` всегда — обе проверки
+    ниже дадут `"/"` вместо `"Клиенты"`.
+    """  # noqa: RUF002
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    folders: list[str] = []
+    monkeypatch.setattr(view, "add_infobase", folders.append)
+
+    _select_key(view, _CLIENTS_KEY)
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Insert)
+    _select_key(view, _DEMO_ACCOUNTING_KEY)
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Insert)
+
+    assert folders == ["Клиенты", "Клиенты"]
+
+
+def test_insert_without_current_row_adds_into_root(qtbot, workspace_factory, monkeypatch):
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    folders: list[str] = []
+    monkeypatch.setattr(view, "add_infobase", folders.append)
+    view.tree().setCurrentIndex(QModelIndex())
+
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Insert)
+
+    assert folders == [ROOT]
+
+
+def test_insert_in_search_field_does_not_add(qtbot, workspace_factory, monkeypatch):
+    """`Insert` — операция дерева, а не окна: в поле поиска это режим ввода, не добавление."""  # noqa: RUF002
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    folders: list[str] = []
+    monkeypatch.setattr(view, "add_infobase", folders.append)
+
+    qtbot.keyClick(view.search(), Qt.Key.Key_Insert)
+
+    assert folders == []
+
+
+def test_common_group_context_menu_disables_all_four_actions(
     qtbot, workspace_factory, common_group_cfg_paths
 ):
     """Круг правок 1 ревью задачи 12: группа общего списка — не полное меню.
@@ -1626,13 +1921,17 @@ def test_common_group_context_menu_disables_all_three_actions(
     guard'ом в `remove_group`. Теперь решение принимает `_group_menu_for`
     до показа меню, единым правилом на все три пункта, тем же приёмом,
     что и у неявного узла.
+
+    T-11, п. 4: четвёртый пункт «Добавить базу…» — тем же правилом.
     """  # noqa: RUF002
     view, _, _, _ = _view(qtbot, workspace_factory, cfg_paths=common_group_cfg_paths)
     item = next(i for i in view.workspace().items() if i.key == COMMON_GROUP_KEY)
     menu = view._group_menu_for(item, COMMON_GROUP_KEY)
     assert menu.toolTipsVisible() is True
     texts = [action.text() for action in menu.actions()]
-    assert texts == ["Создать группу…", "Переименовать группу…", "Удалить группу…"]
+    assert texts == [
+        "Добавить базу…", "Создать группу…", "Переименовать группу…", "Удалить группу…"
+    ]
     for action in menu.actions():
         assert action.isEnabled() is False
         assert action.toolTip() == COMMON_NOTE
@@ -1649,18 +1948,24 @@ def test_group_paths_excludes_common_list_groups(qtbot, workspace_factory, commo
     assert COMMON_GROUP_NAME not in view._group_paths()
 
 
-def test_implicit_group_context_menu_disables_all_three_actions(qtbot, workspace_factory):
+def test_implicit_group_context_menu_disables_all_four_actions(qtbot, workspace_factory):
     """[Ф] T-05.7: у неявного узла нет ни секции, ни ключа — операции недоступны
 
     с пояснением в тултипе, а не молча. `setToolTipsVisible(True)`
     обязателен — без него QMenu тултипы пунктов на этой платформе не
     показывает вовсе, даже если текст в setToolTip есть.
+
+    T-11, п. 4: четвёртый пункт «Добавить базу…» — тем же правилом
+    (`_build_disabled_group_menu` общий для неявного узла и группы общего
+    списка, находка задачи 4: изменение одного затрагивает оба случая).
     """  # noqa: RUF002
     view, _, _, _ = _view(qtbot, workspace_factory)
     menu = view._build_implicit_group_menu()
     assert menu.toolTipsVisible() is True
     texts = [action.text() for action in menu.actions()]
-    assert texts == ["Создать группу…", "Переименовать группу…", "Удалить группу…"]
+    assert texts == [
+        "Добавить базу…", "Создать группу…", "Переименовать группу…", "Удалить группу…"
+    ]
     for action in menu.actions():
         assert action.isEnabled() is False
         assert action.toolTip() == IMPLICIT_NOTE
@@ -2400,6 +2705,7 @@ def test_alt_up_and_alt_down_shortcuts_are_registered_on_view(
         installations=INSTALLED,
         cfg_rules=[],
         recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+        list_order=lambda: ListOrder.FILE,
     )
     qtbot.addWidget(view)
 
@@ -2474,6 +2780,140 @@ def test_alt_up_in_a_virtual_branch_is_a_no_op(qtbot: Any, workspace_factory: An
 
     assert _clients_children(view) == before
     assert errors == []
+
+
+# -- T-11, п. 2: алфавитный режим показа отключает перестановку ----------
+
+
+def test_alphabetical_mode_disables_keyboard_reorder(qtbot, workspace_factory, monkeypatch):
+    """ЗАЩИТНЫЙ ТЕСТ (T-11, п. 2, вариант а): в алфавитном режиме Alt+↑ не пишет файл.
+
+    Мутация 1: убрать проверку `self._list_order() is ListOrder.ALPHABETICAL`
+    в `_move_current` — `move_within_group` перепишет `OrderInList`, который
+    в этом режиме не показывается. Падает на `moves == []`.
+
+    Мутация 2 (находка финального ревью ветки): заменить
+    `self._on_error(InvalidRequestError(ALPHABETICAL_REORDER_NOTE))` на голый
+    `return` в `_move_current` — файл по-прежнему не пишется, но пользователь
+    не получает объяснения, почему перестановка не сработала (дефект того
+    же класса, что customer сообщил в smoke №2). Падает на `len(errors) == 1`.
+
+    Ключ и направление — как в `test_alt_up_moves_the_current_record_before_
+    its_neighbor` (реальная перестановка в режиме FILE): «Демо Бухгалтерия» —
+    ВТОРОЙ (последний) ребёнок «Клиенты» что в файловом, что в алфавитном
+    порядке (группа «Розница» встаёт первой в обоих). Alt+↓ отсюда — не
+    перестановка вовсе (соседа снизу нет), и не отличил бы отсутствие
+    перестановки от списанного гварда; Alt+↑ имеет настоящего соседа сверху
+    и действительно упёрся бы в `move_within_group`, не будь проверки.
+    """  # noqa: RUF002
+    view, _, errors, _ = _view(qtbot, workspace_factory, list_order=lambda: ListOrder.ALPHABETICAL)
+    _show_exposed(qtbot, view)
+    moves = _spy_on(monkeypatch, view.workspace(), "move_within_group")
+    before = view.workspace().paths.ibases.read_bytes()
+    _select_key(view, _DEMO_ACCOUNTING_KEY)
+
+    qtbot.keyClick(view, Qt.Key.Key_Up, Qt.KeyboardModifier.AltModifier)
+
+    assert moves == []
+    assert view.workspace().paths.ibases.read_bytes() == before
+    assert len(errors) == 1 and isinstance(errors[0], InvalidRequestError)
+    assert ALPHABETICAL_REORDER_NOTE in str(errors[0])
+
+
+def test_alt_up_without_selection_in_alphabetical_mode_is_silent(
+    qtbot, workspace_factory, monkeypatch
+):
+    """ЗАЩИТНЫЙ ТЕСТ (находка ре-ревью волны 30.08.2026): без выбора Alt+↑ молчит и здесь.
+
+    Мутация: проверка режима первой строкой метода (до isValid/
+    _is_in_file_tree) — тогда без текущей строки подсказка
+    `ALPHABETICAL_REORDER_NOTE` показалась бы, хотя FILE-режим здесь тоже
+    ничего не делает (`index.isValid()` — первый `return` в `_move_current`).
+    Падает на `errors == []`.
+    """  # noqa: RUF002
+    view, _, errors, _ = _view(qtbot, workspace_factory, list_order=lambda: ListOrder.ALPHABETICAL)
+    _show_exposed(qtbot, view)
+    moves = _spy_on(monkeypatch, view.workspace(), "move_within_group")
+    view.tree().setCurrentIndex(QModelIndex())
+
+    qtbot.keyClick(view, Qt.Key.Key_Up, Qt.KeyboardModifier.AltModifier)
+
+    assert moves == []
+    assert errors == []
+
+
+def test_alt_up_in_a_virtual_branch_in_alphabetical_mode_is_silent(
+    qtbot, workspace_factory, monkeypatch
+):
+    """ЗАЩИТНЫЙ ТЕСТ (находка ре-ревью волны 30.08.2026): виртуальная ветка молчит и здесь.
+
+    Мутация: проверка режима первой строкой метода (до isValid/
+    _is_in_file_tree) — тогда курсор в «Избранное» получил бы подсказку
+    `ALPHABETICAL_REORDER_NOTE`, хотя FILE-режим тут тоже молчит
+    (`test_alt_up_in_a_virtual_branch_is_a_no_op`). Падает на `errors == []`.
+    """  # noqa: RUF002
+    view, _, errors, _ = _view(qtbot, workspace_factory, list_order=lambda: ListOrder.ALPHABETICAL)
+    view.toggle_favorite(_DEMO_ACCOUNTING_KEY)
+    _show_exposed(qtbot, view)
+    moves = _spy_on(monkeypatch, view.workspace(), "move_within_group")
+    _select_key(view, _DEMO_ACCOUNTING_KEY)  # «Избранное» стоит первой веткой
+    assert "Избранное" in _current_path(view)
+
+    qtbot.keyClick(view, Qt.Key.Key_Up, Qt.KeyboardModifier.AltModifier)
+
+    assert moves == []
+    assert errors == []
+
+
+def test_alphabetical_mode_drop_within_group_does_not_reorder(
+    qtbot, workspace_factory, monkeypatch
+):
+    """В алфавитном режиме drop внутри группы не переставляет и не молчит.
+
+    Мутация (находка финального ревью ветки): заменить `self._on_error(...)`
+    в `handle_drop` на голый `return` — файл по-прежнему не пишется, но
+    подсказки не будет. Падает на `len(errors) == 1`.
+    """  # noqa: RUF002
+    view, _, errors, _ = _view(qtbot, workspace_factory, list_order=lambda: ListOrder.ALPHABETICAL)
+    moves = _spy_on(monkeypatch, view.workspace(), "move_within_group")
+    updates = _spy_on(monkeypatch, view.workspace(), "update_infobase")
+    siblings = [
+        i for i in view.workspace().items()
+        if not i.is_group and normalize_folder(i.folder) == ROOT
+    ]
+    assert len(siblings) >= 2
+
+    view.handle_drop(siblings[0].key, siblings[1].key, DropTarget.AFTER)
+
+    assert moves == []
+    assert updates == []
+    assert len(errors) == 1 and isinstance(errors[0], InvalidRequestError)
+    assert ALPHABETICAL_REORDER_NOTE in str(errors[0])
+
+
+def test_alphabetical_mode_drop_into_another_group_still_moves(
+    qtbot, workspace_factory, monkeypatch
+):
+    view, _, errors, _ = _view(qtbot, workspace_factory, list_order=lambda: ListOrder.ALPHABETICAL)
+    updates = _spy_on(monkeypatch, view.workspace(), "update_infobase")
+    root_base = next(
+        i for i in view.workspace().items()
+        if not i.is_group and normalize_folder(i.folder) == ROOT
+    )
+
+    view.handle_drop(root_base.key, _CLIENTS_KEY, DropTarget.INTO)
+
+    assert len(updates) == 1
+    assert errors == []
+
+
+def test_alphabetical_mode_shows_groups_first(qtbot, workspace_factory):
+    view, _, _, _ = _view(qtbot, workspace_factory, list_order=lambda: ListOrder.ALPHABETICAL)
+    top = [
+        view.model().index(row, 0).data()
+        for row in range(view.model().rowCount())
+    ]
+    assert top[:3] == ["Клиенты", "Нет такой группы", "Пустая группа"]
 
 
 # -- dropEvent: перевод Qt-события в примитивы handle_drop ---------------
@@ -3307,7 +3747,7 @@ def test_cache_submenu_stays_enabled_for_common_entry(
     menu = view._build_menu(item, item.key)
     by_text = {a.text(): a for a in menu.actions()}
     # Сам дизейбл COMMON на месте…
-    assert not by_text["Свойства…"].isEnabled()
+    assert not by_text["Свойства…\tAlt+Enter"].isEnabled()
     assert not by_text["Удалить из списка…"].isEnabled()
     # …а кэш он не зацепил.  # noqa: RUF003
     actions = _cache_actions(menu)

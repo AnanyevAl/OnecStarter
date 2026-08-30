@@ -4,6 +4,7 @@
 и покрываются табличными тестами; слой ui только отображает готовое.
 """
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -15,6 +16,7 @@ from onecstarter.domain.selection import ResolutionSource, resolve_version
 from onecstarter.domain.version import Arch, Installation
 from onecstarter.services.catalog import CommonListError, TreeNode, build_tree
 from onecstarter.services.model import InfobaseItem, InfobaseSource
+from onecstarter.services.settings import ListOrder
 
 CONTENT_NAME_LIMIT = 10
 # Помечает подгруппу в плоском списке имён `group_contents`: без пометки
@@ -74,6 +76,7 @@ def display_forest(
     common_errors: Sequence[CommonListError],
     *,
     recent_limit: int,
+    order: ListOrder,
 ) -> list[Row]:
     """Собрать лес раздела: Избранное, Недавние, дерево файла, Общие списки.
 
@@ -84,13 +87,19 @@ def display_forest(
     `recent_limit` — обязательный аргумент, а не константа с умолчанием:
     это пользовательская настройка (спека §5), и значение по умолчанию
     здесь было бы вторым источником истины рядом с
-    `settings.DEFAULT_RECENT_LIMIT`. `0` гасит ветку целиком.
+    `settings.DEFAULT_RECENT_LIMIT`. `0` гасит ветку целиком. `order` —
+    так же обязателен и по той же причине; `ALPHABETICAL` сортирует дерево
+    файла, «Избранное» и «Общие списки» (`sort_rows`), «Недавние» всегда
+    по времени.
     """  # noqa: RUF002
+    alphabetical = order is ListOrder.ALPHABETICAL
     forest: list[Row] = []
     bases = [item for item in items if not item.is_group]
-    favorites = tuple(_base_row(item) for item in bases if item.favorite)
+    favorites = [_base_row(item) for item in bases if item.favorite]
+    if alphabetical:
+        favorites = _sorted_siblings(favorites)
     if favorites:
-        forest.append(Row(RowKind.SECTION, "Избранное", None, favorites))
+        forest.append(Row(RowKind.SECTION, "Избранное", None, tuple(favorites)))
     launched = sorted(
         (item for item in bases if item.last_launched_at is not None),
         key=lambda item: item.last_launched_at or _EPOCH,
@@ -99,9 +108,12 @@ def display_forest(
     recent = tuple(_base_row(item) for item in launched[:recent_limit])
     if recent:
         forest.append(Row(RowKind.SECTION, "Недавние", None, recent))
-    forest.extend(_row_of(node) for node in tree)
+    file_rows = [_row_of(node) for node in tree]
+    forest.extend(sort_rows(file_rows) if alphabetical else file_rows)
     common = [item for item in items if item.source is InfobaseSource.COMMON]
     common_rows = [_row_of(node) for node in build_tree(common)]
+    if alphabetical:
+        common_rows = sort_rows(common_rows)
     common_rows.extend(
         Row(RowKind.NOTE, f"{error.path}: {error.message}", None)
         for error in common_errors
@@ -131,6 +143,72 @@ def filter_rows(rows: Sequence[Row], query: str) -> list[Row]:
         if children:
             kept.append(replace(row, children=tuple(children)))
     return kept
+
+
+_DIGIT_RUN = re.compile(r"([0-9]+)")
+# Число в ключе — не `int`, а (длина без ведущих нулей, цифры без ведущих  # noqa: RUF003
+# нулей): при равной длине лексикографика совпадает с числовой, а лимит  # noqa: RUF003
+# `int()` на число разрядов (`sys.get_int_max_str_digits`, 4300) не
+# достижим — имя из `.v8i` чужое, ронять пересборку дерева оно не должно.
+_Number = tuple[int, str]
+
+
+def _number(digits: str) -> _Number:
+    stripped = digits.lstrip("0")
+    return (len(stripped), stripped)
+
+
+def collation_key(text: str) -> tuple[tuple[str | _Number, ...], str]:
+    """Ключ алфавитного порядка (T-11, п. 2): регистр не важен, «ё» как «е», числа — числа.
+
+    [Р] Детерминированное правило вместо `locale.strxfrm`: результат
+    не зависит от локали машины и проверяется таблично. Латиница идёт
+    перед кириллицей — как в Проводнике Windows; «ё» приравнена к «е»,
+    как в словарях (по кодам она стояла бы после «я»). Цепочки ASCII-цифр
+    сравниваются как числа — по идее Проводника (`StrCmpLogicalW`), но
+    не его алгоритмом: «База 2» перед «База 10», «8.3.9» перед «8.3.24»
+    (решение заказчика 30.08.2026); иные цифры Юникода — текст.
+    `re.split` по захватывающей группе строго чередует текст (чётные
+    места) и число (нечётные), поэтому кортежи разных строк сравнимы
+    поэлементно без смешения типов. Второй элемент — полный casefold —
+    делает порядок «Ель»/«Ёль» и «01»/«1» устойчивым, не зависящим
+    от порядка ввода.
+    """  # noqa: RUF002
+    folded = text.casefold()
+    parts = _DIGIT_RUN.split(folded.replace("ё", "е"))  # noqa: RUF001
+    natural = tuple(_number(part) if index % 2 else part for index, part in enumerate(parts))
+    return (natural, folded)
+
+
+def _sorted_siblings(rows: Sequence[Row]) -> list[Row]:
+    """Группы (и неявные узлы) перед базами, внутри класса — по `collation_key`;
+
+    NOTE — в конце, строки других видов (SECTION) — в конце как есть, без
+    сортировки (находка финального ревью ветки: раньше отбрасывались молча).
+    """
+    groups = sorted(
+        (row for row in rows if row.kind in (RowKind.GROUP, RowKind.IMPLICIT_GROUP)),
+        key=lambda row: collation_key(row.label),
+    )
+    bases = sorted(
+        (row for row in rows if row.kind is RowKind.BASE),
+        key=lambda row: collation_key(row.label),
+    )
+    notes = [row for row in rows if row.kind is RowKind.NOTE]
+    others = [
+        row
+        for row in rows
+        if row.kind not in (RowKind.GROUP, RowKind.IMPLICIT_GROUP, RowKind.BASE, RowKind.NOTE)
+    ]
+    return [*groups, *bases, *notes, *others]
+
+
+def sort_rows(rows: Sequence[Row]) -> list[Row]:
+    """Алфавитный порядок всего поддерева, рекурсивно (режим `ListOrder.ALPHABETICAL`)."""
+    return [
+        replace(row, children=tuple(sort_rows(row.children)))
+        for row in _sorted_siblings(rows)
+    ]
 
 
 def row_label(row: Row) -> str:

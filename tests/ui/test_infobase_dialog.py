@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QDialog
 
 from onecstarter.domain.connect import ConnectKind, classify_connect
 from onecstarter.services.model import InfobaseItem, InfobaseSource
+from onecstarter.ui.dialogs.group_picker import INDENT
 from onecstarter.ui.dialogs.infobase import (
     HIDDEN_VALUE,
     InfobaseDialog,
@@ -311,6 +312,18 @@ def test_unknown_kind_has_no_placement_fields_to_edit(qtbot: Any) -> None:
     dialog = InfobaseDialog(item, groups=["/"], installations=INSTALLED, cfg_rules=[])
     qtbot.addWidget(dialog)
     assert dialog._placement_fields() == []
+
+
+def test_folder_picker_shows_groups_as_a_tree(qtbot: Any) -> None:
+    """T-11, п. 5: выпадающий список групп — с отступом по вложенности, значения — пути."""  # noqa: RUF002
+    item = _item('File="D:\\b";', (), folder="/Клиенты/Розница")
+    dialog = InfobaseDialog(
+        item, groups=["/", "Клиенты", "Клиенты/Розница"], installations=INSTALLED, cfg_rules=[]
+    )
+    qtbot.addWidget(dialog)
+    assert dialog.groups_shown() == ["/", "Клиенты", "Клиенты/Розница"]
+    assert dialog._folder.currentText() == f"{INDENT}Розница"
+    assert dialog.changes() == ({}, None)
 
 
 # -- I7 (круг правок 1): normalize_folder на обеих сторонах сравнения ------------
@@ -998,6 +1011,70 @@ def test_browse_button_does_nothing_when_cancelled(qtbot: Any) -> None:
     dialog.set_file_path(r"D:\already")
     dialog._browse_button.click()
     assert dialog.new_record()[1] == r'File="D:\already";'
+
+
+# -- T-11, п. 6: автоимя из набранного пути и имени в кластере --------------
+
+
+def test_typed_file_path_suggests_the_directory_name(qtbot: Any) -> None:
+    dialog = InfobaseDialog.for_new(groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    dialog.set_kind(ConnectKind.FILE)
+    dialog.set_file_path(r"D:\bases\Зарплата")
+
+    dialog._file_path.editingFinished.emit()
+
+    assert dialog.name_text() == "Зарплата"
+
+
+def test_typed_cluster_ref_suggests_the_name(qtbot: Any) -> None:
+    dialog = InfobaseDialog.for_new(groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    dialog.set_kind(ConnectKind.SERVER)
+    dialog.set_server("srv")
+    dialog.set_ref("ACC_2026")
+
+    dialog._ref.editingFinished.emit()
+
+    assert dialog.name_text() == "ACC_2026"
+
+
+def test_typed_name_survives_path_edit(qtbot: Any) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ: подстановка только в пустое имя — введённое не перезаписывается.
+
+    Мутация: `_suggest_name` без проверки `not self._name.text().strip()`.
+    """  # noqa: RUF002
+    dialog = InfobaseDialog.for_new(groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    dialog.set_name("Своё имя")
+    dialog.set_kind(ConnectKind.FILE)
+    dialog.set_file_path(r"D:\bases\Зарплата")
+
+    dialog._file_path.editingFinished.emit()
+
+    assert dialog.name_text() == "Своё имя"
+
+
+def test_drive_root_suggests_nothing(qtbot: Any) -> None:
+    dialog = InfobaseDialog.for_new(groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    dialog.set_kind(ConnectKind.FILE)
+    dialog.set_file_path("D:\\")
+
+    dialog._file_path.editingFinished.emit()
+
+    assert dialog.name_text() == ""
+
+
+def test_editing_dialog_keeps_its_name_on_path_edit(qtbot: Any) -> None:
+    item = _item('File="D:\\b";', ())
+    dialog = InfobaseDialog(item, groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    dialog.set_file_path(r"E:\c\Другая")
+
+    dialog._file_path.editingFinished.emit()
+
+    assert dialog.name_text() == "Бухгалтерия"
 
 
 def test_browse_button_has_russian_label(qtbot: Any) -> None:
