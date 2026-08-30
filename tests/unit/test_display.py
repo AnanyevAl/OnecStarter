@@ -488,3 +488,28 @@ def test_sort_rows_keeps_note_rows_last() -> None:
         Row(RowKind.GROUP, "Архив", None),
     ]
     assert [row.label for row in sort_rows(rows)] == ["Архив", "Яблоко", "ошибка"]
+
+
+def test_sort_rows_sorts_nested_children_recursively() -> None:
+    """ЗАЩИТНЫЙ ТЕСТ: рекурсия `sort_rows` — дети и внуки тоже сортируются.
+
+    Мутация: `replace(row, children=tuple(sort_rows(row.children)))` → `row`
+    (без рекурсии). На фикстуре `anonymized.v8i` эта мутация невидима: у
+    «Клиенты» единственная подгруппа и так стоит первой (`OrderInList=-1`),
+    поэтому дерево строится вручную с нарушенным порядком на двух уровнях.
+    """  # noqa: RUF002
+    inner = Row(RowKind.GROUP, "Бета", None, (
+        Row(RowKind.BASE, "яблоко", None),
+        Row(RowKind.BASE, "Апрель", None),
+    ))
+    rows = [
+        Row(RowKind.GROUP, "Архив", None, (
+            Row(RowKind.BASE, "Портал", None),
+            inner,
+            Row(RowKind.BASE, "база", None),
+        )),
+    ]
+    (archive,) = sort_rows(rows)
+    assert [row.label for row in archive.children] == ["Бета", "база", "Портал"]
+    beta = archive.children[0]
+    assert [row.label for row in beta.children] == ["Апрель", "яблоко"]
