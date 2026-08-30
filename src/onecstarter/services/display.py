@@ -4,6 +4,7 @@
 и покрываются табличными тестами; слой ui только отображает готовое.
 """
 
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
@@ -144,17 +145,28 @@ def filter_rows(rows: Sequence[Row], query: str) -> list[Row]:
     return kept
 
 
-def collation_key(text: str) -> tuple[str, str]:
-    """Ключ алфавитного порядка (T-11, п. 2): без учёта регистра, «ё» как «е».
+_DIGIT_RUN = re.compile(r"([0-9]+)")
+
+
+def collation_key(text: str) -> tuple[tuple[str | int, ...], str]:
+    """Ключ алфавитного порядка (T-11, п. 2): регистр не важен, «ё» как «е», числа — числа.
 
     [Р] Детерминированное правило вместо `locale.strxfrm`: результат
     не зависит от локали машины и проверяется таблично. Латиница идёт
     перед кириллицей — как в Проводнике Windows; «ё» приравнена к «е»,
-    как в словарях (по кодам она стояла бы после «я»). Второй элемент —
-    полный casefold — делает порядок «Ель»/«Ёль» устойчивым.
+    как в словарях (по кодам она стояла бы после «я»). Цепочки цифр
+    сравниваются как числа — тоже как в Проводнике (`StrCmpLogicalW`):
+    «База 2» перед «База 10», «8.3.9» перед «8.3.24» (решение заказчика
+    30.08.2026). Только ASCII-цифры: `re.split` по захватывающей группе
+    строго чередует текст (чётные места) и число (нечётные), поэтому
+    кортежи разных строк сравнимы поэлементно без смешения типов.
+    Второй элемент — полный casefold — делает порядок «Ель»/«Ёль»
+    и «01»/«1» устойчивым, не зависящим от порядка ввода.
     """  # noqa: RUF002
     folded = text.casefold()
-    return (folded.replace("ё", "е"), folded)  # noqa: RUF001
+    parts = _DIGIT_RUN.split(folded.replace("ё", "е"))  # noqa: RUF001
+    natural = tuple(int(part) if index % 2 else part for index, part in enumerate(parts))
+    return (natural, folded)
 
 
 def _sorted_siblings(rows: Sequence[Row]) -> list[Row]:
