@@ -35,17 +35,22 @@ CONV = ServerConvention(
 class FakeJob:
     """Job с управляемым списком PID (T-12): `pids_value` — что «живёт» в Job;
     `close()` опустошает список и ставит `closed`; `close_error` — `JobError`,
-    который поднимает `close()` вместо закрытия."""  # noqa: RUF002
+    который поднимает `close()` вместо закрытия; `pids_error` — `JobError`
+    из `pids()` (долг T-12, п. 6: у UI-фейка это было, у этого — нет,
+    и ветка отказа чтения в `_reconcile_jobs` оставалась без unit-теста)."""  # noqa: RUF002
 
     pids_value: tuple[int, ...] = ()
     closed: bool = False
     close_error: JobError | None = None
+    pids_error: JobError | None = None
     assigned: list[int] = field(default_factory=list)
 
     def assign(self, process_handle: int) -> None:
         self.assigned.append(process_handle)
 
     def pids(self) -> tuple[int, ...]:
+        if self.pids_error is not None:
+            raise self.pids_error
         return () if self.closed else self.pids_value
 
     def close(self) -> None:
@@ -1113,6 +1118,56 @@ class TestStartWithJob:
 
         assert "(PID )" not in str(excinfo.value)
         assert "CloseHandle отказал" in str(excinfo.value)
+
+    def test_unreadable_job_does_not_block_neighbour_reconciliation(
+        self, tmp_path: Path
+    ) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ: нечитаемый Job одного профиля не мешает соседнему.
+
+        Долг T-12, п. 6. Ветка `JobError` в `_reconcile_jobs` крутится
+        в слоте каждые 5 с, а unit-теста не имела — фейк Job не умел
+        `pids_error`. Отказ чтения обязан быть локальным: свой профиль
+        остаётся как есть (забыть его нельзя — мы не знаем, что там на
+        самом деле), соседний реконсилируется обычным порядком, и его
+        событие не дублируется на следующем снимке.
+        """  # noqa: RUF002
+        factory = FakeJobFactory()
+        logs_dir = tmp_path / "logs"
+        ids = iter(["ra" * 16, "rb" * 16])
+        spawn = FakeServerSpawn(pid=4242)
+        workspace = _workspace(tmp_path / "servers.json", new_id=lambda: next(ids),
+                               job_factory=factory, server_spawn=spawn, logs_dir=logs_dir)
+        workspace.add_profile(_profile())
+        workspace.add_profile(
+            _profile(name="сосед", port=2540, regport=2541, cluster_dir=r"E:\srv\other")
+        )
+        first, second = workspace.profiles()
+        installation = _installation_in(tmp_path)
+        workspace.start(first.id, [installation])
+        workspace.start(second.id, [installation])
+        broken, healthy = factory.created
+        broken.pids_error = JobError("QueryInformationJobObject отказал")
+        healthy.pids_value = (4300,)  # ragent (4242) пропал, остатки дерева живы
+
+        workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+
+        # Сосед реконсилирован обычным порядком, событие записано один раз.
+        journal = server_journal.journal_path(logs_dir, second.id)
+        assert journal.read_text(encoding="utf-8").count("ragent завершился извне") == 1
+        # О нечитаемом профиле не выдумано ничего: событие ему не писали.  # noqa: RUF003
+        broken_journal = server_journal.journal_path(logs_dir, first.id)
+        assert "ragent завершился извне" not in broken_journal.read_text(encoding="utf-8")
+
+        # И он не забыт: как только чтение снова удаётся, порождённый PID на месте.
+        # (`statuses()` до этого момента сам отказывает по спеке §7 — нечитаемый
+        # Job превращается в `ServerError`, это не потеря знания, а честный отказ.)  # noqa: RUF003
+        broken.pids_error = None
+        broken.pids_value = (4242,)
+        assert workspace.statuses([])[0].spawned_pid == 4242
+
+        workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+
+        assert journal.read_text(encoding="utf-8").count("ragent завершился извне") == 1
 
 
 class TestStopWithJob:
