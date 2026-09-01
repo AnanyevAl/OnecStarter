@@ -5,7 +5,6 @@ import os
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import codecs
-import gc
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -18,42 +17,6 @@ from onecstarter.services.catalog import read_common_lists
 from onecstarter.services.workspace import Workspace, WorkspacePaths
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "anonymized.v8i"
-
-
-@pytest.hookimpl(wrapper=True)
-def pytest_runtest_call(item: pytest.Item) -> object:
-    """Собрать мусор в БЕЗОПАСНЫЙ момент — до `processEvents()` библиотеки pytest-qt.
-
-    Долг T-12, п. 15. Механика падения (`Windows fatal exception: access
-    violation` в `pytestqt.plugin._process_events`): виджет, созданный тестом
-    без `qtbot.addWidget` и без родителя, остаётся во владении Python.
-    Освобождает его ЦИКЛИЧЕСКИЙ сборщик мусора — в произвольный момент,
-    в том числе внутри `processEvents()`, когда Qt разбирает очередь событий.
-    Удаление QObject прямо посреди диспетчеризации и даёт access violation.
-
-    Из 26 файлов `tests/ui` только 12 вообще упоминают `qtbot`; фикс T-11
-    (задача 0) добавил регистрацию виджетов ровно в один файл —
-    `test_servers_view.py`, — и механизм этим не сняло. Оба наблюдавшихся
-    падения легли в окно около конца этого файла, причём второе —
-    в `test_settings_view.py`, где `qtbot` не упомянут ни разу.
-
-    Лечение выбрано не «дописать `addWidget` в четырнадцать файлов»
-    (легко забыть в пятнадцатом), а сделать момент сборки предсказуемым.
-    Хук — `wrapper` БЕЗ `tryfirst`, поэтому он внутренний по отношению
-    к хуку pytest-qt (тот объявлен `tryfirst`, то есть внешний): код после
-    `yield` здесь выполняется РАНЬШЕ, чем `_process_events()` снаружи.
-    Мусор собирается, пока Qt ничего не диспетчеризует, — а Qt при
-    разрушении объекта сам снимает его отложенные события.
-
-    Цена измерена, а не предположена: полный прогон 162 с против ~140 с
-    базовых на этой машине, то есть **+15 %** (полная сборка после каждого
-    из 762 UI-тестов). Плата принимается сознательно: одно падение
-    примерно на одиннадцать прогонов стоит перезапуска (те же ~140 с)
-    плюс разбор «регресс или снова оно», а это дороже двадцати секунд.
-    """  # noqa: RUF002
-    result = yield
-    gc.collect()
-    return result
 
 CONVENTIONS = [
     ClientConvention(
