@@ -16,9 +16,12 @@
 пользователя в UAC-диалоге — штатный исход, транслируется в
 `ConsoleRegistrationDeclinedError`, а не в ошибку) и `open_console`
 (`open_file` на путь `.msc`). §7: регистрация зовётся ТОЛЬКО из явного
-действия UI — ни конструктор, ни `apply_scan`, ни `statuses` её не трогают
-(см. `_registered_radmin`/`_run_elevated`/`_open_file` — только сохранены
-в конструкторе, эффекты живут в методах этой задачи).
+действия UI — ни конструктор, ни `apply_scan`, ни `statuses` её не трогают.
+С 01.09.2026 сама логика этих трёх операций живёт в
+`services/console_admin.py::ConsoleAdmin` (долг T-12, п. 10): она не делила
+с этим координатором ни состояния, ни инъекций. Здесь остались три
+однострочных делегата — граница `_ConsoleWorkspace` в `ui/app.py`
+не менялась.
 
 T-10 (задача 4) перевела запуск на дочерний жизненный цикл: спека §12,
 пересмотр решения 26.08.2026 — исходная редакция «отвязанный процесс,
@@ -117,18 +120,15 @@ from onecstarter.domain.server_match import (
     normalize_cluster_dir,
     port_holders,
     port_holders_text,
-    version_from_exe_path,
 )
 from onecstarter.domain.version import VersionNumber
 from onecstarter.platform_1c import console, elevation
-from onecstarter.platform_1c.elevation import ElevationDeclinedError
 from onecstarter.platform_1c.job import Job, JobError
 from onecstarter.platform_1c.process_scan import ProcessInfo, ProcessScanner
-from onecstarter.platform_1c.server_discovery import ServerInstallation, console_path
+from onecstarter.platform_1c.server_discovery import ServerInstallation
 from onecstarter.services import server_journal
+from onecstarter.services.console_admin import ConsoleAdmin
 from onecstarter.services.errors import (
-    ConsoleRegistrationDeclinedError,
-    ConsoleRegistrationError,
     ServerError,
     UnknownItemError,
 )
@@ -295,9 +295,11 @@ class ServersWorkspace:
         self._job_factory = job_factory
         self._server_spawn = server_spawn
         self._logs_dir = logs_dir
-        self._run_elevated = run_elevated
-        self._open_file = open_file
-        self._registered_radmin = registered_radmin
+        self._console = ConsoleAdmin(
+            run_elevated=run_elevated,
+            open_file=open_file,
+            registered_radmin=registered_radmin,
+        )
         self._new_id = new_id
         self._now = now
         self._profiles: list[ServerProfile] = load_profiles(store_path)
@@ -784,61 +786,16 @@ class ServersWorkspace:
         self.log_event(profile_id, "остановка по команде пользователя")
 
     def current_console_version(self) -> VersionNumber | None:
-        """Версия консоли, зарегистрированной СЕЙЧАС в реестре; `None` — не зарегистрирована.
-
-        Чтение, не эффект UAC: `_registered_radmin` читает HKLM обычным
-        пользователем ([Ф] Г2). Версия извлекается из пути `radmin.dll`
-        (`<корень>\\<версия>\\bin\\radmin.dll`) той же функцией, что и для
-        чужих ragent (`version_from_exe_path`, [Ф] В1) — путь до `radmin.dll`
-        имеет ту же форму `<версия>\\bin\\<файл>`, что и до `ragent.exe`.
-        """  # noqa: RUF002
-        path = self._registered_radmin()
-        if path is None:
-            return None
-        return version_from_exe_path(path)
+        """Версия зарегистрированной сейчас консоли — делегат `ConsoleAdmin`."""
+        return self._console.current_version()
 
     def register_console(self, target: ServerInstallation) -> None:
-        """Перерегистрировать консоль на `radmin.dll` версии `target` — эффект с UAC.
-
-        [Ф] Г2: одна команда `regsvr32 /s "<dll>"` без предварительного `/u`
-        (CLSID стабильны между версиями, `register_arguments`). Отказ
-        пользователя в диалоге UAC (`ElevationDeclinedError`) — штатный исход
-        §7, не ошибка программы: транслируется в
-        `ConsoleRegistrationDeclinedError`, UI обязан показать «версия консоли
-        не изменена», а не сообщение об ошибке. Ненулевой код возврата
-        `regsvr32` — настоящий сбой регистрации, код попадает в текст
-        `ConsoleRegistrationError`, чтобы было что показать и с чем прийти
-        в поддержку. Единственная точка входа для UAC-повышения во всём
-        координаторе — см. докстринг конструктора и защитный тест
-        `test_nothing_registers_without_explicit_call`.
-        """  # noqa: RUF002
-        try:
-            exit_code = self._run_elevated("regsvr32", console.register_arguments(target.radmin))
-        except ElevationDeclinedError as error:
-            raise ConsoleRegistrationDeclinedError(
-                "Запрос прав администратора отклонён — версия консоли не изменена"
-            ) from error
-        if exit_code != 0:
-            raise ConsoleRegistrationError(
-                f"Регистрация консоли не удалась — regsvr32 вернул код {exit_code}"
-            )
+        """Перерегистрация консоли (эффект с UAC) — делегат `ConsoleAdmin`."""  # noqa: RUF002
+        self._console.register(target)
 
     def open_console(self, root: Path, convention: ServerConvention) -> None:
-        """Открыть `.msc` консоли администрирования — тот же файл для всех версий.
-
-        Путь строится от `root` (родитель каталогов версий) по `convention`
-        (`console_path`, `platform_1c/server_discovery.py`); какая именно
-        версия `radmin.dll` за ним стоит сейчас, определяет реестр, не этот
-        вызов — см. `current_console_version`/`register_console`. `OSError`
-        `os.startfile` (файл `.msc` отсутствует, нет ассоциации) переводится
-        в `ServerError` (CRITICAL 1c, финальное ревью ветки) — тем же
-        приёмом, что и `start`/`_save`.
-        """
-        path = console_path(root, convention)
-        try:
-            self._open_file(str(path))
-        except OSError as error:
-            raise ServerError(f"Не удалось открыть консоль: {error}") from error  # noqa: RUF001
+        """Открытие `.msc` консоли — делегат `ConsoleAdmin`."""
+        self._console.open(root, convention)
 
     def _profile_or_raise(self, profile_id: str) -> ServerProfile:
         """Найти профиль по `id` либо поднять `UnknownItemError`.
