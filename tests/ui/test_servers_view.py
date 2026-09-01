@@ -42,13 +42,9 @@ from onecstarter.platform_1c.process_scan import ProcessInfo
 from onecstarter.platform_1c.server_discovery import ServerInstallation
 from onecstarter.services.servers import ScanSnapshot, ServerStatus, ServersWorkspace
 from onecstarter.ui import theme
+from onecstarter.ui.servers.card_state import CardState, card_state
 from onecstarter.ui.servers.dialog import ServerProfileDialog
-from onecstarter.ui.servers.view import (
-    TITLE_ROW_SPACING,
-    CardState,
-    ServersView,
-    _card_state,
-)
+from onecstarter.ui.servers.view import TITLE_ROW_SPACING, ServersView
 
 RAGENT = r"C:\Program Files\1cv8\8.3.25.1633\bin\ragent.exe"
 FOREIGN_RAGENT = r"C:\Program Files\1cv8\8.3.22.1923\bin\ragent.exe"
@@ -218,7 +214,7 @@ def application(qapp: QApplication) -> QApplication:
 
 # -- таблица состояний карточки (T-12, задача 5) -----------------------------
 #
-# `_card_state` — чистая функция без Qt, поэтому проверяется табличным
+# `card_state` — чистая функция без Qt, поэтому проверяется табличным
 # тестом на собранном вручную `ServerStatus`, а не через сборку вьюхи:  # noqa: RUF003
 # состояние карточки решают ТОЛЬКО поля Job (`spawned_pid`/`job_pids`),
 # снимок (`processes`) — последний по приоритету и говорит лишь о чужом  # noqa: RUF003
@@ -255,7 +251,7 @@ def _matched(pid: int) -> RagentProcess:
     ],
 )
 def test_card_state_table(status: ServerStatus, expected: CardState) -> None:
-    assert _card_state(status) is expected
+    assert card_state(status) is expected
 
 
 # -- статусы карточки ---------------------------------------------------------
@@ -387,7 +383,7 @@ def test_foreign_matched_ragents_are_show_only(
     с подсказкой — вместо того чтобы обещать остановку, которая всё равно
     отказала бы («нечего останавливать»).
     Мутация: считать совпавший процесс нашим (например, вернуть в
-    `_card_state` ветку `status.processes → RUNNING` перед проверкой Job
+    `card_state` ветку `status.processes → RUNNING` перед проверкой Job
     или включить FOREIGN в активную кнопку `_button_state`) — кнопка станет
     активной, тест упадёт.
     """  # noqa: RUF002
@@ -1139,7 +1135,7 @@ def test_stopped_profile_has_no_extinguish_button_and_no_warnings(
 
     Имя приведено к словарю T-12 (долг, п. 9): понятия «сироты», от которого
     осталось прежнее `no_orphans`, больше нет — состояние карточки решает
-    `_card_state`, и здесь оно `STOPPED` (ни Job, ни совпавшего процесса).
+    `card_state`, и здесь оно `STOPPED` (ни Job, ни совпавшего процесса).
     """  # noqa: RUF002
     profile = _profile()
     workspace = _workspace(tmp_path, (profile,))
@@ -1190,7 +1186,7 @@ def test_path_row_shows_store_path(application: QApplication, tmp_path: Path) ->
     """Строка пути: где лежит `servers.json` и откуда берётся статус карточек.
 
     Волна финального ревью ветки T-12, п. 3: источник статуса — Job Object
-    запуска, а не снимок процессов (`_card_state`: Job спрашивается первым,
+    запуска, а не снимок процессов (`card_state`: Job спрашивается первым,
     снимок — последним). Прежний текст «статус — по живым процессам»
     остался от T-08 и после T-12 лжёт читателю о том, чему верит раздел.
     """  # noqa: RUF002

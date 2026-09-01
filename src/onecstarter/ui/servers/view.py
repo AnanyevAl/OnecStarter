@@ -13,7 +13,7 @@ assets/2026-08-26-v2-servers-mockup.html), секция «Раздел „Сер
 как понятия, и «работает» больше не значит «в снимке нашёлся `ragent`
 на нашем каталоге кластера»: по командной строке наш и чужой процессы
 неразличимы, а управлять мы вправе только тем, чей Job у нас на руках.
-Состояние карточки решает `_card_state` — четыре взаимоисключающих:
+Состояние карточки решает `card_state` — четыре взаимоисключающих:
 `RUNNING` (наш `ragent` жив в Job профиля), `REMNANTS` (Job непуст,
 нашего `ragent` в нём уже нет — остатки прошлого дерева держат порты),
 `FOREIGN` (Job нет, снимок нашёл совпавший `ragent` — только показ,
@@ -61,7 +61,7 @@ assets/2026-08-26-v2-servers-mockup.html), секция «Раздел „Сер
 пустоты (первая половина решения 5 — «совпавший управляем» — отменена
 решением 4 T-12).
 
-Удаление профиля спрашивает по состоянию карточки (`_removal_question`,
+Удаление профиля спрашивает по состоянию карточки (`removal_question`,
 `_remove`). Решение заказчика 3 от 29.08.2026: удаление профиля,
 запущенного НАМИ, его же и останавливает (`ServersWorkspace.remove_profile`
 сама зовёт `stop`) — вопрос обязан говорить именно это. Решение 8 T-08
@@ -99,7 +99,7 @@ assets/2026-08-26-v2-servers-mockup.html), секция «Раздел „Сер
 в layout ПОСЛЕ `addStretch(1)` — карточки/список чужих серверов берут
 свободное место, панель прибита к низу). `_ProfileCard` (тонкий `QWidget`
 с переопределённым `mouseReleaseEvent`) выделяет себя кликом левой кнопкой;
-рамка выделения (`palette.accent`, `_card_border_style`) запечена в
+рамка выделения (`palette.accent`, `card_border_style`) запечена в
 `styleSheet()`, как и остальные цвета карточки, — карточки строятся заново
 на каждый `rebuild()`, отдельного «снять подсветку у старой» шага не нужно.
 Выбор профиля читает и показывает СУЩЕСТВУЮЩИЙ журнал (`workspace.
@@ -123,7 +123,6 @@ layout: при отказе прошлый показ остаётся на эк
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from enum import Enum
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QMouseEvent
@@ -139,12 +138,22 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from onecstarter.domain.server import ServerProfile
 from onecstarter.domain.server_match import ForeignServer, port_holders_text
 from onecstarter.platform_1c.server_discovery import ServerInstallation
 from onecstarter.services.errors import ServicesError
 from onecstarter.services.servers import ServerStatus, ServersWorkspace
 from onecstarter.ui.dialogs.buttons import ask_confirmation
+from onecstarter.ui.servers.card_state import (
+    CardState,
+    button_state,
+    card_border_style,
+    card_state,
+    detail_line,
+    foreign_text,
+    removal_question,
+    status_colour,
+    status_text,
+)
 from onecstarter.ui.servers.dialog import ServerProfileDialog
 from onecstarter.ui.servers.journal_panel import JournalPanel
 from onecstarter.ui.theme import Palette
@@ -157,9 +166,6 @@ _MONO = "font-family: Consolas, 'Cascadia Mono', monospace;"
 # `QLayout::spacing`), а `card_layout` держит 2 px — имя и статус слипались.  # noqa: RUF003
 TITLE_ROW_SPACING = 9
 
-_RANGE_DASH = "–"  # тире мокапа («1560–1591»), не дефис  # noqa: RUF001, RUF003
-
-
 @dataclass(frozen=True)
 class ProfileRow:
     """Что видно на карточке профиля — аксессор тестам, по манере `row_note`/`row_control`
@@ -170,189 +176,6 @@ class ProfileRow:
     status_text: str
     button_text: str
     button_enabled: bool
-
-
-# -- чистые функции текста: без Qt, испытаны через UI-тесты выше по слою ----
-
-
-class CardState(Enum):
-    """Четыре взаимоисключающих состояния карточки профиля (T-12, задача 5)."""
-
-    RUNNING = "running"    # наш ragent жив в Job
-    REMNANTS = "remnants"  # Job не пуст, ragent в нём нет
-    FOREIGN = "foreign"    # Job пуст, снимок нашёл совпавший ragent — только показ (решение 4)
-    STOPPED = "stopped"
-
-
-def _card_state(status: ServerStatus) -> CardState:
-    """Состояние карточки: Job профиля главнее снимка процессов (T-12 §3).
-
-    Порядок проверок и есть решение заказчика 4 от 29.08.2026: снимок
-    (`processes`) спрашивается ПОСЛЕДНИМ и отвечает только на вопрос
-    «есть ли на нашем каталоге кластера чужой `ragent`». Наш он или нет,
-    командная строка не говорит — говорит только наличие PID в НАШЕМ Job.
-    Поэтому «работает» = порождённый нами `ragent` жив в Job, а совпавший
-    процесс без Job — `FOREIGN`, показ без управления.
-    """  # noqa: RUF002
-    if status.spawned_pid is not None and status.spawned_pid in status.job_pids:
-        return CardState.RUNNING
-    if status.job_pids:
-        return CardState.REMNANTS
-    if status.processes:
-        return CardState.FOREIGN
-    return CardState.STOPPED
-
-
-def _status_text(status: ServerStatus) -> str:
-    """Текст статуса карточки — состояние Job главнее разрешения версии.
-
-    IMPORTANT 3 (финальное ревью ветки, правка спеки §3.1; в T-12 — «Job
-    главнее версии»): раньше `resolved is None` проверялся первым
-    и подавлял «работает» даже у живого сервера — карточка работающего
-    профиля с неразрешённой версией (например, после удаления установки,
-    которой он был запущен) показывала «версия не установлена», хотя
-    остановка версии не требует вовсе. Порядок теперь: сначала состояние
-    (`_card_state`), «версия не установлена» — только для `STOPPED`.
-    """  # noqa: RUF002
-    state = _card_state(status)
-    if state is CardState.RUNNING:
-        return f"работает · PID {status.spawned_pid}"
-    if state is CardState.REMNANTS:
-        pids = ", ".join(str(pid) for pid in status.job_pids)
-        return f"остановлен · остатки прошлого запуска: PID {pids}"
-    if state is CardState.FOREIGN:
-        pids = ", ".join(str(p.pid) for p in status.processes)
-        return f"работает (запущен не лаунчером) · PID {pids}"
-    if status.resolved is None:
-        return "версия не установлена"
-    return "остановлен"
-
-
-def _status_colour(status: ServerStatus, palette: Palette) -> str:
-    """Цвет статуса — тот же приоритет, что `_status_text` (IMPORTANT 3).
-
-    Остатки прошлого запуска красятся problem, а не dim: профиль
-    «остановлен», но его порты заняты собственными недобитыми процессами —
-    это состояние, требующее действия, а не спокойный простой.
-    """  # noqa: RUF002
-    state = _card_state(status)
-    if state in (CardState.RUNNING, CardState.FOREIGN):
-        return palette.accent
-    if state is CardState.REMNANTS or status.resolved is None:
-        return palette.problem
-    return palette.text_dim
-
-
-_FOREIGN_TOOLTIP = (
-    "Сервер запущен не лаунчером — остановить его "  # noqa: RUF001
-    "можно только там, где он был запущен"
-)
-
-
-def _button_state(status: ServerStatus) -> tuple[str, bool, str]:
-    """Текст, активность и подсказка кнопки — тот же приоритет, что `_status_text`.
-
-    Остановка не требует разрешённой версии вовсе (`stop` закрывает Job,
-    установка ему не нужна) — «Остановить» активна независимо от
-    `resolved`. У `FOREIGN` кнопка остаётся «Остановить», но НЕАКТИВНА
-    с подсказкой (решение заказчика 4): чужой процесс мы не остановим,
-    и обещать это активной кнопкой значило бы гнать пользователя
-    в гарантированный отказ. У `REMNANTS`/`STOPPED` — «Запустить»,
-    неактивная, только если версия не разрешилась: запускать нечем.
-    """  # noqa: RUF002
-    state = _card_state(status)
-    if state is CardState.RUNNING:
-        return "Остановить", True, ""
-    if state is CardState.FOREIGN:
-        return "Остановить", False, _FOREIGN_TOOLTIP
-    return "Запустить", status.resolved is not None, ""
-
-
-def _flags_text(profile: ServerProfile) -> str:
-    parts: list[str] = []
-    if profile.debug:
-        parts.append("-debug")
-    if profile.http:
-        parts.append("-http")
-    extra = profile.extra_args.strip()
-    if extra:
-        parts.append(extra)
-    return " ".join(parts)
-
-
-def _detail_line(status: ServerStatus) -> str:
-    profile = status.profile
-    resolved_text = str(status.resolved) if status.resolved is not None else "?"
-    ports = (
-        f"порты {profile.port} / {profile.regport} / "
-        f"{profile.range_start}{_RANGE_DASH}{profile.range_end}"
-    )
-    line = f"{profile.version} → {resolved_text} · {ports}"
-    flags = _flags_text(profile)
-    return f"{line} · {flags}" if flags else line
-
-
-def _removal_question(profile: ServerProfile, state: CardState) -> str:
-    """Текст вопроса на удаление профиля — свой на каждое состояние карточки.
-
-    Решение заказчика 3 от 29.08.2026 отменило решение 8 T-08: удаление
-    профиля, запущенного НАМИ, теперь его и останавливает, и вопрос обязан
-    говорить именно это — «продолжит работать» стало бы прямым враньём
-    (`ServersWorkspace.remove_profile` закрывает Job до удаления записи).
-    То же и с остатками: они не переживут удаления, значит вопрос —
-    про гашение. Прежняя формулировка уцелела ровно для `FOREIGN`: чужой
-    `ragent` действительно продолжит работать и станет виден в «Других
-    серверах на машине» — Job у него нет, и трогать его нам нечем.
-    """  # noqa: RUF002
-    if state is CardState.RUNNING:
-        return (
-            f"Сервер «{profile.name}» работает — остановить его и удалить профиль?"  # noqa: RUF001
-        )
-    if state is CardState.REMNANTS:
-        return (
-            f"У профиля «{profile.name}» остались процессы прошлого запуска — "  # noqa: RUF001
-            "погасить их и удалить профиль?"
-        )
-    if state is CardState.FOREIGN:
-        return (
-            f"Удалить профиль «{profile.name}»? Сервер запущен не лаунчером и продолжит "
-            "работать — он перейдёт в «Другие серверы на машине»."
-        )
-    return f"Удалить профиль «{profile.name}» из списка серверов?"
-
-
-def _card_border_style(is_selected: bool, palette: Palette) -> str:
-    """Рамка карточки — `palette.accent`, только у выделенной (задача 5, T-10).
-
-    Ширина рамки одна и та же в обоих состояниях (`transparent` у
-    невыделенной) — иначе выделение сдвигало бы содержимое карточки
-    на толщину рамки.
-    """  # noqa: RUF002
-    colour = palette.accent if is_selected else "transparent"
-    return f"QWidget#ServerCard {{ border: 2px solid {colour}; border-radius: 4px; }}"
-
-
-def _foreign_text(entry: ForeignServer) -> str:
-    """Строка блока «Другие серверы на машине»: полная или ограниченная форма ([Ф] В1).
-
-    Ограниченная — когда командная строка недоступна (`params is None`,
-    чужой пользователь или служба): без портов и каталога, версия — только
-    если виден путь исполняемого файла (`executable`, доступен без
-    повышения даже для SYSTEM-процессов, см. `process_scan.py`).
-    """  # noqa: RUF002
-    if entry.params is None:
-        text = (
-            f"PID {entry.process.pid} · нет доступа к командной строке "
-            "(другой пользователь или служба)"
-        )
-        return f"{text} · {entry.version}" if entry.version is not None else text
-    version_text = str(entry.version) if entry.version is not None else "?"
-    if entry.params.port is not None and entry.params.regport is not None:
-        ports = f"порты {entry.params.port} / {entry.params.regport}"
-    else:
-        ports = "порты ?"
-    directory = entry.params.cluster_dir or "?"
-    return f"{version_text} · {ports} · {directory} · PID {entry.process.pid}"
 
 
 class _ProfileCard(QWidget):
@@ -635,10 +458,10 @@ class ServersView(QWidget):
         status = next((s for s in statuses if s.profile.id == profile_id), None)
         if status is None:
             return
-        # Долг T-12, п. 7: предикат RUNNING — один, в `_card_state`. Своя копия
+        # Долг T-12, п. 7: предикат RUNNING — один, в `card_state`. Своя копия
         # «`spawned_pid` жив в `job_pids`» разъехалась бы с ним при первой же  # noqa: RUF003
         # правке порядка проверок (а порядок — решение заказчика 4).  # noqa: RUF003
-        if _card_state(status) is CardState.RUNNING:
+        if card_state(status) is CardState.RUNNING:
             self._workspace.log_event(profile_id, f"работает · PID {status.spawned_pid}")
             return
         profile = status.profile
@@ -693,19 +516,19 @@ class ServersView(QWidget):
             # monitor.start() сам просит снимок немедленно
             # (ui/servers/monitor.py::start), но до его прихода карточка  # noqa: RUF003
             # обязана молчать, а не гадать по снимку из прошлого раза.  # noqa: RUF003
-            status_text = "…"
+            status_line = "…"
             colour = palette.text_dim
             button_text, button_enabled = "Запустить", False
             button_tooltip = "Идёт первый скан процессов — подождите"
         else:
-            status_text = _status_text(status)
-            colour = _status_colour(status, palette)
-            button_text, button_enabled, button_tooltip = _button_state(status)
+            status_line = status_text(status)
+            colour = status_colour(status, palette)
+            button_text, button_enabled, button_tooltip = button_state(status)
         # Состояние считается ВСЕГДА, даже в слепом окне: показ там свой
         # (снимка ещё нет, `FOREIGN` от `STOPPED` не отличить), но наш Job
         # знает о себе сразу — и меню удаления обязано спросить по нему,  # noqa: RUF003
         # а не по «неизвестно».  # noqa: RUF003
-        state = _card_state(status)
+        state = card_state(status)
         running = state is CardState.RUNNING
 
         # Задача 5 (T-10): _ProfileCard — тот же QWidget, что и раньше, плюс
@@ -713,7 +536,7 @@ class ServersView(QWidget):
         card = _ProfileCard(profile.id, self._select_profile, parent=self)
         card.setObjectName("ServerCard")
         card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        card.setStyleSheet(_card_border_style(profile.id == self._selected_profile_id, palette))
+        card.setStyleSheet(card_border_style(profile.id == self._selected_profile_id, palette))
         card_layout = QVBoxLayout(card)
         card_layout.setContentsMargins(6, 4, 6, 4)
         card_layout.setSpacing(2)
@@ -724,13 +547,13 @@ class ServersView(QWidget):
         name_font = name_label.font()
         name_font.setBold(True)
         name_label.setFont(name_font)
-        status_label = QLabel(status_text)
+        status_label = QLabel(status_line)
         status_label.setStyleSheet(f"color: {colour};")
         title_row.addWidget(name_label)
         title_row.addWidget(status_label)
         title_row.addStretch(1)
 
-        detail_label = QLabel(_detail_line(status))
+        detail_label = QLabel(detail_line(status))
         detail_label.setStyleSheet(f"color: {palette.text_dim}; {_MONO}")
         dir_label = QLabel(profile.cluster_dir)
         dir_label.setStyleSheet(f"color: {palette.text_dim}; {_MONO}")
@@ -819,7 +642,7 @@ class ServersView(QWidget):
         self._profile_rows.append(
             ProfileRow(
                 name=profile.name,
-                status_text=status_text,
+                status_text=status_line,
                 button_text=button_text,
                 button_enabled=button_enabled,
             )
@@ -853,7 +676,7 @@ class ServersView(QWidget):
         return menu
 
     def _build_foreign_row(self, entry: ForeignServer) -> None:
-        text = _foreign_text(entry)
+        text = foreign_text(entry)
         widget = QWidget()
         row_layout = QHBoxLayout(widget)
         row_layout.setContentsMargins(0, 0, 0, 0)
@@ -899,7 +722,7 @@ class ServersView(QWidget):
         обработки клика быть не должно, но гонка не стоит показа ошибки
         пользователю. `rebuild()` в конце — тот же приём, что у `_toggle`/
         `_remove`: рамка выделения запечена в `styleSheet()` карточки
-        (`_card_border_style`), а карточки строятся заново целиком.
+        (`card_border_style`), а карточки строятся заново целиком.
         """  # noqa: RUF002
         profile = next((p for p in self._workspace.profiles() if p.id == profile_id), None)
         if profile is None:
@@ -919,7 +742,7 @@ class ServersView(QWidget):
         задача 3, решение заказчика 3): она закрывает непустой Job до
         удаления записи и, если закрытие отказало, НЕ удаляет профиль —
         отказ приходит сюда `ServicesError` и показывается пользователем.
-        Вьюхе остаётся спросить правильным текстом (`_removal_question`)
+        Вьюхе остаётся спросить правильным текстом (`removal_question`)
         и не делать ничего до согласия: порядок «спросить → удалить»
         сторожит защитный тест
         (`test_removal_of_running_profile_asks_to_stop_and_refusal_...`).
@@ -927,7 +750,7 @@ class ServersView(QWidget):
         profile = next((p for p in self._workspace.profiles() if p.id == profile_id), None)
         if profile is None:
             return
-        if not self._confirm_removal(_removal_question(profile, state)):
+        if not self._confirm_removal(removal_question(profile, state)):
             return
         try:
             self._workspace.remove_profile(profile_id)
