@@ -635,7 +635,10 @@ class ServersView(QWidget):
         status = next((s for s in statuses if s.profile.id == profile_id), None)
         if status is None:
             return
-        if status.spawned_pid is not None and status.spawned_pid in status.job_pids:
+        # Долг T-12, п. 7: предикат RUNNING — один, в `_card_state`. Своя копия
+        # «`spawned_pid` жив в `job_pids`» разъехалась бы с ним при первой же  # noqa: RUF003
+        # правке порядка проверок (а порядок — решение заказчика 4).  # noqa: RUF003
+        if _card_state(status) is CardState.RUNNING:
             self._workspace.log_event(profile_id, f"работает · PID {status.spawned_pid}")
             return
         profile = status.profile
