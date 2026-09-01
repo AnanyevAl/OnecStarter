@@ -2607,6 +2607,58 @@ def test_console_flow_survives_unreadable_job(
     assert "QueryInformationJobObject отказал" in shown[0]
 
 
+def test_console_lists_our_just_started_server_before_the_first_scan(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ (долг T-12, п. 5): «работает» для консоли решает Job, а не снимок.
+
+    Наш `ragent` жив в Job с первой миллисекунды, а первого снимка сканера
+    ждать до 5 с (спека §4.4). Пока `on_console` спрашивал
+    `status.processes`, только что запущенный сервер в список «работает»
+    для `ConsoleDialog` не попадал — и подсказка про совпадение сборки
+    ([Ф] Г3) молчала ровно тогда, когда пользователь секунду назад нажал
+    «Запустить». Снимок здесь намеренно НЕ применяется: это и есть слепое
+    окно первого скана.
+
+    Установки доносятся до окна тем же приёмом, что в
+    `test_on_installations_fills_server_installed` (подмена
+    `server_installations` + `installations_ready.emit`): без них версия
+    профиля не разрешается вовсе, и запись отсеялась бы по `resolved is
+    None` — то есть по другой причине, мимо предмета теста.
+
+    Мутация: вернуть предикат `status.processes` — тест обязан упасть
+    на пустом списке версий.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    monkeypatch.setattr(app_module, "spawn_server", lambda command, log, job: 4646)
+    monkeypatch.setattr(
+        app_module, "server_installations", lambda found, conventions: [_SERVER_INSTALLATION]
+    )
+    flow_calls: list[Any] = []
+    monkeypatch.setattr(
+        app_module, "_console_flow", lambda *args, **kwargs: flow_calls.append(args)
+    )
+
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+    window, tasks, _monitor = _build_main_window(
+        qapp, runtime, env, job_factory=lambda: _FakeJob((4646,))
+    )
+    qtbot.addWidget(window)
+    labels = [button.text() for button in window.section_buttons()]
+    window.show_section(labels.index("Серверы"))
+    servers_view = window.current_section()
+    assert isinstance(servers_view, ServersView)
+    tasks.installations_ready.emit(INSTALLED)
+    _start_fake_server(servers_view, tmp_path)
+
+    servers_view.console_button().click()
+
+    assert len(flow_calls) == 1
+    running_versions = flow_calls[0][2]
+    assert [str(version) for version in running_versions] == ["8.3.25.1633"]
+
+
 # -- T-10, задача 6: подтверждение выхода при работающих серверах ------------
 #
 # `_confirm_quit_with_servers`/`_servers_word` — чистые функции уровня модуля

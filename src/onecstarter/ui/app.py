@@ -59,6 +59,7 @@ from onecstarter.ui.background import StartupTasks
 from onecstarter.ui.bases.view import BasesView
 from onecstarter.ui.dialogs.buttons import ask_confirmation
 from onecstarter.ui.hotkey import GlobalHotkey
+from onecstarter.ui.servers.card_state import CardState, card_state
 from onecstarter.ui.servers.dialog import ConsoleDialog
 from onecstarter.ui.servers.monitor import ServerMonitor
 from onecstarter.ui.servers.view import ServersView
@@ -699,8 +700,13 @@ def _build_main_window(
     def on_console() -> None:
         installed_versions = [si.installation.version for si in server_installed]
         # [Ф] Г3: консоль требует точного совпадения сборки с сервером —  # noqa: RUF003
-        # версии профилей, у которых сейчас есть живой процесс, идут  # noqa: RUF003
+        # версии профилей, у которых сейчас есть живой сервер, идут  # noqa: RUF003
         # в ConsoleDialog как «работает» (её докстринг, ui/servers/dialog.py).
+        # Долг T-12, п. 5: «живой» решает `card_state`, а не снимок процессов.  # noqa: RUF003
+        # `RUNNING` — наш `ragent` в Job (жив с первой миллисекунды, снимка  # noqa: RUF003
+        # ждать до 5 с, §4.4), `FOREIGN` — совпавший чужой: подключаться  # noqa: RUF003
+        # к нему тоже законная цель. `REMNANTS` сюда не идут — остатки
+        # прошлого дерева это не работающий сервер, к ним не подключиться.
         # Волна финального ревью ветки T-12 (Important 1): `statuses()`
         # доходит до `Job.pids()` и может отказать — без этой страховки
         # исключение уходит из слота `clicked`, диалог не открывается,
@@ -711,7 +717,8 @@ def _build_main_window(
             running_versions = [
                 status.resolved
                 for status in servers_workspace.statuses(installed_versions)
-                if status.processes and status.resolved is not None
+                if card_state(status) in (CardState.RUNNING, CardState.FOREIGN)
+                and status.resolved is not None
             ]
         except ServicesError as error:
             _show_servers_error(str(error))
