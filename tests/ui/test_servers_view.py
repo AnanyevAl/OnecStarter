@@ -1220,6 +1220,33 @@ def test_console_note_shows_registered_version(
     assert "8.3.25.1633" in view.console_note()
 
 
+def test_console_note_survives_unreadable_registry(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Долг T-12, п. 11: `OSError` кроме `FileNotFoundError` не оставляет раздел пустым.
+
+    `rebuild()` читает консоль ПОСЛЕ `_clear()`, а `ServersView.__init__`
+    зовёт сам `rebuild()` — незапланированная ошибка чтения HKLM оставляла
+    раздел с очищенным layout и роняла сборку окна целиком. Сказать здесь
+    «не зарегистрирована» нельзя: ключ мог существовать, прочитать его
+    не удалось, и подменять отказ чтения отрицательным ответом — врать
+    пользователю.
+    """  # noqa: RUF002
+
+    def unreadable() -> Path | None:
+        raise PermissionError(5, "Отказано в доступе")
+
+    profile = _profile()
+    workspace = _workspace(tmp_path, (profile,), registered_radmin=unreadable)
+
+    view = ServersView(workspace, installed=lambda: [_installation()], palette=theme.DARK)
+
+    assert "недоступна" in view.console_note()
+    assert "не зарегистрирована" not in view.console_note()
+    # Главное: раздел построен, а не остался с пустым layout после `_clear()`.  # noqa: RUF003
+    assert view.profile_card(0) is not None
+
+
 def test_console_button_calls_on_console(application: QApplication, tmp_path: Path) -> None:
     workspace = _workspace(tmp_path, ())
     calls: list[int] = []

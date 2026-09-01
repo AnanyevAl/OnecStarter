@@ -656,7 +656,22 @@ class ServersView(QWidget):
                 widget.deleteLater()
 
     def _read_console_note(self) -> str:
-        version = self._workspace.current_console_version()
+        """Строка «консоль: …» для витрины пути; не имеет права бросить.
+
+        Долг T-12, п. 11. Зовётся из `rebuild()` ПОСЛЕ `_clear()`, а сам
+        `rebuild()` зовётся из `__init__` — любая ошибка отсюда оставляла бы
+        раздел с очищенным layout, а при сборке окна роняла бы окно целиком.
+        `platform_1c/console.py::_winreg_read` переводит в `None` только
+        `FileNotFoundError` («ключа нет — не зарегистрирована»), поэтому
+        `except OSError` здесь не проглатывает штатный ответ: сюда доходят
+        именно отказы чтения (нет прав, повреждённый ключ). Их и показываем
+        отдельным словом — «не зарегистрирована» было бы ложью о том, чего
+        мы не смогли прочитать.
+        """  # noqa: RUF002
+        try:
+            version = self._workspace.current_console_version()
+        except OSError:
+            return "недоступна"
         return str(version) if version is not None else "не зарегистрирована"
 
     def _build_card(
