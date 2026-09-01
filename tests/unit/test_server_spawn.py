@@ -45,9 +45,6 @@ class _FailingJob:
     def close(self) -> None:
         pass
 
-    def is_empty(self) -> bool:
-        return True
-
 
 def test_spawn_server_redirects_stdout_to_log_file(tmp_path: Path) -> None:
     log_path = tmp_path / "j.log"

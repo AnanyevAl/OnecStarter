@@ -96,9 +96,6 @@ class _FakeJob:
     def close(self) -> None:
         self.closed = True
 
-    def is_empty(self) -> bool:
-        return not self.pids()
-
 
 _SERVER_INSTALLATION = ServerInstallation(
     installation=Installation(
@@ -1612,7 +1609,6 @@ def test_monitor_wires_scan_into_servers_workspace_and_view(
         name="ragent.exe",
         executable=None,
         argv=("ragent.exe", "-d", str(tmp_path / "srv"), "-port", "1540", "-regport", "1541"),
-        create_time=1.0,
     )
 
     monitor.snapshot_ready.emit(ScanSnapshot(agents=(agent,), managers=()))

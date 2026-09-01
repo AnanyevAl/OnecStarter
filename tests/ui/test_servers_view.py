@@ -76,9 +76,6 @@ class FakeJob:
             raise self.close_error
         self.closed = True
 
-    def is_empty(self) -> bool:
-        return not self.pids()
-
 
 @dataclass
 class FakeJobFactory:
@@ -176,7 +173,6 @@ def _agent(
         name="ragent.exe",
         executable=Path(exe) if exe else None,
         argv=argv,
-        create_time=100.0 + pid,
     )
 
 
@@ -244,7 +240,7 @@ def _status(**overrides: object) -> ServerStatus:
 
 
 def _matched(pid: int) -> RagentProcess:
-    return RagentProcess(pid=pid, executable=None, argv=("ragent.exe",), create_time=1.0)
+    return RagentProcess(pid=pid, executable=None, argv=("ragent.exe",))
 
 
 @pytest.mark.parametrize(
@@ -534,7 +530,6 @@ def test_foreign_row_limited_form_without_cmdline_access(
         name="ragent.exe",
         executable=Path(FOREIGN_RAGENT),
         argv=None,
-        create_time=100.0,
     )
     workspace.apply_scan(ScanSnapshot(agents=(opaque,), managers=()))
 
@@ -552,7 +547,7 @@ def test_foreign_row_limited_form_without_executable_omits_version(
 ) -> None:
     """Ни командной строки, ни пути исполняемого файла — версии показать нечем."""
     workspace = _workspace(tmp_path, ())
-    opaque = ProcessInfo(pid=777, name="ragent.exe", executable=None, argv=None, create_time=1.0)
+    opaque = ProcessInfo(pid=777, name="ragent.exe", executable=None, argv=None)
     workspace.apply_scan(ScanSnapshot(agents=(opaque,), managers=()))
 
     view = ServersView(workspace, installed=lambda: [], palette=theme.DARK)
@@ -1137,9 +1132,15 @@ def test_remnants_row_offers_extinguish_button_that_closes_the_job(
     assert rescans == [1]
 
 
-def test_no_orphans_means_no_extinguish_button(
+def test_stopped_profile_has_no_extinguish_button_and_no_warnings(
     application: QApplication, tmp_path: Path
 ) -> None:
+    """Профиль в состоянии STOPPED: гасить нечего, предупреждать не о чем.
+
+    Имя приведено к словарю T-12 (долг, п. 9): понятия «сироты», от которого
+    осталось прежнее `no_orphans`, больше нет — состояние карточки решает
+    `_card_state`, и здесь оно `STOPPED` (ни Job, ни совпавшего процесса).
+    """  # noqa: RUF002
     profile = _profile()
     workspace = _workspace(tmp_path, (profile,))
     workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
@@ -1164,7 +1165,6 @@ def test_port_holder_line_is_red_and_has_no_button(
         name="rmngr.exe",
         executable=None,
         argv=("rmngr.exe", "-port", str(profile.regport)),
-        create_time=50.0,
     )
     workspace = _workspace(tmp_path, (profile,))
     workspace.apply_scan(ScanSnapshot(agents=(), managers=(holder,)))

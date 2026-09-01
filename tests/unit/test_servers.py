@@ -58,9 +58,6 @@ class FakeJob:
             raise self.close_error
         self.closed = True
 
-    def is_empty(self) -> bool:
-        return not self.pids()
-
 
 @dataclass
 class FakeJobFactory:
@@ -229,7 +226,6 @@ def _agent(
         name="ragent.exe",
         executable=Path(exe) if exe else None,
         argv=argv,
-        create_time=100.0 + pid,
     )
 
 
@@ -239,7 +235,6 @@ def _manager(pid: int, argv: tuple[str, ...] | None) -> ProcessInfo:
         name="rmngr.exe",
         executable=Path(r"C:\Program Files\1cv8\8.3.25.1633\bin\rmngr.exe"),
         argv=argv,
-        create_time=100.0 + pid,
     )
 
 
@@ -502,7 +497,7 @@ class TestScanServers:
     def test_splits_agents_and_managers_by_name(self) -> None:
         agent = _agent(1, ("ragent.exe", "-port", "2540", "-d", r"E:\srv\a"))
         manager = _manager(2, ("rmngr.exe", "-port", "1541"))
-        other = ProcessInfo(pid=3, name="rphost.exe", executable=None, argv=None, create_time=1.0)
+        other = ProcessInfo(pid=3, name="rphost.exe", executable=None, argv=None)
         scanner = FakeScanner([agent, manager, other])
 
         snapshot = scan_servers(scanner)

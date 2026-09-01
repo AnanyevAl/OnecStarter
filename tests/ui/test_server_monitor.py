@@ -35,9 +35,7 @@ class _ExplodingScanner:
 
 
 def _agent(pid: int) -> ProcessInfo:
-    return ProcessInfo(
-        pid=pid, name="ragent.exe", executable=None, argv=None, create_time=1.0
-    )
+    return ProcessInfo(pid=pid, name="ragent.exe", executable=None, argv=None)
 
 
 def test_scan_now_emits_snapshot_with_sync_spawn():

@@ -115,9 +115,7 @@ def _proc(
     exe: str | None = r"C:\Program Files\1cv8\8.3.25.1633\bin\ragent.exe",
 ) -> RagentProcess:
     argv = None if cluster is None else ("ragent.exe", "-port", "2540", "-d", cluster)
-    return RagentProcess(
-        pid=pid, executable=Path(exe) if exe else None, argv=argv, create_time=100.0 + pid
-    )
+    return RagentProcess(pid=pid, executable=Path(exe) if exe else None, argv=argv)
 
 
 class TestMatchProfiles:
@@ -147,9 +145,7 @@ class TestMatchProfiles:
 
 
 def _holder(pid: int, name: str, *args: str) -> RagentProcess:
-    return RagentProcess(
-        pid=pid, executable=None, argv=(name, *args), create_time=100.0 + pid
-    )
+    return RagentProcess(pid=pid, executable=None, argv=(name, *args))
 
 
 class TestPortHolders:
@@ -173,7 +169,7 @@ class TestPortHolders:
         assert (port_holders(self.PROFILE, [process], frozenset()) == (process,)) is expected
 
     def test_opaque_process_is_skipped(self) -> None:
-        opaque = RagentProcess(pid=7, executable=None, argv=None, create_time=107.0)
+        opaque = RagentProcess(pid=7, executable=None, argv=None)
         assert port_holders(self.PROFILE, [opaque], frozenset()) == ()
 
     def test_own_job_pids_are_excluded(self) -> None:

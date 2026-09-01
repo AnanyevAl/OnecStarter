@@ -138,7 +138,6 @@ class Job(Protocol):
     def assign(self, process_handle: int) -> None: ...
     def pids(self) -> tuple[int, ...]: ...
     def close(self) -> None: ...
-    def is_empty(self) -> bool: ...
 
 
 class ServerJob:
@@ -211,7 +210,7 @@ class ServerJob:
 
         Если `CloseHandle` отказал, `_handle` НЕ обнуляется (ревью задачи 1
         T-12, Important 1): неудачный вызов не должен выглядеть как
-        успешный — `pids()`/`is_empty()` обязаны по-прежнему отвечать по
+        успешный — `pids()` обязан по-прежнему отвечать по
         живому хендлу (координатору `services` это нужно, чтобы после
         отказавшего `close()` остатки дерева оставались видны), а сам
         `close()` остаётся вызываемым повторно, а не превращается в no-op
@@ -224,9 +223,6 @@ class ServerJob:
             error = ctypes.get_last_error()
             raise JobError(f"CloseHandle не смог закрыть Job: GetLastError={error}")
         self._handle = None
-
-    def is_empty(self) -> bool:
-        return not self.pids()
 
     @staticmethod
     def _create_job() -> int:
@@ -264,6 +260,3 @@ class NullJob:
 
     def close(self) -> None:
         pass
-
-    def is_empty(self) -> bool:
-        return True

@@ -103,7 +103,6 @@ class TestServerJob:
         with _tree_in_job() as (job, parent, grandchild):
             pids = set(job.pids())
             assert {parent.pid, grandchild} <= pids
-            assert job.is_empty() is False
 
     def test_pids_keeps_remnants_after_parent_killed_externally(self) -> None:
         """[Ф] 29.08.2026: родитель снят извне (как `ragent` из Диспетчера) —
@@ -131,12 +130,10 @@ class TestServerJob:
             job.close()
             assert _wait_gone(grandchild), "остаток пережил закрытие Job"
             assert job.pids() == ()
-            assert job.is_empty() is True
 
     def test_pids_of_fresh_job_is_empty(self) -> None:
         job = ServerJob()
         assert job.pids() == ()
-        assert job.is_empty() is True
 
     def test_close_is_idempotent(self) -> None:
         job = ServerJob()
@@ -174,9 +171,8 @@ class TestServerJob:
 
         Мутация «`close()` обнуляет `_handle` ДО проверки `CloseHandle`»
         уронит этот тест: после отказа `_handle` обязан остаться прежним
-        (иначе повторный `close()` станет no-op, а `pids()`/`is_empty()`
-        начнут врать, что Job пуст, хотя настоящий хендл никогда не был
-        закрыт и утёк).
+        (иначе повторный `close()` станет no-op, а `pids()` начнёт врать,
+        что Job пуст, хотя настоящий хендл никогда не был закрыт и утёк).
         """  # noqa: RUF002
         job = ServerJob()
         job._handle = 0x7FFFFFFF  # заведомо невалидный хендл — CloseHandle отказывает
@@ -245,4 +241,3 @@ class TestNullJob:
         job.assign(0)
         job.close()
         assert job.pids() == ()
-        assert job.is_empty() is True

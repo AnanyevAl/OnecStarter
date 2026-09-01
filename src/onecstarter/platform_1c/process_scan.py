@@ -40,7 +40,6 @@ class ProcessInfo:
     name: str
     executable: Path | None  # None — нет доступа ([Ф] В1: чужой процесс/служба)  # noqa: RUF003
     argv: tuple[str, ...] | None  # None — нет доступа либо пустая cmdline
-    create_time: float
 
 
 class ProcessScanner(Protocol):
@@ -52,7 +51,7 @@ class PsutilScanner:
 
     def snapshot(self, names: frozenset[str]) -> list[ProcessInfo]:
         result: list[ProcessInfo] = []
-        processes = psutil.process_iter(attrs=["pid", "name", "cmdline", "exe", "create_time"])
+        processes = psutil.process_iter(attrs=["pid", "name", "cmdline", "exe"])
         for process in processes:
             try:
                 info = process.info
@@ -65,19 +64,8 @@ class PsutilScanner:
             argv = tuple(cmdline) if cmdline else None
             exe = info.get("exe")
             executable = Path(exe) if exe else None
-            # [Ф] В1: create_time виден для SYSTEM-процессов без повышения  # noqa: RUF003
-            # (107/107 в замере) — в отличие от cmdline/exe, поле не бывает
-            # недоступным на практике; 0.0 здесь — оборонительный код,
-            # не наблюдавшийся случай.
-            create_time = info.get("create_time")
             result.append(
-                ProcessInfo(
-                    pid=info["pid"],
-                    name=name,
-                    executable=executable,
-                    argv=argv,
-                    create_time=float(create_time) if create_time is not None else 0.0,
-                )
+                ProcessInfo(pid=info["pid"], name=name, executable=executable, argv=argv)
             )
         return result
 

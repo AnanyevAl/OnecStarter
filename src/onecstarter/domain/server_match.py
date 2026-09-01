@@ -20,7 +20,6 @@ class RagentProcess:
     pid: int
     executable: Path | None  # None — нет доступа ([Ф] В1: чужой/служба)  # noqa: RUF003
     argv: tuple[str, ...] | None
-    create_time: float
 
 
 @dataclass(frozen=True)

@@ -186,12 +186,7 @@ def _snapshot_agents(snapshot: ScanSnapshot) -> tuple[RagentProcess, ...]:
     УЖЕ имеющегося снимка после правки списка профилей.
     """
     return tuple(
-        RagentProcess(
-            pid=info.pid,
-            executable=info.executable,
-            argv=info.argv,
-            create_time=info.create_time,
-        )
+        RagentProcess(pid=info.pid, executable=info.executable, argv=info.argv)
         for info in snapshot.agents
     )
 
@@ -199,9 +194,7 @@ def _snapshot_agents(snapshot: ScanSnapshot) -> tuple[RagentProcess, ...]:
 def _snapshot_processes(snapshot: ScanSnapshot) -> tuple[RagentProcess, ...]:
     """Все процессы снимка (ragent и rmngr) как `RagentProcess` — вход `port_holders`."""  # noqa: RUF002
     return tuple(
-        RagentProcess(
-            pid=info.pid, executable=info.executable, argv=info.argv, create_time=info.create_time
-        )
+        RagentProcess(pid=info.pid, executable=info.executable, argv=info.argv)
         for info in (*snapshot.agents, *snapshot.managers)
     )
 
