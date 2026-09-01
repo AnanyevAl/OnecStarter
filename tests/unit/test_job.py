@@ -1,5 +1,6 @@
 """Job Object: дерево серверов умирает с лаунчером ([Ф] Б1/Б2 T-09) и видно
 ОС ([Ф] 29.08.2026 T-12)."""  # noqa: RUF002
+import ctypes
 import subprocess
 import sys
 import time
@@ -185,6 +186,41 @@ class TestServerJob:
             assert job._handle == 0x7FFFFFFF, "close() потерял хендл при отказе CloseHandle"
         finally:
             job._handle = None  # ничего реально не открыто — просто снять фейковое значение
+
+    def test_pids_gives_up_after_bounded_number_of_retries(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ: `pids()` не растит буфер без верхней границы.
+
+        Долг T-12, п. 12. Это не спин: ёмкость удваивается, практически
+        хватает ≤ 2 итераций, а патологический `ERROR_MORE_DATA` упёрся бы
+        в `MemoryError` за ~30 шагов. Потолок делает отказ явным и дешёвым.
+        Фейк WinAPI держит собственный предохранитель: без потолка в
+        `pids()` тест не завис бы, а упал именно на нём — так видно, что
+        цикл не остановился сам.
+        """  # noqa: RUF002
+        calls: list[int] = []
+
+        class _AlwaysMoreData:
+            def QueryInformationJobObject(self, *args: object) -> int:  # noqa: N802
+                calls.append(1)
+                if len(calls) > 20:
+                    raise RuntimeError("pids() не остановился сам — потолка нет")
+                return 0
+
+        monkeypatch.setattr(job_module, "_PID_LIST_INITIAL_CAPACITY", 1)
+        monkeypatch.setattr(job_module, "_k32", _AlwaysMoreData())
+        monkeypatch.setattr(ctypes, "get_last_error", lambda: 234)
+
+        job = ServerJob()
+        job._handle = 0x7FFFFFFF
+        try:
+            with pytest.raises(JobError):
+                job.pids()
+        finally:
+            job._handle = None
+
+        assert len(calls) <= 8, f"попыток {len(calls)} — потолок не соблюдён"
 
     def test_pids_raises_job_error_when_query_fails_for_other_reason(self) -> None:
         """ЗАЩИТНЫЙ ТЕСТ: отказ `QueryInformationJobObject` не по `ERROR_MORE_DATA`

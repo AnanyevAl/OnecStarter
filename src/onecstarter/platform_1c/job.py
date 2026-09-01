@@ -14,7 +14,9 @@ Job на весь лаунчер. Начиная с T-12 Job заводится 
 умирает раньше собственного вызова `close()` (крах, `TaskKill /F`,
 отключение питания), хендл Job закрывает сама ОС при завершении
 процесса, который его держит, — и kill-on-close срабатывает так же, как
-и раньше.
+и раньше (**[Ф]** Б2 T-09 и п. 6 ручного чек-листа T-10: дерево гасло
+при аварийном снятии самого лаунчера, без его собственного `close()`;
+долг T-12, п. 14 — абзац стоял без метки достоверности).
 
 Структуры ctypes и последовательность вызовов (`CreateJobObjectW` →
 `SetInformationJobObject` → `AssignProcessToJobObject`) — дословно из
@@ -45,6 +47,11 @@ JobObjectExtendedLimitInformation = 9
 JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
 _ERROR_MORE_DATA = 234
 _PID_LIST_INITIAL_CAPACITY = 64
+# Долг T-12, п. 12: потолок попыток чтения списка PID. Ёмкость удваивается,
+# поэтому реальному дереву хватает ≤ 2 итераций; восемь — запас, за которым
+# начинается не рост дерева, а патология, и её честнее назвать отказом,  # noqa: RUF003
+# чем удваивать буфер до MemoryError.
+_PID_LIST_MAX_ATTEMPTS = 8
 
 # Один WinDLL на модуль, argtypes/restype у каждой функции  # noqa: RUF003
 # (долг T-10 «гигиена ctypes»).
@@ -165,11 +172,16 @@ class ServerJob:
         [Д] в этой ситуации WinAPI отдаёт фактическое число процессов
         в `NumberOfAssignedProcesses`, буфер пересоздаётся под этот размер
         (с запасом от удвоения — дерево между двумя вызовами могло вырасти).
+
+        Попыток не больше `_PID_LIST_MAX_ATTEMPTS` (долг T-12, п. 12):
+        реальному дереву хватает ≤ 2, а бесконечное удвоение на
+        патологическом `ERROR_MORE_DATA` кончилось бы `MemoryError`
+        вместо внятного отказа. Исчерпание потолка — `JobError`.
         """  # noqa: RUF002
         if self._handle is None:
             return ()
         capacity = _PID_LIST_INITIAL_CAPACITY
-        while True:
+        for _attempt in range(_PID_LIST_MAX_ATTEMPTS):
             buffer: Any = _pid_list_type(capacity)()
             ok = _k32.QueryInformationJobObject(
                 self._handle, JobObjectBasicProcessIdList,
@@ -185,6 +197,10 @@ class ServerJob:
                     f"GetLastError={error}"
                 )
             capacity = max(capacity * 2, int(buffer.NumberOfAssignedProcesses))
+        raise JobError(
+            f"QueryInformationJobObject не отдал список процессов Job "
+            f"за {_PID_LIST_MAX_ATTEMPTS} попыток (последняя ёмкость {capacity})"
+        )
 
     def close(self) -> None:
         """Закрыть хендл Job — kill-on-close гасит всё, что в нём ([Ф] 29.08.2026).
