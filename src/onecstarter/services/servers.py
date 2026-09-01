@@ -671,20 +671,30 @@ class ServersWorkspace:
                 f"Не удалось запустить сервер «{profile.name}»: {message}"  # noqa: RUF001
             )
         old_job = self._jobs.pop(profile_id, None)
-        self._spawned.pop(profile_id, None)
+        old_spawned = self._spawned.pop(profile_id, None)
         pids_text = ", ".join(str(pid) for pid in job_pids)
         if old_job is not None:
             try:
                 old_job.close()
             except JobError as error:
+                # Долг T-12, п. 4: откат симметричен — оба словаря сняты ДО  # noqa: RUF003
+                # `close()`, значит оба и возвращаются. Вернуть один только  # noqa: RUF003
+                # Job означало бы забыть порождённый PID: реконсиляции стало
+                # бы нечего забывать, и событие «ragent завершился извне»
+                # в этом окне уже никто не записал бы.
                 self._jobs[profile_id] = old_job  # остатки остаются видимыми
+                if old_spawned is not None:
+                    self._spawned[profile_id] = old_spawned
                 self.log_event(
                     profile_id,
                     f"отказ запуска: не удалось погасить остатки прошлого запуска ({error})",
                 )
+                # Пустой Job — «(PID )» с пустым списком; в этом случае  # noqa: RUF003
+                # о PID не говорим вовсе.  # noqa: RUF003
+                remnant = f" (PID {pids_text})" if job_pids else ""
                 raise ServerError(
                     f"Не удалось запустить сервер «{profile.name}»: остатки прошлого "  # noqa: RUF001
-                    f"запуска (PID {pids_text}) не погашены — {error}"
+                    f"запуска{remnant} не погашены — {error}"
                 ) from error
         job = self._job_factory()
         command = LaunchCommand(

@@ -1055,6 +1055,65 @@ class TestStartWithJob:
         content = server_journal.journal_path(logs_dir, profile.id).read_text(encoding="utf-8")
         assert "отказ запуска: не удалось погасить остатки прошлого запуска" in content
 
+    def test_failed_remnant_close_keeps_spawned_pid(self, tmp_path: Path) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ: отказ гашения возвращает и Job, и порождённый PID.
+
+        Долг T-12, п. 4: `_spawned.pop` сделан ДО `old_job.close()`, и в ветке
+        `JobError` в `_jobs` Job возвращается, а порождённый PID — нет. Откат
+        обязан быть симметричным: иначе `spawned_pid` теряется, и событие
+        «ragent завершился извне» в этом окне реконсиляции уже не с чего
+        записать — забывать нечего. Мутация: не возвращать `_spawned` —
+        тест обязан упасть.
+        """  # noqa: RUF002
+        factory = FakeJobFactory()
+        logs_dir = tmp_path / "logs"
+        spawn = FakeServerSpawn(pid=4242)
+        workspace = _workspace(tmp_path / "servers.json", new_id=lambda: "jh" * 16,
+                               job_factory=factory, server_spawn=spawn, logs_dir=logs_dir)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        installation = _installation_in(tmp_path)
+        workspace.start(profile.id, [installation])
+        assert workspace.statuses([])[0].spawned_pid == 4242
+
+        old = factory.created[0]
+        old.pids_value = (4300,)
+        old.close_error = JobError("CloseHandle отказал")
+
+        with pytest.raises(ServerError):
+            workspace.start(profile.id, [installation])
+
+        assert workspace.statuses([])[0].spawned_pid == 4242
+
+    def test_failed_remnant_close_without_pids_omits_empty_pid_list(
+        self, tmp_path: Path
+    ) -> None:
+        """Пустой Job не даёт «(PID )» в тексте отказа (долг T-12, п. 4).
+
+        `pids_text` собирается из `job_pids`; когда старый Job уже пуст,
+        а `close()` всё равно отказал, пользователь получал «остатки прошлого
+        запуска (PID ) не погашены» — скобку с пустым списком.
+        """  # noqa: RUF002
+        factory = FakeJobFactory()
+        logs_dir = tmp_path / "logs"
+        spawn = FakeServerSpawn(pid=4242)
+        workspace = _workspace(tmp_path / "servers.json", new_id=lambda: "ji" * 16,
+                               job_factory=factory, server_spawn=spawn, logs_dir=logs_dir)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        installation = _installation_in(tmp_path)
+        workspace.start(profile.id, [installation])
+
+        old = factory.created[0]
+        old.pids_value = ()
+        old.close_error = JobError("CloseHandle отказал")
+
+        with pytest.raises(ServerError) as excinfo:
+            workspace.start(profile.id, [installation])
+
+        assert "(PID )" not in str(excinfo.value)
+        assert "CloseHandle отказал" in str(excinfo.value)
+
 
 class TestStopWithJob:
     def test_stop_closes_only_this_profiles_job(self, tmp_path: Path) -> None:
