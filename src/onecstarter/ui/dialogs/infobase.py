@@ -46,10 +46,11 @@
 
 - `InfobaseDialog.__init__` принимает `item: InfobaseItem | None`. `None` —
   режим добавления (`for_new`): нет исходной записи, нечего показывать
-  в «Версии», «Клиенте», «Аутентификации ОС» и таблице прочих ключей —
-  `Workspace.add_infobase` их и не принимает, поэтому строить эти виджеты
-  для несуществующей записи означало бы рисовать элементы, которым некуда
-  писать.
+  в «Аутентификации ОС» и таблице прочих ключей — секция ещё не существует,
+  и текущих значений этих полей попросту нет. (До задачи 7 сюда же входили
+  «Версия» и «Клиент» — `Workspace.add_infobase` тогда их не принимала;
+  задача 6 дала `add_infobase` параметры `version`/`app`, и задача 7 —
+  сами поля диалогу добавления, подробности ниже.)
 - **Вид размещения — теперь выпадающий список (`_kind_box`), а не подпись.**
   И для новой записи (обязателен выбор), и для правки существующей — в этом
   и есть задача 10: пользователь может передумать, какого вида база. Поля
@@ -111,6 +112,34 @@
    что и `open_directory` в `ConnectionPanel`) зовёт тот же `accept_directory`,
    что и `dropEvent`.
 
+**Задача 7 — «Версия» и «Клиент» в диалоге добавления.** До этой задачи оба
+поля строились только внутри `if item is not None:` — диалог добавления их
+вовсе не показывал, и новая запись не могла получить ни `Version`, ни `App`
+иначе как последующей правкой. `self._version` и `self._app` теперь строятся
+всегда (`__init__`); внутри ветки `if item is not None:` остаются только
+`self._version_hint`, `self._os_auth` со своей строкой формы и таблица
+прочих ключей — у записи, которой ещё нет, показывать нечего: ни расхождения
+с платформой, ни WA, ни прочих ключей секции.
+
+Начальный индекс пункта считается по-разному для двух режимов — тот же класс
+ловушки, что и у `_kind_box` выше (I7/M9): у новой записи спрашивать нечего,
+запрошенных версии/клиента ещё не существует, поэтому начальный пункт —
+всегда нулевой («как установлено» / «Авто», первый пункт и в
+`version_options`, и в `_APP_ITEMS`), без обращения к
+`item.requested_version`/`item.app`. У существующей записи индекс по-прежнему
+ищется по фактическому значению записи. Спутать эти две ветки означало бы
+откатить диалог ПРАВКИ на «как установлено»/«Авто» и молча снять Version/App
+у нетронутой записи при простом открытии-ОК — мутационная проверка задачи 7
+воспроизводит именно это.
+
+`new_record()` возвращает `NewInfobase` (датакласс задачи 6), а не
+`tuple[str, str, str]`: третье поле раньше было последним (группа), теперь
+после него идут `version` и `app`, оба необязательные. Пункты по умолчанию
+(«как установлено», «Авто») — это данные `None`, и `Workspace.add_infobase`
+кладёт `Version`/`App` в секцию, только когда они заданы, — обычное
+добавление базы без выбора версии/клиента не пишет в `.v8i` ни одного
+из этих двух ключей.
+
 Прочие ключи секции показываются, но не правятся. Общий редактор ключей
 открывает класс порчи, который наши проверки не ловят: [Ф] факт 6 скила
 v8i-format — `Connect` с пробелом вокруг «=» платформа не распознаёт
@@ -155,7 +184,7 @@ from onecstarter.domain.version import Installation
 from onecstarter.security.secrets import is_secret_key
 from onecstarter.services.connection import BADGE_LABELS, connection_path
 from onecstarter.services.display import version_cell, version_options
-from onecstarter.services.model import InfobaseItem
+from onecstarter.services.model import InfobaseItem, NewInfobase
 from onecstarter.services.paths import ROOT, normalize_folder
 from onecstarter.ui.dialogs.buttons import ButtonKind, russian_button_box
 from onecstarter.ui.dialogs.group_picker import GroupPicker
@@ -402,36 +431,54 @@ class InfobaseDialog(QDialog):
         self._update_kind_visibility()
         self._kind_box.currentIndexChanged.connect(self._update_kind_visibility)
 
+        # Задача 7: «Версия» и «Клиент» строятся всегда — и для новой записи
+        # (item is None), и для правки существующей, — не только внутри
+        # ветки `if item is not None`, как раньше. Начальный пункт считается
+        # по-разному для двух режимов (ловушка, найденная ревью задач 4/6):
+        # у новой записи спрашивать нечего, запрошенных версии/клиента ещё  # noqa: RUF003
+        # не существует, поэтому начальный пункт — всегда нулевой («как
+        # установлено» / «Авто», первый пункт и в `version_options`,
+        # и в `_APP_ITEMS`). У существующей записи индекс по-прежнему ищется  # noqa: RUF003
+        # по фактическому значению (`item.requested_version`, `_app_key`) —
+        # тронуть эту ветку значило бы откатить диалог правки на «как
+        # установлено»/«Авто» и молча снять Version/App при простом
+        # открытии-ОК (I7/M9, см. докстринг модуля).  # noqa: RUF003
+        cell = version_cell(item, installations, cfg_rules) if item is not None else None
+        self._version = QComboBox()
+        for text, data in version_options(installations, item, cell):
+            self._version.addItem(text, data)
+        version_index = self._version.findData(item.requested_version) if item is not None else 0
+        self._version.setCurrentIndex(version_index if version_index >= 0 else 0)
+
+        self._app = QComboBox()
+        for text, data in _APP_ITEMS:
+            self._app.addItem(text, data)
+        app_index = self._app.findData(_app_key(item.app)) if item is not None else 0
+        if item is not None and app_index < 0:
+            # Незнакомое значение App (не Auto/ThinClient/ThickClient) —
+            # сохраняем его как есть отдельным пунктом, а не подменяем  # noqa: RUF003
+            # молча одним из трёх известных.
+            self._app.addItem(item.app or "", item.app)
+            app_index = self._app.count() - 1
+        self._app.setCurrentIndex(app_index)
+        self._initial_app = self._app.currentData()
+
+        # «Версия»/«Клиент» — в форме всегда; подсказка о версии,  # noqa: RUF003
+        # аутентификация ОС и таблица прочих ключей — только у записи,  # noqa: RUF003
+        # которая уже существует: у новой записи ещё нет ни расхождения  # noqa: RUF003
+        # с платформой, ни WA, ни прочих ключей секции, показывать нечего.  # noqa: RUF003
+        form.addRow("Версия", self._version)
         if item is not None:
-            cell = version_cell(item, installations, cfg_rules)
-            self._version = QComboBox()
-            for text, data in version_options(installations, item, cell):
-                self._version.addItem(text, data)
-            version_index = self._version.findData(item.requested_version)
-            self._version.setCurrentIndex(version_index if version_index >= 0 else 0)
+            assert cell is not None  # строится вместе с item в этой же ветке выше  # noqa: RUF003
             self._version_hint = QLabel(cell.hint or "")
             self._version_hint.setWordWrap(True)
+            form.addRow("", self._version_hint)
+        form.addRow("Клиент", self._app)
 
-            self._app = QComboBox()
-            for text, data in _APP_ITEMS:
-                self._app.addItem(text, data)
-            app_index = self._app.findData(_app_key(item.app))
-            if app_index < 0:
-                # Незнакомое значение App (не Auto/ThinClient/ThickClient) —
-                # сохраняем его как есть отдельным пунктом, а не подменяем  # noqa: RUF003
-                # молча одним из трёх известных.
-                self._app.addItem(item.app or "", item.app)
-                app_index = self._app.count() - 1
-            self._app.setCurrentIndex(app_index)
-            self._initial_app = self._app.currentData()
-
+        if item is not None:
             self._os_auth = QCheckBox()
             self._os_auth.setChecked(_typed_value(item.keys, "WA") == "1")
             self._initial_wa = "1" if self._os_auth.isChecked() else None
-
-            form.addRow("Версия", self._version)
-            form.addRow("", self._version_hint)
-            form.addRow("Клиент", self._app)
             form.addRow("Аутентификация ОС", self._os_auth)  # noqa: RUF001
 
             self._rows = other_keys(item)
@@ -784,12 +831,23 @@ class InfobaseDialog(QDialog):
             f"Будут потеряны ключи: {', '.join(lost)}"
         )
 
-    def new_record(self) -> tuple[str, str, str]:
-        """Имя, строка соединения и группа — вход `Workspace.add_infobase`.
+    def new_record(self) -> NewInfobase:
+        """Данные новой записи — вход `Workspace.add_infobase`.
 
         Только для диалога добавления (`for_new`): диалог правки существующей
         записи новых записей не создаёт, `changes()` — его собственный путь
         записи.
+
+        Задача 7: раньше возвращал `tuple[str, str, str]` (имя, строка
+        соединения, группа) — «Версия» и «Клиент» диалог добавления вовсе
+        не показывал. Теперь оба поля есть в форме всегда (см. `__init__`),
+        и `record.version`/`record.app` идут в `NewInfobase` тем же способом,
+        что и у диалога правки (`self._version.currentData()`,
+        `self._app.currentData()`). Оба необязательны: пункты по умолчанию
+        («как установлено», «Авто») — это данные `None`, и `Workspace.add_infobase`
+        не пишет в секцию ни `Version`, ни `App`, пока пользователь их не
+        выбрал явно, — файл читает и перезаписывает штатный стартер 1С,
+        и пустая строка вместо отсутствующего ключа испортила бы запись.
         """  # noqa: RUF002
         connect = build_connect(
             self._kind_box.currentData(),
@@ -798,7 +856,13 @@ class InfobaseDialog(QDialog):
             ref=self._ref.text(),
             url=self._url.text(),
         )
-        return self._name.text().strip(), connect, self._folder.current_path()
+        return NewInfobase(
+            name=self._name.text().strip(),
+            connect=connect,
+            folder=self._folder.current_path(),
+            version=self._version.currentData(),
+            app=self._app.currentData(),
+        )
 
     def accept_directory(self, path: str) -> None:
         """Каталог, перетащённый на диалог: путь — в поле, имя — если оно пустое.

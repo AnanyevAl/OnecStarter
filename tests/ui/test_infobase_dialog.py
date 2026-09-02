@@ -8,7 +8,7 @@ from PySide6.QtCore import QMimeData, QUrl
 from PySide6.QtWidgets import QDialog
 
 from onecstarter.domain.connect import ConnectKind, classify_connect
-from onecstarter.services.model import InfobaseItem, InfobaseSource
+from onecstarter.services.model import InfobaseItem, InfobaseSource, NewInfobase
 from onecstarter.ui.dialogs.group_picker import INDENT
 from onecstarter.ui.dialogs.infobase import (
     HIDDEN_VALUE,
@@ -577,7 +577,9 @@ def test_new_record_returns_name_connect_and_folder(qtbot: Any) -> None:
     dialog.set_file_path(r"D:\bases\acc")
     dialog.set_name("Бухгалтерия")
     dialog.set_folder("Клиенты")
-    assert dialog.new_record() == ("Бухгалтерия", r'File="D:\bases\acc";', "Клиенты")
+    assert dialog.new_record() == NewInfobase(
+        name="Бухгалтерия", connect=r'File="D:\bases\acc";', folder="Клиенты"
+    )
 
 
 def test_new_record_defaults_kind_to_file(qtbot: Any) -> None:
@@ -586,7 +588,9 @@ def test_new_record_defaults_kind_to_file(qtbot: Any) -> None:
     qtbot.addWidget(dialog)
     dialog.set_file_path(r"D:\bases\acc")
     dialog.set_name("Бухгалтерия")
-    assert dialog.new_record() == ("Бухгалтерия", r'File="D:\bases\acc";', "/")
+    assert dialog.new_record() == NewInfobase(
+        name="Бухгалтерия", connect=r'File="D:\bases\acc";', folder="/"
+    )
 
 
 def test_new_record_server_kind(qtbot: Any) -> None:
@@ -596,20 +600,60 @@ def test_new_record_server_kind(qtbot: Any) -> None:
     dialog.set_server("srv")
     dialog.set_ref("ACC")
     dialog.set_name("Учёт")
-    assert dialog.new_record() == ("Учёт", 'Srvr="srv";Ref="ACC";', "/")
+    assert dialog.new_record() == NewInfobase(
+        name="Учёт", connect='Srvr="srv";Ref="ACC";', folder="/"
+    )
 
 
-def test_new_dialog_has_no_version_app_or_other_keys_widgets(qtbot: Any) -> None:
-    """Workspace.add_infobase не принимает версию/клиента — строить их незачем.
+def test_new_dialog_has_no_hint_os_auth_or_other_keys_widgets(qtbot: Any) -> None:
+    """Записи ещё не существует — показывать расхождение с платформой, WA
+    и прочие ключи секции нечего.
 
-    Косвенная проверка через публичные геттеры, а не через private-атрибуты:
-    `version_hint`/`other_rows` обязаны остаться безопасными для диалога
-    добавления, а не падать `AttributeError`, если кто-то их всё-таки вызовет.
+    Задача 7: «Версия» и «Клиент» диалог добавления теперь строит и
+    показывает (см. `test_add_dialog_offers_version_and_client` ниже) —
+    этот тест больше не о них, а о том, что подсказка версии
+    (`version_hint`), аутентификация ОС и таблица прочих ключей
+    у записи, которой ещё нет, не появляются. Косвенная проверка через
+    публичные геттеры, а не через private-атрибуты: `version_hint`/
+    `other_rows` обязаны остаться безопасными для диалога добавления,
+    а не падать `AttributeError`, если кто-то их всё-таки вызовет.
     """  # noqa: RUF002
     dialog = InfobaseDialog.for_new(groups=["/"], installations=INSTALLED, cfg_rules=[])
     qtbot.addWidget(dialog)
     assert dialog.version_hint() == ""
     assert dialog.other_rows() == []
+
+
+def test_add_dialog_offers_version_and_client(qtbot: Any) -> None:
+    """Задача 7: диалог добавления предлагает то же самое, что диалог правки."""
+    dialog = InfobaseDialog.for_new(groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    dialog.set_file_path(r"D:\Bases\New")
+    dialog.set_name("Новая")
+
+    dialog.set_version("8.3.25.1633")
+    dialog.set_app("ThinClient")
+    record = dialog.new_record()
+
+    assert record.version == "8.3.25.1633"
+    assert record.app == "ThinClient"
+
+
+def test_untouched_add_dialog_asks_for_neither_version_nor_client(qtbot: Any) -> None:
+    """По умолчанию «как установлено» и «Авто» — в файл не пишется ничего.
+
+    `.v8i` читает и перезаписывает штатный стартер 1С: пустая строка вместо
+    отсутствующего ключа — дефект записи, а не мелочь.
+    """  # noqa: RUF002
+    dialog = InfobaseDialog.for_new(groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    dialog.set_file_path(r"D:\Bases\New")
+    dialog.set_name("Новая")
+
+    record = dialog.new_record()
+
+    assert record.version is None
+    assert record.app is None
 
 
 def test_set_kind_rejects_a_value_the_dialog_never_offered(qtbot: Any) -> None:
@@ -894,8 +938,8 @@ def test_dropped_directory_fills_path_and_name(qtbot: Any) -> None:
     dialog = InfobaseDialog.for_new(groups=["/"], installations=INSTALLED, cfg_rules=[])
     qtbot.addWidget(dialog)
     dialog.accept_directory(r"D:\bases\Бухгалтерия")
-    assert dialog.new_record()[0] == "Бухгалтерия"
-    assert dialog.new_record()[1] == r'File="D:\bases\Бухгалтерия";'
+    assert dialog.new_record().name == "Бухгалтерия"
+    assert dialog.new_record().connect == r'File="D:\bases\Бухгалтерия";'
 
 
 def test_dropped_directory_does_not_overwrite_typed_name(qtbot: Any) -> None:
@@ -903,7 +947,7 @@ def test_dropped_directory_does_not_overwrite_typed_name(qtbot: Any) -> None:
     qtbot.addWidget(dialog)
     dialog.set_name("Своё имя")
     dialog.accept_directory(r"D:\bases\Бухгалтерия")
-    assert dialog.new_record()[0] == "Своё имя"
+    assert dialog.new_record().name == "Своё имя"
 
 
 def test_dropped_directory_on_existing_server_record_switches_kind_to_file(qtbot: Any) -> None:
@@ -982,8 +1026,8 @@ def test_browse_button_fills_path_and_name_when_directory_chosen(qtbot: Any) -> 
     )
     qtbot.addWidget(dialog)
     dialog._browse_button.click()
-    assert dialog.new_record()[0] == "Бухгалтерия"
-    assert dialog.new_record()[1] == r'File="D:\bases\Бухгалтерия";'
+    assert dialog.new_record().name == "Бухгалтерия"
+    assert dialog.new_record().connect == r'File="D:\bases\Бухгалтерия";'
 
 
 def test_browse_button_does_not_overwrite_typed_name(qtbot: Any) -> None:
@@ -996,7 +1040,7 @@ def test_browse_button_does_not_overwrite_typed_name(qtbot: Any) -> None:
     qtbot.addWidget(dialog)
     dialog.set_name("Своё имя")
     dialog._browse_button.click()
-    assert dialog.new_record()[0] == "Своё имя"
+    assert dialog.new_record().name == "Своё имя"
 
 
 def test_browse_button_does_nothing_when_cancelled(qtbot: Any) -> None:
@@ -1010,7 +1054,7 @@ def test_browse_button_does_nothing_when_cancelled(qtbot: Any) -> None:
     qtbot.addWidget(dialog)
     dialog.set_file_path(r"D:\already")
     dialog._browse_button.click()
-    assert dialog.new_record()[1] == r'File="D:\already";'
+    assert dialog.new_record().connect == r'File="D:\already";'
 
 
 # -- T-11, п. 6: автоимя из набранного пути и имени в кластере --------------

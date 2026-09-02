@@ -1343,16 +1343,29 @@ class BasesView(QWidget):
         этот `try` стоял только вокруг `_apply_properties`, а собственный
         тестовый набор вызывает `_apply_new_infobase` тем же прямым
         способом, в обход `exec()`/`_on_accept`.
+
+        Задача 7: `new_record()` отдаёт `NewInfobase` (задача 6), а не
+        кортеж из трёх строк, — «Версия» и «Клиент» диалога добавления
+        передаются `Workspace.add_infobase` тем же способом, что и у
+        диалога правки. `record.version`/`record.app` остаются `None`,
+        пока пользователь не выбрал их явно, и `add_infobase` тогда вовсе
+        не кладёт `Version`/`App` в секцию.
         """  # noqa: RUF002
         try:
-            name, connect, folder = dialog.new_record()
+            record = dialog.new_record()
         except ValueError as error:
             self._on_error(
                 InvalidRequestError(f"Не удалось прочитать данные диалога: {error}")  # noqa: RUF001
             )
             return
         try:
-            self._workspace.add_infobase(name, connect, folder)
+            self._workspace.add_infobase(
+                record.name,
+                record.connect,
+                record.folder,
+                version=record.version,
+                app=record.app,
+            )
         except ServicesError as error:
             self._on_error(error)
         self.rebuild()

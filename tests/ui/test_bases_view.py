@@ -1854,7 +1854,7 @@ def test_add_dialog_is_prefilled_with_the_requested_group(qtbot, workspace_facto
     dialog.set_kind(ConnectKind.FILE)
     dialog.set_file_path(r"D:\bases\new")
     dialog.set_name("Новая")
-    assert dialog.new_record()[2] == "Клиенты"
+    assert dialog.new_record().folder == "Клиенты"
 
 
 def test_empty_space_menu_add_goes_to_root(qtbot, workspace_factory, monkeypatch):
@@ -3335,10 +3335,10 @@ def test_dialog_from_dropped_directory_is_prefilled(
     )
     qtbot.addWidget(dialog)
 
-    name, connect, folder = dialog.new_record()
-    assert name == "Бухгалтерия"
-    assert connect == 'File="' + str(directory) + '";'
-    assert folder == group_path(group.folder, group.name)
+    record = dialog.new_record()
+    assert record.name == "Бухгалтерия"
+    assert record.connect == 'File="' + str(directory) + '";'
+    assert record.folder == group_path(group.folder, group.name)
 
 
 def test_tree_drop_of_a_directory_opens_the_add_dialog(
