@@ -59,6 +59,7 @@ from onecstarter.services.display import (
     filter_rows,
     group_contents,
     version_cell,
+    version_options,
 )
 from onecstarter.services.errors import (
     InvalidRequestError,
@@ -1024,6 +1025,7 @@ class BasesView(QWidget):
         # с `--ib-name`, а та открывает браузер (services/launch.py).  # noqa: RUF003
         menu.addAction("Создать ярлык…", lambda: self.create_shortcut(key))
         properties = menu.addAction("Свойства…\tAlt+Enter", lambda: self.show_properties(key))
+        self._add_version_menu(menu, item, key)
         self._add_cache_menu(menu, item)
         menu.addSeparator()
         star = "Убрать из избранного" if item.favorite else "В избранное"  # noqa: RUF001
@@ -1042,6 +1044,75 @@ class BasesView(QWidget):
                 action.setEnabled(False)
                 action.setToolTip(COMMON_NOTE)
         return menu
+
+    def _add_version_menu(self, menu: QMenu, item: InfobaseItem, key: str) -> None:
+        """Подменю «Версия платформы» — ускоритель того же выбора, что в свойствах.
+
+        Задача 5 вехи v2.1. Пункты — та же `version_options`, что и у диалога
+        записи (задача 4, спека §6): разойдись они, пользователь увидел бы
+        в двух местах разный набор версий для одной и той же записи. Первый
+        пункт — «как установлено» (`None`), отделён разделителем от списка
+        установленных версий; отмечен галочкой тот пункт, чьё значение
+        совпадает с `item.requested_version` — включая отдельный пункт
+        запрошенной-но-не-подошедшей версии, если `version_options` его добавила.
+
+        `QMenu(title, menu)` с явным родителем, а не однострочный
+        `menu.addMenu("…")`: у последнего наблюдалось «Internal C++ object
+        already deleted» при чтении состава подменю после возврата
+        `_build_menu` — то же наблюдение и тот же обход, что и у
+        `_add_cache_menu` (см. её докстринг за подробностями; причина
+        не установлена, обход воспроизводим).
+
+        Выбор пишет сразу, без подтверждения (`set_version` → `update_infobase`),
+        тем же правилом, что `Ctrl+D` для избранного. Запись общего списка
+        получает подменю неактивным здесь же, а не в `_build_menu`: отказ
+        показывается до действия (спека §3.2), тем же приёмом, что
+        `_group_menu_for` — `_build_disabled_group_menu`. `update_infobase`
+        всё равно зовёт `_reject_common` — это второй рубеж, не замена
+        первому (запись могла попасть в общий список между построением меню
+        и кликом).
+        """  # noqa: RUF002
+        submenu = QMenu("Версия платформы", menu)
+        action = menu.addMenu(submenu)
+        submenu.setToolTipsVisible(True)
+        cell = version_cell(item, self._installations or [], self._cfg_rules)
+        for index, (text, value) in enumerate(
+            version_options(self._installations or [], item, cell)
+        ):
+            entry = submenu.addAction(text)
+            entry.setCheckable(True)
+            entry.setChecked(value == item.requested_version)
+            entry.triggered.connect(
+                lambda _checked=False, v=value: self.set_version(key, v)
+            )
+            if index == 0:
+                submenu.addSeparator()
+        if _is_read_only(item):
+            # `setToolTipsVisible(True)` обязателен: без него `QMenu` на этой
+            # платформе тултипы пунктов не показывает вовсе — тот же вывод,
+            # что и у `_build_disabled_group_menu`/`_add_cache_menu`.  # noqa: RUF003
+            menu.setToolTipsVisible(True)
+            action.setEnabled(False)
+            action.setToolTip(COMMON_NOTE)
+
+    def set_version(self, key: str, version: str | None) -> None:
+        """Записать версию, выбранную в подменю «Версия платформы» (задача 5).
+
+        `None` — «как установлено»: снимает ключ `Version` у секции, а не
+        пишет пустую строку — пустая строка и отсутствующий ключ читаются
+        по-разному (`version_cell`/`resolve_version`), и подмена одного
+        другим на этом пункте сделала бы его равносильным вводу текста
+        не работающим способом. Отдельный метод, а не лямбда внутри меню:
+        путь записи обязан быть достижим напрямую тестами в обход
+        блокирующего `QMenu.exec` — тот же приём, что у
+        `_apply_properties`/`show_properties` и у `clear_cache`.
+        """  # noqa: RUF002
+        try:
+            self._workspace.update_infobase(key, {"Version": version})
+        except ServicesError as error:
+            self._on_error(error)
+            return
+        self.rebuild()
 
     def _add_cache_menu(self, menu: QMenu, item: InfobaseItem) -> None:
         """Подменю «Очистить кэш» — два пункта, без сочетаний клавиш (спека §3.2).

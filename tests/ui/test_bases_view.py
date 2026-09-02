@@ -3779,6 +3779,101 @@ def test_cache_item_disabled_without_cache_root(qtbot, workspace_factory, tmp_pa
     assert actions["Программный…"].toolTip() == NO_CACHE_ROOT_NOTE
 
 
+# -- Задача 5 (веха v2.1): подменю «Версия платформы» в контекстном меню -----
+#
+# Ускоритель того же выбора, что делает диалог «Свойства…»: пункты — та же
+# `version_options`, что и у диалога записи (спека §6), запись идёт тем же  # noqa: RUF003
+# путём (`update_infobase`), что и у `Ctrl+D` для избранного — сразу, без  # noqa: RUF003
+# подтверждения. Ключ записи — «Демо Бухгалтерия» (id:4444…4), у неё  # noqa: RUF003
+# Version=8.3.25 в фикстуре — маска, не совпадающая буквально ни с одной  # noqa: RUF003
+# установленной строкой (INSTALLED — 8.3.25.1633), поэтому в options
+# появляется третий, отдельный пункт для запрошенной версии (services/
+# display.py, version_options).
+
+_ACCOUNTING_KEY = "id:44444444-4444-4444-4444-444444444444"
+
+
+def _version_submenu(menu: Any) -> Any:
+    for action in menu.actions():
+        if action.text() == "Версия платформы":
+            return action.menu()
+    return None
+
+
+def test_version_submenu_offers_installed_versions(qtbot, workspace_factory):
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    item = next(i for i in view.workspace().items() if i.key == _ACCOUNTING_KEY)
+
+    menu = view._build_menu(item, _ACCOUNTING_KEY)
+    submenu = _version_submenu(menu)
+
+    assert submenu is not None
+    labels = [action.text() for action in submenu.actions() if not action.isSeparator()]
+    assert labels[0].startswith("как установлено")
+    assert str(INSTALLED[0].version) in labels
+
+
+def test_version_submenu_marks_the_current_version_with_a_checkmark(
+    qtbot, workspace_factory
+):
+    """Отмечен галочкой текущий пункт, остальные — нет (спека §6)."""
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    view.set_version(_ACCOUNTING_KEY, "8.3.25.1633")
+    item = next(i for i in view.workspace().items() if i.key == _ACCOUNTING_KEY)
+
+    menu = view._build_menu(item, _ACCOUNTING_KEY)
+    submenu = _version_submenu(menu)
+
+    assert submenu is not None
+    checked = {a.text() for a in submenu.actions() if not a.isSeparator() and a.isChecked()}
+    assert checked == {str(INSTALLED[0].version)}
+
+
+def test_version_submenu_writes_the_chosen_version(qtbot, workspace_factory):
+    """Пишет сразу, как Ctrl+D для избранного (спека §4), прежним путём."""
+    view, _, _, _ = _view(qtbot, workspace_factory)
+
+    view.set_version(_ACCOUNTING_KEY, "8.3.25.1633")
+
+    changed = next(i for i in view.workspace().items() if i.key == _ACCOUNTING_KEY)
+    assert changed.requested_version == "8.3.25.1633"
+
+
+def test_version_submenu_clears_version_for_as_installed(qtbot, workspace_factory):
+    """«как установлено» снимает ключ Version (пишет None), а не пустую строку."""  # noqa: RUF002
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    view.set_version(_ACCOUNTING_KEY, "8.3.25.1633")
+
+    view.set_version(_ACCOUNTING_KEY, None)
+
+    changed = next(i for i in view.workspace().items() if i.key == _ACCOUNTING_KEY)
+    assert changed.requested_version is None
+
+
+def test_version_submenu_is_disabled_for_a_common_list_record(
+    qtbot, workspace_factory, common_base_cfg_paths
+):
+    """Отказ показывается до действия — тем же приёмом, что «Свойства…»."""
+    view, _, _, _ = _view(qtbot, workspace_factory, cfg_paths=common_base_cfg_paths)
+    item = next(i for i in view.workspace().items() if i.key == COMMON_BASE_KEY)
+
+    menu = view._build_menu(item, item.key)
+    action = next(a for a in menu.actions() if a.text() == "Версия платформы")
+
+    assert action.isEnabled() is False
+    assert COMMON_NOTE in action.toolTip()
+
+
+def test_group_menu_has_no_version_submenu(qtbot, workspace_factory):
+    """У строки-группы подменю не показывается вовсе (тот же приём, что у кэша)."""  # noqa: RUF002
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    item = next(i for i in view.workspace().items() if i.key == _CLIENTS_KEY)
+
+    menu = view._group_menu_for(item, _CLIENTS_KEY)
+
+    assert _version_submenu(menu) is None
+
+
 # -- Задача 8: сценарий очистки — замер → подтверждение → удаление → сводка --
 
 
