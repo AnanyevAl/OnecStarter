@@ -133,6 +133,12 @@ QToolTip {{
 }}
 #ConnectionPanel QPushButton:disabled {{ color: {palette.text_dim}; }}
 #SettingsSub, #SettingsNote {{ color: {palette.text_dim}; font-size: 8pt; }}
+/* Ни font-size, ни font-weight, ни letter-spacing здесь нет НАМЕРЕННО:
+   свойства шрифта заголовка группы ставит код — `ui/settings_group.py`,
+   `CollapsibleGroup.__init__` (`setFont`), потому что Qt Style Sheets
+   не умеют `letter-spacing`, а держать часть свойств шрифта в QSS,
+   а часть в `setFont` нельзя — они перебивают друг друга непредсказуемо.
+   Здесь остаются только цвет и «хром» самой кнопки QToolButton. */
 #SettingsGroupLabel {{
     color: {palette.accent}; border: none; background: transparent;
     text-align: left; padding: 0;
