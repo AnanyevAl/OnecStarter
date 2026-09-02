@@ -93,6 +93,11 @@ AUTOSTART_ROW_NOTE = (
 
 SERVERS_ROOT_ROW_NOTE = "Новые профили серверов предлагают каталог <корень>\\srv_<версия>"
 
+# Ширина колонки заголовка у строк с широким органом управления (спека §2).  # noqa: RUF003
+# Значение — из утверждённого мокапа. Строки с обычным (не растянутым) органом  # noqa: RUF003
+# делят ширину иначе — их заголовок сам решает, сколько ему нужно места.
+WIDE_ROW_LABEL_WIDTH = 330
+
 
 def browse_for_servers_root() -> str:
     """Системный диалог выбора корня каталогов серверов. Пустая строка — отмена.
@@ -206,6 +211,7 @@ class SettingsView(QWidget):
             "Корень каталогов серверов",
             SERVERS_ROOT_ROW_NOTE,
             self._build_servers_root_control(store.settings.servers_root),
+            wide_control=True,
         )
 
         self._add_group("ГОРЯЧИЕ КЛАВИШИ")
@@ -281,7 +287,13 @@ class SettingsView(QWidget):
         return self._current_body
 
     def _add_row(
-        self, title: str, note: str, control: QWidget, *, extra: QWidget | None = None
+        self,
+        title: str,
+        note: str,
+        control: QWidget,
+        *,
+        extra: QWidget | None = None,
+        wide_control: bool = False,
     ) -> None:
         row_title = QLabel(title)
         row_note = QLabel(note)
@@ -298,8 +310,20 @@ class SettingsView(QWidget):
             body.addWidget(extra)
 
         row = QHBoxLayout()
-        row.addLayout(body, stretch=1)
-        row.addWidget(control, alignment=Qt.AlignmentFlag.AlignTop)
+        if wide_control:
+            # Заголовок и подпись — колонкой известной ширины, орган забирает
+            # остаток и тянется вместе с формой (замечание заказчика 1.1,  # noqa: RUF003
+            # спека §2). Флаг ставится только у строки пути: растянутый на  # noqa: RUF003
+            # всю ширину сегментный переключатель («Тонкий/Толстый» и т. п.)
+            # выглядел бы сломанным — это явное требование, не вкусовщина.
+            holder = QWidget()
+            holder.setLayout(body)
+            holder.setFixedWidth(WIDE_ROW_LABEL_WIDTH)
+            row.addWidget(holder)
+            row.addWidget(control, stretch=1)
+        else:
+            row.addLayout(body, stretch=1)
+            row.addWidget(control, alignment=Qt.AlignmentFlag.AlignTop)
         self._target_layout().addLayout(row)
 
     def _add_block(self, title: str, note: str, body: QWidget) -> None:
