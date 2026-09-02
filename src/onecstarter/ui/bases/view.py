@@ -1110,7 +1110,6 @@ class BasesView(QWidget):
             self._workspace.update_infobase(key, {"Version": version})
         except ServicesError as error:
             self._on_error(error)
-            return
         self.rebuild()
 
     def _add_cache_menu(self, menu: QMenu, item: InfobaseItem) -> None:
