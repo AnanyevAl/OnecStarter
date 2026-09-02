@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=PT+Serif:ital,wght@0,400;0,700;1,400&family=PT+Sans:wght@400;700&family=JetBrains+Mono:wght@400;500&display=swap">
+<title>Мокапы OneCStarter v2.1</title>
+<style>
+:root{
+  --bg:#fafafa; --surface:#f0f1f3; --raised:#ffffff; --border:#d8dbe0;
+  --text:#1a1a1a; --dim:#5c5c5c; --accent:#8a6600; --sel:#fdf3cf;
+  --ok:#2e6b31; --plate:#161616;
+  --display:"PT Serif",Georgia,"Times New Roman",serif;
+  --body:"PT Sans","Segoe UI",system-ui,sans-serif;
+  --mono:"JetBrains Mono",Consolas,"Courier New",monospace;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#161616; --surface:#1e1e1e; --raised:#262626; --border:#333333;
+    --text:#e8e8e8; --dim:#9a9a9a; --accent:#f2d54c; --sel:#262626;
+    --ok:#81c784; --plate:#0f0f0f;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#161616; --surface:#1e1e1e; --raised:#262626; --border:#333333;
+  --text:#e8e8e8; --dim:#9a9a9a; --accent:#f2d54c; --sel:#262626;
+  --ok:#81c784; --plate:#0f0f0f;
+}
+
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--bg); color:var(--text);
+  font-family:var(--body); font-size:16px; line-height:1.6;
+  -webkit-font-smoothing:antialiased;
+}
+.wrap{max-width:1220px; margin:0 auto; padding:56px 28px 96px}
+.prose{max-width:68ch}
+
+h1,h2,h3{font-family:var(--display); text-wrap:balance; margin:0}
+h1{font-size:2.6rem; line-height:1.15; letter-spacing:-.01em}
+h2{font-size:1.75rem; line-height:1.25}
+h3{font-size:1.05rem; line-height:1.35}
+p{margin:0}
+
+.masthead{
+  display:flex; flex-direction:column; gap:18px;
+  padding-bottom:28px; border-bottom:2px solid var(--text);
+}
+.eyebrow{
+  font-family:var(--mono); font-size:.72rem; letter-spacing:.14em;
+  text-transform:uppercase; color:var(--dim);
+}
+.lede{font-size:1.12rem; color:var(--dim); max-width:64ch}
+.meta{
+  display:flex; flex-wrap:wrap; gap:10px 28px;
+  font-family:var(--mono); font-size:.78rem; color:var(--dim);
+}
+.meta b{color:var(--text); font-weight:500}
+
+section{margin-top:64px}
+.head{display:flex; flex-direction:column; gap:10px; margin-bottom:26px}
+.num{font-family:var(--mono); font-size:.78rem; color:var(--accent); letter-spacing:.08em}
+
+.decisions{
+  margin-top:36px; border:1px solid var(--border); border-radius:2px;
+  background:var(--surface); overflow-x:auto;
+}
+table{border-collapse:collapse; width:100%; font-size:.92rem}
+th,td{text-align:left; padding:12px 18px; border-bottom:1px solid var(--border)}
+tr:last-child td{border-bottom:none}
+th{
+  font-family:var(--mono); font-weight:500; font-size:.72rem;
+  letter-spacing:.1em; text-transform:uppercase; color:var(--dim);
+}
+td.k{font-family:var(--mono); font-size:.82rem; color:var(--dim); white-space:nowrap}
+
+.grid{display:grid; gap:34px; margin-top:8px}
+@media (min-width:900px){ .grid.two{grid-template-columns:repeat(2,1fr)} }
+
+figure{margin:0; display:flex; flex-direction:column; gap:12px}
+.plate{
+  background:var(--plate); border:1px solid var(--border); border-radius:2px;
+  padding:10px; overflow-x:auto;
+}
+.plate img{display:block; width:100%; height:auto; border-radius:1px}
+.plate.fit{display:flex; justify-content:center}
+.plate.fit img{width:auto; max-width:100%}
+figure.chosen .plate{border-color:var(--accent); box-shadow:0 0 0 3px var(--sel)}
+figcaption{display:flex; flex-direction:column; gap:6px}
+.cap-top{display:flex; align-items:baseline; gap:12px; flex-wrap:wrap}
+.name{font-family:var(--display); font-weight:700; font-size:1.05rem}
+.dim{color:var(--dim); font-size:.92rem}
+.px{font-family:var(--mono); font-size:.76rem; color:var(--dim)}
+
+.chip{
+  font-family:var(--mono); font-size:.68rem; letter-spacing:.1em;
+  text-transform:uppercase; padding:3px 9px; border-radius:2px;
+  border:1px solid var(--border); color:var(--dim); white-space:nowrap;
+}
+.chip.ok{color:var(--ok); border-color:var(--ok)}
+.chip.now{color:var(--text)}
+
+.note{
+  margin-top:34px; border-left:3px solid var(--accent);
+  background:var(--surface); padding:20px 24px;
+  display:flex; flex-direction:column; gap:12px;
+}
+code{
+  font-family:var(--mono); font-size:.86em;
+  background:var(--surface); border:1px solid var(--border);
+  border-radius:2px; padding:1px 5px;
+}
+.note code{background:var(--bg)}
+.ask{
+  margin-top:64px; padding-top:26px; border-top:2px solid var(--text);
+  display:flex; flex-direction:column; gap:14px;
+}
+:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="masthead">
+  <span class="eyebrow">OneCStarter · веха v2.1 · утверждено 02.09.2026</span>
+  <h1>Мокапы интерфейса v2.1</h1>
+  <p class="lede">Четыре замечания к интерфейсу, отрисованные настоящим Qt
+  с проектной палитрой и <code>stylesheet</code>. Вариант «сейчас» совпадает
+  со скриншотом рабочей программы — значит остальные можно сравнивать
+  с ним напрямую.</p>
+  <div class="meta">
+    <span>02.09.2026</span>
+    <span>ветка <b>master</b> @ <b>6ac8729</b></span>
+    <span><b>1799</b> тестов зелёные</span>
+    <span>версия в <code>pyproject.toml</code> пока <b>2.0.0</b></span>
+  </div>
+</header>
+
+<div class="decisions">
+<table>
+<thead><tr><th>№</th><th>Замечание</th><th>Решение</th><th>Объём</th></tr></thead>
+<tbody>
+<tr><td class="k">1</td><td>Группы настроек трудно читаемы</td>
+    <td>Свёрнуты, голые заголовки, шеврон «&gt;»</td><td class="k">большой</td></tr>
+<tr><td class="k">1.1</td><td>Поле «Корень каталогов серверов» узкое</td>
+    <td>Тянется вместе с формой</td><td class="k">малый</td></tr>
+<tr><td class="k">2</td><td>В диалоге добавления нет выбора версии</td>
+    <td>Версия + Клиент</td><td class="k">средний</td></tr>
+<tr><td class="k">3</td><td>Смена версии из списка баз</td>
+    <td>Подменю, не двойной клик</td><td class="k">малый</td></tr>
+</tbody>
+</table>
+</div>
+
+<section>
+  <div class="head">
+    <span class="num">Замечание 1</span>
+    <h2>Раздел «Настройки»</h2>
+    <p class="prose dim">Причина нечитаемости не в объёме страницы, а в перевёрнутой
+    иерархии: заголовок группы мельче заголовка настройки и вровень с пояснениями,
+    а отступ перед группой равен отступу между строками. Утверждённый вариант
+    чинит и это, и объём: типографика правится, группы сворачиваются
+    и по умолчанию свёрнуты.</p>
+  </div>
+  <div class="grid">
+    <figure class="">
+  <div class="plate"><img src="./2026-09-02-v21-settings-now.png" alt="Сейчас"></div>
+  <figcaption>
+    <div class="cap-top">
+      <span class="name">Сейчас</span>
+      <span class="chip now">рабочая версия</span>
+      <span class="px">860 px</span>
+    </div>
+    <p class="dim">Заголовок группы набран 8 пунктами — мельче заголовка настройки (10) и вровень с пояснениями. Отступ перед группой равен отступу между строками, поэтому группы не отделены ничем.</p>
+  </figcaption>
+</figure>
+    <figure class="chosen">
+  <div class="plate"><img src="./2026-09-02-v21-settings-collapsed.png" alt="Станет — свёрнуто"></div>
+  <figcaption>
+    <div class="cap-top">
+      <span class="name">Станет — свёрнуто</span>
+      <span class="chip ok">станет</span>
+      <span class="px">304 px</span>
+    </div>
+    <p class="dim">Пять заголовков, шеврон «&gt;» слева. Втрое компактнее нынешних 860 px. Так раздел выглядит при каждом открытии окна.</p>
+  </figcaption>
+</figure>
+    <figure class="chosen">
+  <div class="plate"><img src="./2026-09-02-v21-settings-expanded.png" alt="Станет — раскрыто"></div>
+  <figcaption>
+    <div class="cap-top">
+      <span class="name">Станет — раскрыто</span>
+      <span class="chip ok">станет</span>
+      <span class="px">533 px</span>
+    </div>
+    <p class="dim">Раскрытые «ОКНО И ЗАПУСК» и «СЕРВЕРЫ»: шеврон повернулся вниз, кегль заголовка вырос до 10 пунктов, появилась линейка и отступ перед группой. Здесь же видно широкое поле пути из замечания 1.1.</p>
+  </figcaption>
+</figure>
+  </div>
+
+  <div class="note">
+    <h3>Шеврон рисуется, а не берётся из шрифта</h3>
+    <p>«&gt;» в свёрнутом виде, он же повёрнутый вниз — в раскрытом
+    (решение заказчика 02.09.2026). Ни глиф <code>▸</code>, ни
+    <code>QStyle.setArrowType</code> не годятся: первый зависит от того, есть ли
+    символ в шрифте — в офскрин-прогоне он выходил плашкой, — а второй рисует
+    залитый треугольник, а не «&gt;». Две линии с круглыми стыками через
+    <code>QPainter</code> дают ровно нужную стрелку и не зависят ни от шрифта,
+    ни от темы оформления Windows.</p>
+  </div>
+
+  <div class="note">
+    <h3>Замечание 1.1 — широкое поле пути</h3>
+    <p>Видно в раскрытом состоянии, в группе «СЕРВЕРЫ»: поле начинается сразу
+    за подписью и тянется вместе с формой. Флаг ставится этой строке, а не всем —
+    растянутый на всю ширину переключатель «Тонкий / Толстый» выглядел бы сломанным.</p>
+  </div>
+
+  <div class="note">
+    <h3>Чего на мокапе не видно: тестовый долг</h3>
+    <p>Свёрнутые по умолчанию группы ломают сторож, добавленный по мутационной
+    проверке 22.08.2026: <code>isHidden()</code> перестаёт отличать «виджет
+    потерян при сборке» от «виджет в свёрнутой группе». Лечится аксессором
+    <code>expand_group()</code> — существующие проверки раскрывают свою группу
+    первыми. Это и делает пункт 1 самым дорогим из четырёх.</p>
+  </div>
+</section>
+
+<section>
+  <div class="head">
+    <span class="num">Замечание 2</span>
+    <h2>Диалог добавления базы</h2>
+    <p class="prose dim">«Версия» и «Клиент» уже существуют в диалоге правки —
+    в диалоге добавления их не строят, потому что <code>add_infobase</code>
+    их не принимает. Добавляются оба: довод «хочу задать сразу» относится
+    к ним одинаково.</p>
+  </div>
+  <div class="grid two">
+    <figure class="">
+  <div class="plate fit"><img src="./2026-09-02-v21-dialog-now.png" alt="Диалог сейчас"></div>
+  <figcaption>
+    <div class="cap-top">
+      <span class="name">Диалог сейчас</span>
+      <span class="chip now">рабочая версия</span>
+      <span class="px">настоящий InfobaseDialog</span>
+    </div>
+    <p class="dim">Имя, размещение, путь, группа. Версию и клиент приходится выставлять следом, открыв свойства.</p>
+  </figcaption>
+</figure>
+    <figure class="chosen">
+  <div class="plate fit"><img src="./2026-09-02-v21-dialog-new.png" alt="Диалог станет"></div>
+  <figcaption>
+    <div class="cap-top">
+      <span class="name">Диалог станет</span>
+      <span class="chip ok">утверждён</span>
+      <span class="px">210 → 285 px</span>
+    </div>
+    <p class="dim">Обе строки необязательны: «как установлено» и «Авто» не пишут в файл списка ничего, обычное добавление не меняется.</p>
+  </figcaption>
+</figure>
+  </div>
+</section>
+
+<section>
+  <div class="head">
+    <span class="num">Замечание 3</span>
+    <h2>Смена версии из списка баз</h2>
+    <p class="prose dim">Двойной клик по строке уже запускает базу — по любой
+    колонке. Отдать его на «Версии» значит поставить рядом два исхода одного
+    жеста: промах мышью либо запускает 1С по рабочей базе, либо открывает
+    редактор вместо запуска. Подменю не занято ничем, работает с клавиатуры
+    и показывает доступные версии вместо ввода вслепую.</p>
+  </div>
+  <figure class="chosen">
+  <div class="plate fit"><img src="./2026-09-02-v21-menu-version.png" alt="«Версия платформы ▸»"></div>
+  <figcaption>
+    <div class="cap-top">
+      <span class="name">«Версия платформы ▸»</span>
+      <span class="chip ok">утверждён</span>
+      
+    </div>
+    <p class="dim">Между «Свойствами…» и «Очистить кэш» — ускоритель стоит рядом с тем, что ускоряет. Пункты совпадают с диалогом: их отдаёт общая чистая функция, иначе списки версий разошлись бы.</p>
+  </figcaption>
+</figure>
+</section>
+
+<div class="ask">
+  <h2>Оговорки о достоверности</h2>
+  <p class="prose">Пути в мокапах обезличены (<code>&lt;пользователь&gt;</code>,
+  <code>D:\1C\srv</code>): файлы лежат в репозитории, а туда не идут ни имя
+  пользователя, ни реальные каталоги машины.</p>
+  <p class="prose">Выпадающие списки и кнопки в диалогах серые не по вине мокапа.
+  В <code>stylesheet()</code> правила есть только для именованных элементов,
+  обычные <code>QComboBox</code> и <code>QPushButton</code> Qt красит темой
+  по умолчанию — сравните «сейчас» и «станет», там одно и то же. Это отдельное
+  замечание к диалогам, в v2.1 не входит.</p>
+</div>
+
+</div>
+</body>
+</html>
