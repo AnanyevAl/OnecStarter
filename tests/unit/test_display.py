@@ -24,6 +24,7 @@ from onecstarter.services.display import (
     row_label,
     sort_rows,
     version_cell,
+    version_options,
 )
 from onecstarter.services.model import InfobaseItem, InfobaseSource
 from onecstarter.services.settings import DEFAULT_RECENT_LIMIT, ListOrder
@@ -304,6 +305,44 @@ def test_version_cell_pending_keeps_web_and_group_behaviour() -> None:
     group = next(entry for entry in _items() if entry.name == "Клиенты")
     group_cell = version_cell(group, [], [], discovery_pending=True)
     assert group_cell.text == ""
+
+
+def _item(*, requested_version: str | None) -> InfobaseItem:
+    """Минимальная запись для тестов `version_options` — только нужное поле."""
+    return InfobaseItem(
+        key="id:x", name="База", folder="/", is_group=False, connect='File="C:\\b";',
+        kind=ConnectKind.FILE, requested_version=requested_version, section_default_version=None,
+        app=None, source=InfobaseSource.USER, order=None, section_id="x",
+    )
+
+
+def test_version_options_without_an_item_offers_installed_versions() -> None:
+    """Диалог добавления: записи ещё нет, «как установлено» без уточнения."""
+    options = version_options(INSTALLED)
+
+    assert options[0] == ("как установлено", None)
+    assert [value for _text, value in options[1:]] == [
+        str(installation.version) for installation in INSTALLED
+    ]
+
+
+def test_version_options_keeps_a_requested_version_that_is_not_installed() -> None:
+    """Иначе нетронутый диалог откатился бы на первый пункт и снял Version."""
+    item = _item(requested_version="8.3.9")
+    cell = version_cell(item, INSTALLED, [])
+
+    options = version_options(INSTALLED, item, cell)
+
+    assert "8.3.9" in [value for _text, value in options]
+
+
+def test_version_options_does_not_duplicate_an_installed_request() -> None:
+    item = _item(requested_version=str(INSTALLED[0].version))
+    cell = version_cell(item, INSTALLED, [])
+
+    values = [value for _text, value in version_options(INSTALLED, item, cell)]
+
+    assert values.count(str(INSTALLED[0].version)) == 1
 
 
 # -- Задача 12: содержимое группы (обязательство 3 блока Б) ----------------

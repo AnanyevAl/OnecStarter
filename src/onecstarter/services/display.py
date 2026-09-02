@@ -296,6 +296,50 @@ def version_cell(
 _ARCH_LABEL = {Arch.X64: "x64", Arch.X86: "x86", Arch.UNKNOWN: ""}
 
 
+def version_options(
+    installations: Sequence[Installation],
+    item: InfobaseItem | None = None,
+    cell: VersionCell | None = None,
+) -> list[tuple[str, str | None]]:
+    """Пункты выбора версии: «как установлено» + установленные.
+
+    Общий источник для диалога записи и подменю списка баз (спека §6):
+    разойдись они, пользователь увидел бы в двух местах разный набор
+    версий для одной записи.
+
+    `item is None` — новая запись (диалог добавления): показывать нечего,
+    кроме установленных, и уточнять «как установлено» нечем.
+
+    Для существующей записи сохраняется прежнее поведение: действующая
+    версия в скобках у первого пункта, когда `Version` у записи нет вовсе
+    ([Ф] T-05.5), и отдельный пункт для запрошенной версии, которой нет
+    среди установленных, — без него нетронутый диалог не нашёл бы себе
+    пункта, откатился бы к первому, и `changes()` восприняла бы это как
+    решение пользователя снять `Version`.
+
+    Кроме WEB: там `version_cell` всегда отдаёт «веб» (Version на запуск
+    веб-базы не влияет), и подстановка читалась бы как «как установлено (веб)».
+    """  # noqa: RUF002
+    display_text = ""
+    if item is not None and cell is not None and item.kind is not ConnectKind.WEB:
+        display_text = cell.text
+    default_label = "как установлено"
+    if item is not None and item.requested_version is None and display_text:
+        default_label = f"{default_label} ({display_text})"
+    options: list[tuple[str, str | None]] = [(default_label, None)]
+    seen: set[str | None] = {None}
+    for installation in installations:
+        value = str(installation.version)
+        if value in seen:
+            continue
+        seen.add(value)
+        options.append((value, value))
+    if item is not None and item.requested_version is not None:
+        if item.requested_version not in seen:
+            options.append((display_text or item.requested_version, item.requested_version))
+    return options
+
+
 def is_degraded_group(item: InfobaseItem) -> bool:
     """Секция-группа с пустым `Connect=`, а не с отсутствующим ключом.
 

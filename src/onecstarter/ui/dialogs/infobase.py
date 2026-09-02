@@ -154,7 +154,7 @@ from onecstarter.domain.default_version import DefaultVersionRule
 from onecstarter.domain.version import Installation
 from onecstarter.security.secrets import is_secret_key
 from onecstarter.services.connection import BADGE_LABELS, connection_path
-from onecstarter.services.display import VersionCell, version_cell
+from onecstarter.services.display import version_cell, version_options
 from onecstarter.services.model import InfobaseItem
 from onecstarter.services.paths import ROOT, normalize_folder
 from onecstarter.ui.dialogs.buttons import ButtonKind, russian_button_box
@@ -308,49 +308,6 @@ def _app_key(app: str | None) -> str | None:
 _APP_ITEMS = (("Авто", None), ("Тонкий клиент", "ThinClient"), ("Толстый клиент", "ThickClient"))
 
 
-def _version_options(
-    item: InfobaseItem, installations: Sequence[Installation], cell: VersionCell
-) -> list[tuple[str, str | None]]:
-    """Пункты выпадающего списка версий: «как установлено» + установленные.
-
-    Если запрошенная версия (маска, неполный номер или версия, которой нет
-    на машине) не совпадает буквально ни с одной установленной строкой,
-    добавляется отдельный пункт с её точным значением. Без него нетронутый
-    диалог не находил бы себе пункта с такими данными и откатывался бы
-    к первому («как установлено»), а `changes()` восприняла бы это как
-    решение пользователя снять `Version` — тот же класс молчаливой порчи,
-    ради которого написан `replace_fragment` для `Connect`.
-
-    Пункт «как установлено» получает действующую версию в скобках, если
-    `Version` у записи нет вовсе (I6, круг правок 1): без Version секция
-    всё равно резолвится в конкретную версию ([Ф] T-05.5 — DefaultVersion
-    или максимум установленной), и задача 8 эту версию показывала. Голая
-    надпись «как установлено» без неё — шаг назад, а не только смена виджета.
-
-    Кроме WEB (круг правок 2, item 5, и круг правок 3, мелочь 1): там
-    `version_cell` всегда отдаёт `cell.text == "веб"` (Version на запуск
-    веб-базы не влияет вовсе), и подстановка без разбора читалась бы как
-    «как установлено (веб)» или, для пункта запрошенной-но-не-подошедшей
-    версии ниже, как голое «веб» вместо самой версии — оба места читают
-    `cell.text` только через `display_text`, уже отфильтрованный по WEB.
-    """  # noqa: RUF002
-    display_text = cell.text if item.kind is not ConnectKind.WEB else ""
-    default_label = "как установлено"
-    if item.requested_version is None and display_text:
-        default_label = f"{default_label} ({display_text})"
-    options: list[tuple[str, str | None]] = [(default_label, None)]
-    seen: set[str | None] = {None}
-    for installation in installations:
-        value = str(installation.version)
-        if value in seen:
-            continue
-        seen.add(value)
-        options.append((value, value))
-    if item.requested_version is not None and item.requested_version not in seen:
-        options.append((display_text or item.requested_version, item.requested_version))
-    return options
-
-
 class InfobaseDialog(QDialog):
     def __init__(
         self,
@@ -448,7 +405,7 @@ class InfobaseDialog(QDialog):
         if item is not None:
             cell = version_cell(item, installations, cfg_rules)
             self._version = QComboBox()
-            for text, data in _version_options(item, installations, cell):
+            for text, data in version_options(installations, item, cell):
                 self._version.addItem(text, data)
             version_index = self._version.findData(item.requested_version)
             self._version.setCurrentIndex(version_index if version_index >= 0 else 0)
