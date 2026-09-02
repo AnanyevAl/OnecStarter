@@ -133,7 +133,14 @@ QToolTip {{
 }}
 #ConnectionPanel QPushButton:disabled {{ color: {palette.text_dim}; }}
 #SettingsSub, #SettingsNote {{ color: {palette.text_dim}; font-size: 8pt; }}
-#SettingsGroupLabel {{ color: {palette.accent}; font-size: 8pt; font-weight: 700; }}
+#SettingsGroupLabel {{
+    color: {palette.accent}; border: none; background: transparent;
+    text-align: left; padding: 0;
+}}
+#SettingsBlockLabel {{
+    color: {palette.text}; border: none; background: transparent;
+    text-align: left; padding: 0;
+}}
 #ThemeSeg QPushButton {{
     border: 1px solid {palette.border}; background: {palette.surface_raised};
     padding: 3px 10px; font-size: 9pt;

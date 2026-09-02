@@ -52,6 +52,7 @@ from onecstarter.services.settings import (
     ThemeMode,
 )
 from onecstarter.ui.hotkey_edit import HotkeyEdit
+from onecstarter.ui.settings_group import CollapsibleGroup
 from onecstarter.ui.settings_store import SettingsStore
 from onecstarter.ui.shortcuts import BASES_SHORTCUTS
 from onecstarter.ui.theme_controller import ThemeController
@@ -130,6 +131,8 @@ class SettingsView(QWidget):
         self._group_labels: list[str] = []
         self._row_notes: dict[str, QLabel] = {}
         self._row_controls: dict[str, QWidget] = {}
+        self._groups: dict[str, CollapsibleGroup] = {}
+        self._current_body: QVBoxLayout | None = None
 
         header = QLabel("Настройки")
         header_font = header.font()
@@ -253,10 +256,29 @@ class SettingsView(QWidget):
     # --- сборка раскладки ------------------------------------------------
 
     def _add_group(self, title: str) -> None:
-        label = QLabel(title)
-        label.setObjectName("SettingsGroupLabel")
-        self._layout.addWidget(label)
+        """Новая сворачиваемая группа (спека §1.4): свёрнута по умолчанию.
+
+        Зазор перед группой ставится, только если это не первая группа —
+        у самой первой над ней уже есть `addSpacing(10)` после шапки раздела.
+        """  # noqa: RUF002
+        if self._groups:
+            self._layout.addSpacing(16)
+        group = CollapsibleGroup(title)
+        group.set_palette(self._controller.palette)
+        self._layout.addWidget(group)
+        self._groups[title] = group
         self._group_labels.append(title)
+        self._current_body = group.body_layout()
+
+    def _target_layout(self) -> QVBoxLayout:
+        """Куда класть строку: тело текущей группы.
+
+        Строк вне группы в разделе нет и не должно быть — иначе они окажутся
+        вне свёртки и переживут её, а раздел обещает обратное.
+        """  # noqa: RUF002
+        if self._current_body is None:
+            raise RuntimeError("строка настроек добавлена до первой группы")
+        return self._current_body
 
     def _add_row(
         self, title: str, note: str, control: QWidget, *, extra: QWidget | None = None
@@ -278,25 +300,31 @@ class SettingsView(QWidget):
         row = QHBoxLayout()
         row.addLayout(body, stretch=1)
         row.addWidget(control, alignment=Qt.AlignmentFlag.AlignTop)
-        self._layout.addLayout(row)
+        self._target_layout().addLayout(row)
 
     def _add_block(self, title: str, note: str, body: QWidget) -> None:
-        """Строка настроек во всю ширину: заголовок, подпись, тело под ними.
+        """Блок во всю ширину, свёрнутый по умолчанию (спека §1.5).
 
-        Для справочной таблицы `_add_row` не годится: та ставит орган
-        управления справа узкой колонкой, а таблице нужна ширина раздела.
-        Регистрируется в `_row_notes`/`_row_controls` так же, как строки
-        `_add_row`, — тесты находят её теми же аксессорами.
-        """  # noqa: RUF002
-        row_title = QLabel(title)
+        Подпись живёт вне сворачиваемого тела: она объясняет, что внутри,
+        и в свёрнутом виде нужна больше, чем в раскрытом.
+        """
         row_note = QLabel(note)
         row_note.setObjectName("SettingsNote")
         row_note.setWordWrap(True)
         self._row_notes[title] = row_note
         self._row_controls[title] = body
-        self._layout.addWidget(row_title)
-        self._layout.addWidget(row_note)
-        self._layout.addWidget(body)
+
+        block = CollapsibleGroup(
+            title,
+            accent=False,
+            rule=False,
+            note=row_note,
+            object_name="SettingsBlockLabel",
+        )
+        block.set_palette(self._controller.palette)
+        block.body_layout().addWidget(body)
+        self._groups[title] = block
+        self._target_layout().addWidget(block)
 
     def _build_shortcut_reference(self) -> QWidget:
         """Таблица «сочетание — действие» по `BASES_SHORTCUTS` (T-11, п. 3, только чтение)."""
@@ -381,6 +409,16 @@ class SettingsView(QWidget):
 
     def group_labels(self) -> list[str]:
         return list(self._group_labels)
+
+    def group(self, title: str) -> CollapsibleGroup:
+        """Группа по заголовку — тестам, проверяющим свёртку."""
+        return self._groups[title]
+
+    def expand_group(self, title: str) -> None:
+        self._groups[title].set_expanded(True)
+
+    def is_group_expanded(self, title: str) -> bool:
+        return self._groups[title].is_expanded()
 
     def theme_buttons(self) -> list[QPushButton]:
         return list(self._buttons)
@@ -629,3 +667,9 @@ class SettingsView(QWidget):
         self._servers_root.blockSignals(blocked)
 
         self._status.setText(self._store.last_save_error or "")
+
+        # Смена темы приходит и через `controller.changed`: без перекраски
+        # здесь заголовки, шевроны и разделители групп остались бы в цветах
+        # темы, в которой раздел был построен.
+        for group in self._groups.values():
+            group.set_palette(self._controller.palette)

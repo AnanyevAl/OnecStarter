@@ -594,6 +594,11 @@ def test_autostart_row_warns_about_task_manager(
     # мутационной проверки 22.08.2026: без этой строки мутация
     # `row_note.setVisible(False)` переживала набор, а докстринг обещал  # noqa: RUF003
     # «видна всегда».
+    # [Ф] Замер 02.09.2026 (PySide6 6.11.1): `isHidden()` отражает только явное
+    # скрытие САМОГО виджета и не наследуется от предка — свёртка группы
+    # (спека §1.4) на него не влияет, и сторож продолжает ловить именно
+    # потерянный при сборке виджет. Видимость строки для пользователя
+    # проверяется не здесь и не так: для неё есть `isVisibleTo(<группа>)`.
     assert not note.isHidden()
     # Заголовок и подпись на местах, а переключатель под ними чужой — тот же  # noqa: RUF003
     # обман, что подсказка не на своей строке: аксессоры вьюхи отдают виджеты
@@ -704,3 +709,53 @@ def test_sync_does_not_bounce_external_servers_root_change_back_into_store(
     # Единственный вызов — наш явный; без глушения `_sync` породил бы ещё один
     # (эхо `editingFinished` от `setText` на новое значение).
     assert calls == [{"servers_root": r"F:\srv"}]
+
+
+# -- сворачиваемые группы (v2.1, задача 2) -----------------------------------
+#
+# Решение заказчика 02.09.2026: раздел открывается свёрнутым целиком, группа
+# «Сочетания раздела «Базы»» — второй уровень свёртки внутри «ГОРЯЧИЕ КЛАВИШИ».
+# Видимость внутри раздела проверяется `isVisibleTo`, а НЕ `isHidden`:  # noqa: RUF003
+# [Ф] замер 02.09.2026 — `isHidden()` отражает только явное скрытие самого
+# виджета и у строки внутри свёрнутой группы остаётся `False` (спека §1.6).  # noqa: RUF003
+# С `isHidden` эти три теста проходили бы всегда и не проверяли бы ничего.  # noqa: RUF003
+
+
+def test_all_groups_are_collapsed_on_creation(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Решение заказчика 02.09.2026: раздел открывается свёрнутым целиком."""
+    view, _ = _view(application, tmp_path)
+
+    assert [view.is_group_expanded(title) for title in view.group_labels()] == [
+        False for _ in view.group_labels()
+    ]
+
+
+def test_expanding_a_group_shows_its_rows(
+    application: QApplication, tmp_path: Path
+) -> None:
+    view, _ = _view(application, tmp_path)
+    note = view.row_note("Корень каталогов серверов")
+    group = view.group("СЕРВЕРЫ")
+    assert note.isVisibleTo(group) is False
+
+    view.expand_group("СЕРВЕРЫ")
+    assert note.isVisibleTo(group) is True
+
+    group.set_expanded(False)
+    assert note.isVisibleTo(group) is False
+
+
+def test_shortcut_reference_is_collapsed_inside_hotkeys_group(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Справочник — второй уровень свёртки: 12 строк читаются один раз."""
+    view, _ = _view(application, tmp_path)
+    view.expand_group("ГОРЯЧИЕ КЛАВИШИ")
+    block = view.group("Сочетания раздела «Базы»")
+
+    assert view.is_group_expanded("Сочетания раздела «Базы»") is False
+    # Подпись блока живёт вне сворачиваемого тела и видна свёрнутой.
+    assert view.row_note("Сочетания раздела «Базы»").isVisibleTo(block) is True
+    assert view.row_control("Сочетания раздела «Базы»").isVisibleTo(block) is False
