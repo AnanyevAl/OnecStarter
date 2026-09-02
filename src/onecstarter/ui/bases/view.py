@@ -1074,7 +1074,6 @@ class BasesView(QWidget):
         """  # noqa: RUF002
         submenu = QMenu("Версия платформы", menu)
         action = menu.addMenu(submenu)
-        submenu.setToolTipsVisible(True)
         cell = version_cell(item, self._installations or [], self._cfg_rules)
         for index, (text, value) in enumerate(
             version_options(self._installations or [], item, cell)

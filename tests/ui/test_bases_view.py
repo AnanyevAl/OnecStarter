@@ -3874,6 +3874,45 @@ def test_group_menu_has_no_version_submenu(qtbot, workspace_factory):
     assert _version_submenu(menu) is None
 
 
+def test_version_submenu_item_trigger_reaches_set_version_with_right_value(
+    qtbot, workspace_factory
+):
+    """Клик пункта подменю доходит до set_version с правильным значением.
+
+    Закрывает находку ревью задачи 5 — тот же класс дефекта, который закрыл
+    ⚠️ ревью задачи 7 у `test_cache_menu_item_trigger_reaches_clear_cache_with_right_kind`
+    чуть ниже по файлу: шесть тестов выше зовут `view.set_version(...)` напрямую,
+    минуя `entry.triggered.connect(...)`, и ни один не проходит цепочку «пункт →
+    лямбда → set_version → update_infobase» целиком — защита от позднего
+    связывания (`v=value` в сигнатуре лямбды) остаётся непроверенной.
+
+    Пункт для клика — конкретная установленная версия (`INSTALLED[0].version`),
+    не первый пункт («как установлено», значение `None`) и не последний
+    (пункт запрошенной-но-не-подошедшей маски `Version=8.3.25` у этой записи,
+    значение `"8.3.25"`, — он добавляется в цикле последним). Без `v=value`
+    все лямбды подменю замкнулись бы на одну и ту же свободную переменную
+    цикла и после его завершения писали бы одно и то же значение последней
+    итерации — «8.3.25»; клик по первому пункту (`None`) отличил бы такую
+    порчу от исправной лямбды не хуже среднего, но не доказывал бы, что дело
+    в позднем связывании, а не в каком-то ином дефекте, теряющем выбор клика
+    вовсе. Средний пункт передаёт оба факта разом: значение дошло, и это
+    значение ИМЕННО этого пункта, а не последнего в списке.
+    """  # noqa: RUF002
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    item = next(i for i in view.workspace().items() if i.key == _ACCOUNTING_KEY)
+    target_version = str(INSTALLED[0].version)
+
+    menu = view._build_menu(item, _ACCOUNTING_KEY)
+    submenu = _version_submenu(menu)
+    assert submenu is not None
+    action = next(a for a in submenu.actions() if a.text() == target_version)
+
+    action.trigger()
+
+    changed = next(i for i in view.workspace().items() if i.key == _ACCOUNTING_KEY)
+    assert changed.requested_version == target_version
+
+
 # -- Задача 8: сценарий очистки — замер → подтверждение → удаление → сводка --
 
 
