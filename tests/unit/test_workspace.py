@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from onecstarter.config.v8i import V8iSection, parse_v8i
 from onecstarter.domain.launch import ClientConvention, ClientKind, LaunchCommand
 from onecstarter.domain.version import Arch, Installation, parse_version
 from onecstarter.services.catalog import read_common_lists
@@ -290,6 +291,45 @@ def test_add_returns_key_of_new_record(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path)
     key = workspace.add_infobase("Новая", 'File="C:\\Bases\\New";')
     assert next(item for item in workspace.items() if item.key == key).name == "Новая"
+
+
+def _raw_section(tmp_path: Path, name: str) -> V8iSection:
+    """Секция ровно как она лежит в файле — не модель `Workspace` в памяти.
+
+    Перечитывает `ibases.v8i` с диска и разбирает заново, независимо от
+    состояния `Workspace`: расхождение между записанным файлом и объектом
+    в памяти (в любую сторону) — именно то, что обязана ловить проверка
+    «версия и клиент не заданы по умолчанию не пишутся в чужой файл».
+    """  # noqa: RUF002
+    document = parse_v8i((tmp_path / "ibases.v8i").read_bytes())
+    return next(section for section in document.sections if section.name == name)
+
+
+def test_add_infobase_writes_version_and_app_when_given(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+
+    key = workspace.add_infobase(
+        "Новая", 'File="D:\\Bases\\New";', "/", version="8.3.25.1633", app="ThinClient"
+    )
+
+    item = next(i for i in workspace.items() if i.key == key)
+    assert item.requested_version == "8.3.25.1633"
+    assert item.app == "ThinClient"
+
+    section = _raw_section(tmp_path, "Новая")
+    assert section.get("Version") == "8.3.25.1633"
+    assert section.get("App") == "ThinClient"
+
+
+def test_add_infobase_writes_neither_key_by_default(tmp_path: Path) -> None:
+    """Обычное добавление не меняется: «как установлено» и «Авто» молчат."""
+    workspace = _workspace(tmp_path)
+
+    workspace.add_infobase("Новая", 'File="D:\\Bases\\New";', "/")
+
+    section = _raw_section(tmp_path, "Новая")
+    assert section.get("Version") is None
+    assert section.get("App") is None
 
 
 def test_duplicate_name_makes_launch_ambiguous(tmp_path: Path) -> None:

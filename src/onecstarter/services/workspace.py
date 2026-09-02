@@ -224,16 +224,33 @@ class Workspace:
         self._rebuild()
         return True
 
-    def add_infobase(self, name: str, connect: str, folder: str | None = None) -> str:
+    def add_infobase(
+        self,
+        name: str,
+        connect: str,
+        folder: str | None = None,
+        version: str | None = None,
+        app: str | None = None,
+    ) -> str:
         """Добавить запись и вернуть её ключ привязки.
 
         Ключ возвращается, потому что искать новую запись по имени нельзя:
         имена в списке не уникальны (дизайн плана 3, §5 — `ADD` с дублем
         разрешён).
+
+        `version` и `app` попадают в секцию, только когда заданы: «как
+        установлено» и «Авто» в диалоге добавления означают отсутствие ключа,
+        а не пустое значение (спека §3) — файл читает и перезаписывает
+        штатный стартер, и пустая строка вместо отсутствующего ключа меняет
+        его поведение.
         """  # noqa: RUF002
         changes: dict[str, str | None] = {"Connect": connect}
         if folder:
             changes["Folder"] = folder
+        if version:
+            changes["Version"] = version
+        if app:
+            changes["App"] = app
         result = self._write(SectionPatch(PatchKind.ADD, name=name, changes=changes))
         if result.key is None:
             # Недостижимо: ADD всегда создаёт секцию и возвращает её ключ.
