@@ -345,6 +345,25 @@ def test_version_options_does_not_duplicate_an_installed_request() -> None:
     assert values.count(str(INSTALLED[0].version)) == 1
 
 
+def test_version_options_deduplicates_installations_sharing_a_version_string() -> None:
+    """x86 и x64 одной сборки дают два `Installation` с равной `version` (T-04.6/6).
+
+    `INSTALLED` несёт три РАЗНЫЕ строки версий — ветка `if value in seen:
+    continue` в `version_options` ни разу не исполняется ни одним из
+    существующих тестов файла. Случай не гипотетический: x86 и x64 одной
+    сборки платформы дают два разных `Installation` с одинаковой `version`.
+    """  # noqa: RUF002
+    same_version = parse_version("8.3.25.1633")
+    installations = [
+        Installation(same_version, Path(r"C:\1cv8\8.3.25.1633\bin"), Arch.X86),
+        Installation(same_version, Path(r"C:\1cv8\8.3.25.1633\bin"), Arch.X64),
+    ]
+
+    values = [value for _text, value in version_options(installations)]
+
+    assert values.count(str(same_version)) == 1
+
+
 # -- Задача 12: содержимое группы (обязательство 3 блока Б) ----------------
 
 

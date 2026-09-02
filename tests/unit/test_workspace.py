@@ -321,11 +321,30 @@ def test_add_infobase_writes_version_and_app_when_given(tmp_path: Path) -> None:
     assert section.get("App") == "ThinClient"
 
 
-def test_add_infobase_writes_neither_key_by_default(tmp_path: Path) -> None:
-    """Обычное добавление не меняется: «как установлено» и «Авто» молчат."""
+@pytest.mark.parametrize(
+    "version, app",
+    [
+        pytest.param(None, None, id="not-given"),
+        pytest.param("", "", id="empty-string"),
+    ],
+)
+def test_add_infobase_writes_neither_key_when_version_and_app_are_falsy(
+    tmp_path: Path, version: str | None, app: str | None
+) -> None:
+    """«Как установлено» и «Авто» молчат — ни отсутствие, ни пустая строка не пишутся.
+
+    Пустая строка (`version=""`/`app=""`) сегодня недостижима через UI —
+    комбобоксы диалога добавления кладут `None`, не `""` — но метод
+    `add_infobase` публичный, и guard `if version:`/`if app:` в нём существует
+    именно ради этого случая: нижний рубеж `_apply_add` (services/edit.py)
+    отбрасывает только `None`, а пустая строка ушла бы в чужой `.v8i` как
+    `Version=`/`App=` — платформа читает такой ключ иначе, чем его отсутствие.
+    Находка финального ревью ветки v2.1: случай был закреплён только разовой
+    мутацией без постоянного теста.
+    """  # noqa: RUF002
     workspace = _workspace(tmp_path)
 
-    workspace.add_infobase("Новая", 'File="D:\\Bases\\New";', "/")
+    workspace.add_infobase("Новая", 'File="D:\\Bases\\New";', "/", version=version, app=app)
 
     section = _raw_section(tmp_path, "Новая")
     assert section.get("Version") is None

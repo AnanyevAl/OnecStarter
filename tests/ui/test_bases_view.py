@@ -22,7 +22,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QTreeView, QWidget
 from onecstarter.config.shell_link import build_shell_link, safe_file_name, shortcut_command
 from onecstarter.domain.connect import ConnectKind
 from onecstarter.domain.launch import ClientKind, LaunchCommand
-from onecstarter.domain.version import Installation
+from onecstarter.domain.version import Arch, Installation, parse_version
 from onecstarter.services.cache import CacheEntry, CacheKind, EntryKind
 from onecstarter.services.display import COMMON_NOTE, IMPLICIT_NOTE, RowKind
 from onecstarter.services.errors import (
@@ -3862,6 +3862,12 @@ def test_version_submenu_is_disabled_for_a_common_list_record(
 
     assert action.isEnabled() is False
     assert COMMON_NOTE in action.toolTip()
+    # `toolTip()` возвращает строку независимо от того, показываются ли
+    # подсказки вообще (находка финального ревью) — без этого ассерта
+    # пропажа `setToolTipsVisible(True)` осталась бы незамеченной: тест
+    # был бы зелёным, а пользователь увидел бы серый пункт без единого  # noqa: RUF003
+    # слова о причине.  # noqa: RUF003
+    assert menu.toolTipsVisible()
 
 
 def test_group_menu_has_no_version_submenu(qtbot, workspace_factory):
@@ -3911,6 +3917,50 @@ def test_version_submenu_item_trigger_reaches_set_version_with_right_value(
 
     changed = next(i for i in view.workspace().items() if i.key == _ACCOUNTING_KEY)
     assert changed.requested_version == target_version
+
+
+# -- отказ записи bases.json после смены ключа привязки (финальное ревью) ----
+#
+# `set_version` роняла `rebuild()` через `return` в ветке `except`. Отказ
+# `_store_user` (см. докстринг `Workspace._write`) приходит уже ПОСЛЕ того,
+# как `.v8i` записан и внутренний `_rebuild()` состоялся, — с `return` дерево  # noqa: RUF003
+# осталось бы со старым ключом строки, которого в файле уже нет. Достижимо  # noqa: RUF003
+# у записи без `ID`: `_apply_update` дописывает его при любой правке секции,  # noqa: RUF003
+# ключ привязки меняется, и `_write` пытается перенести избранное/историю
+# на новый ключ — этот перенос и падает здесь.
+
+
+def test_set_version_rebuilds_the_tree_even_when_user_data_write_fails(
+    qtbot, workspace_factory, tmp_path
+):
+    """Дерево обязано перестроиться, даже если отказал перенос bases.json.
+
+    Две установки, а не одна: у записи без `Version` «как установлено»
+    резолвится в МАКСИМАЛЬНУЮ (`resolve_version`), и колонка версии показала
+    бы тот же текст что до, что после правки, — мутация с `return` осталась
+    бы незамеченной. Выбор МЛАДШЕЙ версии даёт текст, различающий «дерево
+    перестроено» от «дерево осталось прежним».
+    """  # noqa: RUF002
+    (tmp_path / "ibases.v8i").write_bytes(
+        '[БезID]\r\nConnect=File="C:\\B";\r\n'.encode()  # noqa: RUF001
+    )
+    installations = [
+        Installation(parse_version("8.3.22.1923"), Path(r"C:\1cv8\8.3.22.1923"), Arch.X64),
+        Installation(parse_version("8.3.25.1633"), Path(r"C:\1cv8\8.3.25.1633"), Arch.X64),
+    ]
+    view, _, errors, _ = _view(qtbot, workspace_factory, installations=installations)
+    item = view.workspace().items()[0]
+    assert item.section_id is None
+    _block_user_data(view)
+
+    view.set_version(item.key, "8.3.22.1923")
+
+    assert len(errors) == 1
+    assert isinstance(errors[0], UserDataWriteError)
+    changed = view.workspace().items()[0]
+    assert changed.key != item.key
+    assert changed.requested_version == "8.3.22.1923"
+    assert any("8.3.22.1923" in text for text in _column_texts(view, column=1))
 
 
 # -- Задача 8: сценарий очистки — замер → подтверждение → удаление → сводка --
