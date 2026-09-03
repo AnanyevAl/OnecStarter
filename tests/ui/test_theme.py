@@ -177,6 +177,31 @@ def test_checked_theme_segment_uses_selection_and_accent() -> None:
         assert props["color"] == palette.accent
 
 
+def test_settings_group_header_shows_a_focus_frame() -> None:
+    """Заголовок группы — `QToolButton` ради Tab, и фокус обязан быть виден.
+
+    Находка заказчика при живой проверке 02.09.2026: по Tab фокус до
+    заголовка доходил, но понять, на каком именно он стоит, было нельзя —
+    с кнопки снят весь «хром». Доступность с клавиатуры, ради которой
+    заголовок и сделан кнопкой, оказалась фиктивной.
+
+    Цвет рамки — `accent`: та же конвенция, что у `QLineEdit:focus`
+    и в спеке рестайла §2 («accent — рамка фокуса»), а не новая
+    выдумка рядом с существующей.
+
+    Второе утверждение не менее важно первого: в обычном состоянии
+    рамка обязана быть ПРОЗРАЧНОЙ, а не отсутствовать. С `border: none`
+    появление фокуса добавляло бы виджету пиксель и дёргало раскладку
+    при каждом нажатии Tab.
+    """  # noqa: RUF002
+    for palette in (theme.DARK, theme.LIGHT):
+        css = theme.stylesheet(palette)
+        for selector in ("#SettingsGroupLabel", "#SettingsBlockLabel"):
+            assert _rule_properties(css, selector)["border"] == "1px solid transparent"
+            focus = _rule_properties(css, f"{selector}:focus")
+            assert focus["border-color"] == palette.accent
+
+
 @pytest.mark.parametrize(
     ("mode", "system", "expected"),
     [

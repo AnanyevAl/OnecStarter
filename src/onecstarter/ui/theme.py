@@ -140,13 +140,24 @@ QToolTip {{
    а часть в `setFont` нельзя — они перебивают друг друга непредсказуемо.
    Здесь остаются только цвет и «хром» самой кнопки QToolButton. */
 #SettingsGroupLabel {{
-    color: {palette.accent}; border: none; background: transparent;
-    text-align: left; padding: 0;
+    color: {palette.accent}; background: transparent;
+    border: 1px solid transparent; text-align: left; padding: 0;
 }}
 #SettingsBlockLabel {{
-    color: {palette.text}; border: none; background: transparent;
-    text-align: left; padding: 0;
+    color: {palette.text}; background: transparent;
+    border: 1px solid transparent; text-align: left; padding: 0;
 }}
+/* Рамка фокуса — accent, та же конвенция, что у `QLineEdit:focus` выше
+   и в спеке рестайла §2. Заголовок группы сделан `QToolButton` ИМЕННО
+   ради хода по Tab, и без видимого фокуса эта доступность оказалась
+   фиктивной: заказчик при живой проверке 02.09.2026 не смог понять,
+   на каком заголовке находится. В обычном состоянии рамка прозрачная,
+   а не `border: none`, — иначе появление фокуса сдвигало бы раскладку
+   на пиксель. [Ф] замер 02.09.2026: `focusPolicy` кнопки — `TabFocus`,
+   то есть рамка появляется при ходьбе с клавиатуры и не возникает
+   от щелчка мышью. */
+#SettingsGroupLabel:focus {{ border-color: {palette.accent}; }}
+#SettingsBlockLabel:focus {{ border-color: {palette.accent}; }}
 #ThemeSeg QPushButton {{
     border: 1px solid {palette.border}; background: {palette.surface_raised};
     padding: 3px 10px; font-size: 9pt;

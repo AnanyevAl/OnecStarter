@@ -1,6 +1,7 @@
 """Сворачиваемая группа настроек: свёртка, шеврон, тело."""
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QLabel
 
 from onecstarter.ui.settings_group import CollapsibleGroup, chevron_pixmap
@@ -89,3 +90,17 @@ def test_note_stays_visible_while_the_body_is_collapsed(
     assert group.is_expanded() is False
     assert note.isVisibleTo(group) is True
     assert body.isVisibleTo(group) is False
+
+
+def test_group_header_is_reachable_by_tab(application: QApplication) -> None:
+    """Заголовок — `QToolButton` именно ради хода по клавиатуре (спека §1.2).
+
+    [Ф] замер 02.09.2026: `focusPolicy` кнопки — `TabFocus`. Снять его
+    (например, вернувшись к `QLabel` с обработкой мыши) значило бы
+    отнять у раздела ход по Tab целиком, а рамку фокуса в теме
+    превратить в недостижимую декорацию — раздел, где всё свёрнуто,
+    без клавиатуры становится заметно менее пригодным.
+    """  # noqa: RUF002
+    group = CollapsibleGroup("СЕРВЕРЫ")
+
+    assert group.button().focusPolicy() & Qt.FocusPolicy.TabFocus
