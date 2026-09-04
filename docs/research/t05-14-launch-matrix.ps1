@@ -19,23 +19,42 @@ $results = Join-Path $PSScriptRoot "t05-14-results.md"
 
 function Quote([string] $value) { '"' + $value.Replace('"', '""') + '"' }
 
-$password = Read-Host "Пароль пользователя $User (в файл не попадёт)"
+# Симметричная сборка вместо Replace() по готовой строке: $arguments и $shown
+# строит одна и та же функция, различаясь только переданным секретом. Так
+# показ/запись никогда не расходятся с реальным экранированием Quote() —
+# в частности, если пароль содержит `"`, Quote() удваивает её (pa"ss -> pa""ss),
+# и Replace(pa"ss, ...) по уже собранной строке такую двойную форму не находит,
+# и настоящий пароль остаётся в строке. Symmetric build исключает это в принципе.
+function Build-Arguments([string] $secret) {
+    switch ($Run) {
+        "A"  { $extra = "" }
+        "B"  { $extra = "/N$(Quote $User) /P$(Quote $secret)" }
+        "B2" { $extra = "/N$User /P$secret" }
+        "C"  { $extra = "/N$(Quote $User) /P$(Quote $secret) /WA-" }
+        "D"  { $extra = "/N$(Quote $User) /P$(Quote $secret)" }
+    }
+    if ($Run -eq "D") {
+        if (-not $FilePath) { Write-Host "Для D нужен -FilePath"; exit 1 }
+        $target = "/IBConnectionString$(Quote "File=""$FilePath"";")"
+    } else {
+        $target = "/IBName$(Quote $IbName)"
+    }
+    return "ENTERPRISE $target $extra /AppAutoCheckVersion /AppAutoCheckMode".Trim()
+}
 
-switch ($Run) {
-    "A"  { $extra = "" }
-    "B"  { $extra = "/N$(Quote $User) /P$(Quote $password)" }
-    "B2" { $extra = "/N$User /P$password" }
-    "C"  { $extra = "/N$(Quote $User) /P$(Quote $password) /WA-" }
-    "D"  { $extra = "/N$(Quote $User) /P$(Quote $password)" }
-}
-if ($Run -eq "D") {
-    if (-not $FilePath) { Write-Host "Для D нужен -FilePath"; exit 1 }
-    $target = "/IBConnectionString$(Quote "File=""$FilePath"";")"
+if ($Run -eq "A") {
+    # A не передаёт учётные данные вовсе — спрашивать пароль незачем.
+    $password = ""
 } else {
-    $target = "/IBName$(Quote $IbName)"
+    $password = Read-Host "Пароль пользователя $User (в файл не попадёт)"
+    if (-not $password) {
+        Write-Host "Для запуска $Run нужен пароль"
+        exit 1
+    }
 }
-$arguments = "ENTERPRISE $target $extra /AppAutoCheckVersion /AppAutoCheckMode".Trim()
-$shown = $arguments.Replace($password, "<пароль>")
+
+$arguments = Build-Arguments $password
+$shown = Build-Arguments "<пароль>"
 
 $before = (Get-FileHash $ibases -Algorithm SHA256).Hash
 Write-Host ""
@@ -47,7 +66,15 @@ Start-Sleep -Seconds 6
 
 $snapshot = Get-CimInstance Win32_Process -Filter "Name='1cv8.exe' OR Name='1cv8c.exe'" |
     Select-Object -ExpandProperty CommandLine
-$snapshotShown = ($snapshot -join "`n").Replace($password, "<пароль>")
+$snapshotShown = $snapshot -join "`n"
+if ($password) {
+    # WMI отдаёт командную строку так, как она реально легла в память процесса:
+    # для B/C/D пароль внутри кавычек Quote() — в удвоенной форме (pa"ss ->
+    # pa""ss); для B2 без кавычек — в исходной. Гасим сначала удвоенную форму,
+    # потом исходную, иначе неэкранированный "хвост" останется в открытом виде.
+    $doubled = $password.Replace('"', '""')
+    $snapshotShown = $snapshotShown.Replace($doubled, "<пароль>").Replace($password, "<пароль>")
+}
 Write-Host "Win32_Process.CommandLine (пароль заменён):"
 Write-Host $snapshotShown
 Write-Host ""
