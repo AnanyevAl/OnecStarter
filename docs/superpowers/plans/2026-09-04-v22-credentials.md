@@ -97,7 +97,10 @@ Credential Manager, при запуске оба передаются клиен
 
 - [ ] **Step 1: Скрипт**
 
-Создать `docs/research/t05-14-launch-matrix.ps1`:
+Создать `docs/research/t05-14-launch-matrix.ps1`. **Сохранить в UTF-8
+с BOM**: PowerShell 5.1 читает `.ps1` без BOM как ANSI, и все кириллические
+строки скрипта (подсказки, «<пароль>») выйдут кракозябрами. Проверка:
+первые три байта файла — `EF BB BF`.
 
 ```powershell
 <#
@@ -357,7 +360,10 @@ def _keyring_round_trip(vault: object) -> str:
         got = vault.read(SMOKE_VAULT_KEY)  # type: ignore[attr-defined]
         vault.delete(SMOKE_VAULT_KEY)  # type: ignore[attr-defined]
         gone = vault.read(SMOKE_VAULT_KEY)  # type: ignore[attr-defined]
-    except Exception as error:  # noqa: BLE001 — самопроверка: любая причина в лог
+    except Exception as error:
+        # Самопроверка сборки: любая причина отказа обязана попасть в лог
+        # строкой, а не уронить smoke трассировкой. Правило BLE в ruff проекта
+        # не включено — noqa здесь был бы лишним и пойман RUF100.
         return f"FAIL: {type(error).__name__}"
     if got != probe:
         return "FAIL: прочитано не то, что записано"
@@ -1050,8 +1056,9 @@ def test_rekey_moves_the_secret(tmp_path: Path) -> None:
 
     workspace.update_infobase(key, {"Version": "8.3.25"})
 
-    new_key = next(i.key for i in workspace.items() if i.name == workspace._item(key).name) \
-        if False else next(k for k in store.data if k.startswith("id:"))
+    # Новый ключ читается из фактического состояния хранилища, а не
+    # вычисляется: после правки запись получила ID, и её ключ — id:<GUID>.
+    new_key = next(k for k in store.data if k.startswith("id:"))
     assert store.read(new_key) == "p@ss"
     assert store.read(key) is None
 
