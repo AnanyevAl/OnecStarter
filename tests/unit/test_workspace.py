@@ -968,6 +968,26 @@ def test_remove_deletes_the_secret(tmp_path: Path) -> None:
     assert store.read(key) is None
 
 
+def test_recursive_group_removal_deletes_the_secrets(tmp_path: Path) -> None:
+    """Находка ревью: ключ секции без ID иначе достался бы новой записи
+    с тем же именем и строкой соединения — вместе с «удалённым» паролем.
+    """  # noqa: RUF002
+    store = MemoryStore()
+    workspace = _workspace(tmp_path, store=store)
+    nested = [
+        "id:44444444-4444-4444-4444-444444444444",  # Демо Бухгалтерия, /Клиенты
+        "id:55555555-5555-5555-5555-555555555555",  # Демо Розница, /Клиенты/Розница
+    ]
+    for key in nested:
+        workspace.set_credentials(key, "tester", "p@ss", remember=True)
+
+    assert workspace.remove_group(
+        "id:11111111-1111-1111-1111-111111111111", GroupRemoval.RECURSIVE
+    )
+
+    assert not any(key in store.data for key in nested)
+
+
 def test_rekey_moves_the_secret(tmp_path: Path) -> None:
     """Запись без ID получает его при первой правке — ключ меняется с cs:
     на id:, и секрет обязан переехать вместе с избранным (спека §3)."""  # noqa: RUF002

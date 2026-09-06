@@ -337,11 +337,29 @@ class Workspace:
 
         Политика для содержимого обязательна: `PROMOTE` поднимает потомков
         к родителю удаляемой группы, `RECURSIVE` удаляет их вместе с ней.
+
+        Пароли записей, удалённых вместе с группой, удаляются из хранилища:
+        суррогатный ключ секции без ID достался бы новой записи с тем же
+        именем и строкой соединения — вместе с «удалённым» паролем.
         """  # noqa: RUF002
         self._reject_common(key)
-        return self._write(
+        before = {item.key for item in self.items() if not item.is_group}
+        applied = self._write(
             GroupPatch(GroupPatchKind.REMOVE, target_key=key, removal=removal)
         ).applied
+        gone = before - {item.key for item in self.items() if not item.is_group}
+        failed: list[str] = []
+        for removed in sorted(gone):
+            try:
+                self._credentials.delete(removed)
+            except CredentialBackendError as error:
+                failed.append(f"{removed}: {error}")
+        if failed:
+            raise CredentialStoreError(
+                "Группа удалена, но пароли её записей остались в диспетчере "
+                "учётных данных: " + "; ".join(failed)
+            )
+        return applied
 
     def move_within_group(self, key: str, after_key: str | None) -> None:
         """Переставить запись/группу внутри её группы. `after_key is None` — в начало.
@@ -380,7 +398,10 @@ class Workspace:
     ) -> None:
         """Записать логин в наши данные, пароль — в хранилище. Порядок важен:
         логин пишется первым, и отказ хранилища не откатывает его — сообщение
-        различает «логин записан, пароль нет» (спека §4, §8).
+        различает «логин записан, пароль нет» (спека §4, §8). Дерево
+        перестраивается в любом исходе: логин уже на диске, и модель в памяти
+        обязана его отражать до того, как ошибка уйдёт наверх (как `launch`
+        и `_write`; тот же класс дефекта, что чинил add5b16).
 
         `login` пустой → секрет удаляется: пароль без логина неприменим.
         `remember` снят → секрет удаляется. `remember` стоит, `password` не
@@ -400,7 +421,8 @@ class Workspace:
             raise CredentialStoreError(
                 f"Логин сохранён, пароль — нет: {error}"
             ) from error
-        self._rebuild()
+        finally:
+            self._rebuild()
 
     def launch(self, key: str, forced_client: ClientKind | None = None) -> LaunchOutcome:
         if self._installations is None:
