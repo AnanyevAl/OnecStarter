@@ -802,16 +802,13 @@ def test_recursive_group_removal_deletes_the_secrets(tmp_path: Path) -> None:
     """  # noqa: RUF002
     store = MemoryStore()
     workspace = _workspace(tmp_path, store=store)
+    # Поддерево «Клиенты» (id:1111…) в фикстуре: подгруппа «Розница» (id:2222…,
+    # без Connect — у групп секретов не бывает) и ровно две базы.
     nested = [
-        item.key
-        for item in workspace.items()
-        if not item.is_group
-        and item.name in {"Розница", "Демо Бухгалтерия", "Демо Розница"}
+        "id:44444444-4444-4444-4444-444444444444",  # Демо Бухгалтерия, /Клиенты
+        "id:55555555-5555-5555-5555-555555555555",  # Демо Розница, /Клиенты/Розница
     ]
-    assert len(nested) == 3  # состав группы «Клиенты» — как в test_remove_group_recursive_drops_the_subtree
-    outside = next(
-        item.key for item in workspace.items() if not item.is_group and item.key not in nested
-    )
+    outside = "id:66666666-6666-6666-6666-666666666666"  # Учёт серверный, /
     for key in [*nested, outside]:
         workspace.set_credentials(key, "tester", "p@ss", remember=True)
 
