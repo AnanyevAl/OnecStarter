@@ -1413,18 +1413,17 @@ class BasesView(QWidget):
 
         v2.2: логин и признак «пароль сохранён» — из `credentials_of`,
         сам пароль сюда не попадает никогда (спека §4). Отказ хранилища
-        (например, Windows Credential Manager недоступен) идёт в `_on_error`
-        тем же способом, что и остальные отказы `ServicesError`, — диалог
-        всё равно открывается, просто без сведений о сохранённом пароле.
+        (например, Windows Credential Manager недоступен) исключением
+        больше не выходит: `credentials_of` возвращает `has_password=None`,
+        и диалог по нему запирает три поля учётных данных, сохранив логин
+        на экране. Прежний `try`/`except` не только показывал сообщение
+        об ошибке при каждом открытии свойств, но и обнулял логин — «ОК»
+        затирал его молча (финальное ревью, I3).
         """  # noqa: RUF002
         item = next((i for i in self._workspace.items() if i.key == key), None)
         if item is None:
             return None
-        try:
-            login, has_password = self._workspace.credentials_of(key)
-        except ServicesError as error:
-            self._on_error(error)
-            login, has_password = None, False
+        login, has_password = self._workspace.credentials_of(key)
         return InfobaseDialog(
             item,
             groups=self._group_paths(),

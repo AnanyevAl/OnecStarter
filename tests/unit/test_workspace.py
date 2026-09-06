@@ -1058,3 +1058,138 @@ def test_store_failure_on_launch_launches_without_credentials_then_reports(tmp_p
         workspace.launch(key)
     assert len(calls) == 1, "процесс порождён — отказ хранилища не отказ запуска"
     assert "/P" not in calls[0].arguments
+
+
+# -- финальный fix-раунд v2.2: перенос секрета при rekey (F1, F2, F3) --------
+
+
+class _NoStore:
+    """Машина без Credential Manager: отказывает ЛЮБОЙ вызов.
+
+    `keyring` на такой машине поднимает `NoKeyringError` уже из
+    `get_keyring()`, то есть до различения операций, — поэтому шпион
+    отказывает и на `read`, и на `write`, и на `delete`.
+    """
+
+    def read(self, key: str) -> str | None:
+        raise CredentialBackendError("NoKeyringError")
+
+    def write(self, key: str, secret: str) -> None:
+        raise CredentialBackendError("NoKeyringError")
+
+    def delete(self, key: str) -> None:
+        raise CredentialBackendError("NoKeyringError")
+
+
+class _ReadRefused(MemoryStore):
+    def read(self, key: str) -> str | None:
+        raise CredentialBackendError("NoKeyringError")
+
+
+class _WriteRefused(MemoryStore):
+    def write(self, key: str, secret: str) -> None:
+        raise CredentialBackendError("отказ записи")
+
+
+class _DeleteRefused(MemoryStore):
+    def delete(self, key: str) -> None:
+        raise CredentialBackendError("отказ удаления")
+
+
+_ID_LESS_KEY = binding_key(None, 'File="C:\\Bases\\Manual";', "Без идентификатора")
+_REKEYED_KEY = "id:99999999-9999-9999-9999-999999999999"
+
+
+def test_group_rename_never_touches_the_credential_store(tmp_path: Path) -> None:
+    """У группы пароля быть не может — хранилище на её пути не спрашивается.
+
+    Ключ группы без `ID` — `grp:<путь>`, он меняется при переименовании,
+    то есть `_write` идёт по ветке rekey. Безусловный перенос секрета
+    ронял переименование группы на машине без Credential Manager.
+    """  # noqa: RUF002
+    (tmp_path / "ibases.v8i").write_bytes("[Отдел]\r\nFolder=/\r\n".encode())
+    workspace = _raw_workspace(tmp_path, store=_NoStore())
+    key = workspace.items()[0].key
+
+    workspace.update_group(key, new_name="Отдел 2")
+
+    assert [item.name for item in workspace.items()] == ["Отдел 2"]
+
+
+def test_edit_of_id_less_record_with_unavailable_store_reports_unverified_password(
+    tmp_path: Path,
+) -> None:
+    """Отказ `read` — это отказ ПРОВЕРКИ, а не переноса: переносить нечего.
+
+    Прежний текст («не удалось перенести пароль») утверждал факт, которого
+    никто не измерял: был ли у записи пароль вообще, неизвестно.
+    """  # noqa: RUF002
+    workspace = _workspace(tmp_path, store=_ReadRefused())
+
+    with pytest.raises(CredentialStoreError, match="не удалось проверить"):
+        workspace.update_infobase(_ID_LESS_KEY, {"Version": "8.3.25"})
+
+    assert any(item.key == _REKEYED_KEY for item in workspace.items())
+
+
+def test_rekey_delete_failure_says_the_password_moved_and_a_copy_remains(
+    tmp_path: Path,
+) -> None:
+    """Полу-удавшийся перенос: секрет уже под новым ключом, старый остался.
+
+    Сообщение «не удалось перенести пароль» здесь было обратным факту,
+    а старая копия — не безобидный мусор: суррогатный ключ унаследует
+    новая запись с тем же именем и строкой соединения.
+    """  # noqa: RUF002
+    store = _DeleteRefused()
+    workspace = _workspace(tmp_path, store=store)
+    store.data[_ID_LESS_KEY] = "p@ss"
+
+    with pytest.raises(CredentialStoreError) as failure:
+        workspace.update_infobase(_ID_LESS_KEY, {"Version": "8.3.25"})
+
+    text = str(failure.value)
+    assert "перенесён" in text and "старая копия" in text
+    assert _ID_LESS_KEY in text, "без ключа уборка вручную невозможна"
+    assert store.data[_REKEYED_KEY] == "p@ss"
+    assert store.data[_ID_LESS_KEY] == "p@ss"
+
+
+def test_rekey_write_failure_says_the_password_stayed_with_the_old_record(
+    tmp_path: Path,
+) -> None:
+    store = _WriteRefused()
+    workspace = _workspace(tmp_path, store=store)
+    store.data[_ID_LESS_KEY] = "p@ss"
+
+    with pytest.raises(CredentialStoreError, match="не перенесён"):
+        workspace.update_infobase(_ID_LESS_KEY, {"Version": "8.3.25"})
+
+    assert list(store.data) == [_ID_LESS_KEY]
+
+
+def test_rekey_reports_both_the_user_data_and_the_store_failures(tmp_path: Path) -> None:
+    """`failure = failure or …` полностью скрывал отказ хранилища за отказом
+    `bases.json`: пользователь узнавал про избранное и не узнавал про пароль."""
+    store = _WriteRefused()
+    workspace = _workspace(tmp_path, store=store)
+    store.data[_ID_LESS_KEY] = "p@ss"
+    _block_user_data(workspace)
+
+    with pytest.raises(UserDataWriteError) as failure:
+        workspace.update_infobase(_ID_LESS_KEY, {"Version": "8.3.25"})
+
+    text = str(failure.value)
+    assert "избранное" in text, "отказ наших данных не должен теряться"
+    assert "не перенесён" in text, "отказ хранилища не должен маскироваться"
+
+
+def test_credentials_of_keeps_login_when_the_store_fails(tmp_path: Path) -> None:
+    """Логин прочитан из наших данных ДО обращения к хранилищу — терять его
+    из-за недоступного Credential Manager нельзя: диалог покажет пустое поле
+    и молча сотрёт сохранённый логин по «ОК». `None` — «неизвестно»."""  # noqa: RUF002
+    workspace = _workspace(tmp_path, store=_ReadRefused())
+    key = _first_base_key(workspace)
+    workspace._user = set_login(workspace._user, key, "tester")
+
+    assert workspace.credentials_of(key) == ("tester", None)

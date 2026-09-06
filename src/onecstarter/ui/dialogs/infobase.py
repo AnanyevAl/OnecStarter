@@ -360,6 +360,17 @@ CREDENTIALS_NOTE = (
 )
 CLEARING_LOGIN_NOTE = "Поле пользователя пусто — сохранённый пароль будет удалён"
 STORED_PASSWORD_PLACEHOLDER = "сохранён"
+# Финальное ревью, I3: `has_password=None` — «хранилище недоступно», третье
+# состояние рядом с «пароль есть»/«пароля нет» (`Workspace.credentials_of`).  # noqa: RUF003
+# Ни одна операция над хранилищем в этом состоянии невозможна, поэтому поля
+# запираются, а не молча притворяются пустыми.  # noqa: RUF003
+CREDENTIALS_UNAVAILABLE_NOTE = "Хранилище паролей недоступно — учётные данные не изменить"
+# Финальное ревью, I4: спека §4 задавала умолчание «Запомнить» выключенным,
+# но не говорила, что делать с введённым паролем. Молча его выбросить нельзя,  # noqa: RUF003
+# поэтому ввод пароля включает галочку, а снятая галочка при введённом или  # noqa: RUF003
+# сохранённом пароле объясняет последствие до нажатия «ОК».  # noqa: RUF003
+PASSWORD_NOT_KEPT_NOTE = "Пароль введён, но не будет сохранён — включите «Запомнить»"
+STORED_PASSWORD_REMOVAL_NOTE = "Сохранённый пароль будет удалён"
 
 
 @dataclass(frozen=True)
@@ -383,7 +394,7 @@ class InfobaseDialog(QDialog):
         parent: QWidget | None = None,
         choose_directory: Callable[[], str] = browse_for_directory,
         login: str | None = None,
-        has_password: bool = False,
+        has_password: bool | None = False,
     ) -> None:
         super().__init__(parent)
         self._item = item
@@ -526,7 +537,16 @@ class InfobaseDialog(QDialog):
         if has_password:
             self._password.setPlaceholderText(STORED_PASSWORD_PLACEHOLDER)
         self._remember = QCheckBox()
-        self._remember.setChecked(has_password)
+        self._remember.setChecked(bool(has_password))
+        if has_password is None:
+            # Хранилище недоступно: логин показываем (он лежит в наших
+            # данных и прочитан), но менять нечего — ни записать пароль,
+            # ни удалить его нельзя. Поле логина только для чтения, а не  # noqa: RUF003
+            # запрещённое: пользователь вправе увидеть и скопировать то,
+            # что сохранено.
+            self._login.setReadOnly(True)
+            self._password.setEnabled(False)
+            self._remember.setEnabled(False)
         self._credentials_note = QLabel(CREDENTIALS_NOTE)
         self._credentials_note.setObjectName("SettingsNote")
         self._credentials_note.setWordWrap(True)
@@ -537,7 +557,11 @@ class InfobaseDialog(QDialog):
         form.addRow("", self._credentials_note)
 
         self._login.textChanged.connect(self._refresh_ok_state)
+        # Порядок связей важен: автогалочка первой, иначе подпись успела бы
+        # посчитаться по ещё снятой галочке.
+        self._password.textChanged.connect(self._autocheck_remember)
         self._password.textChanged.connect(self._refresh_ok_state)
+        self._remember.toggled.connect(self._refresh_ok_state)
 
         if item is not None:
             self._os_auth = QCheckBox()
@@ -595,7 +619,7 @@ class InfobaseDialog(QDialog):
         parent: QWidget | None = None,
         choose_directory: Callable[[], str] = browse_for_directory,
         login: str | None = None,
-        has_password: bool = False,
+        has_password: bool | None = False,
     ) -> "InfobaseDialog":
         """Диалог добавления записи: то же окно, без исходной записи.
 
@@ -815,17 +839,41 @@ class InfobaseDialog(QDialog):
             fields = ", ".join(f"«{label}»" for label in empty)
             self._required_hint.setText(f"Заполните: {fields}")
 
+        # Подпись считается ДО проверки «пароль без логина»: прежний ранний
+        # `return` в этой ветке оставлял на экране подпись от предыдущего
+        # состояния (финальное ревью, I4 — подпись обязана отвечать тому,
+        # что в полях сейчас).
+        self._credentials_note.setText(self._credentials_note_text())
+
         if self._password.text() and not self._login.text().strip():
             self._ok_button.setEnabled(False)
             self._required_hint.setText(
                 "Заполните: «Пользователь» — пароль без него не применить"
             )
-            return
-        self._credentials_note.setText(
-            CLEARING_LOGIN_NOTE
-            if self._has_password and not self._login.text().strip()
-            else CREDENTIALS_NOTE
-        )
+
+    def _autocheck_remember(self) -> None:
+        """Ввод пароля включает «Запомнить» (финальное ревью, I4).
+
+        Иначе введённый пароль исчезал молча: умолчание галочки — «выключено»
+        (спека §4), и `set_credentials` при снятой галочке идёт в `delete`.
+        Пользователь вправе снять галочку обратно — тогда подпись
+        (`PASSWORD_NOT_KEPT_NOTE`) говорит, чем это кончится.
+        """
+        if self._password.text() and not self._remember.isChecked():
+            self._remember.setChecked(True)
+
+    def _credentials_note_text(self) -> str:
+        """Подпись под учётными данными — по текущему состоянию трёх полей."""
+        if self._has_password is None:
+            return CREDENTIALS_UNAVAILABLE_NOTE
+        if not self._remember.isChecked():
+            if self._password.text():
+                return PASSWORD_NOT_KEPT_NOTE
+            if self._has_password:
+                return STORED_PASSWORD_REMOVAL_NOTE
+        if self._has_password and not self._login.text().strip():
+            return CLEARING_LOGIN_NOTE
+        return CREDENTIALS_NOTE
 
     def _on_accept(self) -> None:
         """Заблокировать «ОК», если правка вписала запрещённый символ."""  # noqa: RUF002
@@ -900,7 +948,14 @@ class InfobaseDialog(QDialog):
 
     def credentials_changed(self) -> bool:
         """Есть ли что записывать: логин сменился, пароль введён заново или
-        галочка переключена. Нетронутый диалог не должен трогать хранилище."""
+        галочка переключена. Нетронутый диалог не должен трогать хранилище.
+
+        `has_password is None` — хранилище недоступно, и ответ всегда `False`:
+        ни одна операция над ним невозможна, а `set_credentials` при снятой
+        галочке ушёл бы в `delete` и вдобавок затёр бы логин (I3).
+        """  # noqa: RUF002
+        if self._has_password is None:
+            return False
         current = self.credentials()
         return (
             current.login != self._initial_login

@@ -4334,3 +4334,37 @@ def test_cache_menu_item_trigger_reaches_clear_cache_with_right_kind(
     actions["Программный…"].trigger()
     assert len(asked) == 1
     assert "программный" in asked[0].casefold()
+
+
+class _ReadRefusedStore(MemoryStore):
+    """Машина без Credential Manager: `read` отказывает, остальное живо."""
+
+    def read(self, key: str) -> str | None:
+        raise CredentialBackendError("NoKeyringError")
+
+
+def test_properties_with_unavailable_store_never_calls_set_credentials(
+    qtbot: Any, workspace_factory: Any
+) -> None:
+    """Финальное ревью, I3: на машине без Credential Manager диалог свойств
+    показывал пустой логин у записи с сохранённым логином, и «ОК» затирал его
+    молча — `credentials_changed()` видел «логин сменился на пустой» и уходил
+    в ветку `delete`. Теперь `has_password=None` запирает все три поля.
+    """  # noqa: RUF002
+    store = _ReadRefusedStore()
+    errors: list[ServicesError] = []
+    view, *_ = _view(qtbot, workspace_factory, errors=errors, store=store)
+    view.workspace().set_credentials(_ACCOUNTING_KEY, "tester", None, remember=False)
+    calls: list[str] = []
+    store.write = lambda key, secret: calls.append(f"write {key}")  # type: ignore[method-assign]
+    store.delete = lambda key: calls.append(f"delete {key}")  # type: ignore[method-assign]
+
+    dialog = view._build_properties_dialog(_ACCOUNTING_KEY)
+    assert dialog is not None
+    assert dialog.login_edit().text() == "tester", "логин известен и обязан быть виден"
+
+    view._apply_properties(_ACCOUNTING_KEY, dialog)
+
+    assert calls == []
+    assert view.workspace().credentials_of(_ACCOUNTING_KEY)[0] == "tester"
+    assert errors == []

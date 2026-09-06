@@ -162,5 +162,9 @@ def _decode(value: Any) -> BaseUserData:
         last_launched_at=datetime.fromisoformat(stamp) if stamp else None,
         launch_count=int(value.get("launch_count", 0)),
         last_client=value.get("last_client"),
-        login=value.get("login"),
+        # Приведение к строке, а не `value.get("login")` как есть: файл  # noqa: RUF003
+        # правят и руками, `"login": 123` без него дожил бы до `.strip()`
+        # в `set_credentials`/`launch` и упал бы там `AttributeError` —
+        # сбоем далеко от причины (финальное ревью, M1).
+        login=str(raw) if (raw := value.get("login")) is not None else None,
     )

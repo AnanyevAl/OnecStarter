@@ -165,3 +165,14 @@ def test_file_without_login_field_loads_as_none(tmp_path: Path) -> None:
 def test_clearing_login_writes_none() -> None:
     entries = set_login(set_login({}, "id:x", "tester"), "id:x", None)
     assert entries["id:x"].login is None
+
+
+def test_non_string_login_in_the_file_is_coerced_to_text(tmp_path: Path) -> None:
+    """`bases.json` правят и руками (докстринг модуля): `"login": 123` без
+    приведения дожил бы до `.strip()` в `set_credentials`/`launch` и упал бы
+    там `AttributeError` — сбоем далеко от причины (финальное ревью, M1)."""
+    path = tmp_path / "bases.json"
+    path.write_text(
+        json.dumps({"schema": 1, "entries": {"id:x": {"login": 123}}}), encoding="utf-8"
+    )
+    assert load_user_data(path)["id:x"].login == "123"

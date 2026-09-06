@@ -11,7 +11,10 @@ from onecstarter.domain.connect import ConnectKind, classify_connect
 from onecstarter.services.model import InfobaseItem, InfobaseSource, NewInfobase
 from onecstarter.ui.dialogs.group_picker import INDENT
 from onecstarter.ui.dialogs.infobase import (
+    CREDENTIALS_UNAVAILABLE_NOTE,
     HIDDEN_VALUE,
+    PASSWORD_NOT_KEPT_NOTE,
+    STORED_PASSWORD_REMOVAL_NOTE,
     DialogCredentials,
     InfobaseDialog,
     build_connect,
@@ -1196,3 +1199,61 @@ def test_clearing_login_with_stored_password_warns(qtbot: Any) -> None:
     dialog.login_edit().setText("")
     assert "будет удалён" in dialog.credentials_note().text()
     assert dialog.credentials_changed() is True
+
+
+# -- финальный fix-раунд v2.2: недоступное хранилище и судьба пароля --------
+
+
+def test_unavailable_store_shows_login_and_locks_credentials(qtbot: Any) -> None:
+    """`has_password=None` — «хранилище недоступно», а не «пароля нет».
+
+    Логин известен (он в `bases.json`) и обязан быть виден; всё, что ведёт
+    к операции над хранилищем, заперто — иначе «ОК» на такой машине молча
+    стирал бы сохранённый логин и уходил в ветку `delete` (I3).
+    """  # noqa: RUF002
+    dialog = InfobaseDialog(
+        _item('Srvr="s";Ref="r";', ()), groups=["/"], installations=INSTALLED,
+        cfg_rules=[], login="tester", has_password=None,
+    )
+    qtbot.addWidget(dialog)
+    assert dialog.login_edit().text() == "tester"
+    assert dialog.login_edit().isReadOnly()
+    assert dialog.password_edit().isEnabled() is False
+    assert dialog.remember_checkbox().isEnabled() is False
+    assert dialog.credentials_note().text() == CREDENTIALS_UNAVAILABLE_NOTE
+    assert dialog.credentials_changed() is False
+
+
+def test_typing_a_password_turns_remember_on(qtbot: Any) -> None:
+    """Спека §4 задаёт умолчание «выключено», но не судьбу введённого пароля:
+    молча выбросить его нельзя. Ввод включает галочку, снять её можно назад."""  # noqa: RUF002
+    dialog = InfobaseDialog.for_new(groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    assert dialog.remember_checkbox().isChecked() is False
+
+    dialog.password_edit().setText("p@ss")
+
+    assert dialog.remember_checkbox().isChecked() is True
+
+
+def test_unchecking_remember_with_a_typed_password_warns(qtbot: Any) -> None:
+    dialog = InfobaseDialog.for_new(groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    dialog.login_edit().setText("tester")
+    dialog.password_edit().setText("p@ss")
+
+    dialog.remember_checkbox().setChecked(False)
+
+    assert dialog.credentials_note().text() == PASSWORD_NOT_KEPT_NOTE
+
+
+def test_unchecking_remember_with_a_stored_password_warns(qtbot: Any) -> None:
+    dialog = InfobaseDialog(
+        _item('Srvr="s";Ref="r";', ()), groups=["/"], installations=INSTALLED,
+        cfg_rules=[], login="tester", has_password=True,
+    )
+    qtbot.addWidget(dialog)
+
+    dialog.remember_checkbox().setChecked(False)
+
+    assert dialog.credentials_note().text() == STORED_PASSWORD_REMOVAL_NOTE

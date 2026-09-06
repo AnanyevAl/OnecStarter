@@ -23,7 +23,7 @@ from onecstarter.domain.default_version import DefaultVersionRule
 from onecstarter.domain.launch import ClientConvention, ClientKind, Credentials, LaunchCommand
 from onecstarter.domain.version import Installation
 from onecstarter.platform_1c.process import spawn as spawn_process
-from onecstarter.security.credentials import CredentialBackendError, CredentialStore
+from onecstarter.security.credentials import SERVICE, CredentialBackendError, CredentialStore
 from onecstarter.services.catalog import (
     EMPTY_COMMON_DATA,
     CommonListData,
@@ -274,6 +274,7 @@ class Workspace:
                 PatchKind.UPDATE, target_key=key, changes=dict(changes), new_name=new_name
             ),
             rekey_from=key,
+            move_secret=True,
         )
 
     def remove_infobase(self, key: str) -> bool:
@@ -383,14 +384,23 @@ class Workspace:
         )
         self._rebuild()
 
-    def credentials_of(self, key: str) -> tuple[str | None, bool]:
+    def credentials_of(self, key: str) -> tuple[str | None, bool | None]:
         """Логин и признак «пароль сохранён» — диалогу. Сам пароль наружу
-        не отдаётся никогда (спека v2.2, §4)."""
+        не отдаётся никогда (спека v2.2, §4).
+
+        `has_password is None` — «хранилище недоступно», третье состояние
+        рядом с «пароль есть» и «пароля нет». Отказ ловится здесь и наружу
+        исключением не выходит: логин лежит в наших данных и прочитан ДО
+        обращения к хранилищу, а прежняя редакция выбрасывала оба значения
+        разом. На машине без Credential Manager диалог свойств показывал
+        из-за этого пустое поле «Пользователь» у записи с сохранённым
+        логином — и «ОК» затирал логин молча (финальное ревью, I3).
+        """  # noqa: RUF002
         login = self._user.get(key, BaseUserData()).login
         try:
-            has_password = self._credentials.read(key) is not None
-        except CredentialBackendError as error:
-            raise CredentialStoreError(str(error)) from error
+            has_password: bool | None = self._credentials.read(key) is not None
+        except CredentialBackendError:
+            has_password = None
         return login, has_password
 
     def set_credentials(
@@ -613,7 +623,68 @@ class Workspace:
             self._user = previous
             raise UserDataWriteError(f"{what} ({self.paths.user_data}): {error}") from error
 
-    def _write(self, patch: Patch, rekey_from: str | None = None) -> PatchResult:
+    def _move_secret(self, rekey_from: str, new_key: str) -> str | None:
+        """Перевесить секрет со старого ключа на новый. `None` — сделано.
+
+        Строка-результат вместо исключения: `_write` собирает отказы
+        нескольких подсистем в одно сообщение, и «первое исключение съедает
+        остальные» здесь как раз тот дефект, который чинится (финальное
+        ревью, I2).
+
+        Три исхода различаются по факту, а не сливаются в «не удалось
+        перенести пароль»:
+
+        * отказ `read` — неизвестно даже, был ли у записи пароль; это отказ
+          ПРОВЕРКИ. Утверждать, что перенос не удался, значит выдумывать
+          несуществующий секрет;
+        * отказ `write` — секрет остался под старым ключом и никуда
+          не делся;
+        * отказ `delete` после успешного `write` — секрет уже под новым
+          ключом, но старая копия жива. Это не безобидный мусор:
+          суррогатный ключ записи без `ID` унаследует следующая запись
+          с тем же именем и строкой соединения — вместе с чужим паролем.
+          Поэтому сообщение называет запись хранилища целиком: ключ
+          привязки секретом не является (докстринг `errors.py`), а без
+          него уборка вручную невозможна.
+        """  # noqa: RUF002
+        try:
+            secret = self._credentials.read(rekey_from)
+        except CredentialBackendError as error:
+            return (
+                "Запись изменена, но не удалось проверить, есть ли у неё "  # noqa: RUF001
+                f"сохранённый пароль: {error}"
+            )
+        if secret is None:
+            return None
+        try:
+            self._credentials.write(new_key, secret)
+        except CredentialBackendError as error:
+            return (
+                "Запись изменена, но пароль не перенесён — он остался "
+                f"у прежней записи: {error}"  # noqa: RUF001
+            )
+        try:
+            self._credentials.delete(rekey_from)
+        except CredentialBackendError as error:
+            return (
+                "Запись изменена, пароль перенесён, но старая копия осталась "
+                "в диспетчере учётных данных — удалите запись "
+                f"`{SERVICE}/{rekey_from}` вручную: {error}"
+            )
+        return None
+
+    def _write(
+        self, patch: Patch, rekey_from: str | None = None, *, move_secret: bool = False
+    ) -> PatchResult:
+        """Применить патч к `.v8i` и привести к новому ключу наши данные.
+
+        `move_secret` — отдельный флаг, а не следствие `rekey_from`
+        (финальное ревью, I1): по ветке rekey ходит и `update_group`, ключ
+        группы без `ID` меняется при переименовании. У группы пароля быть
+        не может по построению (`set_credentials` отказывает группе), но
+        `read` всё равно спрашивал хранилище — и на машине без Credential
+        Manager переименование группы кончалось сообщением про пароль.
+        """  # noqa: RUF002
         new_id = self._new_id()
         payload, result = write_patch(self.paths.ibases, patch, new_id)
         # Наши данные перевешиваются только тогда, когда ключ цели фактически
@@ -626,7 +697,12 @@ class Workspace:
         # обязано это отразить — иначе экран остался бы на старом содержимом,
         # которого в файле уже нет. Поэтому ошибка придерживается и поднимается
         # ПОСЛЕ приведения состояния в порядок, а не вместо него.  # noqa: RUF003
-        failure: UserDataWriteError | CredentialStoreError | None = None
+        #
+        # Отказы копятся списком, а не первым победившим: `failure = failure  # noqa: RUF003
+        # or …` прятал отказ хранилища за отказом `bases.json` целиком —
+        # пользователь узнавал про избранное и не узнавал про пароль.
+        failures: list[str] = []
+        data_failed = False
         if rekey_from is not None and result.key is not None and result.key != rekey_from:
             try:
                 self._store_user(
@@ -635,20 +711,23 @@ class Workspace:
                     "и историю запусков",
                 )
             except UserDataWriteError as error:
-                failure = error
-            try:
-                secret = self._credentials.read(rekey_from)
-                if secret is not None:
-                    self._credentials.write(result.key, secret)
-                    self._credentials.delete(rekey_from)
-            except CredentialBackendError as error:
-                failure = failure or CredentialStoreError(
-                    f"Запись изменена, но не удалось перенести на неё пароль: {error}"
-                )
+                failures.append(str(error))
+                data_failed = True
+            if move_secret:
+                store_failure = self._move_secret(rekey_from, result.key)
+                if store_failure is not None:
+                    failures.append(store_failure)
         self._raw = payload
         self._rebuild()
-        if failure is not None:
-            raise failure
+        if failures:
+            text = "; ".join(failures)
+            # Тип по тому, что отказало: наши данные (в том числе вместе
+            # с хранилищем) — `UserDataWriteError`, только хранилище —  # noqa: RUF003
+            # `CredentialStoreError`. Оба ловятся как `ServicesError`, но  # noqa: RUF003
+            # различаются там, где реакция разная.
+            if data_failed:
+                raise UserDataWriteError(text)
+            raise CredentialStoreError(text)
         return result
 
     def _reload(self) -> None:
