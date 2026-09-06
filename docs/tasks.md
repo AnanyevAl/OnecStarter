@@ -262,7 +262,7 @@ T-04.4 закрывает долги плана 3 (пункты 1 и 3 ниже)
 | # | Пункт | Кому |
 | --- | --- | --- |
 | 1 | Каскадное переименование секции-группы: сейчас переименование группы запрещено, потому что `Folder` потомков не переписывался и операция молча разрушала дерево | DONE (T-04.4) |
-| 2 | ~~`PPasswd` (зашифрованный пароль прокси, ключ секции) не распознаётся `security.secrets.is_secret_key`. Сегодня недостижим — функция применяется только к фрагментам `Connect`; станет достижим, когда UI покажет свойства записи~~ **Закрыто без кода 04.09.2026:** `ppasswd` в `_SECRET_KEYS` с 0.1.0, `test_ppasswd_is_a_secret` есть — строка была устаревшей. | План UI |
+| 2 | ~~`PPasswd` (зашифрованный пароль прокси, ключ секции) не распознаётся `security.secrets.is_secret_key`. Сегодня недостижим — функция применяется только к фрагментам `Connect`; станет достижим, когда UI покажет свойства записи~~ **Закрыто без кода 04.09.2026:** `ppasswd` в `_SECRET_KEYS` с 0.1.0, `test_ppasswd_is_a_secret` есть — строка была устаревшей. | DONE (T-14) |
 | 3 | Запись, присутствующая и в пользовательском списке, и в общем, выдаётся `items()` дважды: дедупликации по ключу привязки между источниками нет, политика в дизайне не задана | DONE (T-04.4) |
 | 4 | Эксперименты: поведение `/IBName` при совпадении имён без учёта регистра; трактовка `Connect=` с пустым значением штатным стартером | T-05.3, T-05.6 |
 | 5 | Эксперименты, добавленные дизайном T-04.4: регистр при сопоставлении `Folder` с именем группы; видит ли стартер группу, созданную без `OrderInTree`; что стартер делает с содержимым при удалении группы | T-05.7, T-05.8, T-05.9 |
@@ -2781,9 +2781,9 @@ requested_version not in seen` (защита от совпадения запр�
   сработала с первого раза; форма без кавычек (B2) не понадобилась и не
   измерена, остаётся [Д].
 - `/WA-` не требуется: B вошёл без него, C с ним — тоже без диалога и без
-  разницы в поведении.
+  разницы в поведении — [Ф] 06.09.2026.
 - `ibases.v8i` не изменился ни в одном из трёх запусков (A, B, C) — платформа
-  не дописывает пароль из командной строки в файл.
+  не дописывает пароль из командной строки в файл — [Ф] 06.09.2026.
 - Запуск D (`/IBConnectionString`) не потребовался и не измерен, остаётся
   неизмеренным.
 
@@ -2898,10 +2898,10 @@ requested_version not in seen` (защита от совпадения запр�
 | 6 | 2 | `MemoryStore.delete`: `pop(key, None)` → `del self.data[key]` | `credentials.py` / `test_memory_store_delete_of_missing_is_silent` | УПАЛ — `KeyError` |
 | 7 | 2 | `import keyring` поднят на уровень модуля `credentials.py` | `credentials.py` / `test_importing_the_module_does_not_import_keyring` | УПАЛ |
 | 8 | 2 (ревью) | В `_tokenize_arguments` снята fail-closed проверка `if in_quotes: return None` | `secrets.py` / `test_redact_arguments` | УПАЛ (кейс непарной кавычки) |
-| 9 | 2 (ревью) | Токенизатор заменён на голый `arguments.split()` | `secrets.py` / проба `/P"secret p@ss"` в стороже | УПАЛ — осколок без `/P` в начале ушёл в вывод как есть |
-| 10 | 2 (ревью) | `_reason` заменён на `str(error)` целиком | `credentials.py` / `test_failure_repr_never_carries_the_secret` | УПАЛ — пароль `p@ss` виден в тексте отказа |
-| 11 | 3 | Снят `repr=False` у `password` | `launch.py` / `test_credentials_never_appear_in_repr` | УПАЛ — `Credentials(login='tester', password='p@ss')` |
-| 12 | 3 (ревью) | Снят `compare=False` у `password` | `launch.py` / `test_credentials_password_never_appears_in_comparison_failure` | УПАЛ — pytest построил diff и показал `p@ss-secret` |
+| 9 | 2 (ревью) | Токенизатор заменён на голый `arguments.split()` | `secrets.py` / проба со значением `/P` из двух слов через пробел в стороже | УПАЛ — осколок без `/P` в начале ушёл в вывод как есть |
+| 10 | 2 (ревью) | `_reason` заменён на `str(error)` целиком | `credentials.py` / `test_failure_repr_never_carries_the_secret` | УПАЛ — пароль виден в тексте отказа дословно |
+| 11 | 3 | Снят `repr=False` у `password` | `launch.py` / `test_credentials_never_appear_in_repr` | УПАЛ — пароль виден в `repr()` объекта `Credentials` |
+| 12 | 3 (ревью) | Снят `compare=False` у `password` | `launch.py` / `test_credentials_password_never_appears_in_comparison_failure` | УПАЛ — pytest построил diff, второй пароль в сравнении отличается от первого только суффиксом |
 | 13 | 3 (ревью) | Вставка `credentials` перенесена ДО `/IBConnectionString` | `launch.py` / `test_credentials_follow_connection_string` | УПАЛ — порядок обратный требуемому |
 | 14 | 3 (ревью) | `__post_init__` убран целиком | `launch.py` / `test_credentials_reject_blank_login` | УПАЛ — `DID NOT RAISE ValueError` |
 | 15 | 4 | `set_credentials` пишет `f"{login}:{password}"` в `bases.json` вместо одного логина | `workspace.py` / `test_set_credentials_keeps_the_password_out_of_our_files` | УПАЛ — пароль найден в файле дословно |
@@ -2940,15 +2940,6 @@ requested_version not in seen` (защита от совпадения запр�
   приёмом, что `UserDataWriteError`: процесс уже порождён.
 - Удаление записи при неудалившемся секрете → запись удаляется, пользователь
   получает сообщение об осиротевшем секрете, а не молчание.
-
-### Отложенные находки задачных ревью
-
-Пятнадцать minor-находок задачных ревью 0a–5 сведены в
-`.superpowers/sdd/2026-09-04-v22-credentials/deferred-minors.md` (плюс три,
-закрытые по ходу) — от `vault: object`/`type: ignore` в `_keyring_round_trip`
-до неоговорённого контракта `set_credentials("")` и сообщения при
-полу-удавшемся rekey, которое называет случившееся наоборот. Триаж —
-финальное ревью ветки.
 
 ### Полный прогон и сборка (задача 6)
 
