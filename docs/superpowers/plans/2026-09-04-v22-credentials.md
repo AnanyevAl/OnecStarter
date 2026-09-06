@@ -1764,7 +1764,11 @@ def test_credentials_accessor_and_repr(qtbot) -> None:
 
     credentials = dialog.credentials()
 
-    assert credentials == DialogCredentials("tester", "p@ss", True)
+    # По полям, не через `==`: у пароля compare=False (иначе упавший assert
+    # печатал бы его в дифе pytest), и равенство пароль не проверяет.
+    assert credentials.login == "tester"
+    assert credentials.password == "p@ss"
+    assert credentials.remember is True
     assert "p@ss" not in repr(credentials)
     assert dialog.credentials_changed() is True
 
