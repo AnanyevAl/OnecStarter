@@ -1419,6 +1419,18 @@ def test_rekey_moves_the_secret(tmp_path: Path) -> None:
     assert store.read(key) is None
 
 
+def test_blank_login_in_user_data_launches_without_credentials(tmp_path: Path) -> None:
+    """bases.json правится и руками: пустой логин — не логин, а не ValueError на запуске."""
+    calls: list[LaunchCommand] = []
+    workspace = _workspace(tmp_path, calls=calls)
+    key = _first_base_key(workspace)
+    workspace._user = set_login(workspace._user, key, "   ")
+
+    workspace.launch(key)
+
+    assert "/N" not in calls[0].arguments
+
+
 def test_store_failure_on_write_is_a_services_error_after_user_data_saved(tmp_path: Path) -> None:
     class Broken(MemoryStore):
         def write(self, key: str, secret: str) -> None:
@@ -1560,7 +1572,11 @@ from onecstarter.services.user_data import set_login
         """Учётные данные для запуска. Отказ хранилища — не отказ запуска:
         клиент запускается без них, платформа спросит сама, а ошибка
         поднимается ПОСЛЕ порождения процесса (спека §8)."""
-        login = self._user.get(key, BaseUserData()).login
+        # Нормализация на чтении, а не только на записи: файл bases.json
+        # правится и руками, а `Credentials("")` отвергается доменом
+        # (`__post_init__`, задача 3) — на запуске это было бы необработанным
+        # ValueError вместо честного «логина нет».
+        login = (self._user.get(key, BaseUserData()).login or "").strip() or None
         if login is None:
             return None, None
         try:
