@@ -1407,16 +1407,17 @@ def test_rekey_moves_the_secret(tmp_path: Path) -> None:
     на id:, и секрет обязан переехать вместе с избранным (спека §3)."""
     store = MemoryStore()
     workspace = _workspace(tmp_path, store=store)
-    key = next(i.key for i in workspace.items() if not i.is_group and i.key.startswith("cs:"))
-    workspace.set_credentials(key, "tester", "p@ss", remember=True)
+    # Тот же приём, что у test_update_of_section_without_id_rekeys_user_data
+    # (строка ~223 этого файла): запись фикстуры без ID адресуется суррогатным
+    # ключом, а new_id фабрики фиксирован — новый ключ известен заранее.
+    old_key = binding_key(None, 'File="C:\Bases\Manual";', "Без идентификатора")
+    workspace.set_credentials(old_key, "tester", "p@ss", remember=True)
 
-    workspace.update_infobase(key, {"Version": "8.3.25"})
+    workspace.update_infobase(old_key, {"Version": "8.3.25"})
 
-    # Новый ключ читается из фактического состояния хранилища, а не
-    # вычисляется: после правки запись получила ID, и её ключ — id:<GUID>.
-    new_key = next(k for k in store.data if k.startswith("id:"))
+    new_key = "id:99999999-9999-9999-9999-999999999999"
     assert store.read(new_key) == "p@ss"
-    assert store.read(key) is None
+    assert store.read(old_key) is None
 
 
 def test_blank_login_in_user_data_launches_without_credentials(tmp_path: Path) -> None:
@@ -1460,12 +1461,10 @@ def test_store_failure_on_launch_launches_without_credentials_then_reports(tmp_p
     assert "/P" not in calls[0].arguments
 ```
 
-Для `test_rekey_moves_the_secret` фикстура `anonymized.v8i` обязана нести
-запись без `ID` — если такой нет, взять её из `tests/unit/test_workspace.py`,
-где уже есть тесты rekey (`grep -n "cs:" tests/unit/test_workspace.py`),
-и повторить их способ получения ключа; строку с `if False else` заменить
-на тот способ — она стоит здесь как напоминание, что ключ после правки
-ищется по фактическому состоянию, а не вычисляется.
+`binding_key` импортируется из `onecstarter.services.model` (в файле уже
+есть — см. `test_update_of_section_without_id_rekeys_user_data`). Фикстура
+`anonymized.v8i` несёт ровно одну запись без `ID` — «Без идентификатора»
+с `Connect=File="C:\Bases\Manual";` (проверено 06.09.2026).
 
 - [ ] **Step 6: Убедиться, что падают**
 
