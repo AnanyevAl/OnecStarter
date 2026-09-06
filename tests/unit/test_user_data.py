@@ -14,6 +14,7 @@ from onecstarter.services.user_data import (
     rekey,
     save_user_data,
     set_favorite,
+    set_login,
 )
 
 WHEN = datetime(2026, 8, 4, 7, 12, 44, tzinfo=UTC)
@@ -144,3 +145,23 @@ def test_rekey_of_absent_entry_is_noop() -> None:
     result = rekey(entries, "cs:нет", "id:abc")
     assert result == {}
     assert result is not entries
+
+
+def test_login_round_trips_through_the_file(tmp_path: Path) -> None:
+    path = tmp_path / "bases.json"
+    save_user_data(path, set_login({}, "id:x", "tester"))
+    assert load_user_data(path)["id:x"].login == "tester"
+
+
+def test_file_without_login_field_loads_as_none(tmp_path: Path) -> None:
+    """Файлы прежних версий поля не несут — схема остаётся 1 (спека v2.2, §3)."""
+    path = tmp_path / "bases.json"
+    path.write_text(
+        json.dumps({"schema": 1, "entries": {"id:x": {"favorite": True}}}), encoding="utf-8"
+    )
+    assert load_user_data(path)["id:x"].login is None
+
+
+def test_clearing_login_writes_none() -> None:
+    entries = set_login(set_login({}, "id:x", "tester"), "id:x", None)
+    assert entries["id:x"].login is None

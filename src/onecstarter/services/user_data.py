@@ -1,4 +1,4 @@
-"""Наши данные о базах: избранное и история запусков.
+"""Наши данные о базах: избранное, история запусков и логин пользователя базы.
 
 Файл лежит в %APPDATA%\\OneCStarter\\bases.json и принадлежит только этому
 слою. В ibases.v8i свои ключи не пишем — привязка идёт ключом из model.
@@ -34,6 +34,7 @@ __all__ = [
     "rekey",
     "save_user_data",
     "set_favorite",
+    "set_login",
 ]
 
 
@@ -43,6 +44,7 @@ class BaseUserData:
     last_launched_at: datetime | None = None
     launch_count: int = 0
     last_client: str | None = None
+    login: str | None = None
 
 
 def load_user_data(path: Path) -> dict[str, BaseUserData]:
@@ -106,6 +108,15 @@ def set_favorite(
     return {**entries, key: replace(current, favorite=value)}
 
 
+def set_login(
+    entries: Mapping[str, BaseUserData], key: str, login: str | None
+) -> dict[str, BaseUserData]:
+    """Логин — не секрет, живёт рядом с избранным (спека v2.2, §3).
+    Пароль сюда не попадает никогда — он в `security/credentials.py`."""  # noqa: RUF002
+    current = entries.get(key, BaseUserData())
+    return {**entries, key: replace(current, login=login)}
+
+
 def rekey(
     entries: Mapping[str, BaseUserData], old_key: str, new_key: str
 ) -> dict[str, BaseUserData]:
@@ -138,6 +149,7 @@ def _encode(data: BaseUserData) -> dict[str, Any]:
         ),
         "launch_count": data.launch_count,
         "last_client": data.last_client,
+        "login": data.login,
     }
 
 
@@ -150,4 +162,5 @@ def _decode(value: Any) -> BaseUserData:
         last_launched_at=datetime.fromisoformat(stamp) if stamp else None,
         launch_count=int(value.get("launch_count", 0)),
         last_client=value.get("last_client"),
+        login=value.get("login"),
     )

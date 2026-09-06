@@ -13,6 +13,7 @@ import pytest
 
 from onecstarter.domain.launch import ClientConvention, ClientKind, LaunchCommand
 from onecstarter.domain.version import Arch, Installation, parse_version
+from onecstarter.security.credentials import MemoryStore
 from onecstarter.services.catalog import read_common_lists
 from onecstarter.services.workspace import Workspace, WorkspacePaths
 
@@ -63,6 +64,7 @@ def workspace_factory(tmp_path):
             open_url=fake_open_url,
             now=lambda: datetime.fromisoformat("2026-08-07T10:00:00+00:00"),
             new_id=lambda: "99999999-9999-9999-9999-999999999999",
+            credentials=MemoryStore(),
         )
         # T-02 поставки (спека T-04.6, §3.3): конструктор больше не читает
         # общие списки сам, поэтому фабрика применяет снимок сразу и

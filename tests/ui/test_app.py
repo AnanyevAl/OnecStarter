@@ -33,6 +33,7 @@ from onecstarter.domain.version import Arch, Installation, VersionNumber, parse_
 from onecstarter.platform_1c.job import JobError, NullJob
 from onecstarter.platform_1c.process_scan import NullScanner, ProcessInfo
 from onecstarter.platform_1c.server_discovery import ServerInstallation
+from onecstarter.security.credentials import MemoryStore
 from onecstarter.services.catalog import EMPTY_COMMON_DATA
 from onecstarter.services.errors import (
     ConsoleRegistrationDeclinedError,
@@ -292,6 +293,7 @@ def _pending_workspace(tmp_path: Any) -> tuple[Workspace, list[LaunchCommand]]:
         spawn=fake_spawn,
         now=lambda: datetime.fromisoformat("2026-08-07T10:00:00+00:00"),
         new_id=lambda: "99999999-9999-9999-9999-999999999999",
+        credentials=MemoryStore(),
     )
     assert workspace.installations_pending
     assert workspace.common_lists_pending

@@ -41,6 +41,7 @@ from onecstarter.platform_1c.process_scan import NullScanner, ProcessScanner, Ps
 from onecstarter.platform_1c.registry import load_conventions, load_server_conventions
 from onecstarter.platform_1c.server_discovery import ServerInstallation, server_installations
 from onecstarter.platform_1c.server_spawn import spawn_server
+from onecstarter.security.credentials import KeyringStore
 from onecstarter.services import autostart
 from onecstarter.services.catalog import CommonListData, read_common_lists
 from onecstarter.services.errors import (
@@ -111,6 +112,7 @@ def build_runtime(env: Mapping[str, str]) -> Runtime:
         conventions=conventions,
         cfg_rules=rules,
         default_app=settings.default_client.default_app,
+        credentials=KeyringStore(),
     )
     servers_path = appdata / "OneCStarter" / "servers.json"
     return Runtime(workspace, rules, list(conventions), settings_path, servers_path)
