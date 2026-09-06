@@ -2400,6 +2400,54 @@ def test_smoke_logs_keyring_round_trip(
     qtbot.addWidget(captured["window"])
 
 
+class _ReadFailsAfterWriteVault:
+    """Пишет и удаляет как настоящее хранилище, но `read()` всегда отказывает.
+
+    Находка ревью задачи 1 (Important): раньше `vault.delete()` в
+    `_keyring_round_trip` стоял между двумя чтениями линейно, и отказ
+    ПЕРВОГО `read()` не давал дойти до удаления вовсе — запись оставалась
+    бы в настоящем Credential Manager машины сборщика.
+    """
+
+    def __init__(self) -> None:
+        self.data: dict[str, str] = {}
+
+    def read(self, key: str) -> str | None:
+        raise RuntimeError("чтение недоступно")
+
+    def write(self, key: str, secret: str) -> None:
+        self.data[key] = secret
+
+    def delete(self, key: str) -> None:
+        self.data.pop(key, None)
+
+
+def test_smoke_keyring_round_trip_deletes_record_even_when_read_fails(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any, caplog: Any
+) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ (находка ревью задачи 1): отказ чтения после успешной
+    записи не должен оставлять служебную запись в хранилище. Мутация: вернуть
+    `vault.delete(...)` из `finally` в прежнюю линейную форму между двумя
+    чтениями — тест обязан упасть, потому что `vault.data` останется
+    непустым (`RuntimeError` первого `read()` прерывает выполнение до
+    строки с `delete()`).
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    appdata = tmp_path / "appdata"
+    target = tmp_path / "out"
+    target.mkdir()
+    vault = _ReadFailsAfterWriteVault()
+
+    with caplog.at_level(logging.INFO):
+        code = run_smoke(str(target), {"APPDATA": str(appdata)}, credential_store=vault)
+
+    assert code == 0
+    assert "smoke: keyring=FAIL: RuntimeError" in caplog.text
+    assert vault.data == {}, "запись обязана быть удалена даже при отказе чтения"
+    qtbot.addWidget(captured["window"])
+
+
 # -- задача 16 (T-08): проводка «Консоль администрирования…» -----------------
 #
 # `_console_flow` — функция уровня модуля, вынесенная из `on_console`
