@@ -616,10 +616,28 @@ def test_importing_the_module_does_not_import_keyring() -> None:
     assert out.stdout.strip() == "False"
 
 
-def test_failure_repr_never_carries_the_secret() -> None:
-    """Текст отказа уходит пользователю — секрета в нём быть не может."""
-    error = CredentialBackendError("запись отвергнута")
-    assert "p@ss" not in repr(error) and "p@ss" not in str(error)
+def test_failure_repr_never_carries_the_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Текст отказа уходит пользователю — секрета в нём быть не может.
+
+    Проверка идёт через настоящий путь отказа, а не через сконструированное
+    вручную исключение с безопасным текстом: `keyring.errors.KeyringError`
+    в проде может нести что угодно, включая пароль (`keyring` этого не
+    гарантирует), и именно поэтому `_reason` берёт только имя типа —
+    здесь это подтверждается, а не постулируется.
+    """  # noqa: RUF002
+    import keyring
+    import keyring.errors
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise keyring.errors.KeyringError("отказ, пароль p@ss отвергнут")
+
+    monkeypatch.setattr(keyring, "set_password", boom)
+    with pytest.raises(CredentialBackendError) as excinfo:
+        KeyringStore(service="OneCStarter-test").write("id:x", "p@ss")
+    error = excinfo.value
+    assert "p@ss" not in str(error)
+    assert "p@ss" not in repr(error)
+    assert not any("p@ss" in str(arg) for arg in error.args)
 ```
 
 - [ ] **Step 2: Убедиться, что падают**
@@ -786,29 +804,233 @@ Expected: FAIL — `ImportError: cannot import name 'HIDDEN_ARGUMENTS'`
 В `src/onecstarter/security/secrets.py` добавить:
 
 ```python
-import re
-
 HIDDEN_ARGUMENTS = "<командная строка скрыта>"
-# Значение /P: либо в кавычках с удвоением внутренних (`quote_launch_value`),
-# либо до первого пробела — форма, которую подтвердит T-05.14.
-_PASSWORD_ARGUMENT = re.compile(r'/P(?:"(?:[^"]|"")*"|\S+)')
+
+
+def is_secret_key(name: str) -> bool:
+    """Несёт ли ключ строки соединения пароль.
+
+    Имя обрезается по краям: `Pwd ` с пробелом перед «=» — тот же пароль,
+    что и `Pwd`. Пробелы вокруг «=» в файлах пользователя не гипотетика —
+    скил v8i-format фиксирует их отдельным измеренным фактом (факт 6:
+    платформа не распознаёт такой ключ и добивает секцию). Направление
+    обрезки безопасное: секретов распознаётся больше, не меньше.
+    """  # noqa: RUF002
+    normalized = name.strip().casefold()
+    return normalized in _SECRET_KEYS or normalized.endswith(_SECRET_SUFFIX)
+
+
+def redact_connect(connect: str) -> str:
+    """Строка соединения без значений секретных ключей — для показа человеку.
+
+    Политика — fail-closed: там, где разбор перестаёт быть однозначным,
+    возвращается заглушка вместо строки. Показать строку частично хуже,
+    чем не показать вовсе, — пароль из неё уже не отозвать
+    (инвариант 5 CLAUDE.md).
+
+    Разобранная строка пересобирается заново из фрагментов, а не правится
+    поиском и заменой: значение секретного ключа в вывод не переносится
+    вообще. Замена по совпадению значения так не умеет — parse_connect
+    снимает кавычки, и значение с экранированной кавычкой в исходном тексте
+    не находится, а одинаковые значения у секретного и обычного ключа
+    затираются оба.
+
+    Скрывается строка целиком в трёх случаях:
+
+    - непарные кавычки: разбор склеивает хвост строки в значение соседнего
+      фрагмента, и `Pwd="secret"` печатается дословно внутри значения
+      несекретного ключа;
+    - непустая строка, из которой не вышло ни одного фрагмента (`Pwd"x"`
+      без «=»): показывать было бы нечего, кроме исходного текста;
+    - в собранном результате остался секретный ключ с настоящим значением —
+      признак того, что границы фрагментов разъехались.
+
+    Разобранная строка при этом нормализуется: исходные кавычки, пробелы
+    и фрагменты без «=» не сохраняются. Это допустимо — результат идёт
+    в сообщение пользователю и обратно в .v8i не пишется никогда.
+
+    **Гарантия не абсолютная.** Проверки закрывают строки, у которых разбор
+    расходится с исходным текстом наблюдаемым образом. Остаётся класс
+    испорченных строк, где кавычки парные, разбор при этом устойчив, а
+    секрет спрятан внутри значения несекретного ключа: `Usr=a"b;Pwd=x"c;`
+    разбирается в один фрагмент `Usr` и повторным разбором не ловится.
+    Это известное ограничение, а не оплошность: закрыть его можно только
+    разбором строки соединения по правилам платформы, которые
+    экспериментально не сняты (скил v8i-format, «Непроверенное»).
+    """  # noqa: RUF002
+    if not connect.strip():
+        # Скрывать нечего: пустая строка секрета не несёт.
+        return connect
+    if connect.count('"') % 2:
+        return _HIDDEN
+    fragments = parse_connect(connect)
+    if not fragments:
+        return _HIDDEN
+    parts = [
+        f"{fragment.name}={_MASK}"
+        if is_secret_key(fragment.name) and fragment.value
+        else f"{fragment.name}={fragment.value}"
+        for fragment in fragments
+    ]
+    redacted = ";".join(parts) + ";"
+    if _leaks_secret(redacted):
+        return _HIDDEN
+    return redacted
+
+
+def strip_url_credentials(url: str) -> str | None:
+    """Адрес без `user:pass@` и без query-параметров с секретным именем.
+
+    `None` — показать адрес надёжно не вышло. Политика fail-closed, как
+    у `redact_connect`: где разбор перестаёт быть однозначным, показывать
+    нельзя вовсе.
+
+    Разбор идёт `urllib.parse.urlsplit` безусловно — даже когда в строке нет
+    буквального «@». Раньше был ранний выход `if "@" not in url: return url`,
+    и это был баг, а не оптимизация: `urlsplit` сам NFKC-нормализует authority
+    и поднимает `ValueError`, если нормализация вносит новый «/», «?», «#»,
+    «@» или «:» — то есть сам ловит юникодных двойников «собаки»
+    (`＠` U+FF20, `﹫` U+FE6B и подобные). Ранний выход по буквальному «@»
+    обходил этот разбор стороной и пропускал двойника на экран, потому что
+    для него `"@" not in url` было истинным. Наивный поиск «@» до первого
+    «/» тоже не годится: он ошибается на `http://user:pa/ss@srv/base`,
+    где authority обрывается на незакодированном «/», и хвост с паролем
+    уезжает в путь. Стандартный парсер режет оба случая по RFC.
+
+    Четыре исхода, где возвращается `None`:
+
+    - `urlsplit` или разбор порта подняли `ValueError` — адрес не разбирается
+      (сюда же попадают юникодные двойники «собаки» в authority, см. выше);
+    - query-строка несёт параметр с секретным именем (`is_secret_key`) —
+      скрывается весь адрес, а не только параметр: показать частично хуже,
+      чем не показать вовсе (та же политика, что у `redact_connect`).
+      Проверяется до решения про «@», поэтому работает и для адресов
+      без учётных данных в authority;
+    - «@» есть — буквально или после NFKC-нормализации всей строки, чем
+      заодно ловятся двойники вне authority, — но не в authority:
+      `urlsplit("user:pass@srv/base")` принимает «user» за схему,
+      и пароль остался бы в пути;
+    - после пересборки «@» всё ещё на месте: границы разъехались.
+
+    IPv6-хост `hostname` отдаёт без скобок (`::1`, не `[::1]`) — их нужно
+    вернуть явно перед пересборкой: `urlunsplit` с голым `::1:8080` вместо
+    `[::1]:8080` даёт адрес, который `urlsplit` обратно не разбирает.
+
+    Плата за fail-closed — законный «@» в пути (`http://srv/base@2`) тоже
+    скрывается. Это осознанный обмен: адрес хоста пользователь узнает
+    из диалога свойств, а пароль из буфера обмена уже не отозвать
+    (инвариант 5 CLAUDE.md).
+    """  # noqa: RUF002
+    try:
+        split = urlsplit(url)
+        netloc = split.netloc
+        host = split.hostname or ""
+        port = split.port
+    except ValueError:
+        return None
+    query_names = (name for name, _value in parse_qsl(split.query, keep_blank_values=True))
+    if any(is_secret_key(name) for name in query_names):
+        return None
+    if "@" not in unicodedata.normalize("NFKC", url):
+        return url
+    if "@" not in netloc:
+        return None
+    if ":" in host:
+        host = f"[{host}]"
+    if port is not None:
+        host = f"{host}:{port}"
+    cleaned = urlunsplit((split.scheme, host, split.path, split.query, split.fragment))
+    return None if "@" in cleaned else cleaned
+
+
+def _leaks_secret(redacted: str) -> bool:
+    """Остался ли в собранном результате секретный ключ с настоящим значением.
+
+    Проверка идёт по повторному разбору вывода: если границы фрагментов
+    при первом разборе разъехались, спрятанный внутри чужого значения
+    `Pwd=...` всплывает здесь отдельным фрагментом.
+    """  # noqa: RUF002
+    return any(
+        is_secret_key(fragment.name) and fragment.value not in ("", _MASK)
+        for fragment in parse_connect(redacted)
+    )
+
+
+def _tokenize_arguments(arguments: str) -> list[str] | None:
+    """Командная строка → токены с учётом кавычек, либо `None` при их разъезде.
+
+    Вне кавычек пробел завершает токен. Кавычка открывает режим цитирования;
+    внутри него удвоенная кавычка (`""`, форма `quote_launch_value`) —
+    экранированная пара и остаётся частью токена как есть, одиночная —
+    закрывает режим. Конец строки при незакрытой кавычке — `None`: граница
+    токенов недостоверна, редактировать по ним нельзя (fail-closed, та же
+    политика, что у непарной кавычки в `redact_connect`).
+    """  # noqa: RUF002
+    tokens: list[str] = []
+    current: list[str] = []
+    in_quotes = False
+    index = 0
+    length = len(arguments)
+    while index < length:
+        char = arguments[index]
+        if in_quotes:
+            if char == '"':
+                if index + 1 < length and arguments[index + 1] == '"':
+                    current.append('""')
+                    index += 2
+                    continue
+                current.append('"')
+                in_quotes = False
+            else:
+                current.append(char)
+            index += 1
+            continue
+        if char == " ":
+            if current:
+                tokens.append("".join(current))
+                current = []
+        elif char == '"':
+            current.append('"')
+            in_quotes = True
+        else:
+            current.append(char)
+        index += 1
+    if in_quotes:
+        return None
+    if current:
+        tokens.append("".join(current))
+    return tokens
 
 
 def redact_arguments(arguments: str) -> str:
     """Командная строка запуска без значения `/P` — для сообщений и исходов.
 
-    Та же политика, что у `redact_connect`: непарная кавычка делает границы
-    значений недостоверными, и показывается заглушка, а не строка частично.
-    Значение заменяется на `***` вместе с кавычками — форма аргумента
-    для читателя роли не играет, а секрет из сообщения уже не отозвать.
+    Строка сначала разбирается на токены (`_tokenize_arguments`), потом
+    пересобирается — та же схема, что у `redact_connect`, и по той же
+    причине: правка по сырому тексту не различает настоящий `/P` и мнимый
+    внутри чужого значения (`/IBName"a/P"`), из-за чего секрет может
+    просочиться в вывод (находка ревью задачи 2, 06.09.2026).
+
+    Каждый токен, начинающийся с `/P` (включая `/PP...` — переизбыточная
+    редакция безопасна: [Д] других ключей на `/P` в режиме `ENTERPRISE`
+    нет), заменяется целиком на `/P***` — форма значения для читателя роли
+    не играет, а секрет из сообщения уже не отозвать. Незакрытая кавычка
+    делает границы токенов недостоверными: показывается заглушка, а не
+    строка частично. Токены при пересборке разделяются одним пробелом —
+    нормализация допустима по той же причине, что и в `redact_connect`.
     """  # noqa: RUF002
-    if arguments.count('"') % 2:
+    tokens = _tokenize_arguments(arguments)
+    if tokens is None:
         return HIDDEN_ARGUMENTS
-    redacted = _PASSWORD_ARGUMENT.sub("/P***", arguments)
-    if "/P" in redacted and _PASSWORD_ARGUMENT.search(redacted.replace("/P***", "")):
-        return HIDDEN_ARGUMENTS
-    return redacted
+    return " ".join("/P***" if token.startswith("/P") else token for token in tokens)
 ```
+
+> Блок выше — код `secrets.py` на коммите f80680a. Первая редакция плана
+> держала регулярку по сырой строке; ревью задачи 2 воспроизвело утечку
+> (`/IBName"a/P" /P"secret"` → secret в выводе). Заменено разбором
+> на токены с учётом кавычек и пересборкой — тот же приём, что
+> у `redact_connect`. Вакуумный тест первой редакции заменён тестом
+> через реальный путь `KeyringStore.write` с секретом в тексте исключения.
 
 Обновить докстринг модуля `secrets.py`: к списку «что тут определено»
 дописать абзац о `redact_arguments` — исходный текст не сокращать.
