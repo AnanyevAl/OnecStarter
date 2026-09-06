@@ -36,7 +36,7 @@ from onecstarter.services.errors import (
 )
 from onecstarter.services.groups import GroupRemoval
 from onecstarter.services.launch import LaunchOutcome
-from onecstarter.services.model import InfobaseItem, InfobaseSource
+from onecstarter.services.model import InfobaseItem, InfobaseSource, binding_key
 from onecstarter.services.paths import ROOT, group_path, normalize_folder, render_folder
 from onecstarter.services.settings import DEFAULT_RECENT_LIMIT, ListOrder
 from onecstarter.ui import theme
@@ -653,14 +653,46 @@ def test_properties_with_no_changes_does_not_touch_the_store(
 ) -> None:
     store = MemoryStore()
     view, *_ = _view(qtbot, workspace_factory, store=store)
+    # Нетронутый диалог отдаёт login=None/password=None/remember=False —
+    # сломанный credentials_changed() ушёл бы в ветку delete, а не write,  # noqa: RUF003
+    # поэтому шпион стоит на обеих операциях (находка ревью).
     calls: list[str] = []
-    store.write = lambda key, secret: calls.append(key)  # type: ignore[method-assign]
+    store.write = lambda key, secret: calls.append(f"write {key}")  # type: ignore[method-assign]
+    store.delete = lambda key: calls.append(f"delete {key}")  # type: ignore[method-assign]
     dialog = view._build_properties_dialog(_ACCOUNTING_KEY)
     assert dialog is not None
 
     view._apply_properties(_ACCOUNTING_KEY, dialog)
 
     assert calls == []
+
+
+def test_properties_edit_of_id_less_record_keeps_entered_credentials(
+    qtbot: Any, workspace_factory: Any
+) -> None:
+    """Правка записи без ID меняет её ключ (дописывается ID). Учётные данные,
+
+    введённые в том же диалоге, обязаны доехать до нового ключа, а не
+    потеряться за «файл изменился извне» (находка ревью задачи 5).
+    """  # noqa: RUF002
+    store = MemoryStore()
+    errors: list[ServicesError] = []
+    view, *_ = _view(qtbot, workspace_factory, errors=errors, store=store)
+    old_key = binding_key(None, 'File="C:\\Bases\\Manual";', "Без идентификатора")
+    dialog = view._build_properties_dialog(old_key)
+    assert dialog is not None
+    dialog.set_name("Ручная база")  # правка → update_infobase → запись получает ID
+    dialog.login_edit().setText("tester")
+    dialog.password_edit().setText("p@ss")
+    dialog.remember_checkbox().setChecked(True)
+
+    view._apply_properties(old_key, dialog)
+
+    assert errors == []
+    new_key = next(key for key in store.data if key.startswith("id:"))
+    assert store.data[new_key] == "p@ss"
+    assert old_key not in store.data
+    assert view.workspace().credentials_of(new_key) == ("tester", True)
 
 
 def test_apply_properties_calls_the_writer_when_something_changed(

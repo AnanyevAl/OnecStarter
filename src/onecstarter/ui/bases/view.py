@@ -1352,14 +1352,22 @@ class BasesView(QWidget):
 
         v2.2: учётные данные пишутся ПОСЛЕ `add_infobase` — `set_credentials`
         принимает ключ существующей записи, которого до этого момента
-        не существует. Отказ `add_infobase` — `return` без записи учётных
-        данных: `key` в этом случае не определён, писать некуда, а запись
-        и не появилась (`_write` поднимает исключение до какой-либо правки
-        файла на этом пути — ADD не задействует `rekey_from`, значит
-        частичного состояния для отображения нет, и `rebuild()` здесь можно
-        не звать). Отказ хранилища после успешного добавления — другое дело:
-        запись уже есть, и сообщение обязано отличать «база не добавлена»
-        от «база добавлена, пароль — нет» (спека §4, §8; тот же принцип,
+        не существует. Отказ `add_infobase` — `key` в этом случае не
+        определён, писать учётные данные некуда. `self.rebuild()` тем не
+        менее зовётся и на этом пути (находка ревью задачи 5, тот же класс
+        дефекта, что чинил add5b16): в общем случае неудачный ADD не меняет
+        состояние `Workspace` вовсе (`_write` поднимает исключение до
+        какой-либо правки файла, ADD не задействует `rekey_from`), и
+        перестройка — холостой перерисовкой того же дерева, но
+        `add_infobase` может отказать и ПОСЛЕ того, как `_write` уже
+        записал файл и перестроил модель внутри себя (`ServicesError
+        ("Запись добавлена, но её ключ неизвестен")` — недостижимо на
+        практике, но не запрещено типом), и тогда пропуск `rebuild()` был
+        бы ровно тем дефектом, который add5b16 уже чинил в другом месте:
+        экран остаётся на старом снимке, которого в файле уже нет.
+        Отказ хранилища после успешного добавления — другое дело: запись
+        уже есть, и сообщение обязано отличать «база не добавлена» от
+        «база добавлена, пароль — нет» (спека §4, §8; тот же принцип,
         что и в `Workspace.set_credentials`).
         """  # noqa: RUF002
         try:
@@ -1379,6 +1387,7 @@ class BasesView(QWidget):
             )
         except ServicesError as error:
             self._on_error(error)
+            self.rebuild()  # инвариант файла: перестройка безусловна (add5b16)
             return
         if dialog.credentials_changed():
             entered = dialog.credentials()
@@ -1467,6 +1476,17 @@ class BasesView(QWidget):
         успешного `dialog.changes()` — двойник диалога без этого метода
         (`_RaisingChanges`, тест ревью задачи 9) не должен на нём упасть,
         а он и не падает: исключение из `changes()` возвращает раньше.
+
+        **Порядок обязателен: учётные данные — ДО `update_infobase`** (находка
+        ревью задачи 5). У записи без `ID` ключ — суррогат (строка соединения
+        + имя, `binding_key`); любая правка через `update_infobase` дописывает
+        `ID` и меняет ключ (`rekey_from=key` внутри `Workspace._write`). Если
+        бы `set_credentials(key, …)` звался после, он не нашёл бы запись под
+        старым ключом — `UnknownItemError`, введённые логин и пароль терялись
+        бы за сообщением «файл изменился извне», хотя правка имени только
+        что прошла успешно. Записанные ДО правки логин и секрет переносит на
+        новый ключ сам `_write` (rekey задачи 4) — тем же путём, что уже
+        переносит избранное и историю запусков.
         """  # noqa: RUF002
         warning = dialog.kind_change_warning()
         if warning is not None and not russian_confirm(self, "Смена вида размещения", warning):
@@ -1483,17 +1503,17 @@ class BasesView(QWidget):
         credentials_changed = dialog.credentials_changed()
         if not changes and new_name is None and not credentials_changed:
             return
-        if changes or new_name is not None:
-            try:
-                self._workspace.update_infobase(key, changes, new_name)
-            except ServicesError as error:
-                self._on_error(error)
         if credentials_changed:
             entered = dialog.credentials()
             try:
                 self._workspace.set_credentials(
                     key, entered.login, entered.password, entered.remember
                 )
+            except ServicesError as error:
+                self._on_error(error)
+        if changes or new_name is not None:
+            try:
+                self._workspace.update_infobase(key, changes, new_name)
             except ServicesError as error:
                 self._on_error(error)
         self.rebuild()
