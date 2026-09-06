@@ -792,6 +792,35 @@ def test_redact_arguments_never_leaves_the_value() -> None:
     """Сторож fail-closed: при любом исходе значения /P в выводе нет."""
     for arguments in ('/P"p@ss"', "/Pp@ss", '/P"p@ss', '/IBName"a" /P"p@ss" /N"u"'):
         assert "p@ss" not in redact_arguments(arguments)
+
+def test_recursive_group_removal_deletes_the_secrets(tmp_path: Path) -> None:
+    """Секреты записей, удалённых вместе с группой, уходят из хранилища.
+
+    Иначе суррогатный ключ секции без ID достался бы новой записи с тем же
+    именем и строкой соединения — вместе с «удалённым» паролем. Контроль:
+    запись вне группы пароль сохраняет.
+    """  # noqa: RUF002
+    store = MemoryStore()
+    workspace = _workspace(tmp_path, store=store)
+    nested = [
+        item.key
+        for item in workspace.items()
+        if not item.is_group
+        and item.name in {"Розница", "Демо Бухгалтерия", "Демо Розница"}
+    ]
+    assert len(nested) == 3  # состав группы «Клиенты» — как в test_remove_group_recursive_drops_the_subtree
+    outside = next(
+        item.key for item in workspace.items() if not item.is_group and item.key not in nested
+    )
+    for key in [*nested, outside]:
+        workspace.set_credentials(key, "tester", "p@ss", remember=True)
+
+    assert workspace.remove_group(
+        "id:11111111-1111-1111-1111-111111111111", GroupRemoval.RECURSIVE
+    )
+
+    assert not any(key in store.data for key in nested)
+    assert store.data[outside] == "p@ss"
 ```
 
 - [ ] **Step 6: Убедиться, что падают**
@@ -1233,7 +1262,7 @@ git commit -m "feat: domain — Credentials и передача /N /P в build_a
 **Files:**
 - Modify: `src/onecstarter/services/user_data.py` (`BaseUserData`, кодек, `set_login`)
 - Modify: `src/onecstarter/services/errors.py`
-- Modify: `src/onecstarter/services/workspace.py` (`__init__`, `set_credentials`, `credentials_of`, `launch`, `_write`, `remove_infobase`)
+- Modify: `src/onecstarter/services/workspace.py` (`__init__`, `set_credentials`, `credentials_of`, `launch`, `_write`, `remove_infobase`, `remove_group`)
 - Modify: `src/onecstarter/services/launch.py` (`launch_infobase`)
 - Modify: `src/onecstarter/ui/app.py:108` (подключение `KeyringStore()` — единственное место)
 - Modify: `tests/unit/test_user_data.py`, `tests/unit/test_workspace.py`, `tests/unit/test_services_launch.py`
@@ -1531,7 +1560,10 @@ from onecstarter.services.user_data import set_login
     ) -> None:
         """Записать логин в наши данные, пароль — в хранилище. Порядок важен:
         логин пишется первым, и отказ хранилища не откатывает его — сообщение
-        различает «логин записан, пароль нет» (спека §4, §8).
+        различает «логин записан, пароль нет» (спека §4, §8). Дерево
+        перестраивается в любом исходе: логин уже на диске, и модель в памяти
+        обязана его отражать до того, как ошибка уйдёт наверх (как `launch`
+        и `_write`; тот же класс дефекта, что чинил add5b16).
 
         `login` пустой → секрет удаляется: пароль без логина неприменим.
         `remember` снят → секрет удаляется. `remember` стоит, `password` не
@@ -1551,7 +1583,8 @@ from onecstarter.services.user_data import set_login
             raise CredentialStoreError(
                 f"Логин сохранён, пароль — нет: {error}"  # noqa: RUF001
             ) from error
-        self._rebuild()
+        finally:
+            self._rebuild()
 ```
 
 В `launch` — перед `launch_infobase(...)`:
@@ -1641,6 +1674,44 @@ from onecstarter.security.secrets import redact_arguments, redact_connect
 Комментарий «Секретов в ней нет: запуск идёт по /IBName» заменить на:
 «С v2.2 в аргументах может быть /P — показывается только редактированная
 форма (спека v2.2, §6)».
+
+`remove_group` — секреты удалённых потомков. Ключи потомков не приходят из
+`PatchResult` (менять `groups.py`/`model.py` ради этого не нужно): достаточно
+разности множеств ключей записей до и после записи — `_write` перестраивает
+дерево в любом исходе. При `PROMOTE` ключи не меняются (папка в ключ не
+входит) — разность пуста, удалять нечего.
+
+```python
+    def remove_group(self, key: str, removal: GroupRemoval) -> bool:
+        """<исходный докстринг — из файла>
+
+        Пароли записей, удалённых вместе с группой, удаляются из хранилища:
+        суррогатный ключ секции без ID достался бы новой записи с тем же
+        именем и строкой соединения — вместе с «удалённым» паролем.
+        """  # noqa: RUF002
+        self._reject_common(key)
+        before = {item.key for item in self.items() if not item.is_group}
+        applied = self._write(
+            GroupPatch(GroupPatchKind.REMOVE, target_key=key, removal=removal)
+        ).applied
+        gone = before - {item.key for item in self.items() if not item.is_group}
+        failed: list[str] = []
+        for removed in sorted(gone):
+            try:
+                self._credentials.delete(removed)
+            except CredentialBackendError as error:
+                failed.append(f"{removed}: {error}")
+        if failed:
+            raise CredentialStoreError(
+                "Группа удалена, но пароли её записей остались в диспетчере "
+                "учётных данных: " + "; ".join(failed)
+            )
+        return applied
+```
+
+Ключ в тексте ошибки — `id:<GUID>` или суррогат (строка соединения + имя),
+секрета в нём нет. Отказ одного удаления не прерывает остальные: пытаемся
+удалить все, потом сообщаем обо всех.
 
 - [ ] **Step 7а: Подключение реального хранилища и защита тестов**
 
@@ -1747,8 +1818,17 @@ Expected: PASS.
    Expected: FAIL в `test_remove_deletes_the_secret`.
 4. В `_write` убрать перенос секрета.
    Expected: FAIL в `test_rekey_moves_the_secret`.
+5. В `remove_group` убрать цикл удаления секретов потомков.
+   Expected: FAIL в `test_recursive_group_removal_deletes_the_secrets`
+   на `assert not any(key in store.data for key in nested)`.
 
-Откатить правкой файлов, все четыре записать в отчёт.
+`finally: self._rebuild()` в `set_credentials` мутацией не проверяется:
+логин на `InfobaseItem` не проецируется, наблюдаемого поведения у пропуска
+перестройки сегодня нет, а тест-шпион на вызов `_rebuild` проверял бы
+намерение, а не поведение (правило файла test_workspace.py). Это правка
+контракта (докстринг `CredentialStoreError`), фиксируется ревью.
+
+Откатить правкой файлов, все пять записать в отчёт.
 
 - [ ] **Step 11: Линт, типы, коммит**
 
