@@ -5,13 +5,14 @@ from typing import Any
 
 import pytest
 from PySide6.QtCore import QMimeData, QUrl
-from PySide6.QtWidgets import QDialog
+from PySide6.QtWidgets import QDialog, QLineEdit
 
 from onecstarter.domain.connect import ConnectKind, classify_connect
 from onecstarter.services.model import InfobaseItem, InfobaseSource, NewInfobase
 from onecstarter.ui.dialogs.group_picker import INDENT
 from onecstarter.ui.dialogs.infobase import (
     HIDDEN_VALUE,
+    DialogCredentials,
     InfobaseDialog,
     build_connect,
     dropped_directory,
@@ -1126,3 +1127,72 @@ def test_browse_button_has_russian_label(qtbot: Any) -> None:
     dialog = InfobaseDialog.for_new(groups=["/"], installations=INSTALLED, cfg_rules=[])
     qtbot.addWidget(dialog)
     assert dialog._browse_button.text() == "Обзор…"
+
+
+# -- v2.2: логин, пароль и «Запомнить» в обоих диалогах (задача 5) ----------
+
+
+def test_dialog_offers_login_password_and_remember_off_by_default(qtbot: Any) -> None:
+    dialog = InfobaseDialog.for_new(groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    assert dialog.login_edit().text() == ""
+    assert dialog.password_edit().echoMode() == QLineEdit.EchoMode.Password
+    assert dialog.remember_checkbox().isChecked() is False
+    assert "командной строке" in dialog.credentials_note().text()
+
+
+def test_stored_password_is_not_shown_in_the_dialog(qtbot: Any) -> None:
+    """Спека v2.2, §4: диалог знает только признак — сам пароль не возвращается."""
+    dialog = InfobaseDialog(
+        _item('File="D:\\b";', ()), groups=["/"], installations=INSTALLED,
+        cfg_rules=[], login="tester", has_password=True,
+    )
+    qtbot.addWidget(dialog)
+    assert dialog.login_edit().text() == "tester"
+    assert dialog.password_edit().text() == ""
+    assert "сохранён" in dialog.password_edit().placeholderText()
+    assert dialog.remember_checkbox().isChecked() is True
+    assert dialog.credentials_changed() is False
+
+
+def test_password_without_login_blocks_ok_with_a_hint(qtbot: Any) -> None:
+    dialog = InfobaseDialog.for_new(groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    dialog.set_name("Демо")
+    dialog.set_file_path(r"D:\Bases\Demo")
+    assert dialog.accepts()
+
+    dialog.password_edit().setText("p@ss")
+
+    assert not dialog.accepts()
+    assert "Пользователь" in dialog.required_hint()
+
+
+def test_credentials_accessor_and_repr(qtbot: Any) -> None:
+    dialog = InfobaseDialog.for_new(groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    dialog.login_edit().setText("tester")
+    dialog.password_edit().setText("p@ss")
+    dialog.remember_checkbox().setChecked(True)
+
+    credentials = dialog.credentials()
+
+    assert isinstance(credentials, DialogCredentials)
+    # По полям, не через `==`: у пароля compare=False (иначе упавший assert  # noqa: RUF003
+    # печатал бы его в дифе pytest), и равенство пароль не проверяет.  # noqa: RUF003
+    assert credentials.login == "tester"
+    assert credentials.password == "p@ss"
+    assert credentials.remember is True
+    assert "p@ss" not in repr(credentials)
+    assert dialog.credentials_changed() is True
+
+
+def test_clearing_login_with_stored_password_warns(qtbot: Any) -> None:
+    dialog = InfobaseDialog(
+        _item('File="D:\\b";', ()), groups=["/"], installations=INSTALLED,
+        cfg_rules=[], login="tester", has_password=True,
+    )
+    qtbot.addWidget(dialog)
+    dialog.login_edit().setText("")
+    assert "будет удалён" in dialog.credentials_note().text()
+    assert dialog.credentials_changed() is True

@@ -23,6 +23,7 @@ from onecstarter.config.shell_link import build_shell_link, safe_file_name, shor
 from onecstarter.domain.connect import ConnectKind
 from onecstarter.domain.launch import ClientKind, LaunchCommand
 from onecstarter.domain.version import Arch, Installation, parse_version
+from onecstarter.security.credentials import CredentialBackendError, MemoryStore
 from onecstarter.services.cache import CacheEntry, CacheKind, EntryKind
 from onecstarter.services.display import COMMON_NOTE, IMPLICIT_NOTE, RowKind
 from onecstarter.services.errors import (
@@ -79,6 +80,7 @@ def _view(
     confirm_cache_clear: Callable[[QWidget | None, str], bool] | None = None,
     show_cache_report: Callable[[QWidget | None, str], None] | None = None,
     list_order: Callable[[], ListOrder] | None = None,
+    store: MemoryStore | None = None,
 ) -> tuple[BasesView, list[LaunchCommand], list[ServicesError], list[str]]:
     # По умолчанию — INSTALLED, не None: большинство тестов файла ничего
     # не знают про фоновое обнаружение и ждут готовых версий сразу.
@@ -86,7 +88,11 @@ def _view(
     # не закончилось», T-04.6 §3.4), а не синоним «используй умолчание»;  # noqa: RUF003
     # workspace_factory(None, ...) сама подставит INSTALLED для Workspace —
     # пробел здесь только у BasesView, у объекта под тестом.  # noqa: RUF003
-    workspace, calls, opened = workspace_factory(installations, cfg_paths=cfg_paths)
+    # `store` — параметр задачи 5 (v2.2): хранилище учётных данных,
+    # инжектируемое в Workspace через фабрику; по умолчанию — свежий
+    # MemoryStore (фабрика сама его создаёт), тест получает свой экземпляр,  # noqa: RUF003
+    # только когда ему нужна ссылка на секреты после вызова.
+    workspace, calls, opened = workspace_factory(installations, cfg_paths=cfg_paths, store=store)
     recorded = errors if errors is not None else []
     kwargs: dict[str, Any] = {}
     if confirm_removal is not None:
@@ -616,6 +622,45 @@ def test_apply_properties_on_untouched_dialog_does_not_write(
     assert calls == []
     assert errors == []
     assert after == before
+
+
+# -- v2.2: логин, пароль и «Запомнить» — оба пути ОК (задача 5) -------------  # noqa: RUF003
+
+
+def test_properties_apply_stores_credentials(qtbot: Any, workspace_factory: Any) -> None:
+    """Путь ОК диалога свойств — `_apply_properties` — доносит учётные данные
+
+    до хранилища; модальный exec() в офскрине не кликается, это приём файла.
+    """  # noqa: RUF002
+    store = MemoryStore()
+    view, *_ = _view(qtbot, workspace_factory, store=store)
+    dialog = view._build_properties_dialog(_ACCOUNTING_KEY)
+    assert dialog is not None
+    dialog.login_edit().setText("tester")
+    dialog.password_edit().setText("p@ss")
+    dialog.remember_checkbox().setChecked(True)
+
+    # Приём файла: `exec()` блокирует офскрин-тесты, поэтому обработчик ОК —  # noqa: RUF003
+    # `_apply_properties` — зовётся напрямую (см. докстринг show_properties).
+    view._apply_properties(_ACCOUNTING_KEY, dialog)
+
+    assert store.read(_ACCOUNTING_KEY) == "p@ss"
+    assert view.workspace().credentials_of(_ACCOUNTING_KEY) == ("tester", True)
+
+
+def test_properties_with_no_changes_does_not_touch_the_store(
+    qtbot: Any, workspace_factory: Any
+) -> None:
+    store = MemoryStore()
+    view, *_ = _view(qtbot, workspace_factory, store=store)
+    calls: list[str] = []
+    store.write = lambda key, secret: calls.append(key)  # type: ignore[method-assign]
+    dialog = view._build_properties_dialog(_ACCOUNTING_KEY)
+    assert dialog is not None
+
+    view._apply_properties(_ACCOUNTING_KEY, dialog)
+
+    assert calls == []
 
 
 def test_apply_properties_calls_the_writer_when_something_changed(
@@ -1300,6 +1345,47 @@ def test_apply_new_infobase_adds_a_record(qtbot, workspace_factory):
     added = next(i for i in items if i.name == "Новая база")
     assert added.connect == r'File="D:\bases\new";'
     assert added.folder == "/"
+
+
+def test_add_dialog_stores_credentials_after_the_record(qtbot: Any, workspace_factory: Any) -> None:
+    store = MemoryStore()
+    view, *_ = _view(qtbot, workspace_factory, store=store)
+    dialog = view._build_add_dialog()
+    qtbot.addWidget(dialog)
+    dialog.set_name("Новая")
+    dialog.set_file_path(r"D:\Bases\New")
+    dialog.login_edit().setText("tester")
+    dialog.password_edit().setText("p@ss")
+    dialog.remember_checkbox().setChecked(True)
+
+    view._apply_new_infobase(dialog)
+
+    key = next(i.key for i in view.workspace().items() if i.name == "Новая")
+    assert store.read(key) == "p@ss"
+
+
+def test_add_dialog_store_failure_reports_record_added(qtbot: Any, workspace_factory: Any) -> None:
+    """Спека §4: «база добавлена, пароль не сохранён», а не «не удалось добавить»."""  # noqa: RUF002
+    errors: list[ServicesError] = []
+    store = MemoryStore()
+    view, *_ = _view(qtbot, workspace_factory, errors=errors, store=store)
+
+    def boom(key: str, secret: str) -> None:
+        raise CredentialBackendError("отказ")
+
+    store.write = boom  # type: ignore[method-assign]
+    dialog = view._build_add_dialog()
+    qtbot.addWidget(dialog)
+    dialog.set_name("Новая")
+    dialog.set_file_path(r"D:\Bases\New")
+    dialog.login_edit().setText("tester")
+    dialog.password_edit().setText("p@ss")
+    dialog.remember_checkbox().setChecked(True)
+
+    view._apply_new_infobase(dialog)
+
+    assert any(i.name == "Новая" for i in view.workspace().items())
+    assert errors and "добавлена" in str(errors[0]) and "пароль" in str(errors[0])
 
 
 def test_apply_new_infobase_reports_invalid_name_and_still_rebuilds(qtbot, workspace_factory):

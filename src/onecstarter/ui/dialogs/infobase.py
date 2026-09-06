@@ -148,9 +148,20 @@ v8i-format — `Connect` с пробелом вокруг «=» платформ
 Секретные значения не показываются и не редактируются. Хранение паролей
 вне v1 (§0 спеки 4a), поле правки пароля создало бы способ записать его
 в .v8i открытым текстом.
+
+**v2.2: логин и пароль вводятся здесь, но идут мимо `changes()` и
+`new_record()` — отдельным аксессором `credentials()` в
+`Workspace.set_credentials`; в `.v8i` пароль не попадает по построению.**
 """  # noqa: RUF002
 
 from collections.abc import Callable, Sequence
+
+# `field` в этом модуле уже занято именем переменной цикла (`_placement_fields`
+# и другие места ниже перебирают `for _label, field in ...`) — импорт
+# `dataclasses.field` берётся под псевдонимом, а не переименовывает  # noqa: RUF003
+# многолетний цикл ради одного нового датакласса (F402).
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path
 
 from PySide6.QtCore import QMimeData
@@ -336,6 +347,25 @@ def _app_key(app: str | None) -> str | None:
 
 _APP_ITEMS = (("Авто", None), ("Тонкий клиент", "ThinClient"), ("Толстый клиент", "ThickClient"))
 
+# v2.2: логин/пароль/«Запомнить» — три новых поля формы (`InfobaseDialog.__init__`).
+CREDENTIALS_NOTE = (
+    "Хранится в диспетчере учётных данных Windows. При запуске передаётся "
+    "в командной строке и виден любой программе, работающей под вашей "
+    "учётной записью, всё время работы клиента"
+)
+CLEARING_LOGIN_NOTE = "Поле пользователя пусто — сохранённый пароль будет удалён"
+STORED_PASSWORD_PLACEHOLDER = "сохранён"
+
+
+@dataclass(frozen=True)
+class DialogCredentials:
+    """Что ввёл пользователь. `password` не печатается (инвариант 5);
+    `None` — поле пустое, сохранённый пароль не трогать."""
+
+    login: str | None
+    password: str | None = dataclass_field(default=None, repr=False, compare=False)
+    remember: bool = False
+
 
 class InfobaseDialog(QDialog):
     def __init__(
@@ -347,6 +377,8 @@ class InfobaseDialog(QDialog):
         cfg_rules: Sequence[DefaultVersionRule],
         parent: QWidget | None = None,
         choose_directory: Callable[[], str] = browse_for_directory,
+        login: str | None = None,
+        has_password: bool = False,
     ) -> None:
         super().__init__(parent)
         self._item = item
@@ -475,6 +507,33 @@ class InfobaseDialog(QDialog):
             form.addRow("", self._version_hint)
         form.addRow("Клиент", self._app)
 
+        # v2.2: логин/пароль/«Запомнить» — строятся всегда, тем же приёмом,
+        # что «Версия»/«Клиент» (задача 7 v2.1): новой записи, как и
+        # существующей, есть что сохранить в `Workspace.set_credentials`.
+        # Пароль никогда не приходит сюда заполненным значением —
+        # `has_password` только признак, сам секрет диалог не видит
+        # (спека v2.2, §4).
+        self._initial_login = (login or "").strip() or None
+        self._has_password = has_password
+        self._login = QLineEdit(self._initial_login or "")
+        self._password = QLineEdit()
+        self._password.setEchoMode(QLineEdit.EchoMode.Password)
+        if has_password:
+            self._password.setPlaceholderText(STORED_PASSWORD_PLACEHOLDER)
+        self._remember = QCheckBox()
+        self._remember.setChecked(has_password)
+        self._credentials_note = QLabel(CREDENTIALS_NOTE)
+        self._credentials_note.setObjectName("SettingsNote")
+        self._credentials_note.setWordWrap(True)
+
+        form.addRow("Пользователь", self._login)
+        form.addRow("Пароль", self._password)
+        form.addRow("Запомнить пароль", self._remember)
+        form.addRow("", self._credentials_note)
+
+        self._login.textChanged.connect(self._refresh_ok_state)
+        self._password.textChanged.connect(self._refresh_ok_state)
+
         if item is not None:
             self._os_auth = QCheckBox()
             self._os_auth.setChecked(_typed_value(item.keys, "WA") == "1")
@@ -530,12 +589,15 @@ class InfobaseDialog(QDialog):
         cfg_rules: Sequence[DefaultVersionRule],
         parent: QWidget | None = None,
         choose_directory: Callable[[], str] = browse_for_directory,
+        login: str | None = None,
+        has_password: bool = False,
     ) -> "InfobaseDialog":
         """Диалог добавления записи: то же окно, без исходной записи.
 
         Строку соединения строит `build_connect` при принятии (`new_record`),
         а не здесь — значений для неё ещё нет, пока пользователь не заполнил
-        форму.
+        форму. `login`/`has_password` — тот же смысл, что и у `__init__`
+        (для новой записи обычно оба по умолчанию: сохранять ещё нечего).
         """  # noqa: RUF002
         return cls(
             None,
@@ -544,6 +606,8 @@ class InfobaseDialog(QDialog):
             cfg_rules=cfg_rules,
             parent=parent,
             choose_directory=choose_directory,
+            login=login,
+            has_password=has_password,
         )
 
     def _placement_widgets(self) -> dict[str, QLineEdit]:
@@ -729,14 +793,34 @@ class InfobaseDialog(QDialog):
         `services` при этом остаётся вторым, самостоятельным рубежом:
         `_apply_new_infobase`/`_apply_properties` достижимы напрямую, в обход
         кнопки, и `Workspace` отвергает пустое имя сам.
+
+        v2.2: та же кнопка запирается и паролем без логина — пароль,
+        сохранённый под пустым пользователем, `Workspace.set_credentials`
+        не сможет привязать ни к чему (см. её докстринг: пустой логин
+        значит удаление секрета, а не запись). Проверка идёт здесь же,
+        поэтому прежний ранний `return` в ветке «всё заполнено» убран —
+        иначе полностью заполненная запись с паролем без логина считалась
+        бы готовой к «ОК» до первого нажатия на поле имени или размещения.
         """  # noqa: RUF002
         empty = self._empty_required()
         self._ok_button.setEnabled(not empty)
         if not empty:
             self._required_hint.setText("")
+        else:
+            fields = ", ".join(f"«{label}»" for label in empty)
+            self._required_hint.setText(f"Заполните: {fields}")
+
+        if self._password.text() and not self._login.text().strip():
+            self._ok_button.setEnabled(False)
+            self._required_hint.setText(
+                "Заполните: «Пользователь» — пароль без него не применить"
+            )
             return
-        fields = ", ".join(f"«{label}»" for label in empty)
-        self._required_hint.setText(f"Заполните: {fields}")
+        self._credentials_note.setText(
+            CLEARING_LOGIN_NOTE
+            if self._has_password and not self._login.text().strip()
+            else CREDENTIALS_NOTE
+        )
 
     def _on_accept(self) -> None:
         """Заблокировать «ОК», если правка вписала запрещённый символ."""  # noqa: RUF002
@@ -793,6 +877,43 @@ class InfobaseDialog(QDialog):
     def groups_shown(self) -> list[str]:
         """Пути групп в выпадающем списке — проверка проброса параметра `groups`."""
         return self._folder.paths()
+
+    def credentials(self) -> DialogCredentials:
+        """Что ввёл пользователь — вход `Workspace.set_credentials`.
+
+        `password` — `None`, если поле не тронуто (пустая строка от
+        нетронутого поля неотличима от `""`, поэтому `.text() or None`,
+        а не сама строка): нетронутое поле обязано означать «сохранённый
+        пароль не трогать», а не «стереть пароль» (см. докстринг
+        `Workspace.set_credentials`).
+        """  # noqa: RUF002
+        return DialogCredentials(
+            login=self._login.text().strip() or None,
+            password=self._password.text() or None,
+            remember=self._remember.isChecked(),
+        )
+
+    def credentials_changed(self) -> bool:
+        """Есть ли что записывать: логин сменился, пароль введён заново или
+        галочка переключена. Нетронутый диалог не должен трогать хранилище."""
+        current = self.credentials()
+        return (
+            current.login != self._initial_login
+            or current.password is not None
+            or current.remember != self._has_password
+        )
+
+    def login_edit(self) -> QLineEdit:
+        return self._login
+
+    def password_edit(self) -> QLineEdit:
+        return self._password
+
+    def remember_checkbox(self) -> QCheckBox:
+        return self._remember
+
+    def credentials_note(self) -> QLabel:
+        return self._credentials_note
 
     def accepts(self) -> bool:
         """Активна ли «ОК» — то, что видит пользователь до клика."""  # noqa: RUF002

@@ -6,6 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import codecs
 import shutil
+from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 
@@ -37,7 +38,11 @@ INSTALLED = [
 
 @pytest.fixture
 def workspace_factory(tmp_path):
-    def factory(installations=None, cfg_paths=()):
+    def factory(
+        installations: Sequence[Installation] | None = None,
+        cfg_paths: tuple[Path, ...] = (),
+        store: MemoryStore | None = None,
+    ) -> tuple[Workspace, list[LaunchCommand], list[str]]:
         calls: list[LaunchCommand] = []
         opened: list[str] = []
         ibases = tmp_path / "ibases.v8i"
@@ -64,7 +69,7 @@ def workspace_factory(tmp_path):
             open_url=fake_open_url,
             now=lambda: datetime.fromisoformat("2026-08-07T10:00:00+00:00"),
             new_id=lambda: "99999999-9999-9999-9999-999999999999",
-            credentials=MemoryStore(),
+            credentials=store if store is not None else MemoryStore(),
         )
         # T-02 поставки (спека T-04.6, §3.3): конструктор больше не читает
         # общие списки сам, поэтому фабрика применяет снимок сразу и

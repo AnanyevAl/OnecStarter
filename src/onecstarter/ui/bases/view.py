@@ -1349,6 +1349,18 @@ class BasesView(QWidget):
         диалога правки. `record.version`/`record.app` остаются `None`,
         пока пользователь не выбрал их явно, и `add_infobase` тогда вовсе
         не кладёт `Version`/`App` в секцию.
+
+        v2.2: учётные данные пишутся ПОСЛЕ `add_infobase` — `set_credentials`
+        принимает ключ существующей записи, которого до этого момента
+        не существует. Отказ `add_infobase` — `return` без записи учётных
+        данных: `key` в этом случае не определён, писать некуда, а запись
+        и не появилась (`_write` поднимает исключение до какой-либо правки
+        файла на этом пути — ADD не задействует `rekey_from`, значит
+        частичного состояния для отображения нет, и `rebuild()` здесь можно
+        не звать). Отказ хранилища после успешного добавления — другое дело:
+        запись уже есть, и сообщение обязано отличать «база не добавлена»
+        от «база добавлена, пароль — нет» (спека §4, §8; тот же принцип,
+        что и в `Workspace.set_credentials`).
         """  # noqa: RUF002
         try:
             record = dialog.new_record()
@@ -1358,7 +1370,7 @@ class BasesView(QWidget):
             )
             return
         try:
-            self._workspace.add_infobase(
+            key = self._workspace.add_infobase(
                 record.name,
                 record.connect,
                 record.folder,
@@ -1367,6 +1379,19 @@ class BasesView(QWidget):
             )
         except ServicesError as error:
             self._on_error(error)
+            return
+        if dialog.credentials_changed():
+            entered = dialog.credentials()
+            try:
+                self._workspace.set_credentials(
+                    key, entered.login, entered.password, entered.remember
+                )
+            except ServicesError as error:
+                self._on_error(
+                    InvalidRequestError(
+                        f"База «{record.name}» добавлена, но пароль не сохранён: {error}"
+                    )
+                )
         self.rebuild()
 
     def _build_properties_dialog(self, key: str) -> InfobaseDialog | None:
@@ -1376,10 +1401,21 @@ class BasesView(QWidget):
         офскрин-тесты, поэтому сборка отделена от показа и проверяется
         отдельно — какая запись найдена, что произойдёт при отсутствующем
         ключе и что реально дошло до диалога (`installations`, группы).
+
+        v2.2: логин и признак «пароль сохранён» — из `credentials_of`,
+        сам пароль сюда не попадает никогда (спека §4). Отказ хранилища
+        (например, Windows Credential Manager недоступен) идёт в `_on_error`
+        тем же способом, что и остальные отказы `ServicesError`, — диалог
+        всё равно открывается, просто без сведений о сохранённом пароле.
         """  # noqa: RUF002
         item = next((i for i in self._workspace.items() if i.key == key), None)
         if item is None:
             return None
+        try:
+            login, has_password = self._workspace.credentials_of(key)
+        except ServicesError as error:
+            self._on_error(error)
+            login, has_password = None, False
         return InfobaseDialog(
             item,
             groups=self._group_paths(),
@@ -1388,6 +1424,8 @@ class BasesView(QWidget):
             installations=self._installations or [],
             cfg_rules=self._cfg_rules,
             parent=self,
+            login=login,
+            has_password=has_password,
         )
 
     def show_properties(self, key: str) -> None:
@@ -1420,6 +1458,15 @@ class BasesView(QWidget):
         список теряемых ключей (`kind_change_warning`) показывается заранее,
         отказ пользователя отменяет всю операцию, не только правку вида,
         и до `Workspace.update_infobase` дело не доходит вовсе.
+
+        v2.2: учётные данные применяются **независимо** от правок `.v8i` —
+        свой собственный путь `Workspace.set_credentials`, а не часть
+        `changes()`. Ранний `return` при пустых `changes` больше не
+        последний: диалог, где пользователь тронул только пароль, не должен
+        уйти ни с чем. `dialog.credentials_changed()` читается уже ПОСЛЕ
+        успешного `dialog.changes()` — двойник диалога без этого метода
+        (`_RaisingChanges`, тест ревью задачи 9) не должен на нём упасть,
+        а он и не падает: исключение из `changes()` возвращает раньше.
         """  # noqa: RUF002
         warning = dialog.kind_change_warning()
         if warning is not None and not russian_confirm(self, "Смена вида размещения", warning):
@@ -1433,12 +1480,22 @@ class BasesView(QWidget):
                 )
             )
             return
-        if not changes and new_name is None:
+        credentials_changed = dialog.credentials_changed()
+        if not changes and new_name is None and not credentials_changed:
             return
-        try:
-            self._workspace.update_infobase(key, changes, new_name)
-        except ServicesError as error:
-            self._on_error(error)
+        if changes or new_name is not None:
+            try:
+                self._workspace.update_infobase(key, changes, new_name)
+            except ServicesError as error:
+                self._on_error(error)
+        if credentials_changed:
+            entered = dialog.credentials()
+            try:
+                self._workspace.set_credentials(
+                    key, entered.login, entered.password, entered.remember
+                )
+            except ServicesError as error:
+                self._on_error(error)
         self.rebuild()
 
     def _group_paths(self) -> list[str]:
