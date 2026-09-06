@@ -28,7 +28,7 @@ from typing import Protocol
 SERVICE = "OneCStarter"
 
 
-class CredentialStoreError(Exception):
+class CredentialBackendError(Exception):
     """Хранилище отказало. Текст — только причина, никогда не секрет."""
 
 
@@ -54,7 +54,7 @@ class KeyringStore:
         try:
             return keyring.get_password(self._service, key)
         except keyring.errors.KeyringError as error:
-            raise CredentialStoreError(_reason(error)) from error
+            raise CredentialBackendError(_reason(error)) from error
 
     def write(self, key: str, secret: str) -> None:
         import keyring
@@ -63,7 +63,7 @@ class KeyringStore:
         try:
             keyring.set_password(self._service, key, secret)
         except keyring.errors.KeyringError as error:
-            raise CredentialStoreError(_reason(error)) from error
+            raise CredentialBackendError(_reason(error)) from error
 
     def delete(self, key: str) -> None:
         import keyring
@@ -74,7 +74,7 @@ class KeyringStore:
         except keyring.errors.PasswordDeleteError:
             return
         except keyring.errors.KeyringError as error:
-            raise CredentialStoreError(_reason(error)) from error
+            raise CredentialBackendError(_reason(error)) from error
 
 
 class MemoryStore:

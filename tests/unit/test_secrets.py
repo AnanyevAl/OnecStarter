@@ -82,11 +82,27 @@ def test_ppasswd_is_a_secret() -> None:
         # принимает именно эту форму.
         ('/IBName"x" /N"u" /P"a""b" /AppAutoCheckMode', '/IBName"x" /N"u" /P*** /AppAutoCheckMode'),
         # Форма без кавычек — справочник (B2 T-05.14), измерением не
-        # подтверждена и не опровергнута: [Д]. Регулярка режет и её.
+        # подтверждена и не опровергнута: [Д]. Токенизатор режет и её.
         ("/IBName\"x\" /Nu /Pp@ss /AppAutoCheckMode", '/IBName"x" /Nu /P*** /AppAutoCheckMode'),
         # Непарная кавычка — границы значений недостоверны, показывать нельзя.
         ('/IBName"x" /P"p@ss /AppAutoCheckMode', HIDDEN_ARGUMENTS),
         ("", ""),
+        # Находка ревью задачи 2 (06.09.2026): мнимый /P внутри значения
+        # /IBName сдвигал границы регулярки и пропускал настоящий секрет.
+        # Токенизатор не путает их — /IBName"a/P" целиком один токен.
+        (
+            '/IBName"a/P" /P"secret" /N"u"',
+            '/IBName"a/P" /P*** /N"u"',
+        ),
+        # /P — часть значения другого ключа, а не отдельный токен: не трогаем.  # noqa: RUF003
+        ('/IBName"/P" /N"u"', '/IBName"/P" /N"u"'),
+        # Пустое значение /P — токен всё равно начинается с /P и режется.  # noqa: RUF003
+        ('/P"" /N"u"', '/P*** /N"u"'),
+        # Два /P — оба токена заменены независимо.  # noqa: RUF003
+        ('/P"x" /P"y"', '/P*** /P***'),
+        # /PP — тоже начинается с /P: переизбыточная редакция безопасна,  # noqa: RUF003
+        # других ключей на /P* в режиме ENTERPRISE нет ([Д]).
+        ('/PP"x"', "/P***"),
     ],
 )
 def test_redact_arguments(arguments: str, expected: str) -> None:
@@ -94,6 +110,24 @@ def test_redact_arguments(arguments: str, expected: str) -> None:
 
 
 def test_redact_arguments_never_leaves_the_value() -> None:
-    """Сторож fail-closed: при любом исходе значения /P в выводе нет."""
-    for arguments in ('/P"p@ss"', "/Pp@ss", '/P"p@ss', '/IBName"a" /P"p@ss" /N"u"'):
+    """Сторож fail-closed: при любом исходе значения /P в выводе нет.
+
+    Две последние пробы — регрессия, а не дубли предыдущих четырёх:
+    - `/IBName"a/P" /P"p@ss" /N"u"` — мнимый `/P` в чужом значении перед
+      настоящим (форма находки ревью задачи 2, 06.09.2026); ни одна
+      из первых четырёх проб её не задевает, там `/P` в тексте только один;
+    - `/P"secret p@ss"` — пробел внутри значения `/P`. Если токенизатор
+      подменить на `arguments.split()` (не различает кавычки), эта проба
+      режется на `/P"secret` и `p@ss"`, второй осколок не начинается
+      с `/P` и остаётся в выводе как есть — секрет утекает.
+    """  # noqa: RUF002
+    arguments_without_the_secret = (
+        '/P"p@ss"',
+        "/Pp@ss",
+        '/P"p@ss',
+        '/IBName"a" /P"p@ss" /N"u"',
+        '/IBName"a/P" /P"p@ss" /N"u"',
+        '/P"secret p@ss"',
+    )
+    for arguments in arguments_without_the_secret:
         assert "p@ss" not in redact_arguments(arguments)

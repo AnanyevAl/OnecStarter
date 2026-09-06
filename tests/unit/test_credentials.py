@@ -3,7 +3,7 @@
 import pytest
 
 from onecstarter.security.credentials import (
-    CredentialStoreError,
+    CredentialBackendError,
     KeyringStore,
     MemoryStore,
 )
@@ -32,7 +32,7 @@ def test_keyring_store_translates_keyring_errors(monkeypatch: pytest.MonkeyPatch
         raise keyring.errors.KeyringError("нет бэкенда")
 
     monkeypatch.setattr(keyring, "set_password", boom)
-    with pytest.raises(CredentialStoreError):
+    with pytest.raises(CredentialBackendError):
         KeyringStore(service="OneCStarter-test").write("id:x", "p@ss")
 
 
@@ -61,7 +61,25 @@ def test_importing_the_module_does_not_import_keyring() -> None:
     assert out.stdout.strip() == "False"
 
 
-def test_failure_repr_never_carries_the_secret() -> None:
-    """Текст отказа уходит пользователю — секрета в нём быть не может."""
-    error = CredentialStoreError("запись отвергнута")
-    assert "p@ss" not in repr(error) and "p@ss" not in str(error)
+def test_failure_repr_never_carries_the_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Текст отказа уходит пользователю — секрета в нём быть не может.
+
+    Проверка идёт через настоящий путь отказа, а не через сконструированное
+    вручную исключение с безопасным текстом: `keyring.errors.KeyringError`
+    в проде может нести что угодно, включая пароль (`keyring` этого не
+    гарантирует), и именно поэтому `_reason` берёт только имя типа —
+    здесь это подтверждается, а не постулируется.
+    """  # noqa: RUF002
+    import keyring
+    import keyring.errors
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise keyring.errors.KeyringError("отказ, пароль p@ss отвергнут")
+
+    monkeypatch.setattr(keyring, "set_password", boom)
+    with pytest.raises(CredentialBackendError) as excinfo:
+        KeyringStore(service="OneCStarter-test").write("id:x", "p@ss")
+    error = excinfo.value
+    assert "p@ss" not in str(error)
+    assert "p@ss" not in repr(error)
+    assert not any("p@ss" in str(arg) for arg in error.args)

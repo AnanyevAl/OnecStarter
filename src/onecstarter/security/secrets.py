@@ -22,11 +22,16 @@
 
 `redact_arguments` закрывает соседний канал утечки — не строку соединения,
 а собранную командную строку запуска платформы (скил platform-launch):
-значение ключа `/P` вырезается тем же способом и по той же политике
-fail-closed, что и секретные ключи `Connect` в `redact_connect`.
+значение ключа `/P` вырезается тем же способом, что и секретные ключи
+`Connect` в `redact_connect`, — командная строка сначала разбирается на
+токены с учётом кавычек, а не правится поиском по сырому тексту. Первая
+реализация резала `/P` регулярным выражением по сырой строке: находка
+ревью задачи 2 (06.09.2026) показала, что мнимый `/P` внутри чужого
+значения (`/IBName"a/P"`) сдвигает границы совпадения и пропускает
+настоящий секрет в вывод — тот же класс ошибки, для которого
+`redact_connect` уже разбирает строку, а не патчит её.
 """  # noqa: RUF002
 
-import re
 import unicodedata
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
@@ -37,12 +42,6 @@ _SECRET_SUFFIX = "pwd"
 _MASK = "***"
 _HIDDEN = "<строка соединения скрыта>"
 HIDDEN_ARGUMENTS = "<командная строка скрыта>"
-# Значение /P: либо в кавычках с удвоением внутренних (`quote_launch_value`,  # noqa: RUF003
-# [Ф] T-05.14 — запуск B), либо до первого пробела — форма справочника
-# (`docs/research/t05-14-results.md`, B2), измерением не подтверждённая
-# и не опровергнутая: [Д]. Регулярка покрывает обе — редакция должна  # noqa: RUF003
-# резать секрет независимо от того, какую форму выберет платформа.
-_PASSWORD_ARGUMENT = re.compile(r'/P(?:"(?:[^"]|"")*"|\S+)')
 
 
 def is_secret_key(name: str) -> bool:
@@ -194,17 +193,70 @@ def _leaks_secret(redacted: str) -> bool:
     )
 
 
+def _tokenize_arguments(arguments: str) -> list[str] | None:
+    """Командная строка → токены с учётом кавычек, либо `None` при их разъезде.
+
+    Вне кавычек пробел завершает токен. Кавычка открывает режим цитирования;
+    внутри него удвоенная кавычка (`""`, форма `quote_launch_value`) —
+    экранированная пара и остаётся частью токена как есть, одиночная —
+    закрывает режим. Конец строки при незакрытой кавычке — `None`: граница
+    токенов недостоверна, редактировать по ним нельзя (fail-closed, та же
+    политика, что у непарной кавычки в `redact_connect`).
+    """  # noqa: RUF002
+    tokens: list[str] = []
+    current: list[str] = []
+    in_quotes = False
+    index = 0
+    length = len(arguments)
+    while index < length:
+        char = arguments[index]
+        if in_quotes:
+            if char == '"':
+                if index + 1 < length and arguments[index + 1] == '"':
+                    current.append('""')
+                    index += 2
+                    continue
+                current.append('"')
+                in_quotes = False
+            else:
+                current.append(char)
+            index += 1
+            continue
+        if char == " ":
+            if current:
+                tokens.append("".join(current))
+                current = []
+        elif char == '"':
+            current.append('"')
+            in_quotes = True
+        else:
+            current.append(char)
+        index += 1
+    if in_quotes:
+        return None
+    if current:
+        tokens.append("".join(current))
+    return tokens
+
+
 def redact_arguments(arguments: str) -> str:
     """Командная строка запуска без значения `/P` — для сообщений и исходов.
 
-    Та же политика, что у `redact_connect`: непарная кавычка делает границы
-    значений недостоверными, и показывается заглушка, а не строка частично.
-    Значение заменяется на `***` вместе с кавычками — форма аргумента
-    для читателя роли не играет, а секрет из сообщения уже не отозвать.
+    Строка сначала разбирается на токены (`_tokenize_arguments`), потом
+    пересобирается — та же схема, что у `redact_connect`, и по той же
+    причине: правка по сырому тексту не различает настоящий `/P` и мнимый
+    внутри чужого значения (`/IBName"a/P"`), из-за чего секрет может
+    просочиться в вывод (находка ревью задачи 2, 06.09.2026).
+
+    Каждый токен, начинающийся с `/P` (включая `/PP...` — переизбыточная
+    редакция безопасна: [Д] других ключей на `/P` в режиме `ENTERPRISE`
+    нет), заменяется целиком на `/P***` — форма значения для читателя роли
+    не играет, а секрет из сообщения уже не отозвать. Незакрытая кавычка
+    делает границы токенов недостоверными: показывается заглушка, а не
+    строка частично. Токены при пересборке разделяются одним пробелом —
+    нормализация допустима по той же причине, что и в `redact_connect`.
     """  # noqa: RUF002
-    if arguments.count('"') % 2:
+    tokens = _tokenize_arguments(arguments)
+    if tokens is None:
         return HIDDEN_ARGUMENTS
-    redacted = _PASSWORD_ARGUMENT.sub("/P***", arguments)
-    if "/P" in redacted and _PASSWORD_ARGUMENT.search(redacted.replace("/P***", "")):
-        return HIDDEN_ARGUMENTS
-    return redacted
+    return " ".join("/P***" if token.startswith("/P") else token for token in tokens)
