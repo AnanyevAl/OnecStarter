@@ -2047,6 +2047,14 @@ class DialogCredentials:
 и `new_record()` — отдельным аксессором `credentials()` в
 `Workspace.set_credentials`; в `.v8i` пароль не попадает по построению».
 
+Уточнение по ревью задачи 5: фраза «не показываются **и не редактируются**»
+после появления поля пароля стала ложной. Объяснение не терять, а перевести
+в прошедшее время: «до v2.2 поля пароля не было — оно создало бы способ
+записать пароль в `.v8i` открытым текстом; с v2.2 поле есть, но его значение
+идёт мимо `changes()`/`new_record()` — в диспетчер учётных данных через
+`Workspace.set_credentials`». Докстринг модуля не должен утверждать
+обратное коду (правило проекта о документе, разошедшемся с кодом).
+
 - [ ] **Step 4: Тесты диалога проходят**
 
 Run: `uv run pytest tests/ui/test_infobase_dialog.py -v`
@@ -2086,13 +2094,43 @@ def test_properties_apply_stores_credentials(qtbot, workspace_factory) -> None:
 def test_properties_with_no_changes_does_not_touch_the_store(qtbot, workspace_factory) -> None:
     store = MemoryStore()
     view, *_ = _view(qtbot, workspace_factory, store=store)
+    # Нетронутый диалог отдаёт login=None/password=None/remember=False —
+    # сломанный credentials_changed() ушёл бы в ветку delete, а не write,
+    # поэтому шпион стоит на обеих операциях (находка ревью).
     calls: list[str] = []
-    store.write = lambda key, secret: calls.append(key)  # type: ignore[method-assign]
+    store.write = lambda key, secret: calls.append(f"write {key}")  # type: ignore[method-assign]
+    store.delete = lambda key: calls.append(f"delete {key}")  # type: ignore[method-assign]
     dialog = view._build_properties_dialog(_ACCOUNTING_KEY)
 
     view._apply_properties(_ACCOUNTING_KEY, dialog)
 
     assert calls == []
+
+
+def test_properties_edit_of_id_less_record_keeps_entered_credentials(
+    qtbot, workspace_factory
+) -> None:
+    """Правка записи без ID меняет её ключ (дописывается ID). Учётные данные,
+    введённые в том же диалоге, обязаны доехать до нового ключа, а не
+    потеряться за «файл изменился извне» (находка ревью задачи 5)."""
+    store = MemoryStore()
+    errors: list[ServicesError] = []
+    view, *_ = _view(qtbot, workspace_factory, errors=errors, store=store)
+    old_key = binding_key(None, 'File="C:\Bases\Manual";', "Без идентификатора")
+    dialog = view._build_properties_dialog(old_key)
+    assert dialog is not None
+    dialog.set_name("Ручная база")  # правка → update_infobase → запись получает ID
+    dialog.login_edit().setText("tester")
+    dialog.password_edit().setText("p@ss")
+    dialog.remember_checkbox().setChecked(True)
+
+    view._apply_properties(old_key, dialog)
+
+    assert errors == []
+    new_key = next(key for key in store.data if key.startswith("id:"))
+    assert store.data[new_key] == "p@ss"
+    assert old_key not in store.data
+    assert view.workspace().credentials_of(new_key) == ("tester", True)
 
 
 def test_add_dialog_stores_credentials_after_the_record(qtbot, workspace_factory) -> None:
@@ -2160,23 +2198,30 @@ Expected: FAIL — `TypeError` на неизвестном параметре `s
 ```
 
 `_apply_properties` — учётные данные применяются **независимо** от правок
-`.v8i`; ранний `return` при пустых `changes` больше не последний:
+`.v8i`; ранний `return` при пустых `changes` больше не последний. Порядок
+обязателен: **учётные данные — ДО `update_infobase`.** У записи без `ID`
+ключ суррогатный (строка соединения + имя), и любая правка через
+`update_infobase` дописывает `ID` и меняет ключ (`rekey_from=key`);
+`set_credentials(key, …)` после этого не найдёт запись —
+`UnknownItemError`, введённые логин и пароль потеряны за сообщением «файл
+изменился извне» (находка ревью задачи 5). Записанные до правки логин и
+секрет `_write` переносит на новый ключ сам (rekey задачи 4).
 
 ```python
         credentials_changed = dialog.credentials_changed()
         if not changes and new_name is None and not credentials_changed:
             return
-        if changes or new_name is not None:
-            try:
-                self._workspace.update_infobase(key, changes, new_name)
-            except ServicesError as error:
-                self._on_error(error)
         if credentials_changed:
             entered = dialog.credentials()
             try:
                 self._workspace.set_credentials(
                     key, entered.login, entered.password, entered.remember
                 )
+            except ServicesError as error:
+                self._on_error(error)
+        if changes or new_name is not None:
+            try:
+                self._workspace.update_infobase(key, changes, new_name)
             except ServicesError as error:
                 self._on_error(error)
         self.rebuild()
@@ -2192,6 +2237,7 @@ Expected: FAIL — `TypeError` на неизвестном параметре `s
             )
         except ServicesError as error:
             self._on_error(error)
+            self.rebuild()  # инвариант файла: перестройка безусловна (add5b16)
             return
         if dialog.credentials_changed():
             entered = dialog.credentials()
@@ -2226,8 +2272,18 @@ Expected: PASS.
    без учёта `credentials_changed`. Expected: FAIL в `test_properties_apply_stores_credentials`.
 4. В `_apply_new_infobase` завернуть отказ хранилища в общий текст «не удалось добавить».
    Expected: FAIL в `test_add_dialog_store_failure_reports_record_added`.
+5. `credentials_changed()` → `return True` безусловно.
+   Expected: FAIL в `test_properties_with_no_changes_does_not_touch_the_store`
+   на `assert calls == []` — в списке `delete id:…`.
+6. В `_apply_properties` вернуть блок учётных данных ПОСЛЕ `update_infobase`.
+   Expected: FAIL в `test_properties_edit_of_id_less_record_keeps_entered_credentials`
+   на `assert errors == []` (UnknownItemError) либо на `credentials_of`.
 
-Откатить правкой файлов.
+`self.rebuild()` в ветке отказа `_apply_new_infobase` мутацией не проверяется:
+ветка после состоявшейся записи документирована как недостижимая, это
+восстановление инварианта файла, фиксируется ревью.
+
+Откатить правкой файлов, все шесть записать в отчёт.
 
 - [ ] **Step 10: Линт, типы, коммит**
 
