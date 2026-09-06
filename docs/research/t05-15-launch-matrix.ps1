@@ -1,9 +1,9 @@
 ﻿<#
-Эксперимент T-05.14 (спека v2.2, §1): работает ли /N /P при запуске по /IBName.
+Эксперимент T-05.15 (спека v2.2, §1): работает ли /N /P при запуске по /IBName.
 Запускает заказчик. Пароль в файл результатов НЕ пишется — заменяется на <пароль>.
 
 Пример:
-  .\t05-14-launch-matrix.ps1 -Exe "C:\Program Files\1cv8\8.3.25.1633\bin\1cv8c.exe" `
+  .\t05-15-launch-matrix.ps1 -Exe "C:\Program Files\1cv8\8.3.25.1633\bin\1cv8c.exe" `
       -IbName "Тест пароля" -User tester -Run B
 #>
 param(
@@ -15,7 +15,7 @@ param(
 )
 
 $ibases = Join-Path $env:APPDATA "1C\1CEStart\ibases.v8i"
-$results = Join-Path $PSScriptRoot "t05-14-results.md"
+$results = Join-Path $PSScriptRoot "t05-15-results.md"
 
 function Quote([string] $value) { '"' + $value.Replace('"', '""') + '"' }
 

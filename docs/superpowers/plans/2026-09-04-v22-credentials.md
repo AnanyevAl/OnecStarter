@@ -59,8 +59,8 @@ Credential Manager, при запуске оба передаются клиен
 
 | Файл | Ответственность | Задача |
 | --- | --- | --- |
-| `docs/research/t05-14-launch-matrix.ps1` | **создаётся.** Скрипт-помощник эксперимента: команда, хеши, снимок процесса | 0a |
-| `docs/research/t05-14-results.md` | **создаётся.** Шаблон записи результатов, потом сами результаты | 0a, 0b |
+| `docs/research/t05-15-launch-matrix.ps1` | **создаётся.** Скрипт-помощник эксперимента: команда, хеши, снимок процесса | 0a |
+| `docs/research/t05-15-results.md` | **создаётся.** Шаблон записи результатов, потом сами результаты | 0a, 0b |
 | `.claude/skills/platform-launch/SKILL.md`, `reference.md` | [Ф] по итогам эксперимента | 0b |
 | `src/onecstarter/ui/app.py` | `run_smoke`: round-trip `keyring` внутри frozen-сборки | 1 |
 | `build/onecstarter.spec`, `build/smoke.py` | `hiddenimports`; проверка строки `smoke: keyring=ok` | 1 |
@@ -81,11 +81,11 @@ Credential Manager, при запуске оба передаются клиен
 
 ---
 
-## Task 0a: скрипт-помощник эксперимента T-05.14 и шаблон результатов
+## Task 0a: скрипт-помощник эксперимента T-05.15 и шаблон результатов
 
 **Files:**
-- Create: `docs/research/t05-14-launch-matrix.ps1`
-- Create: `docs/research/t05-14-results.md`
+- Create: `docs/research/t05-15-launch-matrix.ps1`
+- Create: `docs/research/t05-15-results.md`
 
 **Interfaces:**
 - Produces: файл результатов, который заказчик заполняет; задача 0b читает его.
@@ -97,18 +97,18 @@ Credential Manager, при запуске оба передаются клиен
 
 - [ ] **Step 1: Скрипт**
 
-Создать `docs/research/t05-14-launch-matrix.ps1`. **Сохранить в UTF-8
+Создать `docs/research/t05-15-launch-matrix.ps1`. **Сохранить в UTF-8
 с BOM**: PowerShell 5.1 читает `.ps1` без BOM как ANSI, и все кириллические
 строки скрипта (подсказки, «<пароль>») выйдут кракозябрами. Проверка:
 первые три байта файла — `EF BB BF`.
 
 ```powershell
 <#
-Эксперимент T-05.14 (спека v2.2, §1): работает ли /N /P при запуске по /IBName.
+Эксперимент T-05.15 (спека v2.2, §1): работает ли /N /P при запуске по /IBName.
 Запускает заказчик. Пароль в файл результатов НЕ пишется — заменяется на <пароль>.
 
 Пример:
-  .\t05-14-launch-matrix.ps1 -Exe "C:\Program Files\1cv8\8.3.25.1633\bin\1cv8c.exe" `
+  .\t05-15-launch-matrix.ps1 -Exe "C:\Program Files\1cv8\8.3.25.1633\bin\1cv8c.exe" `
       -IbName "Тест пароля" -User tester -Run B
 #>
 param(
@@ -120,7 +120,7 @@ param(
 )
 
 $ibases = Join-Path $env:APPDATA "1C\1CEStart\ibases.v8i"
-$results = Join-Path $PSScriptRoot "t05-14-results.md"
+$results = Join-Path $PSScriptRoot "t05-15-results.md"
 
 function Quote([string] $value) { '"' + $value.Replace('"', '""') + '"' }
 
@@ -195,7 +195,7 @@ Add-Content -Path $results -Value $row -Encoding UTF8
 Write-Host "Записано: $row"
 ```
 
-> Блок выше — содержимое `docs/research/t05-14-launch-matrix.ps1` на коммите
+> Блок выше — содержимое `docs/research/t05-15-launch-matrix.ps1` на коммите
 > `b5af121`. Первая редакция плана несла дефект (Critical в ревью задачи 0a):
 > `.Replace($password, …)` по уже собранной строке не находил удвоенную
 > `Quote()` кавычку, и пароль с `"` уходил в файл результатов. Исправлено
@@ -204,12 +204,12 @@ Write-Host "Записано: $row"
 
 - [ ] **Step 2: Шаблон результатов**
 
-Создать `docs/research/t05-14-results.md`:
+Создать `docs/research/t05-15-results.md`:
 
 ```markdown
-# T-05.14 — /N /P при запуске по /IBName
+# T-05.15 — /N /P при запуске по /IBName
 
-Спека v2.2, §1. Заполняет скрипт `t05-14-launch-matrix.ps1`, запускает
+Спека v2.2, §1. Заполняет скрипт `t05-15-launch-matrix.ps1`, запускает
 заказчик. Пароль в этом файле не появляется — скрипт заменяет его
 на `<пароль>` и в команде, и в снимке процесса.
 
@@ -226,8 +226,8 @@ Write-Host "Записано: $row"
 - [ ] **Step 3: Коммит**
 
 ```powershell
-git add docs/research/t05-14-launch-matrix.ps1 docs/research/t05-14-results.md
-git commit -m "research: T-05.14 — скрипт-помощник и шаблон результатов эксперимента /N /P"
+git add docs/research/t05-15-launch-matrix.ps1 docs/research/t05-15-results.md
+git commit -m "research: T-05.15 — скрипт-помощник и шаблон результатов эксперимента /N /P"
 ```
 
 **После этой задачи исполнение ОСТАНАВЛИВАЕТСЯ** до того, как заказчик
@@ -239,7 +239,7 @@ git commit -m "research: T-05.14 — скрипт-помощник и шабло
 ## Task 0b: запись результата эксперимента в скил — гейт
 
 **Files:**
-- Modify: `docs/research/t05-14-results.md` (версия, дата, выводы)
+- Modify: `docs/research/t05-15-results.md` (версия, дата, выводы)
 - Modify: `.claude/skills/platform-launch/SKILL.md` (раздел «Пароль в командной строке — неустранимая утечка»)
 - Modify: `.claude/skills/platform-launch/reference.md` (таблица ключей `/N`, `/P`)
 
@@ -267,7 +267,7 @@ D вошёл без диалога — результат 1 «нет, тольк
 Пример для исхода «B с кавычками работает, /WA- не нужен»:
 
 ```markdown
-**[Ф] <дата>, T-05.14:** при запуске по `/IBName` ключи `/N"<имя>" /P"<пароль>"`,
+**[Ф] <дата>, T-05.15:** при запуске по `/IBName` ключи `/N"<имя>" /P"<пароль>"`,
 поставленные сразу после `/IBName`, перекрывают запись `.v8i`: клиент входит
 под указанным пользователем без диалога. `/WA-` рядом не требуется. Форма
 значения — как у `/IBName`: в кавычках, внутренние удвоены. `ibases.v8i`
@@ -280,13 +280,13 @@ D вошёл без диалога — результат 1 «нет, тольк
 
 - [ ] **Step 3: В `reference.md` у строк `/N<имя>` и `/P<пароль>` дописать столбец достоверности**
 
-Строка 36–37 таблицы: добавить `**[Ф]** T-05.14` и измеренную форму значения.
+Строка 36–37 таблицы: добавить `**[Ф]** T-05.15` и измеренную форму значения.
 
 - [ ] **Step 4: Коммит**
 
 ```powershell
-git add docs/research/t05-14-results.md .claude/skills/platform-launch/SKILL.md .claude/skills/platform-launch/reference.md
-git commit -m "research: T-05.14 — [Ф] /N /P при /IBName, форма значения, /WA-"
+git add docs/research/t05-15-results.md .claude/skills/platform-launch/SKILL.md .claude/skills/platform-launch/reference.md
+git commit -m "research: T-05.15 — [Ф] /N /P при /IBName, форма значения, /WA-"
 ```
 
 ---
@@ -777,7 +777,7 @@ from onecstarter.security.secrets import HIDDEN_ARGUMENTS, redact_arguments
         # Кавычка внутри пароля удвоена формой quote_launch_value — закрывающая
         # граница остаётся однозначной.
         ('/IBName"x" /N"u" /P"a""b" /AppAutoCheckMode', '/IBName"x" /N"u" /P*** /AppAutoCheckMode'),
-        # Форма без кавычек (если T-05.14 подтвердит её) — до пробела.
+        # Форма без кавычек (если T-05.15 подтвердит её) — до пробела.
         ("/IBName\"x\" /Nu /Pp@ss /AppAutoCheckMode", '/IBName"x" /Nu /P*** /AppAutoCheckMode'),
         # Непарная кавычка — границы значений недостоверны, показывать нельзя.
         ('/IBName"x" /P"p@ss /AppAutoCheckMode', HIDDEN_ARGUMENTS),
@@ -1115,7 +1115,7 @@ git commit -m "feat: security — хранилище паролей над keyri
 
 ```python
     def test_credentials_go_right_after_ibname(self) -> None:
-        """[Ф] T-05.14: /N /P сразу после /IBName, форма значения — как у /IBName."""
+        """[Ф] T-05.15: /N /P сразу после /IBName, форма значения — как у /IBName."""
         arguments = build_arguments(
             ClientKind.THIN,
             ib_name="empty",
@@ -1190,7 +1190,7 @@ class Credentials:
 
 
 def _credential_arguments(credentials: Credentials) -> str:
-    """[Ф] <дата> T-05.14: форма значения — как у /IBName, в кавычках
+    """[Ф] <дата> T-05.15: форма значения — как у /IBName, в кавычках
     с удвоением; /WA- рядом не требуется. При ином результате эксперимента
     меняется только эта функция."""
     parts = [f"/N{quote_launch_value(credentials.login)}"]
@@ -2331,7 +2331,7 @@ Expected: 0. Код 139 — повторить; любой другой — ре
    и дописать: «**Закрыто без кода 04.09.2026:** `ppasswd` в `_SECRET_KEYS`
    с 0.1.0, `test_ppasswd_is_a_secret` есть — строка была устаревшей».
 2. Веха **T-14** в конец файла по структуре T-13: четыре гейта/решения
-   заказчика, результат T-05.14 со ссылкой на `docs/research/t05-14-results.md`,
+   заказчика, результат T-05.15 со ссылкой на `docs/research/t05-15-results.md`,
    **все** мутационные проверки задач 1–5 (что ломали, где отозвалось),
    принятые ограничения (§8 спеки), keyring-гейт и его исход.
 
@@ -2359,7 +2359,7 @@ git commit -m "release: версия 2.2.0 — учётные данные дл�
 
 - [ ] **Step 6: Живая проверка заказчиком — до слияния**
 
-Заказчику: собранный экземпляр, тестовая база из T-05.14. Проверить глазами:
+Заказчику: собранный экземпляр, тестовая база из T-05.15. Проверить глазами:
 три строки в свойствах и в добавлении; подпись-предупреждение читается;
 «Запомнить» выключено у новой записи; после сохранения — запуск базы без
 диалога; снятие галочки — снова диалог; в `%APPDATA%\OneCStarter\bases.json`

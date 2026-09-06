@@ -246,7 +246,7 @@ class TestBuildArguments:
         assert arguments.startswith("ENTERPRISE /IBConnectionString")
 
     def test_credentials_go_right_after_ibname(self) -> None:
-        """[Ф] T-05.14: /N /P сразу после /IBName, форма значения — как у /IBName."""  # noqa: RUF002
+        """[Ф] T-05.15: /N /P сразу после /IBName, форма значения — как у /IBName."""  # noqa: RUF002
         arguments = build_arguments(
             ClientKind.THIN,
             ib_name="empty",

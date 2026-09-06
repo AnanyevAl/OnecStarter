@@ -62,7 +62,7 @@ class Credentials:
 
 
 def _credential_arguments(credentials: Credentials) -> str:
-    """[Ф] 06.09.2026 T-05.14: форма значения — как у /IBName, в кавычках
+    """[Ф] 06.09.2026 T-05.15: форма значения — как у /IBName, в кавычках
     с удвоением ([Д] по аналогии, не измерено — ни в `tester`, ни в пароле
     кавычек не было); /WA- рядом не требуется. При ином результате
     эксперимента меняется только эта функция.
@@ -71,7 +71,7 @@ def _credential_arguments(credentials: Credentials) -> str:
     `/IBConnectionString`, а не сразу после проверок стража: [Д] reference.md —
     более поздний по командной строке ключ переопределяет часть строки
     соединения, и, скажем, несекретный `Usr=` внутри `connect` иначе перебил бы
-    наш явный логин. Измерено это только для пути `/IBName` (T-05.14); для
+    наш явный логин. Измерено это только для пути `/IBName` (T-05.15); для
     `/IBConnectionString` порядок — по документации, не по эксперименту."""  # noqa: RUF002
     parts = [f"/N{quote_launch_value(credentials.login)}"]
     if credentials.password is not None:

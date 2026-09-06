@@ -78,10 +78,10 @@ def test_ppasswd_is_a_secret() -> None:
         ('ENTERPRISE /IBName"x" /N"u" /P"p@ss" /AppAutoCheckVersion',
          'ENTERPRISE /IBName"x" /N"u" /P*** /AppAutoCheckVersion'),
         # Кавычка внутри пароля удвоена формой quote_launch_value — закрывающая
-        # граница остаётся однозначной. [Ф] T-05.14, запуск B: платформа
+        # граница остаётся однозначной. [Ф] T-05.15, запуск B: платформа
         # принимает именно эту форму.
         ('/IBName"x" /N"u" /P"a""b" /AppAutoCheckMode', '/IBName"x" /N"u" /P*** /AppAutoCheckMode'),
-        # Форма без кавычек — справочник (B2 T-05.14), измерением не
+        # Форма без кавычек — справочник (B2 T-05.15), измерением не
         # подтверждена и не опровергнута: [Д]. Токенизатор режет и её.
         ("/IBName\"x\" /Nu /Pp@ss /AppAutoCheckMode", '/IBName"x" /Nu /P*** /AppAutoCheckMode'),
         # Непарная кавычка — границы значений недостоверны, показывать нельзя.
