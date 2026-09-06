@@ -388,23 +388,60 @@ class _KeyringSmokeVault:
 
 
 def _keyring_round_trip(vault: object) -> str:
-    """`ok` либо причина отказа — одной строкой, без секрета."""
+    """`ok` либо причина отказа — одной строкой, без секрета.
+
+    Удаление служебной записи (`vault.delete`) — в `finally` (находка ревью
+    задачи 1, Important): раньше `delete()` стоял линейно между двумя
+    чтениями, и отказ ПЕРВОГО чтения оставлял запись непотревоженной —
+    до вызова `delete()` дело просто не доходило. То же с отказом самого
+    удаления: `_KeyringSmokeVault.delete` глотает только `PasswordDeleteError`
+    keyring, любое другое исключение раньше вылетало наружу необработанным
+    и подменяло собой причину более раннего отказа. Оба случая оставляли
+    мусор в настоящем Credential Manager машины сборщика — ровно то, что
+    запрещает спека §9. `finally` гарантирует попытку удаления при любом
+    исходе чтения; собственный `except Exception` внутри `finally` — чтобы
+    отказ САМОГО удаления не заслонил более раннюю причину (`result`,
+    захваченный до входа в `finally`) и не прервал функцию раньше
+    контрольного чтения `gone` ниже.
+    """  # noqa: RUF002
     probe = "smoke"
     try:
         vault.write(SMOKE_VAULT_KEY, probe)  # type: ignore[attr-defined]
-        got = vault.read(SMOKE_VAULT_KEY)  # type: ignore[attr-defined]
-        vault.delete(SMOKE_VAULT_KEY)  # type: ignore[attr-defined]
-        gone = vault.read(SMOKE_VAULT_KEY)  # type: ignore[attr-defined]
     except Exception as error:
         # Самопроверка сборки: любая причина отказа обязана попасть в лог
-        # строкой, а не уронить smoke трассировкой. Правило BLE в ruff проекта
+        # строкой, а не уронить smoke трассировкой. Правило BLE в ruff проекта  # noqa: RUF003
         # не включено — noqa здесь был бы лишним и пойман RUF100.
         return f"FAIL: {type(error).__name__}"
+
+    result: str | None = None
+    got: str | None = None
+    try:
+        got = vault.read(SMOKE_VAULT_KEY)  # type: ignore[attr-defined]
+    except Exception as error:
+        result = f"FAIL: {type(error).__name__}"
+    finally:
+        try:
+            vault.delete(SMOKE_VAULT_KEY)  # type: ignore[attr-defined]
+        except Exception as error:
+            if result is None:
+                result = f"FAIL: {type(error).__name__}"
+    if result is not None:
+        return result
     if got != probe:
         return "FAIL: прочитано не то, что записано"
+
+    try:
+        gone = vault.read(SMOKE_VAULT_KEY)  # type: ignore[attr-defined]
+    except Exception as error:
+        return f"FAIL: {type(error).__name__}"
     if gone is not None:
         return "FAIL: запись не удалилась"
     return "ok"
+
+# Блок выше — функция как она закоммичена в bd1ffdc после раунда правок:
+# первая редакция плана звала delete() линейно между двумя read(), и отказ
+# первого чтения оставлял служебную запись в Credential Manager (Important
+# в ревью задачи 1). План правится вслед за находкой.
 ```
 
 В сигнатуру `run_smoke` добавить `credential_store: object | None = None`;
