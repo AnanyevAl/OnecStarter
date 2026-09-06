@@ -335,17 +335,18 @@ def test_smoke_logs_keyring_round_trip(tmp_path, qapp):
     именно в собранном экземпляре (спека v2.2, §9): без hiddenimports keyring
     в frozen-сборке молча уходит в пустой бэкенд."""
     vault = _MemoryVault()
-    env = _smoke_env(tmp_path)  # тот же помощник, что у соседних тестов run_smoke
+    env = {"APPDATA": str(tmp_path), "QT_QPA_PLATFORM": "offscreen"}  # как у соседей
     code = run_smoke(str(tmp_path), env, credential_store=vault)
 
     assert code == 0
-    log = (tmp_path / "smoke.log").read_text(encoding="utf-8")  # путь — как у соседних тестов
-    assert "smoke: keyring=ok" in log
+    assert "smoke: keyring=ok" in caplog.text  # лог run_smoke читается через caplog
     assert vault.data == {}, "служебная запись обязана быть удалена после проверки"
 ```
 
-Имя помощника окружения и путь лога взять из соседних тестов `run_smoke`
-в этом файле — они уже есть; выдумывать новые нельзя.
+(Сигнатура теста получает фикстуру `caplog`.) Первая редакция плана
+выдумала помощник `_smoke_env` и файл `smoke.log` — их в проекте нет:
+соседние тесты `run_smoke` строят окружение inline и читают лог через
+`caplog`. Исполнитель задачи 1 пошёл по факту; текст приведён к нему.
 
 - [ ] **Step 2: Убедиться, что падает**
 
