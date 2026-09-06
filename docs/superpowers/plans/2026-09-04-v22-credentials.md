@@ -585,6 +585,20 @@ def test_keyring_store_delete_of_missing_is_silent(monkeypatch: pytest.MonkeyPat
     KeyringStore(service="OneCStarter-test").delete("id:nope")
 
 
+def test_importing_the_module_does_not_import_keyring() -> None:
+    """[Ф] 06.09.2026: import keyring ~200 мс; модуль тянет Workspace на каждом
+    старте — keyring обязан грузиться лениво, при первом обращении."""
+    import subprocess
+    import sys
+
+    probe = (
+        "import sys; import onecstarter.security.credentials; "
+        "print('keyring' in sys.modules)"
+    )
+    out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True)
+    assert out.stdout.strip() == "False"
+
+
 def test_failure_repr_never_carries_the_secret() -> None:
     """Текст отказа уходит пользователю — секрета в нём быть не может."""
     error = CredentialStoreFailure("запись отвергнута")
@@ -617,12 +631,16 @@ frozen-сборка молча уходит в пустой бэкенд, гей
 Имя записи в хранилище — ключ привязки базы (`services/model.py::
 binding_key`): тот же, что у избранного и истории, поэтому при смене
 ключа (`Workspace._write(rekey_from=…)`) секрет переезжает вместе с ними.
+
+`keyring` импортируется ЛЕНИВО, внутри методов, а не на уровне модуля:
+[Ф] 06.09.2026 — `import keyring` стоит ~200 мс (тянет `keyring.core`),
+первый `get_keyring()` — ещё ~55 мс на entry points. Этот модуль
+импортирует `Workspace`, то есть каждый старт программы; платить 200 мс
+за функцию, которую большинство не включит, нельзя. Тот же приём, что
+у `_KeyringSmokeVault` в `ui/app.py` (задача 1 вехи v2.2).
 """  # noqa: RUF002
 
 from typing import Protocol
-
-import keyring
-import keyring.errors
 
 SERVICE = "OneCStarter"
 
@@ -647,18 +665,27 @@ class KeyringStore:
         self._service = service
 
     def read(self, key: str) -> str | None:
+        import keyring
+        import keyring.errors
+
         try:
             return keyring.get_password(self._service, key)
         except keyring.errors.KeyringError as error:
             raise CredentialStoreFailure(_reason(error)) from error
 
     def write(self, key: str, secret: str) -> None:
+        import keyring
+        import keyring.errors
+
         try:
             keyring.set_password(self._service, key, secret)
         except keyring.errors.KeyringError as error:
             raise CredentialStoreFailure(_reason(error)) from error
 
     def delete(self, key: str) -> None:
+        import keyring
+        import keyring.errors
+
         try:
             keyring.delete_password(self._service, key)
         except keyring.errors.PasswordDeleteError:
@@ -781,6 +808,8 @@ Expected: PASS.
    и в `test_redact_arguments_never_leaves_the_value`.
 2. В `MemoryStore.delete` заменить `pop(key, None)` на `del self.data[key]`.
    Expected: FAIL в `test_memory_store_delete_of_missing_is_silent`.
+3. Поднять `import keyring` на уровень модуля `credentials.py`.
+   Expected: FAIL в `test_importing_the_module_does_not_import_keyring`.
 
 Откатить правкой файлов.
 
