@@ -1154,7 +1154,13 @@ class Credentials:
     спросит пароль сама (спека v2.2, §4)."""
 
     login: str
-    password: str | None = field(default=None, repr=False)
+    password: str | None = field(default=None, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        # Граница домена: пустой логин = логина нет (спека §4). Services
+        # нормализуют до конструирования; сюда пустое не доходит штатно.
+        if not self.login.strip():
+            raise ValueError("логин пуст")
 
 
 def _credential_arguments(credentials: Credentials) -> str:
@@ -1177,8 +1183,10 @@ def _credential_arguments(credentials: Credentials) -> str:
             parts.append(_credential_arguments(credentials))
 ```
 
-Для ветки строки соединения — то же, **после** проверок стража, перед
-`parts.append(f"/IBConnectionString…")`:
+Для ветки строки соединения — то же, но **после** `parts.append(
+f"/IBConnectionString…")`: [Д] reference.md — части строки соединения
+переопределяются ключами, стоящими в командной строке позже; `Usr=` в
+строке не секрет и стража проходит, и явный логин обязан его перекрыть:
 
 ```python
         if credentials is not None:
@@ -1190,6 +1198,14 @@ def _credential_arguments(credentials: Credentials) -> str:
 попадают в аргументы **явно** через `credentials=` — по решению заказчика
 04.09.2026 с записанной моделью угроз (спека v2.2, §2); страж секретов
 в строке соединения остаётся».
+
+> **Правки вслед за ревью задачи 3 (06.09.2026).** `compare=False` у пароля:
+> pytest строит диф полей по `field.compare`, а не по `field.repr`, и упавший
+> `assert a == b` печатал бы пароль; `__post_init__` отвергает пустой логин
+> (`/N""` не должен собираться); в ветке `connect=` учётные данные идут ПОСЛЕ
+> `/IBConnectionString` — [Д] поздний ключ перекрывает часть строки. Первая
+> редакция плана всех трёх вещей не учитывала. Тесты: равенство при разных
+> паролях, порядок в ветке строки соединения, отказ на пустом логине.
 
 - [ ] **Step 4: Тесты проходят**
 
@@ -1775,7 +1791,7 @@ class DialogCredentials:
     `None` — поле пустое, сохранённый пароль не трогать."""
 
     login: str | None
-    password: str | None = field(default=None, repr=False)
+    password: str | None = field(default=None, repr=False, compare=False)
     remember: bool = False
 ```
 
