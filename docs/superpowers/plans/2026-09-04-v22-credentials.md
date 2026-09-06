@@ -348,6 +348,23 @@ def test_smoke_logs_keyring_round_trip(tmp_path, qapp):
 соседние тесты `run_smoke` строят окружение inline и читают лог через
 `caplog`. Исполнитель задачи 1 пошёл по факту; текст приведён к нему.
 
+> **Добавлено по итогам ревью задачи 1 (коммиты bd1ffdc, 54b9bfe).** Линейная
+> форма `write → read → delete → read` оставляла служебную запись, если первый
+> `read()` бросал; `delete()` ушёл в `finally`, отказ самого удаления не
+> заслоняет причину чтения (guard `if result is None`). Это сторожат два
+> регрессионных теста в `tests/ui/test_app.py`:
+>
+> - `test_smoke_keyring_round_trip_deletes_record_even_when_read_fails` —
+>   хранилище, у которого `read()` бросает после успешного `write()`:
+>   `assert vault.data == {}` и `"smoke: keyring=FAIL: RuntimeError" in caplog.text`;
+> - `test_smoke_keyring_round_trip_keeps_read_failure_over_delete_failure` —
+>   `read()` бросает `ValueError`, `delete()` — `RuntimeError`:
+>   `"smoke: keyring=FAIL: ValueError" in caplog.text` и `"RuntimeError" not in caplog.text`.
+>
+> Мутации: снять guard → второй тест падает (причина подменена); снять
+> `try/except` вокруг `delete` в `finally` → исключение вылетает из
+> `run_smoke`, строки `keyring=` нет.
+
 - [ ] **Step 2: Убедиться, что падает**
 
 Run: `uv run pytest tests/ui/test_app.py -k keyring_round_trip -v`
