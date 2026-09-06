@@ -971,6 +971,17 @@ def test_remove_deletes_the_secret(tmp_path: Path) -> None:
 def test_recursive_group_removal_deletes_the_secrets(tmp_path: Path) -> None:
     """Находка ревью: ключ секции без ID иначе достался бы новой записи
     с тем же именем и строкой соединения — вместе с «удалённым» паролем.
+
+    Контрольная запись вне группы (`id:6666…`, «Учёт серверный», `Folder=/`)
+    проверяет, что удаление не выметает секреты подряд — только те, что
+    принадлежат удалённому поддереву (находка ревью раунда 2: реализация,
+    удаляющая всё хранилище целиком, тоже прошла бы тест без этой записи).
+    «Розница» (`id:2222…`) в `nested` не входит: это подгруппа «Клиенты»,
+    а не база — `set_credentials` отказал бы ей `InvalidRequestError`,
+    секретов у групп не бывает вовсе. Обе настоящие базы поддерева —
+    «Демо Бухгалтерия» (прямой потомок «Клиенты») и «Демо Розница» (потомок
+    через «Розницу») — учтены в `nested`; других баз в этом поддереве
+    фикстура не несёт.
     """  # noqa: RUF002
     store = MemoryStore()
     workspace = _workspace(tmp_path, store=store)
@@ -978,7 +989,8 @@ def test_recursive_group_removal_deletes_the_secrets(tmp_path: Path) -> None:
         "id:44444444-4444-4444-4444-444444444444",  # Демо Бухгалтерия, /Клиенты
         "id:55555555-5555-5555-5555-555555555555",  # Демо Розница, /Клиенты/Розница
     ]
-    for key in nested:
+    outside = "id:66666666-6666-6666-6666-666666666666"  # Учёт серверный, /
+    for key in [*nested, outside]:
         workspace.set_credentials(key, "tester", "p@ss", remember=True)
 
     assert workspace.remove_group(
@@ -986,6 +998,7 @@ def test_recursive_group_removal_deletes_the_secrets(tmp_path: Path) -> None:
     )
 
     assert not any(key in store.data for key in nested)
+    assert store.data[outside] == "p@ss"
 
 
 def test_rekey_moves_the_secret(tmp_path: Path) -> None:
