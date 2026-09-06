@@ -2,7 +2,12 @@
 
 import pytest
 
-from onecstarter.security.secrets import is_secret_key, strip_url_credentials
+from onecstarter.security.secrets import (
+    HIDDEN_ARGUMENTS,
+    is_secret_key,
+    redact_arguments,
+    strip_url_credentials,
+)
 
 
 @pytest.mark.parametrize(
@@ -61,3 +66,34 @@ def test_ppasswd_is_a_secret() -> None:
     assert is_secret_key("PPasswd")
     assert is_secret_key("ppasswd")
     assert not is_secret_key("PUser")
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        (
+            'ENTERPRISE /IBName"x" /AppAutoCheckVersion',
+            'ENTERPRISE /IBName"x" /AppAutoCheckVersion',
+        ),
+        ('ENTERPRISE /IBName"x" /N"u" /P"p@ss" /AppAutoCheckVersion',
+         'ENTERPRISE /IBName"x" /N"u" /P*** /AppAutoCheckVersion'),
+        # Кавычка внутри пароля удвоена формой quote_launch_value — закрывающая
+        # граница остаётся однозначной. [Ф] T-05.14, запуск B: платформа
+        # принимает именно эту форму.
+        ('/IBName"x" /N"u" /P"a""b" /AppAutoCheckMode', '/IBName"x" /N"u" /P*** /AppAutoCheckMode'),
+        # Форма без кавычек — справочник (B2 T-05.14), измерением не
+        # подтверждена и не опровергнута: [Д]. Регулярка режет и её.
+        ("/IBName\"x\" /Nu /Pp@ss /AppAutoCheckMode", '/IBName"x" /Nu /P*** /AppAutoCheckMode'),
+        # Непарная кавычка — границы значений недостоверны, показывать нельзя.
+        ('/IBName"x" /P"p@ss /AppAutoCheckMode', HIDDEN_ARGUMENTS),
+        ("", ""),
+    ],
+)
+def test_redact_arguments(arguments: str, expected: str) -> None:
+    assert redact_arguments(arguments) == expected
+
+
+def test_redact_arguments_never_leaves_the_value() -> None:
+    """Сторож fail-closed: при любом исходе значения /P в выводе нет."""
+    for arguments in ('/P"p@ss"', "/Pp@ss", '/P"p@ss', '/IBName"a" /P"p@ss" /N"u"'):
+        assert "p@ss" not in redact_arguments(arguments)

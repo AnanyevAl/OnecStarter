@@ -19,8 +19,14 @@
 Сверка идёт по полному имени: `wsp` — секрет; `wspuser`, `wspsrv`,
 `wspport` — нет. Пробельные символы по краям имени перед сверкой
 обрезаются: `Pwd ` и `\tPwd` — тот же секрет, что и `Pwd`.
+
+`redact_arguments` закрывает соседний канал утечки — не строку соединения,
+а собранную командную строку запуска платформы (скил platform-launch):
+значение ключа `/P` вырезается тем же способом и по той же политике
+fail-closed, что и секретные ключи `Connect` в `redact_connect`.
 """  # noqa: RUF002
 
+import re
 import unicodedata
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
@@ -30,6 +36,13 @@ _SECRET_KEYS = frozenset({"pwd", "dbpwd", "spwd", "wsp", "wsppwd", "ppasswd"})
 _SECRET_SUFFIX = "pwd"
 _MASK = "***"
 _HIDDEN = "<строка соединения скрыта>"
+HIDDEN_ARGUMENTS = "<командная строка скрыта>"
+# Значение /P: либо в кавычках с удвоением внутренних (`quote_launch_value`,  # noqa: RUF003
+# [Ф] T-05.14 — запуск B), либо до первого пробела — форма справочника
+# (`docs/research/t05-14-results.md`, B2), измерением не подтверждённая
+# и не опровергнутая: [Д]. Регулярка покрывает обе — редакция должна  # noqa: RUF003
+# резать секрет независимо от того, какую форму выберет платформа.
+_PASSWORD_ARGUMENT = re.compile(r'/P(?:"(?:[^"]|"")*"|\S+)')
 
 
 def is_secret_key(name: str) -> bool:
@@ -179,3 +192,19 @@ def _leaks_secret(redacted: str) -> bool:
         is_secret_key(fragment.name) and fragment.value not in ("", _MASK)
         for fragment in parse_connect(redacted)
     )
+
+
+def redact_arguments(arguments: str) -> str:
+    """Командная строка запуска без значения `/P` — для сообщений и исходов.
+
+    Та же политика, что у `redact_connect`: непарная кавычка делает границы
+    значений недостоверными, и показывается заглушка, а не строка частично.
+    Значение заменяется на `***` вместе с кавычками — форма аргумента
+    для читателя роли не играет, а секрет из сообщения уже не отозвать.
+    """  # noqa: RUF002
+    if arguments.count('"') % 2:
+        return HIDDEN_ARGUMENTS
+    redacted = _PASSWORD_ARGUMENT.sub("/P***", arguments)
+    if "/P" in redacted and _PASSWORD_ARGUMENT.search(redacted.replace("/P***", "")):
+        return HIDDEN_ARGUMENTS
+    return redacted

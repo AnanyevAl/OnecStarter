@@ -36,6 +36,7 @@ CORE = (
     "onecstarter.platform_1c.server_discovery",
     "onecstarter.platform_1c.server_spawn",
     "onecstarter.security.secrets",
+    "onecstarter.security.credentials",
 )
 
 PROBE = (
