@@ -2448,6 +2448,102 @@ def test_smoke_keyring_round_trip_deletes_record_even_when_read_fails(
     qtbot.addWidget(captured["window"])
 
 
+class _DeleteFailsVault:
+    """`write`/`read` работают, `delete()` бросает не `PasswordDeleteError`.
+
+    Ре-ревью задачи 1 (Important, подветка «б»): без собственного
+    `try/except` вокруг `vault.delete()` в `finally` это исключение вылетело
+    бы из `_keyring_round_trip` наружу необработанным, а не превратилось бы
+    в контрактный `FAIL: <тип>`.
+    """  # noqa: RUF002
+
+    def __init__(self) -> None:
+        self.data: dict[str, str] = {}
+
+    def read(self, key: str) -> str | None:
+        return self.data.get(key)
+
+    def write(self, key: str, secret: str) -> None:
+        self.data[key] = secret
+
+    def delete(self, key: str) -> None:
+        raise RuntimeError("удаление недоступно")
+
+
+def test_smoke_keyring_round_trip_reports_delete_failure(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any, caplog: Any
+) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ (ре-ревью задачи 1): отказ самого `delete()` обязан
+    попасть в лог как `FAIL: <тип>`, а не уронить `run_smoke` трассировкой.
+    Мутация: снять `try/except` вокруг `vault.delete(...)` внутри `finally`
+    (оставить голый вызов) — исключение вылетит из `_keyring_round_trip`
+    прямо из аргумента `_log.info(...)`, строка `smoke: keyring=` не
+    появится вовсе, и сам вызов `run_smoke(...)` в этом тесте упадёт
+    необработанным исключением, а не обычным `assert`.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    appdata = tmp_path / "appdata"
+    target = tmp_path / "out"
+    target.mkdir()
+    vault = _DeleteFailsVault()
+
+    with caplog.at_level(logging.INFO):
+        code = run_smoke(str(target), {"APPDATA": str(appdata)}, credential_store=vault)
+
+    assert code == 0
+    assert "smoke: keyring=FAIL: RuntimeError" in caplog.text
+    qtbot.addWidget(captured["window"])
+
+
+class _ReadAndDeleteFailVault:
+    """`read()` бросает `ValueError`, `delete()` — `RuntimeError` (разные типы).
+
+    Ре-ревью задачи 1 (Important, подветка «б»): причина ЧТЕНИЯ обязана
+    остаться в логе — `if result is None:` внутри `finally` не даёт более
+    позднему отказу удаления заслонить более раннюю причину.
+    """  # noqa: RUF002
+
+    def __init__(self) -> None:
+        self.data: dict[str, str] = {}
+
+    def read(self, key: str) -> str | None:
+        raise ValueError("чтение недоступно")
+
+    def write(self, key: str, secret: str) -> None:
+        self.data[key] = secret
+
+    def delete(self, key: str) -> None:
+        raise RuntimeError("удаление недоступно")
+
+
+def test_smoke_keyring_round_trip_keeps_read_failure_over_delete_failure(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any, caplog: Any
+) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ (ре-ревью задачи 1): при одновременном отказе чтения
+    и удаления в логе обязана остаться причина ЧТЕНИЯ (`FAIL: ValueError`),
+    а не удаления (`RuntimeError`) — оно случилось позже и не должно
+    подменять собой более раннюю причину. Мутация: убрать
+    `if result is None:`, оставить безусловное присвоение `result` внутри
+    `except` в `finally` — отказ удаления затрёт причину чтения, и в логе
+    окажется `RuntimeError` вместо ожидаемого `ValueError`.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    appdata = tmp_path / "appdata"
+    target = tmp_path / "out"
+    target.mkdir()
+    vault = _ReadAndDeleteFailVault()
+
+    with caplog.at_level(logging.INFO):
+        code = run_smoke(str(target), {"APPDATA": str(appdata)}, credential_store=vault)
+
+    assert code == 0
+    assert "smoke: keyring=FAIL: ValueError" in caplog.text
+    assert "RuntimeError" not in caplog.text
+    qtbot.addWidget(captured["window"])
+
+
 # -- задача 16 (T-08): проводка «Консоль администрирования…» -----------------
 #
 # `_console_flow` — функция уровня модуля, вынесенная из `on_console`
