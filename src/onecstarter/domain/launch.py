@@ -38,17 +38,41 @@ class Credentials:
     """Учётные данные для `/N` и `/P`. `password` не печатается в `repr`:
     дефолтный repr датакласса выводил бы его в любую трассировку
     и в `pytest -rA` (инвариант 5). `None` — только логин, платформа
-    спросит пароль сама (спека v2.2, §4)."""  # noqa: RUF002
+    спросит пароль сама (спека v2.2, §4).
+
+    `password` также исключён из `__eq__`/`__hash__` (`compare=False`):
+    `repr=False` защищает только явный `repr()`/`print()`, а не diff
+    несовпавшего `assert` в pytest — тот сравнивает объекты через `==` и
+    печатает несовпавшие поля своим построителем diff'а, в обход `__repr__`
+    (находка ревью задачи 3, круг правок 1). Равенство по одному логину —
+    сознательная цена: два разных пароля у одного логина считаются равными
+    `Credentials`, но пароль не может попасть ни в один диф упавшего теста."""  # noqa: RUF002
 
     login: str
-    password: str | None = field(default=None, repr=False)
+    password: str | None = field(default=None, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        # Спека v2.2 §4: пустой логин — то же самое, что логина нет вовсе,
+        # т.е. не отдельный случай `Credentials`, а отсутствие credentials=  # noqa: RUF003
+        # у вызывающего кода. Граница домена: нормализация (обрезка пробелов,  # noqa: RUF003
+        # решение «передавать ли вообще») — забота вызывающего слоя (services),
+        # сюда логин обязан прийти уже непустым.
+        if not self.login.strip():
+            raise ValueError("логин не может быть пустым")
 
 
 def _credential_arguments(credentials: Credentials) -> str:
     """[Ф] 06.09.2026 T-05.14: форма значения — как у /IBName, в кавычках
     с удвоением ([Д] по аналогии, не измерено — ни в `tester`, ни в пароле
     кавычек не было); /WA- рядом не требуется. При ином результате
-    эксперимента меняется только эта функция."""  # noqa: RUF002
+    эксперимента меняется только эта функция.
+
+    В ветке строки соединения вызывающий код вставляет результат ПОСЛЕ
+    `/IBConnectionString`, а не сразу после проверок стража: [Д] reference.md —
+    более поздний по командной строке ключ переопределяет часть строки
+    соединения, и, скажем, несекретный `Usr=` внутри `connect` иначе перебил бы
+    наш явный логин. Измерено это только для пути `/IBName` (T-05.14); для
+    `/IBConnectionString` порядок — по документации, не по эксперименту."""  # noqa: RUF002
     parts = [f"/N{quote_launch_value(credentials.login)}"]
     if credentials.password is not None:
         parts.append(f"/P{quote_launch_value(credentials.password)}")
@@ -167,11 +191,13 @@ def build_arguments(
                 f"Пароль ({', '.join(secrets)}) в строке соединения не передаётся "
                 "через командную строку — используйте /IBName или уберите эти ключи"
             )
-        if credentials is not None:
-            parts.append(_credential_arguments(credentials))
         # [Ф] T-05.1: значение прижато к ключу, кавычки внутри удвоены —
         # форма снята с реального запуска, путь с пробелом работает.  # noqa: RUF003
         parts.append(f"/IBConnectionString{quote_launch_value(connect)}")
+        if credentials is not None:
+            # После /IBConnectionString — см. докстринг _credential_arguments:
+            # более поздний ключ переопределяет часть строки соединения.
+            parts.append(_credential_arguments(credentials))
     parts.append("/AppAutoCheckVersion" if auto_check_version else "/AppAutoCheckVersion-")
     if auto_check_mode:
         parts.append("/AppAutoCheckMode")

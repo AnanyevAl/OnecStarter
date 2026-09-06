@@ -283,6 +283,24 @@ class TestBuildArguments:
         assert "p@ss" not in str(credentials)
         assert "tester" in repr(credentials)
 
+    def test_credentials_password_never_appears_in_comparison_failure(self) -> None:
+        """Ревью задачи 3, круг правок 1: `repr=False` не защищает от diff'а
+        падающего `assert ==` — pytest сравнивает поля по `field.compare`, а
+        не по `field.repr`, и печатает несовпавшие поля в обход `__repr__`.
+        `compare=False` у `password` убирает пароль из этого сравнения тоже:
+        два Credentials с одним логином и разными паролями обязаны быть
+        РАВНЫ, иначе упавший `assert ==` где-то в проекте построит diff
+        и напечатает оба пароля."""  # noqa: RUF002
+        assert Credentials("tester", "p@ss-secret") == Credentials("tester", "other")
+        assert "p@ss" not in repr(Credentials("tester", "p@ss-secret"))
+
+    def test_credentials_reject_blank_login(self) -> None:
+        """Спека v2.2 §4: пустой логин — то же самое, что логина нет вовсе."""
+        with pytest.raises(ValueError):
+            Credentials("")
+        with pytest.raises(ValueError):
+            Credentials("   ")
+
     def test_connect_string_path_still_rejects_secrets_with_credentials(self) -> None:
         """Страж строки соединения не ослабляется новым аргументом."""
         with pytest.raises(ValueError, match="Pwd"):
@@ -291,6 +309,23 @@ class TestBuildArguments:
                 auto_check_version=True, auto_check_mode=True,
                 credentials=Credentials("u", "p"),
             )
+
+    def test_credentials_follow_connection_string(self) -> None:
+        """Ревью задачи 3, круг правок 1: [Д] reference.md — более поздний
+        по командной строке ключ переопределяет часть строки соединения.
+        Несекретный `Usr=` внутри `connect` иначе перебил бы наш явный логин,
+        поставленный раньше в строке."""
+        arguments = build_arguments(
+            ClientKind.THIN,
+            connect='Srvr="s";Ref="r";Usr="other";',
+            auto_check_version=True,
+            auto_check_mode=True,
+            credentials=Credentials("tester", "p@ss"),
+        )
+        connection_index = arguments.index("/IBConnectionString")
+        login_index = arguments.index('/N"tester"')
+        password_index = arguments.index('/P"p@ss"')
+        assert connection_index < login_index < password_index
 
     def test_exactly_one_target_required(self) -> None:
         with pytest.raises(ValueError, match="ровно одно"):
