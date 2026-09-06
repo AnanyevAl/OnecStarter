@@ -186,7 +186,7 @@ fail-closed на непарной кавычке — вся строка зам�
 
 | Слой | Что появляется |
 | --- | --- |
-| `security/credentials.py` | `CredentialStore` — Protocol `read(key) -> str \| None`, `write(key, secret)`, `delete(key)` по образцу `services/autostart.py::Registry`; `KeyringStore` над `keyring` (сервис `OneCStarter`); `NullStore` для тестов и smoke |
+| `security/credentials.py` | Имя отказа хранилища — `CredentialBackendError`, не `…Failure`: ruff N818 требует суффикс `Error`, а `CredentialStoreError` занят слоем `services` (§7 ниже) — два класса с одним именем, один оборачивает другой, недопустимы (находка задачи 2, 06.09.2026). `CredentialStore` — Protocol `read(key) -> str \| None`, `write(key, secret)`, `delete(key)` по образцу `services/autostart.py::Registry`; `KeyringStore` над `keyring` (сервис `OneCStarter`); `NullStore` для тестов и smoke |
 | `security/secrets.py` | `redact_arguments` |
 | `domain/launch.py` | `Credentials` (`repr=False` у пароля); `build_arguments(credentials=)` |
 | `services/user_data.py` | `BaseUserData.login`; кодек; `set_login()` |

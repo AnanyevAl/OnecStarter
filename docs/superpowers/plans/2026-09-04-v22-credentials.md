@@ -64,7 +64,7 @@ Credential Manager, при запуске оба передаются клиен
 | `.claude/skills/platform-launch/SKILL.md`, `reference.md` | [Ф] по итогам эксперимента | 0b |
 | `src/onecstarter/ui/app.py` | `run_smoke`: round-trip `keyring` внутри frozen-сборки | 1 |
 | `build/onecstarter.spec`, `build/smoke.py` | `hiddenimports`; проверка строки `smoke: keyring=ok` | 1 |
-| `src/onecstarter/security/credentials.py` | **создаётся.** `CredentialStore`, `KeyringStore`, `MemoryStore`, `CredentialStoreFailure` | 2 |
+| `src/onecstarter/security/credentials.py` | **создаётся.** `CredentialStore`, `KeyringStore`, `MemoryStore`, `CredentialBackendError` | 2 |
 | `src/onecstarter/security/secrets.py` | `redact_arguments` | 2 |
 | `tests/unit/test_credentials.py`, `tests/unit/test_secrets.py` | тесты хранилища и редакции | 2 |
 | `src/onecstarter/domain/launch.py` | `Credentials`; `build_arguments(credentials=)` | 3 |
@@ -545,7 +545,7 @@ git commit -m "build: keyring-гейт — round-trip Credential Manager вну�
     `write(key: str, secret: str) -> None`, `delete(key: str) -> None`
   - `KeyringStore(service: str = "OneCStarter")` — реализация над `keyring`
   - `MemoryStore()` — в памяти, для тестов и самопроверки; атрибут `data: dict[str, str]`
-  - `CredentialStoreFailure(Exception)` — единственное, что поднимает `KeyringStore`
+  - `CredentialBackendError(Exception)` — единственное, что поднимает `KeyringStore`
   - `redact_arguments(arguments: str) -> str`; константа `HIDDEN_ARGUMENTS`
 
 - [ ] **Step 1: Падающие тесты хранилища**
@@ -558,7 +558,7 @@ git commit -m "build: keyring-гейт — round-trip Credential Manager вну�
 import pytest
 
 from onecstarter.security.credentials import (
-    CredentialStoreFailure,
+    CredentialBackendError,
     KeyringStore,
     MemoryStore,
 )
@@ -587,7 +587,7 @@ def test_keyring_store_translates_keyring_errors(monkeypatch: pytest.MonkeyPatch
         raise keyring.errors.KeyringError("нет бэкенда")
 
     monkeypatch.setattr(keyring, "set_password", boom)
-    with pytest.raises(CredentialStoreFailure):
+    with pytest.raises(CredentialBackendError):
         KeyringStore(service="OneCStarter-test").write("id:x", "p@ss")
 
 
@@ -618,7 +618,7 @@ def test_importing_the_module_does_not_import_keyring() -> None:
 
 def test_failure_repr_never_carries_the_secret() -> None:
     """Текст отказа уходит пользователю — секрета в нём быть не может."""
-    error = CredentialStoreFailure("запись отвергнута")
+    error = CredentialBackendError("запись отвергнута")
     assert "p@ss" not in repr(error) and "p@ss" not in str(error)
 ```
 
@@ -662,7 +662,7 @@ from typing import Protocol
 SERVICE = "OneCStarter"
 
 
-class CredentialStoreFailure(Exception):
+class CredentialBackendError(Exception):
     """Хранилище отказало. Текст — только причина, никогда не секрет."""
 
 
@@ -688,7 +688,7 @@ class KeyringStore:
         try:
             return keyring.get_password(self._service, key)
         except keyring.errors.KeyringError as error:
-            raise CredentialStoreFailure(_reason(error)) from error
+            raise CredentialBackendError(_reason(error)) from error
 
     def write(self, key: str, secret: str) -> None:
         import keyring
@@ -697,7 +697,7 @@ class KeyringStore:
         try:
             keyring.set_password(self._service, key, secret)
         except keyring.errors.KeyringError as error:
-            raise CredentialStoreFailure(_reason(error)) from error
+            raise CredentialBackendError(_reason(error)) from error
 
     def delete(self, key: str) -> None:
         import keyring
@@ -708,7 +708,7 @@ class KeyringStore:
         except keyring.errors.PasswordDeleteError:
             return
         except keyring.errors.KeyringError as error:
-            raise CredentialStoreFailure(_reason(error)) from error
+            raise CredentialBackendError(_reason(error)) from error
 
 
 class MemoryStore:
@@ -1000,7 +1000,7 @@ git commit -m "feat: domain — Credentials и передача /N /P в build_a
 - Modify: `tests/unit/test_user_data.py`, `tests/unit/test_workspace.py`, `tests/unit/test_services_launch.py`
 
 **Interfaces:**
-- Consumes: `CredentialStore`, `MemoryStore`, `CredentialStoreFailure`,
+- Consumes: `CredentialStore`, `MemoryStore`, `CredentialBackendError`,
   `redact_arguments` (задача 2); `Credentials`, `build_arguments(credentials=)` (задача 3).
 - Produces:
   - `BaseUserData.login: str | None`; `set_login(entries, key, login) -> dict[str, BaseUserData]`
@@ -1075,7 +1075,7 @@ Expected: PASS.
 в `Workspace(credentials=store or MemoryStore())`):
 
 ```python
-from onecstarter.security.credentials import CredentialStoreFailure, MemoryStore
+from onecstarter.security.credentials import CredentialBackendError, MemoryStore
 from onecstarter.services.errors import CredentialStoreError
 
 
@@ -1184,7 +1184,7 @@ def test_rekey_moves_the_secret(tmp_path: Path) -> None:
 def test_store_failure_on_write_is_a_services_error_after_user_data_saved(tmp_path: Path) -> None:
     class Broken(MemoryStore):
         def write(self, key: str, secret: str) -> None:
-            raise CredentialStoreFailure("отказ")
+            raise CredentialBackendError("отказ")
 
     workspace = _workspace(tmp_path, store=Broken())
     key = _first_base_key(workspace)
@@ -1197,7 +1197,7 @@ def test_store_failure_on_write_is_a_services_error_after_user_data_saved(tmp_pa
 def test_store_failure_on_launch_launches_without_credentials_then_reports(tmp_path: Path) -> None:
     class Broken(MemoryStore):
         def read(self, key: str) -> str | None:
-            raise CredentialStoreFailure("отказ")
+            raise CredentialBackendError("отказ")
 
     calls: list[LaunchCommand] = []
     workspace = _workspace(tmp_path, calls=calls, store=Broken())
@@ -1243,7 +1243,7 @@ class CredentialStoreError(ServicesError):
 ```python
 from onecstarter.security.credentials import (
     CredentialStore,
-    CredentialStoreFailure,
+    CredentialBackendError,
     KeyringStore,
 )
 from onecstarter.services.errors import CredentialStoreError
@@ -1264,7 +1264,7 @@ from onecstarter.services.user_data import set_login
         login = self._user.get(key, BaseUserData()).login
         try:
             has_password = self._credentials.read(key) is not None
-        except CredentialStoreFailure as error:
+        except CredentialBackendError as error:
             raise CredentialStoreError(str(error)) from error
         return login, has_password
 
@@ -1289,7 +1289,7 @@ from onecstarter.services.user_data import set_login
                 self._credentials.delete(key)
             elif password is not None:
                 self._credentials.write(key, password)
-        except CredentialStoreFailure as error:
+        except CredentialBackendError as error:
             raise CredentialStoreError(
                 f"Логин сохранён, пароль — нет: {error}"  # noqa: RUF001
             ) from error
@@ -1327,7 +1327,7 @@ from onecstarter.services.user_data import set_login
             return None, None
         try:
             password = self._credentials.read(key)
-        except CredentialStoreFailure as error:
+        except CredentialBackendError as error:
             return Credentials(login), CredentialStoreError(
                 f"Пароль не прочитан, запуск без него: {error}"  # noqa: RUF001
             )
@@ -1340,7 +1340,7 @@ from onecstarter.services.user_data import set_login
         applied = self._write(SectionPatch(PatchKind.REMOVE, target_key=key)).applied
         try:
             self._credentials.delete(key)
-        except CredentialStoreFailure as error:
+        except CredentialBackendError as error:
             raise CredentialStoreError(
                 f"Запись удалена, но пароль в диспетчере учётных данных остался: {error}"  # noqa: RUF001
             ) from error
@@ -1356,7 +1356,7 @@ from onecstarter.services.user_data import set_login
                 if secret is not None:
                     self._credentials.write(result.key, secret)
                     self._credentials.delete(rekey_from)
-            except CredentialStoreFailure as error:
+            except CredentialBackendError as error:
                 failure = failure or CredentialStoreError(
                     f"Запись изменена, но не удалось перенести на неё пароль: {error}"  # noqa: RUF001
                 )
@@ -1696,7 +1696,7 @@ def test_add_dialog_store_failure_reports_record_added(qtbot, workspace_factory)
     store = view.workspace_store
 
     def boom(key: str, secret: str) -> None:
-        raise CredentialStoreFailure("отказ")
+        raise CredentialBackendError("отказ")
 
     store.write = boom  # type: ignore[method-assign]
     dialog = view._build_add_dialog()
@@ -1921,7 +1921,7 @@ rekey — это не заглушка, а запрет вычислять кл�
 фикстур, ломается на первом же шаге.
 
 **Согласованность имён.** `CredentialStore`/`KeyringStore`/`MemoryStore`/
-`CredentialStoreFailure` (2, 4, 5), `redact_arguments`/`HIDDEN_ARGUMENTS`
+`CredentialBackendError` (2, 4, 5), `redact_arguments`/`HIDDEN_ARGUMENTS`
 (2, 4), `Credentials` (3, 4), `set_login` (4), `set_credentials`/`credentials_of`
 (4, 5), `DialogCredentials`/`credentials()`/`credentials_changed()` (5),
 `CredentialStoreError` (4, 5) — совпадают во всех употреблениях.
