@@ -1313,9 +1313,11 @@ Expected: PASS.
 - [ ] **Step 5: Падающие тесты `Workspace`**
 
 В `tests/unit/test_workspace.py` (помощник `_workspace(tmp_path, calls, cfg_paths)`
-и `_raw_section(tmp_path, name)` уже есть; `_workspace` получает новый
-параметр `store: MemoryStore | None = None`, который прокидывается
-в `Workspace(credentials=store or MemoryStore())`):
+и `_raw_section(tmp_path, name)` уже есть; `_workspace` делегирует
+`_raw_workspace`, поэтому ОБА помощника получают параметр
+`store: CredentialStore | None = None`, и `_raw_workspace` передаёт
+`Workspace(..., credentials=store if store is not None else MemoryStore())` —
+параметр конструктора обязателен, см. Step 7):
 
 ```python
 from onecstarter.security.credentials import CredentialBackendError, MemoryStore
