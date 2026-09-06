@@ -6,6 +6,7 @@ from onecstarter.domain.launch import (
     ClientChoice,
     ClientConvention,
     ClientKind,
+    Credentials,
     LaunchCommand,
     build_arguments,
     build_launch_command,
@@ -243,6 +244,53 @@ class TestBuildArguments:
             auto_check_mode=False,
         )
         assert arguments.startswith("ENTERPRISE /IBConnectionString")
+
+    def test_credentials_go_right_after_ibname(self) -> None:
+        """[Ф] T-05.14: /N /P сразу после /IBName, форма значения — как у /IBName."""  # noqa: RUF002
+        arguments = build_arguments(
+            ClientKind.THIN,
+            ib_name="empty",
+            auto_check_version=True,
+            auto_check_mode=True,
+            credentials=Credentials("tester", "p@ss"),
+        )
+        assert arguments == (
+            'ENTERPRISE /IBName"empty" /N"tester" /P"p@ss" /AppAutoCheckVersion /AppAutoCheckMode'
+        )
+
+    def test_login_without_password_passes_only_n(self) -> None:
+        """Спека v2.2, §4: один /N — платформа спросит только пароль."""
+        arguments = build_arguments(
+            ClientKind.THIN, ib_name="empty", auto_check_version=True,
+            auto_check_mode=True, credentials=Credentials("tester"),
+        )
+        assert arguments == (
+            'ENTERPRISE /IBName"empty" /N"tester" /AppAutoCheckVersion /AppAutoCheckMode'
+        )
+
+    def test_quote_in_password_is_doubled(self) -> None:
+        arguments = build_arguments(
+            ClientKind.THIN, ib_name="empty", auto_check_version=True,
+            auto_check_mode=True, credentials=Credentials("u", 'a"b'),
+        )
+        assert '/P"a""b"' in arguments
+
+    def test_credentials_never_appear_in_repr(self) -> None:
+        """Дефолтный repr датакласса печатал бы пароль в любой трассировке
+        и в `pytest -rA` (инвариант 5)."""
+        credentials = Credentials("tester", "p@ss")
+        assert "p@ss" not in repr(credentials)
+        assert "p@ss" not in str(credentials)
+        assert "tester" in repr(credentials)
+
+    def test_connect_string_path_still_rejects_secrets_with_credentials(self) -> None:
+        """Страж строки соединения не ослабляется новым аргументом."""
+        with pytest.raises(ValueError, match="Pwd"):
+            build_arguments(
+                ClientKind.THIN, connect='File="D:\\b";Pwd="x";',
+                auto_check_version=True, auto_check_mode=True,
+                credentials=Credentials("u", "p"),
+            )
 
     def test_exactly_one_target_required(self) -> None:
         with pytest.raises(ValueError, match="ровно одно"):

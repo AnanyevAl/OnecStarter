@@ -5,10 +5,13 @@
 platform-launch), побайтовое совпадение с ними проверяется тестами.
 Секреты в аргументы не попадают: основной путь запуска — /IBName, при
 котором платформа сама читает всё нужное из ibases.v8i.
+С v2.2 учётные данные записи попадают в аргументы **явно** через `credentials=` —
+по решению заказчика 04.09.2026 с записанной моделью угроз (спека v2.2, §2);
+страж секретов в строке соединения остаётся.
 """  # noqa: RUF002
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
@@ -28,6 +31,28 @@ class ClientConvention:
     min_version: VersionNumber
     bin_dir: str
     executables: Mapping[ClientKind, str]
+
+
+@dataclass(frozen=True)
+class Credentials:
+    """Учётные данные для `/N` и `/P`. `password` не печатается в `repr`:
+    дефолтный repr датакласса выводил бы его в любую трассировку
+    и в `pytest -rA` (инвариант 5). `None` — только логин, платформа
+    спросит пароль сама (спека v2.2, §4)."""  # noqa: RUF002
+
+    login: str
+    password: str | None = field(default=None, repr=False)
+
+
+def _credential_arguments(credentials: Credentials) -> str:
+    """[Ф] 06.09.2026 T-05.14: форма значения — как у /IBName, в кавычках
+    с удвоением ([Д] по аналогии, не измерено — ни в `tester`, ни в пароле
+    кавычек не было); /WA- рядом не требуется. При ином результате
+    эксперимента меняется только эта функция."""  # noqa: RUF002
+    parts = [f"/N{quote_launch_value(credentials.login)}"]
+    if credentials.password is not None:
+        parts.append(f"/P{quote_launch_value(credentials.password)}")
+    return " ".join(parts)
 
 
 def convention_for(
@@ -102,6 +127,7 @@ def build_arguments(
     connect: str | None = None,
     auto_check_version: bool,
     auto_check_mode: bool,
+    credentials: Credentials | None = None,
 ) -> str:
     if (ib_name is None) == (connect is None):
         raise ValueError("Нужно ровно одно из: ib_name, connect")
@@ -109,6 +135,8 @@ def build_arguments(
     parts = [mode]
     if ib_name is not None:
         parts.append(f"/IBName{quote_launch_value(ib_name)}")
+        if credentials is not None:
+            parts.append(_credential_arguments(credentials))
     else:
         if connect is None:
             # Недостижимо: выше проверено «ровно одно из ib_name, connect».
@@ -139,6 +167,8 @@ def build_arguments(
                 f"Пароль ({', '.join(secrets)}) в строке соединения не передаётся "
                 "через командную строку — используйте /IBName или уберите эти ключи"
             )
+        if credentials is not None:
+            parts.append(_credential_arguments(credentials))
         # [Ф] T-05.1: значение прижато к ключу, кавычки внутри удвоены —
         # форма снята с реального запуска, путь с пробелом работает.  # noqa: RUF003
         parts.append(f"/IBConnectionString{quote_launch_value(connect)}")
