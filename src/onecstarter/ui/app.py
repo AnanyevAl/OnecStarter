@@ -244,12 +244,60 @@ def run_launch(
     return 0
 
 
+SMOKE_VAULT_SERVICE = "OneCStarter-smoke"
+SMOKE_VAULT_KEY = "round-trip"
+
+
+class _KeyringSmokeVault:
+    """Настоящий keyring под служебным именем: проверка сборки, не данных."""
+
+    def read(self, key: str) -> str | None:
+        import keyring
+
+        return keyring.get_password(SMOKE_VAULT_SERVICE, key)
+
+    def write(self, key: str, secret: str) -> None:
+        import keyring
+
+        keyring.set_password(SMOKE_VAULT_SERVICE, key, secret)
+
+    def delete(self, key: str) -> None:
+        import keyring
+        import keyring.errors
+
+        try:
+            keyring.delete_password(SMOKE_VAULT_SERVICE, key)
+        except keyring.errors.PasswordDeleteError:
+            pass
+
+
+def _keyring_round_trip(vault: object) -> str:
+    """`ok` либо причина отказа — одной строкой, без секрета."""
+    probe = "smoke"
+    try:
+        vault.write(SMOKE_VAULT_KEY, probe)  # type: ignore[attr-defined]
+        got = vault.read(SMOKE_VAULT_KEY)  # type: ignore[attr-defined]
+        vault.delete(SMOKE_VAULT_KEY)  # type: ignore[attr-defined]
+        gone = vault.read(SMOKE_VAULT_KEY)  # type: ignore[attr-defined]
+    except Exception as error:
+        # Самопроверка сборки: любая причина отказа обязана попасть в лог
+        # строкой, а не уронить smoke трассировкой. Правило BLE в ruff проекта  # noqa: RUF003
+        # не включено — noqa здесь был бы лишним и пойман RUF100.
+        return f"FAIL: {type(error).__name__}"
+    if got != probe:
+        return "FAIL: прочитано не то, что записано"
+    if gone is not None:
+        return "FAIL: запись не удалилась"
+    return "ok"
+
+
 def run_smoke(
     target_dir: str,
     env: Mapping[str, str],
     *,
     timeout_ms: int = 30000,
     make_tasks: Callable[[], StartupTasks] | None = None,
+    credential_store: object | None = None,
 ) -> int:
     """Самопроверка собранного экземпляра — вызывает `build/smoke.py` (задача 10).
 
@@ -277,6 +325,25 @@ def run_smoke(
     только для теста таймаута: молчаливая замена (`spawn`, ничего не
     запускающий) не эмитирует сигналов, и ожидание обязано остановиться
     по `timeout_ms`, а не повиснуть до конца прогона тестов.
+
+    `credential_store` — гейт вехи v2.2 перед задачами хранения паролей
+    (спека §9, задача 1 плана): `keyring` ищет бэкенды через entry points,
+    PyInstaller анализом импортов их не видит, и без `hiddenimports`
+    (`build/onecstarter.spec`) замороженный `keyring` молча уходит в пустой
+    бэкенд — все операции отказывают без единого исключения. Проверить это
+    можно только внутри собранного exe, поэтому round-trip
+    (`set_password`/`get_password`/`delete_password`) живёт здесь, а
+    `build/smoke.py` читает его результат из лога. `None` — настоящий
+    `keyring` под служебным именем `SMOKE_VAULT_SERVICE`
+    (`_KeyringSmokeVault`), а не под именем данных пользователя: в отличие
+    от `APPDATA`, который эта самопроверка подменяет, Credential Manager
+    к нему не привязан — он общий на машину сборщика, и мусор в нём
+    недопустим, отсюда и обязательное удаление записи внутри
+    `_keyring_round_trip`. Инъекция — только для теста (хранилище в памяти,
+    не трогающее настоящий диспетчер учётных данных). В лог уходит строка
+    `smoke: keyring=ok` либо `smoke: keyring=FAIL: <тип исключения>` —
+    причина отказа помечается только именем типа, без текста и без значений
+    (инвариант 5).
     """  # noqa: RUF002
     existing = QApplication.instance()
     application = existing if isinstance(existing, QApplication) else QApplication([])
@@ -354,6 +421,8 @@ def run_smoke(
         payload = build_shell_link(target, arguments, target.parent, "OneCStarter smoke")
         atomic_write(Path(target_dir) / "smoke.lnk", payload)
         _log.info("smoke: ярлык записан")
+        vault = credential_store if credential_store is not None else _KeyringSmokeVault()
+        _log.info("smoke: keyring=%s", _keyring_round_trip(vault))
         return 0
     finally:
         # `run_smoke` не крутит `application.exec()` — `aboutToQuit` не

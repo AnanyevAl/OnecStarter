@@ -2357,6 +2357,49 @@ def test_run_smoke_times_out_without_background(
     qtbot.addWidget(captured["window"])
 
 
+class _MemoryVault:
+    """Хранилище в памяти — тест не трогает настоящий Credential Manager."""
+
+    def __init__(self) -> None:
+        self.data: dict[str, str] = {}
+
+    def read(self, key: str) -> str | None:
+        return self.data.get(key)
+
+    def write(self, key: str, secret: str) -> None:
+        self.data[key] = secret
+
+    def delete(self, key: str) -> None:
+        self.data.pop(key, None)
+
+
+def test_smoke_logs_keyring_round_trip(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any, caplog: Any
+) -> None:
+    """Самопроверка сборки обязана доказать, что хранилище паролей работает
+    именно в собранном экземпляре (спека v2.2, §9): без `hiddenimports`
+    `keyring` в frozen-сборке молча уходит в пустой бэкенд. Инъекция
+    хранилища в памяти (не настоящий `keyring`) — тот же приём, что у
+    остальных внешних систем `run_smoke` (`autostart_registry`,
+    `process_scanner`): самопроверка не должна трогать настоящий Credential
+    Manager машины, на которой гоняются юнит-тесты.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    appdata = tmp_path / "appdata"
+    target = tmp_path / "out"
+    target.mkdir()
+    vault = _MemoryVault()
+
+    with caplog.at_level(logging.INFO):
+        code = run_smoke(str(target), {"APPDATA": str(appdata)}, credential_store=vault)
+
+    assert code == 0
+    assert "smoke: keyring=ok" in caplog.text
+    assert vault.data == {}, "служебная запись обязана быть удалена после проверки"
+    qtbot.addWidget(captured["window"])
+
+
 # -- задача 16 (T-08): проводка «Консоль администрирования…» -----------------
 #
 # `_console_flow` — функция уровня модуля, вынесенная из `on_console`
