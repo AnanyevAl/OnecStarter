@@ -1894,24 +1894,29 @@ Expected: PASS, прежние тесты без правок.
 
 - [ ] **Step 5: Падающие тесты путей применения**
 
-В `tests/ui/conftest.py::workspace_factory` добавить `credentials=MemoryStore()`
-в конструктор `Workspace` и вернуть хранилище четвёртым элементом кортежа
-(`return workspace, calls, opened, store`) — существующие вызывающие
-распаковывают три значения, их надо обновить (`grep -rn "workspace_factory(" tests/ui`).
+В `tests/ui/conftest.py::workspace_factory` добавить параметр
+`store: MemoryStore | None = None` и передавать в `Workspace(...,
+credentials=store if store is not None else MemoryStore())`. Кортеж возврата
+НЕ менять — его распаковывают позиционно десятки вызывающих. В
+`tests/ui/test_bases_view.py::_view` добавить такой же параметр `store` и
+прокинуть в фабрику; тесты, которым нужно хранилище, создают его сами
+и передают `store=store` — ссылка остаётся у теста.
 
 В `tests/ui/test_bases_view.py`:
 
 ```python
-def test_properties_ok_click_stores_credentials(qtbot, workspace_factory) -> None:
-    """Через клик по ОК — не прямым вызовом (Global Constraints)."""
-    view = _view(qtbot, workspace_factory)
-    store = view.workspace_store  # хранилище из фабрики; имя — как в _view
+def test_properties_apply_stores_credentials(qtbot, workspace_factory) -> None:
+    """Путь ОК диалога свойств — `_apply_properties` — доносит учётные данные
+    до хранилища; модальный exec() в офскрине не кликается, это приём файла."""
+    store = MemoryStore()
+    view, *_ = _view(qtbot, workspace_factory, store=store)
     dialog = view._build_properties_dialog(_ACCOUNTING_KEY)
     dialog.login_edit().setText("tester")
     dialog.password_edit().setText("p@ss")
     dialog.remember_checkbox().setChecked(True)
 
-    _click_ok(dialog)  # помощник файла, нажимающий кнопку ОК; если нет — завести по образцу соседних
+    # Приём файла: `exec()` блокирует офскрин-тесты, поэтому обработчик ОК —
+    # `_apply_properties` — зовётся напрямую (см. докстринг show_properties).
     view._apply_properties(_ACCOUNTING_KEY, dialog)
 
     assert store.read(_ACCOUNTING_KEY) == "p@ss"
@@ -1919,8 +1924,8 @@ def test_properties_ok_click_stores_credentials(qtbot, workspace_factory) -> Non
 
 
 def test_properties_with_no_changes_does_not_touch_the_store(qtbot, workspace_factory) -> None:
-    view = _view(qtbot, workspace_factory)
-    store = view.workspace_store
+    store = MemoryStore()
+    view, *_ = _view(qtbot, workspace_factory, store=store)
     calls: list[str] = []
     store.write = lambda key, secret: calls.append(key)  # type: ignore[method-assign]
     dialog = view._build_properties_dialog(_ACCOUNTING_KEY)
@@ -1931,8 +1936,8 @@ def test_properties_with_no_changes_does_not_touch_the_store(qtbot, workspace_fa
 
 
 def test_add_dialog_stores_credentials_after_the_record(qtbot, workspace_factory) -> None:
-    view = _view(qtbot, workspace_factory)
-    store = view.workspace_store
+    store = MemoryStore()
+    view, *_ = _view(qtbot, workspace_factory, store=store)
     dialog = view._build_add_dialog()
     dialog.set_name("Новая")
     dialog.set_file_path(r"D:\Bases\New")
@@ -1949,8 +1954,8 @@ def test_add_dialog_stores_credentials_after_the_record(qtbot, workspace_factory
 def test_add_dialog_store_failure_reports_record_added(qtbot, workspace_factory) -> None:
     """Спека §4: «база добавлена, пароль не сохранён», а не «не удалось добавить»."""
     errors: list[ServicesError] = []
-    view = _view(qtbot, workspace_factory, errors=errors)
-    store = view.workspace_store
+    store = MemoryStore()
+    view, *_ = _view(qtbot, workspace_factory, errors=errors, store=store)
 
     def boom(key: str, secret: str) -> None:
         raise CredentialBackendError("отказ")
@@ -1969,15 +1974,14 @@ def test_add_dialog_store_failure_reports_record_added(qtbot, workspace_factory)
     assert errors and "добавлена" in str(errors[0]) and "пароль" in str(errors[0])
 ```
 
-`_view` обязан отдать хранилище — добавить атрибут `view.workspace_store`
-в помощнике или вернуть его вторым значением; выбрать способ, которым
-`_view` уже отдаёт `calls`/`errors`, и не заводить третий.
+`_view` возвращает кортеж `(view, calls, recorded, opened)` — не менять;
+хранилище приходит параметром `store=` и остаётся ссылкой у теста.
 
 - [ ] **Step 6: Убедиться, что падают**
 
 Run: `uv run pytest tests/ui/test_bases_view.py -k credentials -v`
-Expected: FAIL — `AttributeError` на `login_edit`/`workspace_store` либо
-`TypeError` в фабрике.
+Expected: FAIL — `TypeError` на неизвестном параметре `store` у `_view`/фабрики
+либо `AttributeError` на `login_edit`.
 
 - [ ] **Step 7: Реализация в `view.py`**
 
@@ -2059,7 +2063,7 @@ Expected: PASS.
 2. `self._remember.setChecked(True)` безусловно.
    Expected: FAIL в `test_dialog_offers_login_password_and_remember_off_by_default`.
 3. В `_apply_properties` вернуть ранний `return` при пустых `changes`
-   без учёта `credentials_changed`. Expected: FAIL в `test_properties_ok_click_stores_credentials`.
+   без учёта `credentials_changed`. Expected: FAIL в `test_properties_apply_stores_credentials`.
 4. В `_apply_new_infobase` завернуть отказ хранилища в общий текст «не удалось добавить».
    Expected: FAIL в `test_add_dialog_store_failure_reports_record_added`.
 
@@ -2172,10 +2176,10 @@ git commit -m "release: версия 2.2.0 — учётные данные дл�
 **Заглушки.** В задаче 4 `test_rekey_moves_the_secret` несёт конструкцию
 `if False else` с явным указанием заменить её способом из соседних тестов
 rekey — это не заглушка, а запрет вычислять ключ вместо чтения состояния;
-исполнитель обязан заменить и записать, чем. В задаче 1 и 5 имена
-помощников (`_smoke_env`, `_click_ok`, `workspace_store`) даны с указанием
-взять фактические из файла — по опыту v2.1 план, выдумывающий имена
-фикстур, ломается на первом же шаге.
+исполнитель обязан заменить и записать, чем. (Перепроверка 06.09.2026:
+тест rekey задачи 4 и помощники задачи 5 переписаны на фактические
+имена из файлов — `binding_key` + фиксированный `new_id`, параметр `store=`
+у фабрики и `_view`; выдуманных помощников в плане не осталось.)
 
 **Согласованность имён.** `CredentialStore`/`KeyringStore`/`MemoryStore`/
 `CredentialBackendError` (2, 4, 5), `redact_arguments`/`HIDDEN_ARGUMENTS`
