@@ -1988,12 +1988,25 @@ class DialogCredentials:
         self._password.textChanged.connect(self._refresh_ok_state)
 ```
 
-В `_refresh_ok_state` — после существующей проверки `empty`:
+В `_refresh_ok_state` существующая ветка «всё заполнено» заканчивается
+ранним `return` — проверка, поставленная после неё, была бы недостижима
+для заполненного диалога (дефект первой редакции плана, найден исполнителем).
+Поэтому `return` заменяется на `if/else`, а новая проверка идёт следом:
 
 ```python
+        empty = self._empty_required()
+        self._ok_button.setEnabled(not empty)
+        if not empty:
+            self._required_hint.setText("")
+        else:
+            fields = ", ".join(f"«{label}»" for label in empty)
+            self._required_hint.setText(f"Заполните: {fields}")
+
         if self._password.text() and not self._login.text().strip():
             self._ok_button.setEnabled(False)
-            self._required_hint.setText("Заполните: «Пользователь» — пароль без него не применить")  # noqa: RUF001
+            self._required_hint.setText(
+                "Заполните: «Пользователь» — пароль без него не применить"
+            )
             return
         self._credentials_note.setText(
             CLEARING_LOGIN_NOTE
