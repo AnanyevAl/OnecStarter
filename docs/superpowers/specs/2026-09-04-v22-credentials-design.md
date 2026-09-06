@@ -191,7 +191,7 @@ fail-closed на непарной кавычке — вся строка зам�
 | `domain/launch.py` | `Credentials` (`repr=False` у пароля); `build_arguments(credentials=)` |
 | `services/user_data.py` | `BaseUserData.login`; кодек; `set_login()` |
 | `services/errors.py` | `CredentialStoreError(ServicesError)` |
-| `services/workspace.py` | инъекция `credentials: CredentialStore`; `set_credentials()`; `credentials_of(key) -> (login, has_password)`; `launch` собирает `Credentials`; `_write` переносит секрет при rekey; `remove_infobase` удаляет |
+| `services/workspace.py` | инъекция `credentials: CredentialStore` — обязательная, без умолчания (реальное хранилище подключает только `ui/app.py`, тесты — `MemoryStore` под session-guard'ом `tests/conftest.py`); `set_credentials()`; `credentials_of(key) -> (login, has_password)`; `launch` собирает `Credentials`; `_write` переносит секрет при rekey; `remove_infobase` удаляет |
 | `services/launch.py` | `launch_infobase(credentials=)`; ошибка и `LaunchOutcome` — через `redact_arguments` |
 | `ui/dialogs/infobase.py` | три строки + подпись; `credentials()`; параметры `login`, `has_password` |
 | `ui/bases/view.py` | `_build_properties_dialog` передаёт `credentials_of(key)`; `_apply_properties` и `_apply_new_infobase` зовут `set_credentials` после записи `.v8i` |

@@ -1235,7 +1235,10 @@ git commit -m "feat: domain — Credentials и передача /N /P в build_a
 - Modify: `src/onecstarter/services/errors.py`
 - Modify: `src/onecstarter/services/workspace.py` (`__init__`, `set_credentials`, `credentials_of`, `launch`, `_write`, `remove_infobase`)
 - Modify: `src/onecstarter/services/launch.py` (`launch_infobase`)
+- Modify: `src/onecstarter/ui/app.py:108` (подключение `KeyringStore()` — единственное место)
 - Modify: `tests/unit/test_user_data.py`, `tests/unit/test_workspace.py`, `tests/unit/test_services_launch.py`
+- Modify: `tests/ui/conftest.py:54`, `tests/ui/test_app.py:286` (`credentials=MemoryStore()` — параметр стал обязательным)
+- Create: `tests/conftest.py` (session-guard: тесты не дотягиваются до реального keyring)
 
 **Interfaces:**
 - Consumes: `CredentialStore`, `MemoryStore`, `CredentialBackendError`,
@@ -1243,7 +1246,9 @@ git commit -m "feat: domain — Credentials и передача /N /P в build_a
 - Produces:
   - `BaseUserData.login: str | None`; `set_login(entries, key, login) -> dict[str, BaseUserData]`
   - `CredentialStoreError(ServicesError)`
-  - `Workspace(..., credentials: CredentialStore = KeyringStore())`
+  - `Workspace(..., *, credentials: CredentialStore)` — обязательный именованный
+    параметр без умолчания; реальный `KeyringStore()` подключает только
+    `ui/app.py`, тесты передают `MemoryStore()`
   - `Workspace.set_credentials(key: str, login: str | None, password: str | None, remember: bool) -> None`
   - `Workspace.credentials_of(key: str) -> tuple[str | None, bool]` — логин, есть ли пароль
   - `launch_infobase(..., credentials: Credentials | None = None)`
@@ -1493,15 +1498,17 @@ class CredentialStoreError(ServicesError):
 from onecstarter.security.credentials import (
     CredentialStore,
     CredentialBackendError,
-    KeyringStore,
 )
 from onecstarter.services.errors import CredentialStoreError
 from onecstarter.services.user_data import set_login
 
-# в __init__ — новый именованный параметр, рядом с new_id:
-        credentials: CredentialStore | None = None,
+# в __init__ — новый именованный параметр без умолчания, рядом с new_id.
+# Умолчание `KeyringStore()` запрещено: тест, собравший Workspace без
+# параметра, молча читал бы и удалял записи в реальном Credential Manager
+# пользователя. Обязательность заставляет каждое место сборки выбрать явно.
+        credentials: CredentialStore,
 # и в теле:
-        self._credentials: CredentialStore = credentials if credentials is not None else KeyringStore()
+        self._credentials = credentials
 ```
 
 Методы, после `set_favorite`:
@@ -1633,6 +1640,67 @@ from onecstarter.security.secrets import redact_arguments, redact_connect
 «С v2.2 в аргументах может быть /P — показывается только редактированная
 форма (спека v2.2, §6)».
 
+- [ ] **Step 7а: Подключение реального хранилища и защита тестов**
+
+Параметр обязателен, поэтому меняются все места сборки `Workspace`
+(`grep -rn "Workspace(" src tests --include=*.py`, без `class Workspace`):
+
+1. `src/onecstarter/ui/app.py:108` — единственное место, где появляется
+   реальное хранилище:
+
+```python
+from onecstarter.security.credentials import KeyringStore
+# в вызове Workspace(...) после default_app=...:
+        credentials=KeyringStore(),
+```
+
+2. `tests/ui/conftest.py:54` и `tests/ui/test_app.py:286` — в вызов
+   `Workspace(...)` добавить `credentials=MemoryStore()` (импорт из
+   `onecstarter.security.credentials`). В задаче 5 conftest получит
+   параметр `store=`; здесь — минимум, чтобы набор остался зелёным.
+
+3. Создать `tests/conftest.py` — session-guard. Хранилище паролей
+   пользователя не тестовый стенд: чтение выдаст его секреты, удаление
+   их уничтожит. Любой путь до `keyring.*` из теста — потерянная инъекция.
+
+```python
+"""Общие фикстуры всего набора тестов."""
+
+from collections.abc import Iterator
+from typing import NoReturn
+
+import pytest
+
+
+@pytest.fixture(autouse=True, scope="session")
+def forbid_real_keyring() -> Iterator[None]:
+    """Ни один тест не дотягивается до реального Credential Manager.
+
+    Тесты `KeyringStore` подменяют эти же функции своим `monkeypatch` —
+    он ложится поверх защиты и снимается обратно на неё.
+    """
+    import keyring
+
+    def _refuse(*args: object, **kwargs: object) -> NoReturn:
+        raise AssertionError(
+            "тест дотянулся до реального keyring — инъекция хранилища потеряна"
+        )
+
+    with pytest.MonkeyPatch.context() as patch:
+        for name in ("get_password", "set_password", "delete_password"):
+            patch.setattr(keyring, name, _refuse)
+        yield
+```
+
+Проверка защиты (не оставлять в наборе): временно добавить в
+`tests/unit/test_credentials.py` тест, зовущий `KeyringStore().read("probe")`,
+запустить его одного — он обязан упасть с `AssertionError: тест дотянулся до
+реального keyring`, не с `None`. Удалить тест, записать в отчёт.
+
+Run: `uv run pytest tests/unit/test_credentials.py tests/ui/test_app.py -q`
+Expected: PASS — тесты `KeyringStore` по-прежнему зелёные поверх защиты,
+`test_importing_the_module_does_not_import_keyring` (подпроцесс) не задет.
+
 - [ ] **Step 8: Тест редакции в исходе и ошибке**
 
 В `tests/unit/test_services_launch.py`:
@@ -1685,7 +1753,7 @@ Expected: PASS.
 ```powershell
 uv run ruff check .
 uv run mypy
-git add src/onecstarter/services tests/unit/test_user_data.py tests/unit/test_workspace.py tests/unit/test_services_launch.py
+git add src/onecstarter/services src/onecstarter/ui/app.py tests/conftest.py tests/ui/conftest.py tests/ui/test_app.py tests/unit/test_user_data.py tests/unit/test_workspace.py tests/unit/test_services_launch.py
 git commit -m "feat: services — логин в наших данных, пароль в хранилище, передача при запуске"
 ```
 
@@ -1696,7 +1764,7 @@ git commit -m "feat: services — логин в наших данных, пар�
 **Files:**
 - Modify: `src/onecstarter/ui/dialogs/infobase.py` (`__init__:341`, `for_new:525`, `_refresh_ok_state`, новые аксессоры)
 - Modify: `src/onecstarter/ui/bases/view.py` (`_build_properties_dialog`, `_apply_properties:1400`, `_apply_new_infobase`)
-- Modify: `tests/ui/conftest.py` (`workspace_factory` → `credentials=MemoryStore()`)
+- Modify: `tests/ui/conftest.py` (`workspace_factory`: `credentials=MemoryStore()` из задачи 4 → параметр `store=`)
 - Modify: `tests/ui/test_infobase_dialog.py`, `tests/ui/test_bases_view.py`
 
 **Interfaces:**
