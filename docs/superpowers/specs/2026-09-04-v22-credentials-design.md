@@ -186,7 +186,7 @@ fail-closed на непарной кавычке — вся строка зам�
 
 | Слой | Что появляется |
 | --- | --- |
-| `security/credentials.py` | Имя отказа хранилища — `CredentialBackendError`, не `…Failure`: ruff N818 требует суффикс `Error`, а `CredentialStoreError` занят слоем `services` (§7 ниже) — два класса с одним именем, один оборачивает другой, недопустимы (находка задачи 2, 06.09.2026). `CredentialStore` — Protocol `read(key) -> str \| None`, `write(key, secret)`, `delete(key)` по образцу `services/autostart.py::Registry`; `KeyringStore` над `keyring` (сервис `OneCStarter`); `NullStore` для тестов и smoke |
+| `security/credentials.py` | Имя отказа хранилища — `CredentialBackendError`, не `…Failure`: ruff N818 требует суффикс `Error`, а `CredentialStoreError` занят слоем `services` (§7 ниже) — два класса с одним именем, один оборачивает другой, недопустимы (находка задачи 2, 06.09.2026). `CredentialStore` — Protocol `read(key) -> str \| None`, `write(key, secret)`, `delete(key)` по образцу `services/autostart.py::Registry`; `KeyringStore` над `keyring` (сервис `OneCStarter`); `MemoryStore` для тестов и smoke |
 | `security/secrets.py` | `redact_arguments` |
 | `domain/launch.py` | `Credentials` (`repr=False` у пароля); `build_arguments(credentials=)` |
 | `services/user_data.py` | `BaseUserData.login`; кодек; `set_login()` |
@@ -283,7 +283,7 @@ Smoke: keyring round-trip в frozen-сборке (§9).
 0. Эксперимент T-05.14 (§1) — заказчик заводит базу, исполнитель пишет
    скрипт-помощник, результат в скил. **Гейт.**
 1. Keyring-гейт (§9) — `hiddenimports`, smoke round-trip. **Гейт.**
-2. `security/`: `CredentialStore`, `KeyringStore`, `NullStore`, `redact_arguments`.
+2. `security/`: `CredentialStore`, `KeyringStore`, `MemoryStore`, `redact_arguments`.
 3. `domain/launch.py`: `Credentials`, `build_arguments(credentials=)`.
 4. `services/`: `user_data.login`, `errors`, `workspace` (`set_credentials`,
    `credentials_of`, `launch`, rekey, remove), `launch.py` с редакцией.
