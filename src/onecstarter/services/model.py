@@ -103,6 +103,22 @@ class InfobaseItem:
     keys: tuple[tuple[str, str], ...] = ()
 
 
+@dataclass(frozen=True)
+class NewInfobase:
+    """Данные новой записи — вход `Workspace.add_infobase`.
+
+    Датакласс, а не кортеж из пяти значений: позиционные `name`, `connect`,
+    `folder`, `version`, `app` — все строки или `None`, и перепутать их
+    местами не помешал бы ни один тип.
+    """  # noqa: RUF002
+
+    name: str
+    connect: str
+    folder: str
+    version: str | None = None
+    app: str | None = None
+
+
 def key_of_section(section: V8iSection) -> str:
     """Ключ привязки секции документа.
 

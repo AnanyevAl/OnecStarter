@@ -41,6 +41,7 @@ from onecstarter.platform_1c.process_scan import NullScanner, ProcessScanner, Ps
 from onecstarter.platform_1c.registry import load_conventions, load_server_conventions
 from onecstarter.platform_1c.server_discovery import ServerInstallation, server_installations
 from onecstarter.platform_1c.server_spawn import spawn_server
+from onecstarter.security.credentials import KeyringStore
 from onecstarter.services import autostart
 from onecstarter.services.catalog import CommonListData, read_common_lists
 from onecstarter.services.errors import (
@@ -59,6 +60,7 @@ from onecstarter.ui.background import StartupTasks
 from onecstarter.ui.bases.view import BasesView
 from onecstarter.ui.dialogs.buttons import ask_confirmation
 from onecstarter.ui.hotkey import GlobalHotkey
+from onecstarter.ui.servers.card_state import CardState, card_state
 from onecstarter.ui.servers.dialog import ConsoleDialog
 from onecstarter.ui.servers.monitor import ServerMonitor
 from onecstarter.ui.servers.view import ServersView
@@ -110,6 +112,7 @@ def build_runtime(env: Mapping[str, str]) -> Runtime:
         conventions=conventions,
         cfg_rules=rules,
         default_app=settings.default_client.default_app,
+        credentials=KeyringStore(),
     )
     servers_path = appdata / "OneCStarter" / "servers.json"
     return Runtime(workspace, rules, list(conventions), settings_path, servers_path)
@@ -243,12 +246,92 @@ def run_launch(
     return 0
 
 
+SMOKE_VAULT_SERVICE = "OneCStarter-smoke"
+SMOKE_VAULT_KEY = "round-trip"
+
+
+class _KeyringSmokeVault:
+    """Настоящий keyring под служебным именем: проверка сборки, не данных."""
+
+    def read(self, key: str) -> str | None:
+        import keyring
+
+        return keyring.get_password(SMOKE_VAULT_SERVICE, key)
+
+    def write(self, key: str, secret: str) -> None:
+        import keyring
+
+        keyring.set_password(SMOKE_VAULT_SERVICE, key, secret)
+
+    def delete(self, key: str) -> None:
+        import keyring
+        import keyring.errors
+
+        try:
+            keyring.delete_password(SMOKE_VAULT_SERVICE, key)
+        except keyring.errors.PasswordDeleteError:
+            pass
+
+
+def _keyring_round_trip(vault: object) -> str:
+    """`ok` либо причина отказа — одной строкой, без секрета.
+
+    Удаление служебной записи (`vault.delete`) — в `finally` (находка ревью
+    задачи 1, Important): раньше `delete()` стоял линейно между двумя
+    чтениями, и отказ ПЕРВОГО чтения оставлял запись непотревоженной —
+    до вызова `delete()` дело просто не доходило. То же с отказом самого
+    удаления: `_KeyringSmokeVault.delete` глотает только `PasswordDeleteError`
+    keyring, любое другое исключение раньше вылетало наружу необработанным
+    и подменяло собой причину более раннего отказа. Оба случая оставляли
+    мусор в настоящем Credential Manager машины сборщика — ровно то, что
+    запрещает спека §9. `finally` гарантирует попытку удаления при любом
+    исходе чтения; собственный `except Exception` внутри `finally` — чтобы
+    отказ САМОГО удаления не заслонил более раннюю причину (`result`,
+    захваченный до входа в `finally`) и не прервал функцию раньше
+    контрольного чтения `gone` ниже.
+    """  # noqa: RUF002
+    probe = "smoke"
+    try:
+        vault.write(SMOKE_VAULT_KEY, probe)  # type: ignore[attr-defined]
+    except Exception as error:
+        # Самопроверка сборки: любая причина отказа обязана попасть в лог
+        # строкой, а не уронить smoke трассировкой. Правило BLE в ruff проекта  # noqa: RUF003
+        # не включено — noqa здесь был бы лишним и пойман RUF100.
+        return f"FAIL: {type(error).__name__}"
+
+    result: str | None = None
+    got: str | None = None
+    try:
+        got = vault.read(SMOKE_VAULT_KEY)  # type: ignore[attr-defined]
+    except Exception as error:
+        result = f"FAIL: {type(error).__name__}"
+    finally:
+        try:
+            vault.delete(SMOKE_VAULT_KEY)  # type: ignore[attr-defined]
+        except Exception as error:
+            if result is None:
+                result = f"FAIL: {type(error).__name__}"
+    if result is not None:
+        return result
+    if got != probe:
+        return "FAIL: прочитано не то, что записано"
+
+    try:
+        gone = vault.read(SMOKE_VAULT_KEY)  # type: ignore[attr-defined]
+    except Exception as error:
+        return f"FAIL: {type(error).__name__}"
+    if gone is not None:
+        return "FAIL: запись не удалилась"
+    return "ok"
+
+
 def run_smoke(
     target_dir: str,
     env: Mapping[str, str],
     *,
     timeout_ms: int = 30000,
     make_tasks: Callable[[], StartupTasks] | None = None,
+    credential_store: object | None = None,
 ) -> int:
     """Самопроверка собранного экземпляра — вызывает `build/smoke.py` (задача 10).
 
@@ -276,6 +359,25 @@ def run_smoke(
     только для теста таймаута: молчаливая замена (`spawn`, ничего не
     запускающий) не эмитирует сигналов, и ожидание обязано остановиться
     по `timeout_ms`, а не повиснуть до конца прогона тестов.
+
+    `credential_store` — гейт вехи v2.2 перед задачами хранения паролей
+    (спека §9, задача 1 плана): `keyring` ищет бэкенды через entry points,
+    PyInstaller анализом импортов их не видит, и без `hiddenimports`
+    (`build/onecstarter.spec`) замороженный `keyring` молча уходит в пустой
+    бэкенд — все операции отказывают без единого исключения. Проверить это
+    можно только внутри собранного exe, поэтому round-trip
+    (`set_password`/`get_password`/`delete_password`) живёт здесь, а
+    `build/smoke.py` читает его результат из лога. `None` — настоящий
+    `keyring` под служебным именем `SMOKE_VAULT_SERVICE`
+    (`_KeyringSmokeVault`), а не под именем данных пользователя: в отличие
+    от `APPDATA`, который эта самопроверка подменяет, Credential Manager
+    к нему не привязан — он общий на машину сборщика, и мусор в нём
+    недопустим, отсюда и обязательное удаление записи внутри
+    `_keyring_round_trip`. Инъекция — только для теста (хранилище в памяти,
+    не трогающее настоящий диспетчер учётных данных). В лог уходит строка
+    `smoke: keyring=ok` либо `smoke: keyring=FAIL: <тип исключения>` —
+    причина отказа помечается только именем типа, без текста и без значений
+    (инвариант 5).
     """  # noqa: RUF002
     existing = QApplication.instance()
     application = existing if isinstance(existing, QApplication) else QApplication([])
@@ -353,6 +455,8 @@ def run_smoke(
         payload = build_shell_link(target, arguments, target.parent, "OneCStarter smoke")
         atomic_write(Path(target_dir) / "smoke.lnk", payload)
         _log.info("smoke: ярлык записан")
+        vault = credential_store if credential_store is not None else _KeyringSmokeVault()
+        _log.info("smoke: keyring=%s", _keyring_round_trip(vault))
         return 0
     finally:
         # `run_smoke` не крутит `application.exec()` — `aboutToQuit` не
@@ -699,8 +803,13 @@ def _build_main_window(
     def on_console() -> None:
         installed_versions = [si.installation.version for si in server_installed]
         # [Ф] Г3: консоль требует точного совпадения сборки с сервером —  # noqa: RUF003
-        # версии профилей, у которых сейчас есть живой процесс, идут  # noqa: RUF003
+        # версии профилей, у которых сейчас есть живой сервер, идут  # noqa: RUF003
         # в ConsoleDialog как «работает» (её докстринг, ui/servers/dialog.py).
+        # Долг T-12, п. 5: «живой» решает `card_state`, а не снимок процессов.  # noqa: RUF003
+        # `RUNNING` — наш `ragent` в Job (жив с первой миллисекунды, снимка  # noqa: RUF003
+        # ждать до 5 с, §4.4), `FOREIGN` — совпавший чужой: подключаться  # noqa: RUF003
+        # к нему тоже законная цель. `REMNANTS` сюда не идут — остатки
+        # прошлого дерева это не работающий сервер, к ним не подключиться.
         # Волна финального ревью ветки T-12 (Important 1): `statuses()`
         # доходит до `Job.pids()` и может отказать — без этой страховки
         # исключение уходит из слота `clicked`, диалог не открывается,
@@ -711,7 +820,8 @@ def _build_main_window(
             running_versions = [
                 status.resolved
                 for status in servers_workspace.statuses(installed_versions)
-                if status.processes and status.resolved is not None
+                if card_state(status) in (CardState.RUNNING, CardState.FOREIGN)
+                and status.resolved is not None
             ]
         except ServicesError as error:
             _show_servers_error(str(error))

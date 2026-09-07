@@ -594,6 +594,11 @@ def test_autostart_row_warns_about_task_manager(
     # мутационной проверки 22.08.2026: без этой строки мутация
     # `row_note.setVisible(False)` переживала набор, а докстринг обещал  # noqa: RUF003
     # «видна всегда».
+    # [Ф] Замер 02.09.2026 (PySide6 6.11.1): `isHidden()` отражает только явное
+    # скрытие САМОГО виджета и не наследуется от предка — свёртка группы
+    # (спека §1.4) на него не влияет, и сторож продолжает ловить именно
+    # потерянный при сборке виджет. Видимость строки для пользователя
+    # проверяется не здесь и не так: для неё есть `isVisibleTo(<группа>)`.
     assert not note.isHidden()
     # Заголовок и подпись на местах, а переключатель под ними чужой — тот же  # noqa: RUF003
     # обман, что подсказка не на своей строке: аксессоры вьюхи отдают виджеты
@@ -704,3 +709,129 @@ def test_sync_does_not_bounce_external_servers_root_change_back_into_store(
     # Единственный вызов — наш явный; без глушения `_sync` породил бы ещё один
     # (эхо `editingFinished` от `setText` на новое значение).
     assert calls == [{"servers_root": r"F:\srv"}]
+
+
+# -- сворачиваемые группы (v2.1, задача 2) -----------------------------------
+#
+# Решение заказчика 02.09.2026: раздел открывается свёрнутым целиком, группа
+# «Сочетания раздела «Базы»» — второй уровень свёртки внутри «ГОРЯЧИЕ КЛАВИШИ».
+# Видимость внутри раздела проверяется `isVisibleTo`, а НЕ `isHidden`:  # noqa: RUF003
+# [Ф] замер 02.09.2026 — `isHidden()` отражает только явное скрытие самого
+# виджета и у строки внутри свёрнутой группы остаётся `False` (спека §1.6).  # noqa: RUF003
+# С `isHidden` эти три теста проходили бы всегда и не проверяли бы ничего.  # noqa: RUF003
+
+
+def test_all_groups_are_collapsed_on_creation(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Решение заказчика 02.09.2026: раздел открывается свёрнутым целиком."""
+    view, _ = _view(application, tmp_path)
+
+    assert [view.is_group_expanded(title) for title in view.group_labels()] == [
+        False for _ in view.group_labels()
+    ]
+
+
+def test_expanding_a_group_shows_its_rows(
+    application: QApplication, tmp_path: Path
+) -> None:
+    view, _ = _view(application, tmp_path)
+    note = view.row_note("Корень каталогов серверов")
+    group = view.group("СЕРВЕРЫ")
+    assert note.isVisibleTo(group) is False
+
+    view.expand_group("СЕРВЕРЫ")
+    assert note.isVisibleTo(group) is True
+
+    group.set_expanded(False)
+    assert note.isVisibleTo(group) is False
+
+
+def test_shortcut_reference_is_collapsed_inside_hotkeys_group(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Справочник — второй уровень свёртки: 12 строк читаются один раз."""
+    view, _ = _view(application, tmp_path)
+    view.expand_group("ГОРЯЧИЕ КЛАВИШИ")
+    block = view.group("Сочетания раздела «Базы»")
+
+    assert view.is_group_expanded("Сочетания раздела «Базы»") is False
+    # Подпись блока живёт вне сворачиваемого тела и видна свёрнутой.
+    assert view.row_note("Сочетания раздела «Базы»").isVisibleTo(block) is True
+    assert view.row_control("Сочетания раздела «Базы»").isVisibleTo(block) is False
+
+
+# -- широкое поле «Корень каталогов серверов» (v2.1, задача 3) ---------------
+#
+# Замечание заказчика 1.1 / спека §2: поле пути должно начинаться сразу за
+# подписью и тянуться вместе с формой. Группа «СЕРВЕРЫ» свёрнута по  # noqa: RUF003
+# умолчанию — без `expand_group` поле лежит в скрытом теле группы, и
+# геометрия может не пересчитаться при `resize`.
+#
+# [Ф] Разбор 02.09.2026 (PySide6 6.11.1, offscreen), две независимые находки:
+#
+# 1. Одного `resize` + `view.layout().activate()` мало. `activate()`
+#    пересчитывает геометрию ТОЛЬКО прямых элементов того layout, на
+#    котором его вызвали, — группа (CollapsibleGroup) получает новую  # noqa: RUF003
+#    ширину, но её СОБСТВЕННЫЙ layout (заголовок/тело) и layout тела группы
+#    остаются с прежней геометрией: у невидимого (не показанного) виджета  # noqa: RUF003
+#    Qt не генерирует события `LayoutRequest` для вложенных под-layout'ов,
+#    и без реального цикла событий каскад до самого поля не доходит —
+#    ширина поля застревает на значении первого прохода. Инструментированная
+#    проверка (см. отчёт задачи 3) показала: то же самое `resize` +
+#    `activate()`, но НАД ПОКАЗАННЫМ окном (`view.show()`), пересчитывает
+#    геометрию до конца без единого `processEvents()` — Qt для видимого
+#    виджета сам обслуживает вложенные layout'ы синхронно при активации
+#    внешнего. Поэтому оба теста показывают раздел перед измерением.  # noqa: RUF003
+#
+# 2. Буквальные 700/1200 из брифа на этой машине оба меньше фактического  # noqa: RUF003
+#    минимума раздела: `self._path_label` (полный путь к файлу настроек,
+#    вне свёртки, вне этой задачи) не переносится по строкам, а `tmp_path`  # noqa: RUF003
+#    у pytest — длинный вложенный путь (`...\pytest-of-<user>\pytest-N\  # noqa: RUF003
+#    <имя теста>0\settings.json`), и чем длиннее имя теста, тем шире
+#    единственная строка подписи. Оба `resize` схлопывались в один и тот же  # noqa: RUF003
+#    пол — тест «проходил» бы вне зависимости от того, тянется поле или нет.
+#    Точка отсчёта — фактический `view.minimumSizeHint().width()` этого
+#    прогона, а не константы, случайно годные на одной машине.  # noqa: RUF003
+
+
+def test_servers_root_field_grows_with_the_section(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Поле пути тянется вместе с формой (замечание заказчика 1.1, спека §2)."""  # noqa: RUF002
+    view, _ = _view(application, tmp_path)
+    view.expand_group("СЕРВЕРЫ")
+    view.show()
+    layout = view.layout()
+    assert layout is not None
+    floor = view.minimumSizeHint().width()
+    view.resize(floor, 600)
+    layout.activate()
+    narrow = view.servers_root_edit().width()
+
+    view.resize(floor + 500, 600)
+    layout.activate()
+
+    assert view.servers_root_edit().width() > narrow
+    view.close()
+
+
+def test_only_the_path_row_gets_a_wide_control(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Растянутый сегментный переключатель выглядел бы сломанным (спека §2)."""
+    view, _ = _view(application, tmp_path)
+    view.expand_group("ВНЕШНИЙ ВИД")
+    view.show()
+    layout = view.layout()
+    assert layout is not None
+    floor = view.minimumSizeHint().width()
+    view.resize(floor, 600)
+    layout.activate()
+    narrow = view.row_control("Тема").width()
+
+    view.resize(floor + 500, 600)
+    layout.activate()
+
+    assert view.row_control("Тема").width() == narrow
+    view.close()

@@ -65,6 +65,10 @@ a = Analysis(
             "onecstarter/platform_1c",
         )
     ],
+    # keyring находит бэкенды через entry points — анализ импортов PyInstaller
+    # их не видит, и без этой строки frozen-сборка молча уходит в пустой бэкенд
+    # (спека v2.2, §9). Гейт — строка `smoke: keyring=ok` в самопроверке.
+    hiddenimports=["keyring.backends.Windows"],
     excludes=["tkinter"],
 )
 pyz = PYZ(a.pure)

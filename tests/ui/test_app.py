@@ -33,6 +33,7 @@ from onecstarter.domain.version import Arch, Installation, VersionNumber, parse_
 from onecstarter.platform_1c.job import JobError, NullJob
 from onecstarter.platform_1c.process_scan import NullScanner, ProcessInfo
 from onecstarter.platform_1c.server_discovery import ServerInstallation
+from onecstarter.security.credentials import MemoryStore
 from onecstarter.services.catalog import EMPTY_COMMON_DATA
 from onecstarter.services.errors import (
     ConsoleRegistrationDeclinedError,
@@ -95,9 +96,6 @@ class _FakeJob:
 
     def close(self) -> None:
         self.closed = True
-
-    def is_empty(self) -> bool:
-        return not self.pids()
 
 
 _SERVER_INSTALLATION = ServerInstallation(
@@ -295,6 +293,7 @@ def _pending_workspace(tmp_path: Any) -> tuple[Workspace, list[LaunchCommand]]:
         spawn=fake_spawn,
         now=lambda: datetime.fromisoformat("2026-08-07T10:00:00+00:00"),
         new_id=lambda: "99999999-9999-9999-9999-999999999999",
+        credentials=MemoryStore(),
     )
     assert workspace.installations_pending
     assert workspace.common_lists_pending
@@ -1612,7 +1611,6 @@ def test_monitor_wires_scan_into_servers_workspace_and_view(
         name="ragent.exe",
         executable=None,
         argv=("ragent.exe", "-d", str(tmp_path / "srv"), "-port", "1540", "-regport", "1541"),
-        create_time=1.0,
     )
 
     monitor.snapshot_ready.emit(ScanSnapshot(agents=(agent,), managers=()))
@@ -2361,6 +2359,193 @@ def test_run_smoke_times_out_without_background(
     qtbot.addWidget(captured["window"])
 
 
+class _MemoryVault:
+    """Хранилище в памяти — тест не трогает настоящий Credential Manager."""
+
+    def __init__(self) -> None:
+        self.data: dict[str, str] = {}
+
+    def read(self, key: str) -> str | None:
+        return self.data.get(key)
+
+    def write(self, key: str, secret: str) -> None:
+        self.data[key] = secret
+
+    def delete(self, key: str) -> None:
+        self.data.pop(key, None)
+
+
+def test_smoke_logs_keyring_round_trip(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any, caplog: Any
+) -> None:
+    """Самопроверка сборки обязана доказать, что хранилище паролей работает
+    именно в собранном экземпляре (спека v2.2, §9): без `hiddenimports`
+    `keyring` в frozen-сборке молча уходит в пустой бэкенд. Инъекция
+    хранилища в памяти (не настоящий `keyring`) — тот же приём, что у
+    остальных внешних систем `run_smoke` (`autostart_registry`,
+    `process_scanner`): самопроверка не должна трогать настоящий Credential
+    Manager машины, на которой гоняются юнит-тесты.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    appdata = tmp_path / "appdata"
+    target = tmp_path / "out"
+    target.mkdir()
+    vault = _MemoryVault()
+
+    with caplog.at_level(logging.INFO):
+        code = run_smoke(str(target), {"APPDATA": str(appdata)}, credential_store=vault)
+
+    assert code == 0
+    assert "smoke: keyring=ok" in caplog.text
+    assert vault.data == {}, "служебная запись обязана быть удалена после проверки"
+    qtbot.addWidget(captured["window"])
+
+
+class _ReadFailsAfterWriteVault:
+    """Пишет и удаляет как настоящее хранилище, но `read()` всегда отказывает.
+
+    Находка ревью задачи 1 (Important): раньше `vault.delete()` в
+    `_keyring_round_trip` стоял между двумя чтениями линейно, и отказ
+    ПЕРВОГО `read()` не давал дойти до удаления вовсе — запись оставалась
+    бы в настоящем Credential Manager машины сборщика.
+    """
+
+    def __init__(self) -> None:
+        self.data: dict[str, str] = {}
+
+    def read(self, key: str) -> str | None:
+        raise RuntimeError("чтение недоступно")
+
+    def write(self, key: str, secret: str) -> None:
+        self.data[key] = secret
+
+    def delete(self, key: str) -> None:
+        self.data.pop(key, None)
+
+
+def test_smoke_keyring_round_trip_deletes_record_even_when_read_fails(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any, caplog: Any
+) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ (находка ревью задачи 1): отказ чтения после успешной
+    записи не должен оставлять служебную запись в хранилище. Мутация: вернуть
+    `vault.delete(...)` из `finally` в прежнюю линейную форму между двумя
+    чтениями — тест обязан упасть, потому что `vault.data` останется
+    непустым (`RuntimeError` первого `read()` прерывает выполнение до
+    строки с `delete()`).
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    appdata = tmp_path / "appdata"
+    target = tmp_path / "out"
+    target.mkdir()
+    vault = _ReadFailsAfterWriteVault()
+
+    with caplog.at_level(logging.INFO):
+        code = run_smoke(str(target), {"APPDATA": str(appdata)}, credential_store=vault)
+
+    assert code == 0
+    assert "smoke: keyring=FAIL: RuntimeError" in caplog.text
+    assert vault.data == {}, "запись обязана быть удалена даже при отказе чтения"
+    qtbot.addWidget(captured["window"])
+
+
+class _DeleteFailsVault:
+    """`write`/`read` работают, `delete()` бросает не `PasswordDeleteError`.
+
+    Ре-ревью задачи 1 (Important, подветка «б»): без собственного
+    `try/except` вокруг `vault.delete()` в `finally` это исключение вылетело
+    бы из `_keyring_round_trip` наружу необработанным, а не превратилось бы
+    в контрактный `FAIL: <тип>`.
+    """  # noqa: RUF002
+
+    def __init__(self) -> None:
+        self.data: dict[str, str] = {}
+
+    def read(self, key: str) -> str | None:
+        return self.data.get(key)
+
+    def write(self, key: str, secret: str) -> None:
+        self.data[key] = secret
+
+    def delete(self, key: str) -> None:
+        raise RuntimeError("удаление недоступно")
+
+
+def test_smoke_keyring_round_trip_reports_delete_failure(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any, caplog: Any
+) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ (ре-ревью задачи 1): отказ самого `delete()` обязан
+    попасть в лог как `FAIL: <тип>`, а не уронить `run_smoke` трассировкой.
+    Мутация: снять `try/except` вокруг `vault.delete(...)` внутри `finally`
+    (оставить голый вызов) — исключение вылетит из `_keyring_round_trip`
+    прямо из аргумента `_log.info(...)`, строка `smoke: keyring=` не
+    появится вовсе, и сам вызов `run_smoke(...)` в этом тесте упадёт
+    необработанным исключением, а не обычным `assert`.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    appdata = tmp_path / "appdata"
+    target = tmp_path / "out"
+    target.mkdir()
+    vault = _DeleteFailsVault()
+
+    with caplog.at_level(logging.INFO):
+        code = run_smoke(str(target), {"APPDATA": str(appdata)}, credential_store=vault)
+
+    assert code == 0
+    assert "smoke: keyring=FAIL: RuntimeError" in caplog.text
+    qtbot.addWidget(captured["window"])
+
+
+class _ReadAndDeleteFailVault:
+    """`read()` бросает `ValueError`, `delete()` — `RuntimeError` (разные типы).
+
+    Ре-ревью задачи 1 (Important, подветка «б»): причина ЧТЕНИЯ обязана
+    остаться в логе — `if result is None:` внутри `finally` не даёт более
+    позднему отказу удаления заслонить более раннюю причину.
+    """  # noqa: RUF002
+
+    def __init__(self) -> None:
+        self.data: dict[str, str] = {}
+
+    def read(self, key: str) -> str | None:
+        raise ValueError("чтение недоступно")
+
+    def write(self, key: str, secret: str) -> None:
+        self.data[key] = secret
+
+    def delete(self, key: str) -> None:
+        raise RuntimeError("удаление недоступно")
+
+
+def test_smoke_keyring_round_trip_keeps_read_failure_over_delete_failure(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any, caplog: Any
+) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ (ре-ревью задачи 1): при одновременном отказе чтения
+    и удаления в логе обязана остаться причина ЧТЕНИЯ (`FAIL: ValueError`),
+    а не удаления (`RuntimeError`) — оно случилось позже и не должно
+    подменять собой более раннюю причину. Мутация: убрать
+    `if result is None:`, оставить безусловное присвоение `result` внутри
+    `except` в `finally` — отказ удаления затрёт причину чтения, и в логе
+    окажется `RuntimeError` вместо ожидаемого `ValueError`.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    appdata = tmp_path / "appdata"
+    target = tmp_path / "out"
+    target.mkdir()
+    vault = _ReadAndDeleteFailVault()
+
+    with caplog.at_level(logging.INFO):
+        code = run_smoke(str(target), {"APPDATA": str(appdata)}, credential_store=vault)
+
+    assert code == 0
+    assert "smoke: keyring=FAIL: ValueError" in caplog.text
+    assert "RuntimeError" not in caplog.text
+    qtbot.addWidget(captured["window"])
+
+
 # -- задача 16 (T-08): проводка «Консоль администрирования…» -----------------
 #
 # `_console_flow` — функция уровня модуля, вынесенная из `on_console`
@@ -2609,6 +2794,58 @@ def test_console_flow_survives_unreadable_job(
     assert flow_calls == [], "диалог консоли не должен открываться на неизвестном состоянии"
     assert len(shown) == 1
     assert "QueryInformationJobObject отказал" in shown[0]
+
+
+def test_console_lists_our_just_started_server_before_the_first_scan(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ (долг T-12, п. 5): «работает» для консоли решает Job, а не снимок.
+
+    Наш `ragent` жив в Job с первой миллисекунды, а первого снимка сканера
+    ждать до 5 с (спека §4.4). Пока `on_console` спрашивал
+    `status.processes`, только что запущенный сервер в список «работает»
+    для `ConsoleDialog` не попадал — и подсказка про совпадение сборки
+    ([Ф] Г3) молчала ровно тогда, когда пользователь секунду назад нажал
+    «Запустить». Снимок здесь намеренно НЕ применяется: это и есть слепое
+    окно первого скана.
+
+    Установки доносятся до окна тем же приёмом, что в
+    `test_on_installations_fills_server_installed` (подмена
+    `server_installations` + `installations_ready.emit`): без них версия
+    профиля не разрешается вовсе, и запись отсеялась бы по `resolved is
+    None` — то есть по другой причине, мимо предмета теста.
+
+    Мутация: вернуть предикат `status.processes` — тест обязан упасть
+    на пустом списке версий.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    monkeypatch.setattr(app_module, "spawn_server", lambda command, log, job: 4646)
+    monkeypatch.setattr(
+        app_module, "server_installations", lambda found, conventions: [_SERVER_INSTALLATION]
+    )
+    flow_calls: list[Any] = []
+    monkeypatch.setattr(
+        app_module, "_console_flow", lambda *args, **kwargs: flow_calls.append(args)
+    )
+
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+    window, tasks, _monitor = _build_main_window(
+        qapp, runtime, env, job_factory=lambda: _FakeJob((4646,))
+    )
+    qtbot.addWidget(window)
+    labels = [button.text() for button in window.section_buttons()]
+    window.show_section(labels.index("Серверы"))
+    servers_view = window.current_section()
+    assert isinstance(servers_view, ServersView)
+    tasks.installations_ready.emit(INSTALLED)
+    _start_fake_server(servers_view, tmp_path)
+
+    servers_view.console_button().click()
+
+    assert len(flow_calls) == 1
+    running_versions = flow_calls[0][2]
+    assert [str(version) for version in running_versions] == ["8.3.25.1633"]
 
 
 # -- T-10, задача 6: подтверждение выхода при работающих серверах ------------

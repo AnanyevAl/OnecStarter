@@ -91,6 +91,24 @@ _FILE_ATTRIBUTE_NORMAL = 0x80
 # результат HANDLE-возврата (см. докстринг `_open_append_shared`).
 _INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 
+# Один WinDLL на модуль, argtypes/restype проставлены один раз — тот же приём,
+# что в `platform_1c/job.py` (долг T-10 «гигиена ctypes», закрыт задачей 1
+# T-12). Раньше `_open_append_shared` заводил свой `WinDLL` и переписывал
+# argtypes на КАЖДЫЙ запуск сервера (долг T-12, п. 9).
+_k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+_k32.CreateFileW.restype = wintypes.HANDLE
+_k32.CreateFileW.argtypes = [
+    wintypes.LPCWSTR,
+    wintypes.DWORD,
+    wintypes.DWORD,
+    ctypes.c_void_p,
+    wintypes.DWORD,
+    wintypes.DWORD,
+    wintypes.HANDLE,
+]
+_k32.CloseHandle.restype = wintypes.BOOL
+_k32.CloseHandle.argtypes = [wintypes.HANDLE]
+
 
 def _open_append_shared(path: Path) -> int:
     """Открыть журнал хендлом, который пишет строго в конец файла — [Ф] 29.08.2026.
@@ -105,10 +123,11 @@ def _open_append_shared(path: Path) -> int:
     флагов расшаривания — попутное лекарство долга ротации (см. докстринг
     модуля): `Path.replace` проходит, пока этот хендл жив.
 
-    `use_last_error=True` и явные `argtypes`/`restype` — гигиена ctypes,
-    для НОВОГО кода этой волны исправлений, в отличие от долга
-    `platform_1c/job.py` (см. `docs/tasks.md`, долг вехи T-10), не
-    повторяем. Возвращает файловый дескриптор C-рантайма
+    `use_last_error=True` и явные `argtypes`/`restype` — гигиена ctypes.
+    Сам `WinDLL` — один на модуль (`_k32`), а не свой на каждый вызов:
+    долг T-10 «гигиена ctypes» закрыт в `platform_1c/job.py` задачей 1
+    T-12, и здесь тот же приём (долг T-12, п. 9). Возвращает файловый
+    дескриптор C-рантайма
     (`msvcrt.open_osfhandle`) — тот вид хендла, что принимает `stdout=`
     у `subprocess.Popen`; `os.O_APPEND` на самом дескрипторе избыточен
     поверх `FILE_APPEND_DATA`, но не вредит и оставлен для симметрии
@@ -134,20 +153,7 @@ def _open_append_shared(path: Path) -> int:
     `restype` — та же гигиена, что у `CreateFileW`) и перевызывающий
     исключение как есть: закрытие ресурса не глушит саму ошибку.
     """  # noqa: RUF002
-    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    k32.CreateFileW.restype = wintypes.HANDLE
-    k32.CreateFileW.argtypes = [
-        wintypes.LPCWSTR,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        ctypes.c_void_p,
-        wintypes.DWORD,
-        wintypes.DWORD,
-        wintypes.HANDLE,
-    ]
-    k32.CloseHandle.restype = wintypes.BOOL
-    k32.CloseHandle.argtypes = [wintypes.HANDLE]
-    handle = k32.CreateFileW(
+    handle = _k32.CreateFileW(
         str(path),
         _FILE_APPEND_DATA | _SYNCHRONIZE,
         _FILE_SHARE_READ | _FILE_SHARE_WRITE | _FILE_SHARE_DELETE,
@@ -166,7 +172,7 @@ def _open_append_shared(path: Path) -> int:
         # валидный Win32-хендл — отказ open_osfhandle (например, исчерпана
         # таблица CRT-дескрипторов) НЕ закрывает его сам, это утечка хендла  # noqa: RUF003
         # без этой ветки. Закрываем и перевызываем исходную OSError как есть.
-        k32.CloseHandle(handle)
+        _k32.CloseHandle(handle)
         raise
 
 

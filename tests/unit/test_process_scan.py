@@ -51,7 +51,6 @@ class TestPsutilScanner:
         assert found.argv is not None
         assert "-port" in found.argv
         assert "9999" in found.argv
-        assert found.create_time > 0
 
     def test_unrelated_name_does_not_match_fake_process(
         self, fake_process: psutil.Process

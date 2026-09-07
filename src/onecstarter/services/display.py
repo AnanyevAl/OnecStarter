@@ -296,6 +296,62 @@ def version_cell(
 _ARCH_LABEL = {Arch.X64: "x64", Arch.X86: "x86", Arch.UNKNOWN: ""}
 
 
+def version_options(
+    installations: Sequence[Installation],
+    item: InfobaseItem | None = None,
+    cell: VersionCell | None = None,
+) -> list[tuple[str, str | None]]:
+    """Пункты выбора версии: «как установлено» + установленные.
+
+    Общий источник для диалога записи и подменю списка баз (спека §6):
+    разойдись они, пользователь увидел бы в двух местах разный набор
+    версий для одной записи.
+
+    `item is None` — новая запись (диалог добавления): показывать нечего,
+    кроме установленных, и уточнять «как установлено» нечем. Дальше речь
+    про случай, когда запись уже есть (`item` и `cell` переданы).
+
+    Если запрошенная версия (маска, неполный номер или версия, которой нет
+    на машине) не совпадает буквально ни с одной установленной строкой,
+    добавляется отдельный пункт с её точным значением. Без него нетронутый
+    диалог не находил бы себе пункта с такими данными и откатывался бы
+    к первому («как установлено»), а `changes()` восприняла бы это как
+    решение пользователя снять `Version` — тот же класс молчаливой порчи,
+    ради которого написан `replace_fragment` для `Connect`.
+
+    Пункт «как установлено» получает действующую версию в скобках, если
+    `Version` у записи нет вовсе (I6, круг правок 1): без Version секция
+    всё равно резолвится в конкретную версию ([Ф] T-05.5 — DefaultVersion
+    или максимум установленной), и задача 8 эту версию показывала. Голая
+    надпись «как установлено» без неё — шаг назад, а не только смена виджета.
+
+    Кроме WEB (круг правок 2, item 5, и круг правок 3, мелочь 1): там
+    `version_cell` всегда отдаёт `cell.text == "веб"` (Version на запуск
+    веб-базы не влияет вовсе), и подстановка без разбора читалась бы как
+    «как установлено (веб)» или, для пункта запрошенной-но-не-подошедшей
+    версии ниже, как голое «веб» вместо самой версии — оба места читают
+    `cell.text` только через `display_text`, уже отфильтрованный по WEB.
+    """  # noqa: RUF002
+    display_text = ""
+    if item is not None and cell is not None and item.kind is not ConnectKind.WEB:
+        display_text = cell.text
+    default_label = "как установлено"
+    if item is not None and item.requested_version is None and display_text:
+        default_label = f"{default_label} ({display_text})"
+    options: list[tuple[str, str | None]] = [(default_label, None)]
+    seen: set[str | None] = {None}
+    for installation in installations:
+        value = str(installation.version)
+        if value in seen:
+            continue
+        seen.add(value)
+        options.append((value, value))
+    if item is not None and item.requested_version is not None:
+        if item.requested_version not in seen:
+            options.append((display_text or item.requested_version, item.requested_version))
+    return options
+
+
 def is_degraded_group(item: InfobaseItem) -> bool:
     """Секция-группа с пустым `Connect=`, а не с отсутствующим ключом.
 

@@ -59,6 +59,7 @@ from onecstarter.services.display import (
     filter_rows,
     group_contents,
     version_cell,
+    version_options,
 )
 from onecstarter.services.errors import (
     InvalidRequestError,
@@ -1024,6 +1025,7 @@ class BasesView(QWidget):
         # с `--ib-name`, а та открывает браузер (services/launch.py).  # noqa: RUF003
         menu.addAction("Создать ярлык…", lambda: self.create_shortcut(key))
         properties = menu.addAction("Свойства…\tAlt+Enter", lambda: self.show_properties(key))
+        self._add_version_menu(menu, item, key)
         self._add_cache_menu(menu, item)
         menu.addSeparator()
         star = "Убрать из избранного" if item.favorite else "В избранное"  # noqa: RUF001
@@ -1042,6 +1044,73 @@ class BasesView(QWidget):
                 action.setEnabled(False)
                 action.setToolTip(COMMON_NOTE)
         return menu
+
+    def _add_version_menu(self, menu: QMenu, item: InfobaseItem, key: str) -> None:
+        """Подменю «Версия платформы» — ускоритель того же выбора, что в свойствах.
+
+        Задача 5 вехи v2.1. Пункты — та же `version_options`, что и у диалога
+        записи (задача 4, спека §6): разойдись они, пользователь увидел бы
+        в двух местах разный набор версий для одной и той же записи. Первый
+        пункт — «как установлено» (`None`), отделён разделителем от списка
+        установленных версий; отмечен галочкой тот пункт, чьё значение
+        совпадает с `item.requested_version` — включая отдельный пункт
+        запрошенной-но-не-подошедшей версии, если `version_options` его добавила.
+
+        `QMenu(title, menu)` с явным родителем, а не однострочный
+        `menu.addMenu("…")`: у последнего наблюдалось «Internal C++ object
+        already deleted» при чтении состава подменю после возврата
+        `_build_menu` — то же наблюдение и тот же обход, что и у
+        `_add_cache_menu` (см. её докстринг за подробностями; причина
+        не установлена, обход воспроизводим).
+
+        Выбор пишет сразу, без подтверждения (`set_version` → `update_infobase`),
+        тем же правилом, что `Ctrl+D` для избранного. Запись общего списка
+        получает подменю неактивным здесь же, а не в `_build_menu`: отказ
+        показывается до действия (спека §3.2), тем же приёмом, что
+        `_group_menu_for` — `_build_disabled_group_menu`. `update_infobase`
+        всё равно зовёт `_reject_common` — это второй рубеж, не замена
+        первому (запись могла попасть в общий список между построением меню
+        и кликом).
+        """  # noqa: RUF002
+        submenu = QMenu("Версия платформы", menu)
+        action = menu.addMenu(submenu)
+        cell = version_cell(item, self._installations or [], self._cfg_rules)
+        for index, (text, value) in enumerate(
+            version_options(self._installations or [], item, cell)
+        ):
+            entry = submenu.addAction(text)
+            entry.setCheckable(True)
+            entry.setChecked(value == item.requested_version)
+            entry.triggered.connect(
+                lambda _checked=False, v=value: self.set_version(key, v)
+            )
+            if index == 0:
+                submenu.addSeparator()
+        if _is_read_only(item):
+            # `setToolTipsVisible(True)` обязателен: без него `QMenu` на этой
+            # платформе тултипы пунктов не показывает вовсе — тот же вывод,
+            # что и у `_build_disabled_group_menu`/`_add_cache_menu`.  # noqa: RUF003
+            menu.setToolTipsVisible(True)
+            action.setEnabled(False)
+            action.setToolTip(COMMON_NOTE)
+
+    def set_version(self, key: str, version: str | None) -> None:
+        """Записать версию, выбранную в подменю «Версия платформы» (задача 5).
+
+        `None` — «как установлено»: снимает ключ `Version` у секции, а не
+        пишет пустую строку — пустая строка и отсутствующий ключ читаются
+        по-разному (`version_cell`/`resolve_version`), и подмена одного
+        другим на этом пункте сделала бы его равносильным вводу текста
+        не работающим способом. Отдельный метод, а не лямбда внутри меню:
+        путь записи обязан быть достижим напрямую тестами в обход
+        блокирующего `QMenu.exec` — тот же приём, что у
+        `_apply_properties`/`show_properties` и у `clear_cache`.
+        """  # noqa: RUF002
+        try:
+            self._workspace.update_infobase(key, {"Version": version})
+        except ServicesError as error:
+            self._on_error(error)
+        self.rebuild()
 
     def _add_cache_menu(self, menu: QMenu, item: InfobaseItem) -> None:
         """Подменю «Очистить кэш» — два пункта, без сочетаний клавиш (спека §3.2).
@@ -1273,18 +1342,65 @@ class BasesView(QWidget):
         этот `try` стоял только вокруг `_apply_properties`, а собственный
         тестовый набор вызывает `_apply_new_infobase` тем же прямым
         способом, в обход `exec()`/`_on_accept`.
+
+        Задача 7: `new_record()` отдаёт `NewInfobase` (задача 6), а не
+        кортеж из трёх строк, — «Версия» и «Клиент» диалога добавления
+        передаются `Workspace.add_infobase` тем же способом, что и у
+        диалога правки. `record.version`/`record.app` остаются `None`,
+        пока пользователь не выбрал их явно, и `add_infobase` тогда вовсе
+        не кладёт `Version`/`App` в секцию.
+
+        v2.2: учётные данные пишутся ПОСЛЕ `add_infobase` — `set_credentials`
+        принимает ключ существующей записи, которого до этого момента
+        не существует. Отказ `add_infobase` — `key` в этом случае не
+        определён, писать учётные данные некуда. `self.rebuild()` тем не
+        менее зовётся и на этом пути (находка ревью задачи 5, тот же класс
+        дефекта, что чинил add5b16): в общем случае неудачный ADD не меняет
+        состояние `Workspace` вовсе (`_write` поднимает исключение до
+        какой-либо правки файла, ADD не задействует `rekey_from`), и
+        перестройка — холостой перерисовкой того же дерева, но
+        `add_infobase` может отказать и ПОСЛЕ того, как `_write` уже
+        записал файл и перестроил модель внутри себя (`ServicesError
+        ("Запись добавлена, но её ключ неизвестен")` — недостижимо на
+        практике, но не запрещено типом), и тогда пропуск `rebuild()` был
+        бы ровно тем дефектом, который add5b16 уже чинил в другом месте:
+        экран остаётся на старом снимке, которого в файле уже нет.
+        Отказ хранилища после успешного добавления — другое дело: запись
+        уже есть, и сообщение обязано отличать «база не добавлена» от
+        «база добавлена, пароль — нет» (спека §4, §8; тот же принцип,
+        что и в `Workspace.set_credentials`).
         """  # noqa: RUF002
         try:
-            name, connect, folder = dialog.new_record()
+            record = dialog.new_record()
         except ValueError as error:
             self._on_error(
                 InvalidRequestError(f"Не удалось прочитать данные диалога: {error}")  # noqa: RUF001
             )
             return
         try:
-            self._workspace.add_infobase(name, connect, folder)
+            key = self._workspace.add_infobase(
+                record.name,
+                record.connect,
+                record.folder,
+                version=record.version,
+                app=record.app,
+            )
         except ServicesError as error:
             self._on_error(error)
+            self.rebuild()  # инвариант файла: перестройка безусловна (add5b16)
+            return
+        if dialog.credentials_changed():
+            entered = dialog.credentials()
+            try:
+                self._workspace.set_credentials(
+                    key, entered.login, entered.password, entered.remember
+                )
+            except ServicesError as error:
+                self._on_error(
+                    InvalidRequestError(
+                        f"База «{record.name}» добавлена, но пароль не сохранён: {error}"
+                    )
+                )
         self.rebuild()
 
     def _build_properties_dialog(self, key: str) -> InfobaseDialog | None:
@@ -1294,10 +1410,20 @@ class BasesView(QWidget):
         офскрин-тесты, поэтому сборка отделена от показа и проверяется
         отдельно — какая запись найдена, что произойдёт при отсутствующем
         ключе и что реально дошло до диалога (`installations`, группы).
+
+        v2.2: логин и признак «пароль сохранён» — из `credentials_of`,
+        сам пароль сюда не попадает никогда (спека §4). Отказ хранилища
+        (например, Windows Credential Manager недоступен) исключением
+        больше не выходит: `credentials_of` возвращает `has_password=None`,
+        и диалог по нему запирает три поля учётных данных, сохранив логин
+        на экране. Прежний `try`/`except` не только показывал сообщение
+        об ошибке при каждом открытии свойств, но и обнулял логин — «ОК»
+        затирал его молча (финальное ревью, I3).
         """  # noqa: RUF002
         item = next((i for i in self._workspace.items() if i.key == key), None)
         if item is None:
             return None
+        login, has_password = self._workspace.credentials_of(key)
         return InfobaseDialog(
             item,
             groups=self._group_paths(),
@@ -1306,6 +1432,8 @@ class BasesView(QWidget):
             installations=self._installations or [],
             cfg_rules=self._cfg_rules,
             parent=self,
+            login=login,
+            has_password=has_password,
         )
 
     def show_properties(self, key: str) -> None:
@@ -1338,6 +1466,26 @@ class BasesView(QWidget):
         список теряемых ключей (`kind_change_warning`) показывается заранее,
         отказ пользователя отменяет всю операцию, не только правку вида,
         и до `Workspace.update_infobase` дело не доходит вовсе.
+
+        v2.2: учётные данные применяются **независимо** от правок `.v8i` —
+        свой собственный путь `Workspace.set_credentials`, а не часть
+        `changes()`. Ранний `return` при пустых `changes` больше не
+        последний: диалог, где пользователь тронул только пароль, не должен
+        уйти ни с чем. `dialog.credentials_changed()` читается уже ПОСЛЕ
+        успешного `dialog.changes()` — двойник диалога без этого метода
+        (`_RaisingChanges`, тест ревью задачи 9) не должен на нём упасть,
+        а он и не падает: исключение из `changes()` возвращает раньше.
+
+        **Порядок обязателен: учётные данные — ДО `update_infobase`** (находка
+        ревью задачи 5). У записи без `ID` ключ — суррогат (строка соединения
+        + имя, `binding_key`); любая правка через `update_infobase` дописывает
+        `ID` и меняет ключ (`rekey_from=key` внутри `Workspace._write`). Если
+        бы `set_credentials(key, …)` звался после, он не нашёл бы запись под
+        старым ключом — `UnknownItemError`, введённые логин и пароль терялись
+        бы за сообщением «файл изменился извне», хотя правка имени только
+        что прошла успешно. Записанные ДО правки логин и секрет переносит на
+        новый ключ сам `_write` (rekey задачи 4) — тем же путём, что уже
+        переносит избранное и историю запусков.
         """  # noqa: RUF002
         warning = dialog.kind_change_warning()
         if warning is not None and not russian_confirm(self, "Смена вида размещения", warning):
@@ -1351,12 +1499,22 @@ class BasesView(QWidget):
                 )
             )
             return
-        if not changes and new_name is None:
+        credentials_changed = dialog.credentials_changed()
+        if not changes and new_name is None and not credentials_changed:
             return
-        try:
-            self._workspace.update_infobase(key, changes, new_name)
-        except ServicesError as error:
-            self._on_error(error)
+        if credentials_changed:
+            entered = dialog.credentials()
+            try:
+                self._workspace.set_credentials(
+                    key, entered.login, entered.password, entered.remember
+                )
+            except ServicesError as error:
+                self._on_error(error)
+        if changes or new_name is not None:
+            try:
+                self._workspace.update_infobase(key, changes, new_name)
+            except ServicesError as error:
+                self._on_error(error)
         self.rebuild()
 
     def _group_paths(self) -> list[str]:

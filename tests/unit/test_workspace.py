@@ -6,10 +6,13 @@ from pathlib import Path
 
 import pytest
 
+from onecstarter.config.v8i import V8iSection, parse_v8i
 from onecstarter.domain.launch import ClientConvention, ClientKind, LaunchCommand
 from onecstarter.domain.version import Arch, Installation, parse_version
+from onecstarter.security.credentials import CredentialBackendError, CredentialStore, MemoryStore
 from onecstarter.services.catalog import read_common_lists
 from onecstarter.services.errors import (
+    CredentialStoreError,
     InvalidRequestError,
     LaunchError,
     ReadOnlySourceError,
@@ -20,6 +23,7 @@ from onecstarter.services.errors import (
 )
 from onecstarter.services.groups import GroupRemoval
 from onecstarter.services.model import InfobaseSource, binding_key, group_binding_key
+from onecstarter.services.user_data import set_login
 from onecstarter.services.workspace import Workspace, WorkspacePaths, _records_word
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "anonymized.v8i"
@@ -45,6 +49,7 @@ def _raw_workspace(
     calls: list[LaunchCommand] | None = None,
     cfg_paths: tuple[Path, ...] = (),
     installations: Sequence[Installation] | None = INSTALLED,
+    store: CredentialStore | None = None,
 ) -> Workspace:
     """Собрать Workspace как есть — без снимка общих списков.
 
@@ -52,7 +57,9 @@ def _raw_workspace(
     «сразу после конструктора»: pending общих списков и/или pending
     установок (§3.3–3.4 спеки T-04.6). `_workspace` ниже — обёртка над
     этим хелпером для всех остальных тестов, которым не до тонкостей
-    и нужен уже «загруженный» Workspace.
+    и нужен уже «загруженный» Workspace. `store` — хранилище паролей;
+    по умолчанию `MemoryStore()`, настоящий Credential Manager машины
+    тестами не трогается (задача 4 вехи v2.2).
     """  # noqa: RUF002
     ibases = tmp_path / "ibases.v8i"
     if not ibases.exists():
@@ -73,6 +80,7 @@ def _raw_workspace(
         open_url=lambda url: True,
         now=lambda: datetime.fromisoformat(STAMP),
         new_id=lambda: "99999999-9999-9999-9999-999999999999",
+        credentials=store if store is not None else MemoryStore(),
     )
 
 
@@ -80,6 +88,7 @@ def _workspace(
     tmp_path: Path,
     calls: list[LaunchCommand] | None = None,
     cfg_paths: tuple[Path, ...] = (),
+    store: CredentialStore | None = None,
 ) -> Workspace:
     """Собрать Workspace и сразу применить снимок общих списков.
 
@@ -89,7 +98,7 @@ def _workspace(
     «загруженный» мир. Тесты, которым важен именно момент до применения
     снимка (pending), используют `_raw_workspace` напрямую.
     """
-    workspace = _raw_workspace(tmp_path, calls, cfg_paths)
+    workspace = _raw_workspace(tmp_path, calls, cfg_paths, store=store)
     workspace.apply_common_lists(read_common_lists(list(cfg_paths)))
     return workspace
 
@@ -290,6 +299,64 @@ def test_add_returns_key_of_new_record(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path)
     key = workspace.add_infobase("Новая", 'File="C:\\Bases\\New";')
     assert next(item for item in workspace.items() if item.key == key).name == "Новая"
+
+
+def _raw_section(tmp_path: Path, name: str) -> V8iSection:
+    """Секция ровно как она лежит в файле — не модель `Workspace` в памяти.
+
+    Перечитывает `ibases.v8i` с диска и разбирает заново, независимо от
+    состояния `Workspace`: расхождение между записанным файлом и объектом
+    в памяти (в любую сторону) — именно то, что обязана ловить проверка
+    «версия и клиент не заданы по умолчанию не пишутся в чужой файл».
+    """  # noqa: RUF002
+    document = parse_v8i((tmp_path / "ibases.v8i").read_bytes())
+    return next(section for section in document.sections if section.name == name)
+
+
+def test_add_infobase_writes_version_and_app_when_given(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+
+    key = workspace.add_infobase(
+        "Новая", 'File="D:\\Bases\\New";', "/", version="8.3.25.1633", app="ThinClient"
+    )
+
+    item = next(i for i in workspace.items() if i.key == key)
+    assert item.requested_version == "8.3.25.1633"
+    assert item.app == "ThinClient"
+
+    section = _raw_section(tmp_path, "Новая")
+    assert section.get("Version") == "8.3.25.1633"
+    assert section.get("App") == "ThinClient"
+
+
+@pytest.mark.parametrize(
+    "version, app",
+    [
+        pytest.param(None, None, id="not-given"),
+        pytest.param("", "", id="empty-string"),
+    ],
+)
+def test_add_infobase_writes_neither_key_when_version_and_app_are_falsy(
+    tmp_path: Path, version: str | None, app: str | None
+) -> None:
+    """«Как установлено» и «Авто» молчат — ни отсутствие, ни пустая строка не пишутся.
+
+    Пустая строка (`version=""`/`app=""`) сегодня недостижима через UI —
+    комбобоксы диалога добавления кладут `None`, не `""` — но метод
+    `add_infobase` публичный, и guard `if version:`/`if app:` в нём существует
+    именно ради этого случая: нижний рубеж `_apply_add` (services/edit.py)
+    отбрасывает только `None`, а пустая строка ушла бы в чужой `.v8i` как
+    `Version=`/`App=` — платформа читает такой ключ иначе, чем его отсутствие.
+    Находка финального ревью ветки v2.1: случай был закреплён только разовой
+    мутацией без постоянного теста.
+    """  # noqa: RUF002
+    workspace = _workspace(tmp_path)
+
+    workspace.add_infobase("Новая", 'File="D:\\Bases\\New";', "/", version=version, app=app)
+
+    section = _raw_section(tmp_path, "Новая")
+    assert section.get("Version") is None
+    assert section.get("App") is None
 
 
 def test_duplicate_name_makes_launch_ambiguous(tmp_path: Path) -> None:
@@ -811,3 +878,318 @@ def test_group_removal_is_exported_from_the_layer() -> None:
 
     assert services.GroupRemoval is GroupRemoval
     assert "GroupRemoval" in services.__all__
+
+
+# -- задача 4 вехи v2.2: логин/пароль записи ---------------------------------
+
+
+def _first_base_key(workspace: Workspace) -> str:
+    return next(i.key for i in workspace.items() if not i.is_group)
+
+
+def test_set_credentials_keeps_the_password_out_of_our_files(tmp_path: Path) -> None:
+    """Инвариант 5 по ФАКТУ на диске: ни bases.json, ни ibases.v8i не несут пароль."""
+    store = MemoryStore()
+    workspace = _workspace(tmp_path, store=store)
+    key = _first_base_key(workspace)
+
+    workspace.set_credentials(key, "tester", "p@ss", remember=True)
+
+    assert store.read(key) == "p@ss"
+    assert "p@ss" not in (tmp_path / "bases.json").read_text(encoding="utf-8")
+    assert b"p@ss" not in (tmp_path / "ibases.v8i").read_bytes()
+    assert workspace.credentials_of(key) == ("tester", True)
+
+
+def test_unremember_deletes_the_secret(tmp_path: Path) -> None:
+    store = MemoryStore()
+    workspace = _workspace(tmp_path, store=store)
+    key = _first_base_key(workspace)
+    workspace.set_credentials(key, "tester", "p@ss", remember=True)
+
+    workspace.set_credentials(key, "tester", None, remember=False)
+
+    assert store.read(key) is None
+    assert workspace.credentials_of(key) == ("tester", False)
+
+
+def test_clearing_login_deletes_the_secret_too(tmp_path: Path) -> None:
+    """Секрет без логина неприменим — оставлять его молча нельзя (спека §4)."""  # noqa: RUF002
+    store = MemoryStore()
+    workspace = _workspace(tmp_path, store=store)
+    key = _first_base_key(workspace)
+    workspace.set_credentials(key, "tester", "p@ss", remember=True)
+
+    workspace.set_credentials(key, None, None, remember=True)
+
+    assert store.read(key) is None
+    assert workspace.credentials_of(key) == (None, False)
+
+
+def test_remember_without_new_password_keeps_the_stored_one(tmp_path: Path) -> None:
+    """Пользователь открыл свойства и нажал ОК, не перепечатывая пароль."""  # noqa: RUF002
+    store = MemoryStore()
+    workspace = _workspace(tmp_path, store=store)
+    key = _first_base_key(workspace)
+    workspace.set_credentials(key, "tester", "p@ss", remember=True)
+
+    workspace.set_credentials(key, "tester", None, remember=True)
+
+    assert store.read(key) == "p@ss"
+
+
+def test_launch_passes_stored_credentials(tmp_path: Path) -> None:
+    calls: list[LaunchCommand] = []
+    store = MemoryStore()
+    workspace = _workspace(tmp_path, calls=calls, store=store)
+    key = _first_base_key(workspace)
+    workspace.set_credentials(key, "tester", "p@ss", remember=True)
+
+    workspace.launch(key)
+
+    assert '/N"tester" /P"p@ss"' in calls[0].arguments
+
+
+def test_launch_without_credentials_is_unchanged(tmp_path: Path) -> None:
+    calls: list[LaunchCommand] = []
+    workspace = _workspace(tmp_path, calls=calls)
+    workspace.launch(_first_base_key(workspace))
+    assert "/N" not in calls[0].arguments and "/P" not in calls[0].arguments
+
+
+def test_remove_deletes_the_secret(tmp_path: Path) -> None:
+    store = MemoryStore()
+    workspace = _workspace(tmp_path, store=store)
+    key = _first_base_key(workspace)
+    workspace.set_credentials(key, "tester", "p@ss", remember=True)
+
+    workspace.remove_infobase(key)
+
+    assert store.read(key) is None
+
+
+def test_recursive_group_removal_deletes_the_secrets(tmp_path: Path) -> None:
+    """Находка ревью: ключ секции без ID иначе достался бы новой записи
+    с тем же именем и строкой соединения — вместе с «удалённым» паролем.
+
+    Контрольная запись вне группы (`id:6666…`, «Учёт серверный», `Folder=/`)
+    проверяет, что удаление не выметает секреты подряд — только те, что
+    принадлежат удалённому поддереву (находка ревью раунда 2: реализация,
+    удаляющая всё хранилище целиком, тоже прошла бы тест без этой записи).
+    «Розница» (`id:2222…`) в `nested` не входит: это подгруппа «Клиенты»,
+    а не база — `set_credentials` отказал бы ей `InvalidRequestError`,
+    секретов у групп не бывает вовсе. Обе настоящие базы поддерева —
+    «Демо Бухгалтерия» (прямой потомок «Клиенты») и «Демо Розница» (потомок
+    через «Розницу») — учтены в `nested`; других баз в этом поддереве
+    фикстура не несёт.
+    """  # noqa: RUF002
+    store = MemoryStore()
+    workspace = _workspace(tmp_path, store=store)
+    nested = [
+        "id:44444444-4444-4444-4444-444444444444",  # Демо Бухгалтерия, /Клиенты
+        "id:55555555-5555-5555-5555-555555555555",  # Демо Розница, /Клиенты/Розница
+    ]
+    outside = "id:66666666-6666-6666-6666-666666666666"  # Учёт серверный, /
+    for key in [*nested, outside]:
+        workspace.set_credentials(key, "tester", "p@ss", remember=True)
+
+    assert workspace.remove_group(
+        "id:11111111-1111-1111-1111-111111111111", GroupRemoval.RECURSIVE
+    )
+
+    assert not any(key in store.data for key in nested)
+    assert store.data[outside] == "p@ss"
+
+
+def test_rekey_moves_the_secret(tmp_path: Path) -> None:
+    """Запись без ID получает его при первой правке — ключ меняется с cs:
+    на id:, и секрет обязан переехать вместе с избранным (спека §3)."""  # noqa: RUF002
+    store = MemoryStore()
+    workspace = _workspace(tmp_path, store=store)
+    # Тот же приём, что у test_update_of_section_without_id_rekeys_user_data  # noqa: RUF003
+    # (строка ~223 этого файла): запись фикстуры без ID адресуется суррогатным
+    # ключом, а new_id фабрики фиксирован — новый ключ известен заранее.  # noqa: RUF003
+    old_key = binding_key(None, 'File="C:\\Bases\\Manual";', "Без идентификатора")
+    workspace.set_credentials(old_key, "tester", "p@ss", remember=True)
+
+    workspace.update_infobase(old_key, {"Version": "8.3.25"})
+
+    new_key = "id:99999999-9999-9999-9999-999999999999"
+    assert store.read(new_key) == "p@ss"
+    assert store.read(old_key) is None
+
+
+def test_blank_login_in_user_data_launches_without_credentials(tmp_path: Path) -> None:
+    """bases.json правится и руками: пустой логин — не логин, а не ValueError на запуске."""  # noqa: RUF002
+    calls: list[LaunchCommand] = []
+    workspace = _workspace(tmp_path, calls=calls)
+    key = _first_base_key(workspace)
+    workspace._user = set_login(workspace._user, key, "   ")
+
+    workspace.launch(key)
+
+    assert "/N" not in calls[0].arguments
+
+
+def test_store_failure_on_write_is_a_services_error_after_user_data_saved(tmp_path: Path) -> None:
+    class Broken(MemoryStore):
+        def write(self, key: str, secret: str) -> None:
+            raise CredentialBackendError("отказ")
+
+    workspace = _workspace(tmp_path, store=Broken())
+    key = _first_base_key(workspace)
+
+    with pytest.raises(CredentialStoreError):
+        workspace.set_credentials(key, "tester", "p@ss", remember=True)
+    assert workspace.credentials_of(key) == ("tester", False), "логин записан, пароль — нет"
+
+
+def test_store_failure_on_launch_launches_without_credentials_then_reports(tmp_path: Path) -> None:
+    class Broken(MemoryStore):
+        def read(self, key: str) -> str | None:
+            raise CredentialBackendError("отказ")
+
+    calls: list[LaunchCommand] = []
+    workspace = _workspace(tmp_path, calls=calls, store=Broken())
+    key = _first_base_key(workspace)
+    workspace._user = set_login(workspace._user, key, "tester")
+
+    with pytest.raises(CredentialStoreError):
+        workspace.launch(key)
+    assert len(calls) == 1, "процесс порождён — отказ хранилища не отказ запуска"
+    assert "/P" not in calls[0].arguments
+
+
+# -- финальный fix-раунд v2.2: перенос секрета при rekey (F1, F2, F3) --------
+
+
+class _NoStore:
+    """Машина без Credential Manager: отказывает ЛЮБОЙ вызов.
+
+    `keyring` на такой машине поднимает `NoKeyringError` уже из
+    `get_keyring()`, то есть до различения операций, — поэтому шпион
+    отказывает и на `read`, и на `write`, и на `delete`.
+    """
+
+    def read(self, key: str) -> str | None:
+        raise CredentialBackendError("NoKeyringError")
+
+    def write(self, key: str, secret: str) -> None:
+        raise CredentialBackendError("NoKeyringError")
+
+    def delete(self, key: str) -> None:
+        raise CredentialBackendError("NoKeyringError")
+
+
+class _ReadRefused(MemoryStore):
+    def read(self, key: str) -> str | None:
+        raise CredentialBackendError("NoKeyringError")
+
+
+class _WriteRefused(MemoryStore):
+    def write(self, key: str, secret: str) -> None:
+        raise CredentialBackendError("отказ записи")
+
+
+class _DeleteRefused(MemoryStore):
+    def delete(self, key: str) -> None:
+        raise CredentialBackendError("отказ удаления")
+
+
+_ID_LESS_KEY = binding_key(None, 'File="C:\\Bases\\Manual";', "Без идентификатора")
+_REKEYED_KEY = "id:99999999-9999-9999-9999-999999999999"
+
+
+def test_group_rename_never_touches_the_credential_store(tmp_path: Path) -> None:
+    """У группы пароля быть не может — хранилище на её пути не спрашивается.
+
+    Ключ группы без `ID` — `grp:<путь>`, он меняется при переименовании,
+    то есть `_write` идёт по ветке rekey. Безусловный перенос секрета
+    ронял переименование группы на машине без Credential Manager.
+    """  # noqa: RUF002
+    (tmp_path / "ibases.v8i").write_bytes("[Отдел]\r\nFolder=/\r\n".encode())
+    workspace = _raw_workspace(tmp_path, store=_NoStore())
+    key = workspace.items()[0].key
+
+    workspace.update_group(key, new_name="Отдел 2")
+
+    assert [item.name for item in workspace.items()] == ["Отдел 2"]
+
+
+def test_edit_of_id_less_record_with_unavailable_store_reports_unverified_password(
+    tmp_path: Path,
+) -> None:
+    """Отказ `read` — это отказ ПРОВЕРКИ, а не переноса: переносить нечего.
+
+    Прежний текст («не удалось перенести пароль») утверждал факт, которого
+    никто не измерял: был ли у записи пароль вообще, неизвестно.
+    """  # noqa: RUF002
+    workspace = _workspace(tmp_path, store=_ReadRefused())
+
+    with pytest.raises(CredentialStoreError, match="не удалось проверить"):
+        workspace.update_infobase(_ID_LESS_KEY, {"Version": "8.3.25"})
+
+    assert any(item.key == _REKEYED_KEY for item in workspace.items())
+
+
+def test_rekey_delete_failure_says_the_password_moved_and_a_copy_remains(
+    tmp_path: Path,
+) -> None:
+    """Полу-удавшийся перенос: секрет уже под новым ключом, старый остался.
+
+    Сообщение «не удалось перенести пароль» здесь было обратным факту,
+    а старая копия — не безобидный мусор: суррогатный ключ унаследует
+    новая запись с тем же именем и строкой соединения.
+    """  # noqa: RUF002
+    store = _DeleteRefused()
+    workspace = _workspace(tmp_path, store=store)
+    store.data[_ID_LESS_KEY] = "p@ss"
+
+    with pytest.raises(CredentialStoreError) as failure:
+        workspace.update_infobase(_ID_LESS_KEY, {"Version": "8.3.25"})
+
+    text = str(failure.value)
+    assert "перенесён" in text and "старая копия" in text
+    assert _ID_LESS_KEY in text, "без ключа уборка вручную невозможна"
+    assert store.data[_REKEYED_KEY] == "p@ss"
+    assert store.data[_ID_LESS_KEY] == "p@ss"
+
+
+def test_rekey_write_failure_says_the_password_stayed_with_the_old_record(
+    tmp_path: Path,
+) -> None:
+    store = _WriteRefused()
+    workspace = _workspace(tmp_path, store=store)
+    store.data[_ID_LESS_KEY] = "p@ss"
+
+    with pytest.raises(CredentialStoreError, match="не перенесён"):
+        workspace.update_infobase(_ID_LESS_KEY, {"Version": "8.3.25"})
+
+    assert list(store.data) == [_ID_LESS_KEY]
+
+
+def test_rekey_reports_both_the_user_data_and_the_store_failures(tmp_path: Path) -> None:
+    """`failure = failure or …` полностью скрывал отказ хранилища за отказом
+    `bases.json`: пользователь узнавал про избранное и не узнавал про пароль."""
+    store = _WriteRefused()
+    workspace = _workspace(tmp_path, store=store)
+    store.data[_ID_LESS_KEY] = "p@ss"
+    _block_user_data(workspace)
+
+    with pytest.raises(UserDataWriteError) as failure:
+        workspace.update_infobase(_ID_LESS_KEY, {"Version": "8.3.25"})
+
+    text = str(failure.value)
+    assert "избранное" in text, "отказ наших данных не должен теряться"
+    assert "не перенесён" in text, "отказ хранилища не должен маскироваться"
+
+
+def test_credentials_of_keeps_login_when_the_store_fails(tmp_path: Path) -> None:
+    """Логин прочитан из наших данных ДО обращения к хранилищу — терять его
+    из-за недоступного Credential Manager нельзя: диалог покажет пустое поле
+    и молча сотрёт сохранённый логин по «ОК». `None` — «неизвестно»."""  # noqa: RUF002
+    workspace = _workspace(tmp_path, store=_ReadRefused())
+    key = _first_base_key(workspace)
+    workspace._user = set_login(workspace._user, key, "tester")
+
+    assert workspace.credentials_of(key) == ("tester", None)

@@ -35,26 +35,28 @@ CONV = ServerConvention(
 class FakeJob:
     """Job с управляемым списком PID (T-12): `pids_value` — что «живёт» в Job;
     `close()` опустошает список и ставит `closed`; `close_error` — `JobError`,
-    который поднимает `close()` вместо закрытия."""  # noqa: RUF002
+    который поднимает `close()` вместо закрытия; `pids_error` — `JobError`
+    из `pids()` (долг T-12, п. 6: у UI-фейка это было, у этого — нет,
+    и ветка отказа чтения в `_reconcile_jobs` оставалась без unit-теста)."""  # noqa: RUF002
 
     pids_value: tuple[int, ...] = ()
     closed: bool = False
     close_error: JobError | None = None
+    pids_error: JobError | None = None
     assigned: list[int] = field(default_factory=list)
 
     def assign(self, process_handle: int) -> None:
         self.assigned.append(process_handle)
 
     def pids(self) -> tuple[int, ...]:
+        if self.pids_error is not None:
+            raise self.pids_error
         return () if self.closed else self.pids_value
 
     def close(self) -> None:
         if self.close_error is not None:
             raise self.close_error
         self.closed = True
-
-    def is_empty(self) -> bool:
-        return not self.pids()
 
 
 @dataclass
@@ -224,7 +226,6 @@ def _agent(
         name="ragent.exe",
         executable=Path(exe) if exe else None,
         argv=argv,
-        create_time=100.0 + pid,
     )
 
 
@@ -234,7 +235,6 @@ def _manager(pid: int, argv: tuple[str, ...] | None) -> ProcessInfo:
         name="rmngr.exe",
         executable=Path(r"C:\Program Files\1cv8\8.3.25.1633\bin\rmngr.exe"),
         argv=argv,
-        create_time=100.0 + pid,
     )
 
 
@@ -497,7 +497,7 @@ class TestScanServers:
     def test_splits_agents_and_managers_by_name(self) -> None:
         agent = _agent(1, ("ragent.exe", "-port", "2540", "-d", r"E:\srv\a"))
         manager = _manager(2, ("rmngr.exe", "-port", "1541"))
-        other = ProcessInfo(pid=3, name="rphost.exe", executable=None, argv=None, create_time=1.0)
+        other = ProcessInfo(pid=3, name="rphost.exe", executable=None, argv=None)
         scanner = FakeScanner([agent, manager, other])
 
         snapshot = scan_servers(scanner)
@@ -1054,6 +1054,115 @@ class TestStartWithJob:
         assert workspace.statuses([])[0].job_pids == (4300,)
         content = server_journal.journal_path(logs_dir, profile.id).read_text(encoding="utf-8")
         assert "отказ запуска: не удалось погасить остатки прошлого запуска" in content
+
+    def test_failed_remnant_close_keeps_spawned_pid(self, tmp_path: Path) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ: отказ гашения возвращает и Job, и порождённый PID.
+
+        Долг T-12, п. 4: `_spawned.pop` сделан ДО `old_job.close()`, и в ветке
+        `JobError` в `_jobs` Job возвращается, а порождённый PID — нет. Откат
+        обязан быть симметричным: иначе `spawned_pid` теряется, и событие
+        «ragent завершился извне» в этом окне реконсиляции уже не с чего
+        записать — забывать нечего. Мутация: не возвращать `_spawned` —
+        тест обязан упасть.
+        """  # noqa: RUF002
+        factory = FakeJobFactory()
+        logs_dir = tmp_path / "logs"
+        spawn = FakeServerSpawn(pid=4242)
+        workspace = _workspace(tmp_path / "servers.json", new_id=lambda: "jh" * 16,
+                               job_factory=factory, server_spawn=spawn, logs_dir=logs_dir)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        installation = _installation_in(tmp_path)
+        workspace.start(profile.id, [installation])
+        assert workspace.statuses([])[0].spawned_pid == 4242
+
+        old = factory.created[0]
+        old.pids_value = (4300,)
+        old.close_error = JobError("CloseHandle отказал")
+
+        with pytest.raises(ServerError):
+            workspace.start(profile.id, [installation])
+
+        assert workspace.statuses([])[0].spawned_pid == 4242
+
+    def test_failed_remnant_close_without_pids_omits_empty_pid_list(
+        self, tmp_path: Path
+    ) -> None:
+        """Пустой Job не даёт «(PID )» в тексте отказа (долг T-12, п. 4).
+
+        `pids_text` собирается из `job_pids`; когда старый Job уже пуст,
+        а `close()` всё равно отказал, пользователь получал «остатки прошлого
+        запуска (PID ) не погашены» — скобку с пустым списком.
+        """  # noqa: RUF002
+        factory = FakeJobFactory()
+        logs_dir = tmp_path / "logs"
+        spawn = FakeServerSpawn(pid=4242)
+        workspace = _workspace(tmp_path / "servers.json", new_id=lambda: "ji" * 16,
+                               job_factory=factory, server_spawn=spawn, logs_dir=logs_dir)
+        workspace.add_profile(_profile())
+        profile = workspace.profiles()[0]
+        installation = _installation_in(tmp_path)
+        workspace.start(profile.id, [installation])
+
+        old = factory.created[0]
+        old.pids_value = ()
+        old.close_error = JobError("CloseHandle отказал")
+
+        with pytest.raises(ServerError) as excinfo:
+            workspace.start(profile.id, [installation])
+
+        assert "(PID )" not in str(excinfo.value)
+        assert "CloseHandle отказал" in str(excinfo.value)
+
+    def test_unreadable_job_does_not_block_neighbour_reconciliation(
+        self, tmp_path: Path
+    ) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ: нечитаемый Job одного профиля не мешает соседнему.
+
+        Долг T-12, п. 6. Ветка `JobError` в `_reconcile_jobs` крутится
+        в слоте каждые 5 с, а unit-теста не имела — фейк Job не умел
+        `pids_error`. Отказ чтения обязан быть локальным: свой профиль
+        остаётся как есть (забыть его нельзя — мы не знаем, что там на
+        самом деле), соседний реконсилируется обычным порядком, и его
+        событие не дублируется на следующем снимке.
+        """  # noqa: RUF002
+        factory = FakeJobFactory()
+        logs_dir = tmp_path / "logs"
+        ids = iter(["ra" * 16, "rb" * 16])
+        spawn = FakeServerSpawn(pid=4242)
+        workspace = _workspace(tmp_path / "servers.json", new_id=lambda: next(ids),
+                               job_factory=factory, server_spawn=spawn, logs_dir=logs_dir)
+        workspace.add_profile(_profile())
+        workspace.add_profile(
+            _profile(name="сосед", port=2540, regport=2541, cluster_dir=r"E:\srv\other")
+        )
+        first, second = workspace.profiles()
+        installation = _installation_in(tmp_path)
+        workspace.start(first.id, [installation])
+        workspace.start(second.id, [installation])
+        broken, healthy = factory.created
+        broken.pids_error = JobError("QueryInformationJobObject отказал")
+        healthy.pids_value = (4300,)  # ragent (4242) пропал, остатки дерева живы
+
+        workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+
+        # Сосед реконсилирован обычным порядком, событие записано один раз.
+        journal = server_journal.journal_path(logs_dir, second.id)
+        assert journal.read_text(encoding="utf-8").count("ragent завершился извне") == 1
+        # О нечитаемом профиле не выдумано ничего: событие ему не писали.  # noqa: RUF003
+        broken_journal = server_journal.journal_path(logs_dir, first.id)
+        assert "ragent завершился извне" not in broken_journal.read_text(encoding="utf-8")
+
+        # И он не забыт: как только чтение снова удаётся, порождённый PID на месте.
+        # (`statuses()` до этого момента сам отказывает по спеке §7 — нечитаемый
+        # Job превращается в `ServerError`, это не потеря знания, а честный отказ.)  # noqa: RUF003
+        broken.pids_error = None
+        broken.pids_value = (4242,)
+        assert workspace.statuses([])[0].spawned_pid == 4242
+
+        workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+
+        assert journal.read_text(encoding="utf-8").count("ragent завершился извне") == 1
 
 
 class TestStopWithJob:

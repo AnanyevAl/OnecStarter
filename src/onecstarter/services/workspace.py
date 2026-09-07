@@ -20,9 +20,10 @@ from pathlib import Path
 from onecstarter.config.v8i import parse_v8i
 from onecstarter.domain.connect import ConnectKind
 from onecstarter.domain.default_version import DefaultVersionRule
-from onecstarter.domain.launch import ClientConvention, ClientKind, LaunchCommand
+from onecstarter.domain.launch import ClientConvention, ClientKind, Credentials, LaunchCommand
 from onecstarter.domain.version import Installation
 from onecstarter.platform_1c.process import spawn as spawn_process
+from onecstarter.security.credentials import SERVICE, CredentialBackendError, CredentialStore
 from onecstarter.services.catalog import (
     EMPTY_COMMON_DATA,
     CommonListData,
@@ -35,6 +36,7 @@ from onecstarter.services.catalog import (
 )
 from onecstarter.services.edit import Patch, PatchKind, PatchResult, ReorderPatch, SectionPatch
 from onecstarter.services.errors import (
+    CredentialStoreError,
     InvalidRequestError,
     LaunchError,
     ReadOnlySourceError,
@@ -52,6 +54,7 @@ from onecstarter.services.user_data import (
     rekey,
     save_user_data,
     set_favorite,
+    set_login,
 )
 from onecstarter.services.writer import write_patch
 
@@ -98,6 +101,7 @@ class Workspace:
         open_url: Callable[[str], bool] = webbrowser.open,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         new_id: Callable[[], str] = lambda: str(uuid.uuid4()),
+        credentials: CredentialStore,
     ) -> None:
         self.paths = paths
         # `None` — «обнаружение платформ ещё не завершено» (спека T-04.6,
@@ -112,6 +116,7 @@ class Workspace:
         self._open_url = open_url
         self._now = now
         self._new_id = new_id
+        self._credentials = credentials
         # Храним сами байты файла, а не хеш: список баз измеряется килобайтами,  # noqa: RUF003
         # хеш экономии не даёт, а байты избавляют от повторного чтения при  # noqa: RUF003
         # перестроении модели.
@@ -224,16 +229,33 @@ class Workspace:
         self._rebuild()
         return True
 
-    def add_infobase(self, name: str, connect: str, folder: str | None = None) -> str:
+    def add_infobase(
+        self,
+        name: str,
+        connect: str,
+        folder: str | None = None,
+        version: str | None = None,
+        app: str | None = None,
+    ) -> str:
         """Добавить запись и вернуть её ключ привязки.
 
         Ключ возвращается, потому что искать новую запись по имени нельзя:
         имена в списке не уникальны (дизайн плана 3, §5 — `ADD` с дублем
         разрешён).
+
+        `version` и `app` попадают в секцию, только когда заданы: «как
+        установлено» и «Авто» в диалоге добавления означают отсутствие ключа,
+        а не пустое значение (спека §3) — файл читает и перезаписывает
+        штатный стартер, и пустая строка вместо отсутствующего ключа меняет
+        его поведение.
         """  # noqa: RUF002
         changes: dict[str, str | None] = {"Connect": connect}
         if folder:
             changes["Folder"] = folder
+        if version:
+            changes["Version"] = version
+        if app:
+            changes["App"] = app
         result = self._write(SectionPatch(PatchKind.ADD, name=name, changes=changes))
         if result.key is None:
             # Недостижимо: ADD всегда создаёт секцию и возвращает её ключ.
@@ -252,6 +274,7 @@ class Workspace:
                 PatchKind.UPDATE, target_key=key, changes=dict(changes), new_name=new_name
             ),
             rekey_from=key,
+            move_secret=True,
         )
 
     def remove_infobase(self, key: str) -> bool:
@@ -262,7 +285,14 @@ class Workspace:
         из-за правки файла извне, и тогда запись осталась на месте.
         """  # noqa: RUF002
         self._reject_common(key)
-        return self._write(SectionPatch(PatchKind.REMOVE, target_key=key)).applied
+        applied = self._write(SectionPatch(PatchKind.REMOVE, target_key=key)).applied
+        try:
+            self._credentials.delete(key)
+        except CredentialBackendError as error:
+            raise CredentialStoreError(
+                f"Запись удалена, но пароль в диспетчере учётных данных остался: {error}"
+            ) from error
+        return applied
 
     def add_group(self, name: str, folder: str | None = None) -> str:
         """Создать секцию-группу и вернуть её ключ привязки."""
@@ -308,11 +338,29 @@ class Workspace:
 
         Политика для содержимого обязательна: `PROMOTE` поднимает потомков
         к родителю удаляемой группы, `RECURSIVE` удаляет их вместе с ней.
+
+        Пароли записей, удалённых вместе с группой, удаляются из хранилища:
+        суррогатный ключ секции без ID достался бы новой записи с тем же
+        именем и строкой соединения — вместе с «удалённым» паролем.
         """  # noqa: RUF002
         self._reject_common(key)
-        return self._write(
+        before = {item.key for item in self.items() if not item.is_group}
+        applied = self._write(
             GroupPatch(GroupPatchKind.REMOVE, target_key=key, removal=removal)
         ).applied
+        gone = before - {item.key for item in self.items() if not item.is_group}
+        failed: list[str] = []
+        for removed in sorted(gone):
+            try:
+                self._credentials.delete(removed)
+            except CredentialBackendError as error:
+                failed.append(f"{removed}: {error}")
+        if failed:
+            raise CredentialStoreError(
+                "Группа удалена, но пароли её записей остались в диспетчере "
+                "учётных данных: " + "; ".join(failed)
+            )
+        return applied
 
     def move_within_group(self, key: str, after_key: str | None) -> None:
         """Переставить запись/группу внутри её группы. `after_key is None` — в начало.
@@ -336,6 +384,56 @@ class Workspace:
         )
         self._rebuild()
 
+    def credentials_of(self, key: str) -> tuple[str | None, bool | None]:
+        """Логин и признак «пароль сохранён» — диалогу. Сам пароль наружу
+        не отдаётся никогда (спека v2.2, §4).
+
+        `has_password is None` — «хранилище недоступно», третье состояние
+        рядом с «пароль есть» и «пароля нет». Отказ ловится здесь и наружу
+        исключением не выходит: логин лежит в наших данных и прочитан ДО
+        обращения к хранилищу, а прежняя редакция выбрасывала оба значения
+        разом. На машине без Credential Manager диалог свойств показывал
+        из-за этого пустое поле «Пользователь» у записи с сохранённым
+        логином — и «ОК» затирал логин молча (финальное ревью, I3).
+        """  # noqa: RUF002
+        login = self._user.get(key, BaseUserData()).login
+        try:
+            has_password: bool | None = self._credentials.read(key) is not None
+        except CredentialBackendError:
+            has_password = None
+        return login, has_password
+
+    def set_credentials(
+        self, key: str, login: str | None, password: str | None, remember: bool
+    ) -> None:
+        """Записать логин в наши данные, пароль — в хранилище. Порядок важен:
+        логин пишется первым, и отказ хранилища не откатывает его — сообщение
+        различает «логин записан, пароль нет» (спека §4, §8). Дерево
+        перестраивается в любом исходе: логин уже на диске, и модель в памяти
+        обязана его отражать до того, как ошибка уйдёт наверх (как `launch`
+        и `_write`; тот же класс дефекта, что чинил add5b16).
+
+        `login` пустой → секрет удаляется: пароль без логина неприменим.
+        `remember` снят → секрет удаляется. `remember` стоит, `password` не
+        задан → сохранённый пароль остаётся (пользователь не перепечатывал).
+        """  # noqa: RUF002
+        item = self._item(key)
+        if item.is_group:
+            raise InvalidRequestError(f"«{item.name}» — группа, у неё нет пользователя")  # noqa: RUF001
+        normalized = (login or "").strip() or None
+        self._store_user(set_login(self._user, key, normalized), "Не удалось сохранить логин")  # noqa: RUF001
+        try:
+            if normalized is None or not remember:
+                self._credentials.delete(key)
+            elif password is not None:
+                self._credentials.write(key, password)
+        except CredentialBackendError as error:
+            raise CredentialStoreError(
+                f"Логин сохранён, пароль — нет: {error}"
+            ) from error
+        finally:
+            self._rebuild()
+
     def launch(self, key: str, forced_client: ClientKind | None = None) -> LaunchOutcome:
         if self._installations is None:
             # Спека T-04.6, §3.4: запуск до готовности обязан отказать
@@ -349,6 +447,7 @@ class Workspace:
             )
         item = self._item(key)
         self._reject_ambiguous_name(item)
+        credentials, store_failure = self._credentials_for_launch(key)
         outcome = launch_infobase(
             item,
             installations=self._installations,
@@ -358,6 +457,7 @@ class Workspace:
             forced_client=forced_client,
             spawn=self._spawn,
             open_url=self._open_url,
+            credentials=credentials,
         )
         client = outcome.client.value if outcome.client else "browser"
         # Процесс уже порождён, и об этом сказано прямо в тексте: отказ  # noqa: RUF003
@@ -371,7 +471,30 @@ class Workspace:
             )
         finally:
             self._rebuild()
+        if store_failure is not None:
+            raise store_failure
         return outcome
+
+    def _credentials_for_launch(
+        self, key: str
+    ) -> tuple[Credentials | None, CredentialStoreError | None]:
+        """Учётные данные для запуска. Отказ хранилища — не отказ запуска:
+        клиент запускается без них, платформа спросит сама, а ошибка
+        поднимается ПОСЛЕ порождения процесса (спека §8)."""  # noqa: RUF002
+        # Нормализация на чтении, а не только на записи: файл bases.json  # noqa: RUF003
+        # правится и руками, а `Credentials("")` отвергается доменом  # noqa: RUF003
+        # (`__post_init__`, задача 3) — на запуске это было бы необработанным
+        # ValueError вместо честного «логина нет».
+        login = (self._user.get(key, BaseUserData()).login or "").strip() or None
+        if login is None:
+            return None, None
+        try:
+            password = self._credentials.read(key)
+        except CredentialBackendError as error:
+            return Credentials(login), CredentialStoreError(
+                f"Пароль не прочитан, запуск без него: {error}"
+            )
+        return Credentials(login, password), None
 
     def find_by_name(self, name: str) -> str:
         """Ключ записи по имени базы. Сравнение без учёта регистра.
@@ -500,7 +623,68 @@ class Workspace:
             self._user = previous
             raise UserDataWriteError(f"{what} ({self.paths.user_data}): {error}") from error
 
-    def _write(self, patch: Patch, rekey_from: str | None = None) -> PatchResult:
+    def _move_secret(self, rekey_from: str, new_key: str) -> str | None:
+        """Перевесить секрет со старого ключа на новый. `None` — сделано.
+
+        Строка-результат вместо исключения: `_write` собирает отказы
+        нескольких подсистем в одно сообщение, и «первое исключение съедает
+        остальные» здесь как раз тот дефект, который чинится (финальное
+        ревью, I2).
+
+        Три исхода различаются по факту, а не сливаются в «не удалось
+        перенести пароль»:
+
+        * отказ `read` — неизвестно даже, был ли у записи пароль; это отказ
+          ПРОВЕРКИ. Утверждать, что перенос не удался, значит выдумывать
+          несуществующий секрет;
+        * отказ `write` — секрет остался под старым ключом и никуда
+          не делся;
+        * отказ `delete` после успешного `write` — секрет уже под новым
+          ключом, но старая копия жива. Это не безобидный мусор:
+          суррогатный ключ записи без `ID` унаследует следующая запись
+          с тем же именем и строкой соединения — вместе с чужим паролем.
+          Поэтому сообщение называет запись хранилища целиком: ключ
+          привязки секретом не является (докстринг `errors.py`), а без
+          него уборка вручную невозможна.
+        """  # noqa: RUF002
+        try:
+            secret = self._credentials.read(rekey_from)
+        except CredentialBackendError as error:
+            return (
+                "Запись изменена, но не удалось проверить, есть ли у неё "  # noqa: RUF001
+                f"сохранённый пароль: {error}"
+            )
+        if secret is None:
+            return None
+        try:
+            self._credentials.write(new_key, secret)
+        except CredentialBackendError as error:
+            return (
+                "Запись изменена, но пароль не перенесён — он остался "
+                f"у прежней записи: {error}"  # noqa: RUF001
+            )
+        try:
+            self._credentials.delete(rekey_from)
+        except CredentialBackendError as error:
+            return (
+                "Запись изменена, пароль перенесён, но старая копия осталась "
+                "в диспетчере учётных данных — удалите запись "
+                f"`{SERVICE}/{rekey_from}` вручную: {error}"
+            )
+        return None
+
+    def _write(
+        self, patch: Patch, rekey_from: str | None = None, *, move_secret: bool = False
+    ) -> PatchResult:
+        """Применить патч к `.v8i` и привести к новому ключу наши данные.
+
+        `move_secret` — отдельный флаг, а не следствие `rekey_from`
+        (финальное ревью, I1): по ветке rekey ходит и `update_group`, ключ
+        группы без `ID` меняется при переименовании. У группы пароля быть
+        не может по построению (`set_credentials` отказывает группе), но
+        `read` всё равно спрашивал хранилище — и на машине без Credential
+        Manager переименование группы кончалось сообщением про пароль.
+        """  # noqa: RUF002
         new_id = self._new_id()
         payload, result = write_patch(self.paths.ibases, patch, new_id)
         # Наши данные перевешиваются только тогда, когда ключ цели фактически
@@ -513,7 +697,12 @@ class Workspace:
         # обязано это отразить — иначе экран остался бы на старом содержимом,
         # которого в файле уже нет. Поэтому ошибка придерживается и поднимается
         # ПОСЛЕ приведения состояния в порядок, а не вместо него.  # noqa: RUF003
-        failure: UserDataWriteError | None = None
+        #
+        # Отказы копятся списком, а не первым победившим: `failure = failure  # noqa: RUF003
+        # or …` прятал отказ хранилища за отказом `bases.json` целиком —
+        # пользователь узнавал про избранное и не узнавал про пароль.
+        failures: list[str] = []
+        data_failed = False
         if rekey_from is not None and result.key is not None and result.key != rekey_from:
             try:
                 self._store_user(
@@ -522,11 +711,23 @@ class Workspace:
                     "и историю запусков",
                 )
             except UserDataWriteError as error:
-                failure = error
+                failures.append(str(error))
+                data_failed = True
+            if move_secret:
+                store_failure = self._move_secret(rekey_from, result.key)
+                if store_failure is not None:
+                    failures.append(store_failure)
         self._raw = payload
         self._rebuild()
-        if failure is not None:
-            raise failure
+        if failures:
+            text = "; ".join(failures)
+            # Тип по тому, что отказало: наши данные (в том числе вместе
+            # с хранилищем) — `UserDataWriteError`, только хранилище —  # noqa: RUF003
+            # `CredentialStoreError`. Оба ловятся как `ServicesError`, но  # noqa: RUF003
+            # различаются там, где реакция разная.
+            if data_failed:
+                raise UserDataWriteError(text)
+            raise CredentialStoreError(text)
         return result
 
     def _reload(self) -> None:

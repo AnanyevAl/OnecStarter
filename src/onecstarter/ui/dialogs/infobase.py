@@ -46,10 +46,11 @@
 
 - `InfobaseDialog.__init__` принимает `item: InfobaseItem | None`. `None` —
   режим добавления (`for_new`): нет исходной записи, нечего показывать
-  в «Версии», «Клиенте», «Аутентификации ОС» и таблице прочих ключей —
-  `Workspace.add_infobase` их и не принимает, поэтому строить эти виджеты
-  для несуществующей записи означало бы рисовать элементы, которым некуда
-  писать.
+  в «Аутентификации ОС» и таблице прочих ключей — секция ещё не существует,
+  и текущих значений этих полей попросту нет. (До задачи 7 сюда же входили
+  «Версия» и «Клиент» — `Workspace.add_infobase` тогда их не принимала;
+  задача 6 дала `add_infobase` параметры `version`/`app`, и задача 7 —
+  сами поля диалогу добавления, подробности ниже.)
 - **Вид размещения — теперь выпадающий список (`_kind_box`), а не подпись.**
   И для новой записи (обязателен выбор), и для правки существующей — в этом
   и есть задача 10: пользователь может передумать, какого вида база. Поля
@@ -111,17 +112,61 @@
    что и `open_directory` в `ConnectionPanel`) зовёт тот же `accept_directory`,
    что и `dropEvent`.
 
+**Задача 7 — «Версия» и «Клиент» в диалоге добавления.** До этой задачи оба
+поля строились только внутри `if item is not None:` — диалог добавления их
+вовсе не показывал, и новая запись не могла получить ни `Version`, ни `App`
+иначе как последующей правкой. `self._version` и `self._app` теперь строятся
+всегда (`__init__`); внутри ветки `if item is not None:` остаются только
+`self._version_hint`, `self._os_auth` со своей строкой формы и таблица
+прочих ключей — у записи, которой ещё нет, показывать нечего: ни расхождения
+с платформой, ни WA, ни прочих ключей секции.
+
+Начальный индекс пункта считается по-разному для двух режимов — тот же класс
+ловушки, что и у `_kind_box` выше (I7/M9): у новой записи спрашивать нечего,
+запрошенных версии/клиента ещё не существует, поэтому начальный пункт —
+всегда нулевой («как установлено» / «Авто», первый пункт и в
+`version_options`, и в `_APP_ITEMS`), без обращения к
+`item.requested_version`/`item.app`. У существующей записи индекс по-прежнему
+ищется по фактическому значению записи. Спутать эти две ветки означало бы
+откатить диалог ПРАВКИ на «как установлено»/«Авто» и молча снять Version/App
+у нетронутой записи при простом открытии-ОК — мутационная проверка задачи 7
+воспроизводит именно это.
+
+`new_record()` возвращает `NewInfobase` (датакласс задачи 6), а не
+`tuple[str, str, str]`: третье поле раньше было последним (группа), теперь
+после него идут `version` и `app`, оба необязательные. Пункты по умолчанию
+(«как установлено», «Авто») — это данные `None`, и `Workspace.add_infobase`
+кладёт `Version`/`App` в секцию, только когда они заданы, — обычное
+добавление базы без выбора версии/клиента не пишет в `.v8i` ни одного
+из этих двух ключей.
+
 Прочие ключи секции показываются, но не правятся. Общий редактор ключей
 открывает класс порчи, который наши проверки не ловят: [Ф] факт 6 скила
 v8i-format — `Connect` с пробелом вокруг «=» платформа не распознаёт
 и необратимо добивает секцию.
 
-Секретные значения не показываются и не редактируются. Хранение паролей
-вне v1 (§0 спеки 4a), поле правки пароля создало бы способ записать его
-в .v8i открытым текстом.
+Секретные значения из таблицы прочих ключей секции (например, `PPasswd`)
+не показываются и не редактируются: общий редактор ключей открыл бы тот же
+класс порчи, что и абзацем выше (`Connect` с пробелом вокруг «=»).
+
+До v2.2 поля пароля не было вовсе (§0 спеки 4a) — оно создало бы способ
+записать пароль в .v8i открытым текстом. С v2.2 поле есть (см. `__init__`
+ниже), но его значение идёт мимо `changes()` и `new_record()` — отдельным
+аксессором `credentials()`, которым `BasesView` кормит
+`Workspace.set_credentials`; в `.v8i` пароль не попадает по построению.
+Уточнение ревью задачи 5: докстринг модуля не должен утверждать обратное
+коду — фраза «поле правки пароля создало бы способ...» была верна до v2.2
+и стала ложной после появления поля, поэтому переведена в прошедшее время.
 """  # noqa: RUF002
 
 from collections.abc import Callable, Sequence
+
+# `field` в этом модуле уже занято именем переменной цикла (`_placement_fields`
+# и другие места ниже перебирают `for _label, field in ...`) — импорт
+# `dataclasses.field` берётся под псевдонимом, а не переименовывает  # noqa: RUF003
+# многолетний цикл ради одного нового датакласса (F402).
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from pathlib import Path
 
 from PySide6.QtCore import QMimeData
@@ -154,8 +199,8 @@ from onecstarter.domain.default_version import DefaultVersionRule
 from onecstarter.domain.version import Installation
 from onecstarter.security.secrets import is_secret_key
 from onecstarter.services.connection import BADGE_LABELS, connection_path
-from onecstarter.services.display import VersionCell, version_cell
-from onecstarter.services.model import InfobaseItem
+from onecstarter.services.display import version_cell, version_options
+from onecstarter.services.model import InfobaseItem, NewInfobase
 from onecstarter.services.paths import ROOT, normalize_folder
 from onecstarter.ui.dialogs.buttons import ButtonKind, russian_button_box
 from onecstarter.ui.dialogs.group_picker import GroupPicker
@@ -307,48 +352,35 @@ def _app_key(app: str | None) -> str | None:
 
 _APP_ITEMS = (("Авто", None), ("Тонкий клиент", "ThinClient"), ("Толстый клиент", "ThickClient"))
 
+# v2.2: логин/пароль/«Запомнить» — три новых поля формы (`InfobaseDialog.__init__`).
+CREDENTIALS_NOTE = (
+    "Хранится в диспетчере учётных данных Windows. При запуске передаётся "
+    "в командной строке и виден любой программе, работающей под вашей "
+    "учётной записью, всё время работы клиента"
+)
+CLEARING_LOGIN_NOTE = "Поле пользователя пусто — сохранённый пароль будет удалён"
+STORED_PASSWORD_PLACEHOLDER = "сохранён"
+# Финальное ревью, I3: `has_password=None` — «хранилище недоступно», третье
+# состояние рядом с «пароль есть»/«пароля нет» (`Workspace.credentials_of`).  # noqa: RUF003
+# Ни одна операция над хранилищем в этом состоянии невозможна, поэтому поля
+# запираются, а не молча притворяются пустыми.  # noqa: RUF003
+CREDENTIALS_UNAVAILABLE_NOTE = "Хранилище паролей недоступно — учётные данные не изменить"
+# Финальное ревью, I4: спека §4 задавала умолчание «Запомнить» выключенным,
+# но не говорила, что делать с введённым паролем. Молча его выбросить нельзя,  # noqa: RUF003
+# поэтому ввод пароля включает галочку, а снятая галочка при введённом или  # noqa: RUF003
+# сохранённом пароле объясняет последствие до нажатия «ОК».  # noqa: RUF003
+PASSWORD_NOT_KEPT_NOTE = "Пароль введён, но не будет сохранён — включите «Запомнить»"
+STORED_PASSWORD_REMOVAL_NOTE = "Сохранённый пароль будет удалён"
 
-def _version_options(
-    item: InfobaseItem, installations: Sequence[Installation], cell: VersionCell
-) -> list[tuple[str, str | None]]:
-    """Пункты выпадающего списка версий: «как установлено» + установленные.
 
-    Если запрошенная версия (маска, неполный номер или версия, которой нет
-    на машине) не совпадает буквально ни с одной установленной строкой,
-    добавляется отдельный пункт с её точным значением. Без него нетронутый
-    диалог не находил бы себе пункта с такими данными и откатывался бы
-    к первому («как установлено»), а `changes()` восприняла бы это как
-    решение пользователя снять `Version` — тот же класс молчаливой порчи,
-    ради которого написан `replace_fragment` для `Connect`.
+@dataclass(frozen=True)
+class DialogCredentials:
+    """Что ввёл пользователь. `password` не печатается (инвариант 5);
+    `None` — поле пустое, сохранённый пароль не трогать."""
 
-    Пункт «как установлено» получает действующую версию в скобках, если
-    `Version` у записи нет вовсе (I6, круг правок 1): без Version секция
-    всё равно резолвится в конкретную версию ([Ф] T-05.5 — DefaultVersion
-    или максимум установленной), и задача 8 эту версию показывала. Голая
-    надпись «как установлено» без неё — шаг назад, а не только смена виджета.
-
-    Кроме WEB (круг правок 2, item 5, и круг правок 3, мелочь 1): там
-    `version_cell` всегда отдаёт `cell.text == "веб"` (Version на запуск
-    веб-базы не влияет вовсе), и подстановка без разбора читалась бы как
-    «как установлено (веб)» или, для пункта запрошенной-но-не-подошедшей
-    версии ниже, как голое «веб» вместо самой версии — оба места читают
-    `cell.text` только через `display_text`, уже отфильтрованный по WEB.
-    """  # noqa: RUF002
-    display_text = cell.text if item.kind is not ConnectKind.WEB else ""
-    default_label = "как установлено"
-    if item.requested_version is None and display_text:
-        default_label = f"{default_label} ({display_text})"
-    options: list[tuple[str, str | None]] = [(default_label, None)]
-    seen: set[str | None] = {None}
-    for installation in installations:
-        value = str(installation.version)
-        if value in seen:
-            continue
-        seen.add(value)
-        options.append((value, value))
-    if item.requested_version is not None and item.requested_version not in seen:
-        options.append((display_text or item.requested_version, item.requested_version))
-    return options
+    login: str | None
+    password: str | None = dataclass_field(default=None, repr=False, compare=False)
+    remember: bool = False
 
 
 class InfobaseDialog(QDialog):
@@ -361,6 +393,8 @@ class InfobaseDialog(QDialog):
         cfg_rules: Sequence[DefaultVersionRule],
         parent: QWidget | None = None,
         choose_directory: Callable[[], str] = browse_for_directory,
+        login: str | None = None,
+        has_password: bool | None = False,
     ) -> None:
         super().__init__(parent)
         self._item = item
@@ -445,36 +479,94 @@ class InfobaseDialog(QDialog):
         self._update_kind_visibility()
         self._kind_box.currentIndexChanged.connect(self._update_kind_visibility)
 
+        # Задача 7: «Версия» и «Клиент» строятся всегда — и для новой записи
+        # (item is None), и для правки существующей, — не только внутри
+        # ветки `if item is not None`, как раньше. Начальный пункт считается
+        # по-разному для двух режимов (ловушка, найденная ревью задач 4/6):
+        # у новой записи спрашивать нечего, запрошенных версии/клиента ещё  # noqa: RUF003
+        # не существует, поэтому начальный пункт — всегда нулевой («как
+        # установлено» / «Авто», первый пункт и в `version_options`,
+        # и в `_APP_ITEMS`). У существующей записи индекс по-прежнему ищется  # noqa: RUF003
+        # по фактическому значению (`item.requested_version`, `_app_key`) —
+        # тронуть эту ветку значило бы откатить диалог правки на «как
+        # установлено»/«Авто» и молча снять Version/App при простом
+        # открытии-ОК (I7/M9, см. докстринг модуля).  # noqa: RUF003
+        cell = version_cell(item, installations, cfg_rules) if item is not None else None
+        self._version = QComboBox()
+        for text, data in version_options(installations, item, cell):
+            self._version.addItem(text, data)
+        version_index = self._version.findData(item.requested_version) if item is not None else 0
+        self._version.setCurrentIndex(version_index if version_index >= 0 else 0)
+
+        self._app = QComboBox()
+        for text, data in _APP_ITEMS:
+            self._app.addItem(text, data)
+        app_index = self._app.findData(_app_key(item.app)) if item is not None else 0
+        if item is not None and app_index < 0:
+            # Незнакомое значение App (не Auto/ThinClient/ThickClient) —
+            # сохраняем его как есть отдельным пунктом, а не подменяем  # noqa: RUF003
+            # молча одним из трёх известных.
+            self._app.addItem(item.app or "", item.app)
+            app_index = self._app.count() - 1
+        self._app.setCurrentIndex(app_index)
+        self._initial_app = self._app.currentData()
+
+        # «Версия»/«Клиент» — в форме всегда; подсказка о версии,  # noqa: RUF003
+        # аутентификация ОС и таблица прочих ключей — только у записи,  # noqa: RUF003
+        # которая уже существует: у новой записи ещё нет ни расхождения  # noqa: RUF003
+        # с платформой, ни WA, ни прочих ключей секции, показывать нечего.  # noqa: RUF003
+        form.addRow("Версия", self._version)
         if item is not None:
-            cell = version_cell(item, installations, cfg_rules)
-            self._version = QComboBox()
-            for text, data in _version_options(item, installations, cell):
-                self._version.addItem(text, data)
-            version_index = self._version.findData(item.requested_version)
-            self._version.setCurrentIndex(version_index if version_index >= 0 else 0)
+            assert cell is not None  # строится вместе с item в этой же ветке выше  # noqa: RUF003
             self._version_hint = QLabel(cell.hint or "")
             self._version_hint.setWordWrap(True)
+            form.addRow("", self._version_hint)
+        form.addRow("Клиент", self._app)
 
-            self._app = QComboBox()
-            for text, data in _APP_ITEMS:
-                self._app.addItem(text, data)
-            app_index = self._app.findData(_app_key(item.app))
-            if app_index < 0:
-                # Незнакомое значение App (не Auto/ThinClient/ThickClient) —
-                # сохраняем его как есть отдельным пунктом, а не подменяем  # noqa: RUF003
-                # молча одним из трёх известных.
-                self._app.addItem(item.app or "", item.app)
-                app_index = self._app.count() - 1
-            self._app.setCurrentIndex(app_index)
-            self._initial_app = self._app.currentData()
+        # v2.2: логин/пароль/«Запомнить» — строятся всегда, тем же приёмом,
+        # что «Версия»/«Клиент» (задача 7 v2.1): новой записи, как и
+        # существующей, есть что сохранить в `Workspace.set_credentials`.
+        # Пароль никогда не приходит сюда заполненным значением —
+        # `has_password` только признак, сам секрет диалог не видит
+        # (спека v2.2, §4).
+        self._initial_login = (login or "").strip() or None
+        self._has_password = has_password
+        self._login = QLineEdit(self._initial_login or "")
+        self._password = QLineEdit()
+        self._password.setEchoMode(QLineEdit.EchoMode.Password)
+        if has_password:
+            self._password.setPlaceholderText(STORED_PASSWORD_PLACEHOLDER)
+        self._remember = QCheckBox()
+        self._remember.setChecked(bool(has_password))
+        if has_password is None:
+            # Хранилище недоступно: логин показываем (он лежит в наших
+            # данных и прочитан), но менять нечего — ни записать пароль,
+            # ни удалить его нельзя. Поле логина только для чтения, а не  # noqa: RUF003
+            # запрещённое: пользователь вправе увидеть и скопировать то,
+            # что сохранено.
+            self._login.setReadOnly(True)
+            self._password.setEnabled(False)
+            self._remember.setEnabled(False)
+        self._credentials_note = QLabel(CREDENTIALS_NOTE)
+        self._credentials_note.setObjectName("SettingsNote")
+        self._credentials_note.setWordWrap(True)
 
+        form.addRow("Пользователь", self._login)
+        form.addRow("Пароль", self._password)
+        form.addRow("Запомнить пароль", self._remember)
+        form.addRow("", self._credentials_note)
+
+        self._login.textChanged.connect(self._refresh_ok_state)
+        # Порядок связей важен: автогалочка первой, иначе подпись успела бы
+        # посчитаться по ещё снятой галочке.
+        self._password.textChanged.connect(self._autocheck_remember)
+        self._password.textChanged.connect(self._refresh_ok_state)
+        self._remember.toggled.connect(self._refresh_ok_state)
+
+        if item is not None:
             self._os_auth = QCheckBox()
             self._os_auth.setChecked(_typed_value(item.keys, "WA") == "1")
             self._initial_wa = "1" if self._os_auth.isChecked() else None
-
-            form.addRow("Версия", self._version)
-            form.addRow("", self._version_hint)
-            form.addRow("Клиент", self._app)
             form.addRow("Аутентификация ОС", self._os_auth)  # noqa: RUF001
 
             self._rows = other_keys(item)
@@ -526,12 +618,15 @@ class InfobaseDialog(QDialog):
         cfg_rules: Sequence[DefaultVersionRule],
         parent: QWidget | None = None,
         choose_directory: Callable[[], str] = browse_for_directory,
+        login: str | None = None,
+        has_password: bool | None = False,
     ) -> "InfobaseDialog":
         """Диалог добавления записи: то же окно, без исходной записи.
 
         Строку соединения строит `build_connect` при принятии (`new_record`),
         а не здесь — значений для неё ещё нет, пока пользователь не заполнил
-        форму.
+        форму. `login`/`has_password` — тот же смысл, что и у `__init__`
+        (для новой записи обычно оба по умолчанию: сохранять ещё нечего).
         """  # noqa: RUF002
         return cls(
             None,
@@ -540,6 +635,8 @@ class InfobaseDialog(QDialog):
             cfg_rules=cfg_rules,
             parent=parent,
             choose_directory=choose_directory,
+            login=login,
+            has_password=has_password,
         )
 
     def _placement_widgets(self) -> dict[str, QLineEdit]:
@@ -725,14 +822,58 @@ class InfobaseDialog(QDialog):
         `services` при этом остаётся вторым, самостоятельным рубежом:
         `_apply_new_infobase`/`_apply_properties` достижимы напрямую, в обход
         кнопки, и `Workspace` отвергает пустое имя сам.
+
+        v2.2: та же кнопка запирается и паролем без логина — пароль,
+        сохранённый под пустым пользователем, `Workspace.set_credentials`
+        не сможет привязать ни к чему (см. её докстринг: пустой логин
+        значит удаление секрета, а не запись). Проверка идёт здесь же,
+        поэтому прежний ранний `return` в ветке «всё заполнено» убран —
+        иначе полностью заполненная запись с паролем без логина считалась
+        бы готовой к «ОК» до первого нажатия на поле имени или размещения.
         """  # noqa: RUF002
         empty = self._empty_required()
         self._ok_button.setEnabled(not empty)
         if not empty:
             self._required_hint.setText("")
-            return
-        fields = ", ".join(f"«{label}»" for label in empty)
-        self._required_hint.setText(f"Заполните: {fields}")
+        else:
+            fields = ", ".join(f"«{label}»" for label in empty)
+            self._required_hint.setText(f"Заполните: {fields}")
+
+        # Подпись считается ДО проверки «пароль без логина»: прежний ранний
+        # `return` в этой ветке оставлял на экране подпись от предыдущего
+        # состояния (финальное ревью, I4 — подпись обязана отвечать тому,
+        # что в полях сейчас).
+        self._credentials_note.setText(self._credentials_note_text())
+
+        if self._password.text() and not self._login.text().strip():
+            self._ok_button.setEnabled(False)
+            self._required_hint.setText(
+                "Заполните: «Пользователь» — пароль без него не применить"
+            )
+
+    def _autocheck_remember(self) -> None:
+        """Ввод пароля включает «Запомнить» (финальное ревью, I4).
+
+        Иначе введённый пароль исчезал молча: умолчание галочки — «выключено»
+        (спека §4), и `set_credentials` при снятой галочке идёт в `delete`.
+        Пользователь вправе снять галочку обратно — тогда подпись
+        (`PASSWORD_NOT_KEPT_NOTE`) говорит, чем это кончится.
+        """
+        if self._password.text() and not self._remember.isChecked():
+            self._remember.setChecked(True)
+
+    def _credentials_note_text(self) -> str:
+        """Подпись под учётными данными — по текущему состоянию трёх полей."""
+        if self._has_password is None:
+            return CREDENTIALS_UNAVAILABLE_NOTE
+        if not self._remember.isChecked():
+            if self._password.text():
+                return PASSWORD_NOT_KEPT_NOTE
+            if self._has_password:
+                return STORED_PASSWORD_REMOVAL_NOTE
+        if self._has_password and not self._login.text().strip():
+            return CLEARING_LOGIN_NOTE
+        return CREDENTIALS_NOTE
 
     def _on_accept(self) -> None:
         """Заблокировать «ОК», если правка вписала запрещённый символ."""  # noqa: RUF002
@@ -790,6 +931,50 @@ class InfobaseDialog(QDialog):
         """Пути групп в выпадающем списке — проверка проброса параметра `groups`."""
         return self._folder.paths()
 
+    def credentials(self) -> DialogCredentials:
+        """Что ввёл пользователь — вход `Workspace.set_credentials`.
+
+        `password` — `None`, если поле не тронуто (пустая строка от
+        нетронутого поля неотличима от `""`, поэтому `.text() or None`,
+        а не сама строка): нетронутое поле обязано означать «сохранённый
+        пароль не трогать», а не «стереть пароль» (см. докстринг
+        `Workspace.set_credentials`).
+        """  # noqa: RUF002
+        return DialogCredentials(
+            login=self._login.text().strip() or None,
+            password=self._password.text() or None,
+            remember=self._remember.isChecked(),
+        )
+
+    def credentials_changed(self) -> bool:
+        """Есть ли что записывать: логин сменился, пароль введён заново или
+        галочка переключена. Нетронутый диалог не должен трогать хранилище.
+
+        `has_password is None` — хранилище недоступно, и ответ всегда `False`:
+        ни одна операция над ним невозможна, а `set_credentials` при снятой
+        галочке ушёл бы в `delete` и вдобавок затёр бы логин (I3).
+        """  # noqa: RUF002
+        if self._has_password is None:
+            return False
+        current = self.credentials()
+        return (
+            current.login != self._initial_login
+            or current.password is not None
+            or current.remember != self._has_password
+        )
+
+    def login_edit(self) -> QLineEdit:
+        return self._login
+
+    def password_edit(self) -> QLineEdit:
+        return self._password
+
+    def remember_checkbox(self) -> QCheckBox:
+        return self._remember
+
+    def credentials_note(self) -> QLabel:
+        return self._credentials_note
+
     def accepts(self) -> bool:
         """Активна ли «ОК» — то, что видит пользователь до клика."""  # noqa: RUF002
         return self._ok_button.isEnabled()
@@ -827,12 +1012,23 @@ class InfobaseDialog(QDialog):
             f"Будут потеряны ключи: {', '.join(lost)}"
         )
 
-    def new_record(self) -> tuple[str, str, str]:
-        """Имя, строка соединения и группа — вход `Workspace.add_infobase`.
+    def new_record(self) -> NewInfobase:
+        """Данные новой записи — вход `Workspace.add_infobase`.
 
         Только для диалога добавления (`for_new`): диалог правки существующей
         записи новых записей не создаёт, `changes()` — его собственный путь
         записи.
+
+        Задача 7: раньше возвращал `tuple[str, str, str]` (имя, строка
+        соединения, группа) — «Версия» и «Клиент» диалог добавления вовсе
+        не показывал. Теперь оба поля есть в форме всегда (см. `__init__`),
+        и `record.version`/`record.app` идут в `NewInfobase` тем же способом,
+        что и у диалога правки (`self._version.currentData()`,
+        `self._app.currentData()`). Оба необязательны: пункты по умолчанию
+        («как установлено», «Авто») — это данные `None`, и `Workspace.add_infobase`
+        не пишет в секцию ни `Version`, ни `App`, пока пользователь их не
+        выбрал явно, — файл читает и перезаписывает штатный стартер 1С,
+        и пустая строка вместо отсутствующего ключа испортила бы запись.
         """  # noqa: RUF002
         connect = build_connect(
             self._kind_box.currentData(),
@@ -841,7 +1037,13 @@ class InfobaseDialog(QDialog):
             ref=self._ref.text(),
             url=self._url.text(),
         )
-        return self._name.text().strip(), connect, self._folder.current_path()
+        return NewInfobase(
+            name=self._name.text().strip(),
+            connect=connect,
+            folder=self._folder.current_path(),
+            version=self._version.currentData(),
+            app=self._app.currentData(),
+        )
 
     def accept_directory(self, path: str) -> None:
         """Каталог, перетащённый на диалог: путь — в поле, имя — если оно пустое.

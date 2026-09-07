@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from onecstarter.config.v8i import parse_v8i
-from onecstarter.domain.launch import ClientConvention, ClientKind, LaunchCommand
+from onecstarter.domain.launch import ClientConvention, ClientKind, Credentials, LaunchCommand
 from onecstarter.domain.version import Arch, Installation, parse_version
 from onecstarter.security.secrets import redact_connect
 from onecstarter.services.launch import LaunchError, LaunchKind, launch_infobase
@@ -293,3 +293,34 @@ def test_spawn_failure_becomes_launch_error_with_command_line() -> None:
     message = str(excinfo.value)
     assert "1cv8c.exe" in message
     assert "/IBName" in message
+
+
+def test_launch_outcome_and_error_hide_the_password() -> None:
+    """Спека v2.2, §6: ни исход, ни текст ошибки не несут значение /P."""
+    item = _item('[Демо]\r\nConnect=File="C:\\Bases\\Demo";\r\nVersion=8.3.25\r\n')
+    outcome = launch_infobase(
+        item,
+        installations=INSTALLED,
+        cfg_rules=[],
+        conventions=CONVENTIONS,
+        default_app=None,
+        spawn=lambda command: 7,
+        credentials=Credentials("u", "p@ss"),
+    )
+    assert "p@ss" not in (outcome.command_line or "")
+    assert "/P***" in (outcome.command_line or "")
+
+    def failing(command: LaunchCommand) -> int:
+        raise OSError("нет доступа")
+
+    with pytest.raises(LaunchError) as caught:
+        launch_infobase(
+            item,
+            installations=INSTALLED,
+            cfg_rules=[],
+            conventions=CONVENTIONS,
+            default_app=None,
+            spawn=failing,
+            credentials=Credentials("u", "p@ss"),
+        )
+    assert "p@ss" not in str(caught.value)

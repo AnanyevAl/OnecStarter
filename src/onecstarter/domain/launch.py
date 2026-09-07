@@ -5,10 +5,13 @@
 platform-launch), побайтовое совпадение с ними проверяется тестами.
 Секреты в аргументы не попадают: основной путь запуска — /IBName, при
 котором платформа сама читает всё нужное из ibases.v8i.
+С v2.2 учётные данные записи попадают в аргументы **явно** через `credentials=` —
+по решению заказчика 04.09.2026 с записанной моделью угроз (спека v2.2, §2);
+страж секретов в строке соединения остаётся.
 """  # noqa: RUF002
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
@@ -28,6 +31,52 @@ class ClientConvention:
     min_version: VersionNumber
     bin_dir: str
     executables: Mapping[ClientKind, str]
+
+
+@dataclass(frozen=True)
+class Credentials:
+    """Учётные данные для `/N` и `/P`. `password` не печатается в `repr`:
+    дефолтный repr датакласса выводил бы его в любую трассировку
+    и в `pytest -rA` (инвариант 5). `None` — только логин, платформа
+    спросит пароль сама (спека v2.2, §4).
+
+    `password` также исключён из `__eq__`/`__hash__` (`compare=False`):
+    `repr=False` защищает только явный `repr()`/`print()`, а не diff
+    несовпавшего `assert` в pytest — тот сравнивает объекты через `==` и
+    печатает несовпавшие поля своим построителем diff'а, в обход `__repr__`
+    (находка ревью задачи 3, круг правок 1). Равенство по одному логину —
+    сознательная цена: два разных пароля у одного логина считаются равными
+    `Credentials`, но пароль не может попасть ни в один диф упавшего теста."""  # noqa: RUF002
+
+    login: str
+    password: str | None = field(default=None, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        # Спека v2.2 §4: пустой логин — то же самое, что логина нет вовсе,
+        # т.е. не отдельный случай `Credentials`, а отсутствие credentials=  # noqa: RUF003
+        # у вызывающего кода. Граница домена: нормализация (обрезка пробелов,  # noqa: RUF003
+        # решение «передавать ли вообще») — забота вызывающего слоя (services),
+        # сюда логин обязан прийти уже непустым.
+        if not self.login.strip():
+            raise ValueError("логин не может быть пустым")
+
+
+def _credential_arguments(credentials: Credentials) -> str:
+    """[Ф] 06.09.2026 T-05.15: форма значения — как у /IBName, в кавычках
+    с удвоением ([Д] по аналогии, не измерено — ни в `tester`, ни в пароле
+    кавычек не было); /WA- рядом не требуется. При ином результате
+    эксперимента меняется только эта функция.
+
+    В ветке строки соединения вызывающий код вставляет результат ПОСЛЕ
+    `/IBConnectionString`, а не сразу после проверок стража: [Д] reference.md —
+    более поздний по командной строке ключ переопределяет часть строки
+    соединения, и, скажем, несекретный `Usr=` внутри `connect` иначе перебил бы
+    наш явный логин. Измерено это только для пути `/IBName` (T-05.15); для
+    `/IBConnectionString` порядок — по документации, не по эксперименту."""  # noqa: RUF002
+    parts = [f"/N{quote_launch_value(credentials.login)}"]
+    if credentials.password is not None:
+        parts.append(f"/P{quote_launch_value(credentials.password)}")
+    return " ".join(parts)
 
 
 def convention_for(
@@ -102,6 +151,7 @@ def build_arguments(
     connect: str | None = None,
     auto_check_version: bool,
     auto_check_mode: bool,
+    credentials: Credentials | None = None,
 ) -> str:
     if (ib_name is None) == (connect is None):
         raise ValueError("Нужно ровно одно из: ib_name, connect")
@@ -109,6 +159,8 @@ def build_arguments(
     parts = [mode]
     if ib_name is not None:
         parts.append(f"/IBName{quote_launch_value(ib_name)}")
+        if credentials is not None:
+            parts.append(_credential_arguments(credentials))
     else:
         if connect is None:
             # Недостижимо: выше проверено «ровно одно из ib_name, connect».
@@ -142,6 +194,10 @@ def build_arguments(
         # [Ф] T-05.1: значение прижато к ключу, кавычки внутри удвоены —
         # форма снята с реального запуска, путь с пробелом работает.  # noqa: RUF003
         parts.append(f"/IBConnectionString{quote_launch_value(connect)}")
+        if credentials is not None:
+            # После /IBConnectionString — см. докстринг _credential_arguments:
+            # более поздний ключ переопределяет часть строки соединения.
+            parts.append(_credential_arguments(credentials))
     parts.append("/AppAutoCheckVersion" if auto_check_version else "/AppAutoCheckVersion-")
     if auto_check_mode:
         parts.append("/AppAutoCheckMode")

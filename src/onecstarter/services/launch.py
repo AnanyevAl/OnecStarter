@@ -21,6 +21,7 @@ from onecstarter.domain.launch import (
     ClientChoice,
     ClientConvention,
     ClientKind,
+    Credentials,
     LaunchCommand,
     build_arguments,
     build_launch_command,
@@ -31,7 +32,7 @@ from onecstarter.domain.launch import (
 from onecstarter.domain.selection import ResolutionSource, resolve_version
 from onecstarter.domain.version import Installation, VersionNumber
 from onecstarter.platform_1c.process import spawn as spawn_process
-from onecstarter.security.secrets import redact_connect
+from onecstarter.security.secrets import redact_arguments, redact_connect
 from onecstarter.services.errors import LaunchError
 from onecstarter.services.model import InfobaseItem
 
@@ -63,6 +64,7 @@ def launch_infobase(
     forced_client: ClientKind | None = None,
     spawn: Callable[[LaunchCommand], int] = spawn_process,
     open_url: Callable[[str], bool] = webbrowser.open,
+    credentials: Credentials | None = None,
 ) -> LaunchOutcome:
     """Запустить базу: процесс клиента или браузер для веб-базы.
 
@@ -105,21 +107,23 @@ def launch_infobase(
         ib_name=item.name,
         auto_check_version=False,
         auto_check_mode=choice.auto_check_mode,
+        credentials=credentials,
     )
     command = build_launch_command(installation, convention, choice.client, arguments)
     try:
         pid = spawn(command)
     except OSError as error:
         # Спека 4a, §3: командная строка в сообщении — для «скопировать
-        # для отчёта». Секретов в ней нет: запуск идёт по /IBName.
+        # для отчёта». С v2.2 в аргументах может быть /P — показывается  # noqa: RUF003
+        # только редактированная форма (спека v2.2, §6).
         raise LaunchError(
             f"Не удалось запустить клиента для «{item.name}»: {error}.\n"  # noqa: RUF001
-            f"Команда: {command.command_line}"
+            f"Команда: \"{command.executable}\" {redact_arguments(command.arguments)}"
         ) from error
     return LaunchOutcome(
         kind=LaunchKind.PROCESS,
         client=choice.client,
-        command_line=command.command_line,
+        command_line=f'"{command.executable}" {redact_arguments(command.arguments)}',
         url=None,
         pid=pid,
         version=resolution.version,

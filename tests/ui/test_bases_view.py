@@ -22,7 +22,8 @@ from PySide6.QtWidgets import QApplication, QDialog, QTreeView, QWidget
 from onecstarter.config.shell_link import build_shell_link, safe_file_name, shortcut_command
 from onecstarter.domain.connect import ConnectKind
 from onecstarter.domain.launch import ClientKind, LaunchCommand
-from onecstarter.domain.version import Installation
+from onecstarter.domain.version import Arch, Installation, parse_version
+from onecstarter.security.credentials import CredentialBackendError, MemoryStore
 from onecstarter.services.cache import CacheEntry, CacheKind, EntryKind
 from onecstarter.services.display import COMMON_NOTE, IMPLICIT_NOTE, RowKind
 from onecstarter.services.errors import (
@@ -35,7 +36,7 @@ from onecstarter.services.errors import (
 )
 from onecstarter.services.groups import GroupRemoval
 from onecstarter.services.launch import LaunchOutcome
-from onecstarter.services.model import InfobaseItem, InfobaseSource
+from onecstarter.services.model import InfobaseItem, InfobaseSource, binding_key
 from onecstarter.services.paths import ROOT, group_path, normalize_folder, render_folder
 from onecstarter.services.settings import DEFAULT_RECENT_LIMIT, ListOrder
 from onecstarter.ui import theme
@@ -79,6 +80,7 @@ def _view(
     confirm_cache_clear: Callable[[QWidget | None, str], bool] | None = None,
     show_cache_report: Callable[[QWidget | None, str], None] | None = None,
     list_order: Callable[[], ListOrder] | None = None,
+    store: MemoryStore | None = None,
 ) -> tuple[BasesView, list[LaunchCommand], list[ServicesError], list[str]]:
     # По умолчанию — INSTALLED, не None: большинство тестов файла ничего
     # не знают про фоновое обнаружение и ждут готовых версий сразу.
@@ -86,7 +88,11 @@ def _view(
     # не закончилось», T-04.6 §3.4), а не синоним «используй умолчание»;  # noqa: RUF003
     # workspace_factory(None, ...) сама подставит INSTALLED для Workspace —
     # пробел здесь только у BasesView, у объекта под тестом.  # noqa: RUF003
-    workspace, calls, opened = workspace_factory(installations, cfg_paths=cfg_paths)
+    # `store` — параметр задачи 5 (v2.2): хранилище учётных данных,
+    # инжектируемое в Workspace через фабрику; по умолчанию — свежий
+    # MemoryStore (фабрика сама его создаёт), тест получает свой экземпляр,  # noqa: RUF003
+    # только когда ему нужна ссылка на секреты после вызова.
+    workspace, calls, opened = workspace_factory(installations, cfg_paths=cfg_paths, store=store)
     recorded = errors if errors is not None else []
     kwargs: dict[str, Any] = {}
     if confirm_removal is not None:
@@ -616,6 +622,77 @@ def test_apply_properties_on_untouched_dialog_does_not_write(
     assert calls == []
     assert errors == []
     assert after == before
+
+
+# -- v2.2: логин, пароль и «Запомнить» — оба пути ОК (задача 5) -------------  # noqa: RUF003
+
+
+def test_properties_apply_stores_credentials(qtbot: Any, workspace_factory: Any) -> None:
+    """Путь ОК диалога свойств — `_apply_properties` — доносит учётные данные
+
+    до хранилища; модальный exec() в офскрине не кликается, это приём файла.
+    """  # noqa: RUF002
+    store = MemoryStore()
+    view, *_ = _view(qtbot, workspace_factory, store=store)
+    dialog = view._build_properties_dialog(_ACCOUNTING_KEY)
+    assert dialog is not None
+    dialog.login_edit().setText("tester")
+    dialog.password_edit().setText("p@ss")
+    dialog.remember_checkbox().setChecked(True)
+
+    # Приём файла: `exec()` блокирует офскрин-тесты, поэтому обработчик ОК —  # noqa: RUF003
+    # `_apply_properties` — зовётся напрямую (см. докстринг show_properties).
+    view._apply_properties(_ACCOUNTING_KEY, dialog)
+
+    assert store.read(_ACCOUNTING_KEY) == "p@ss"
+    assert view.workspace().credentials_of(_ACCOUNTING_KEY) == ("tester", True)
+
+
+def test_properties_with_no_changes_does_not_touch_the_store(
+    qtbot: Any, workspace_factory: Any
+) -> None:
+    store = MemoryStore()
+    view, *_ = _view(qtbot, workspace_factory, store=store)
+    # Нетронутый диалог отдаёт login=None/password=None/remember=False —
+    # сломанный credentials_changed() ушёл бы в ветку delete, а не write,  # noqa: RUF003
+    # поэтому шпион стоит на обеих операциях (находка ревью).
+    calls: list[str] = []
+    store.write = lambda key, secret: calls.append(f"write {key}")  # type: ignore[method-assign]
+    store.delete = lambda key: calls.append(f"delete {key}")  # type: ignore[method-assign]
+    dialog = view._build_properties_dialog(_ACCOUNTING_KEY)
+    assert dialog is not None
+
+    view._apply_properties(_ACCOUNTING_KEY, dialog)
+
+    assert calls == []
+
+
+def test_properties_edit_of_id_less_record_keeps_entered_credentials(
+    qtbot: Any, workspace_factory: Any
+) -> None:
+    """Правка записи без ID меняет её ключ (дописывается ID). Учётные данные,
+
+    введённые в том же диалоге, обязаны доехать до нового ключа, а не
+    потеряться за «файл изменился извне» (находка ревью задачи 5).
+    """  # noqa: RUF002
+    store = MemoryStore()
+    errors: list[ServicesError] = []
+    view, *_ = _view(qtbot, workspace_factory, errors=errors, store=store)
+    old_key = binding_key(None, 'File="C:\\Bases\\Manual";', "Без идентификатора")
+    dialog = view._build_properties_dialog(old_key)
+    assert dialog is not None
+    dialog.set_name("Ручная база")  # правка → update_infobase → запись получает ID
+    dialog.login_edit().setText("tester")
+    dialog.password_edit().setText("p@ss")
+    dialog.remember_checkbox().setChecked(True)
+
+    view._apply_properties(old_key, dialog)
+
+    assert errors == []
+    new_key = next(key for key in store.data if key.startswith("id:"))
+    assert store.data[new_key] == "p@ss"
+    assert old_key not in store.data
+    assert view.workspace().credentials_of(new_key) == ("tester", True)
 
 
 def test_apply_properties_calls_the_writer_when_something_changed(
@@ -1302,6 +1379,47 @@ def test_apply_new_infobase_adds_a_record(qtbot, workspace_factory):
     assert added.folder == "/"
 
 
+def test_add_dialog_stores_credentials_after_the_record(qtbot: Any, workspace_factory: Any) -> None:
+    store = MemoryStore()
+    view, *_ = _view(qtbot, workspace_factory, store=store)
+    dialog = view._build_add_dialog()
+    qtbot.addWidget(dialog)
+    dialog.set_name("Новая")
+    dialog.set_file_path(r"D:\Bases\New")
+    dialog.login_edit().setText("tester")
+    dialog.password_edit().setText("p@ss")
+    dialog.remember_checkbox().setChecked(True)
+
+    view._apply_new_infobase(dialog)
+
+    key = next(i.key for i in view.workspace().items() if i.name == "Новая")
+    assert store.read(key) == "p@ss"
+
+
+def test_add_dialog_store_failure_reports_record_added(qtbot: Any, workspace_factory: Any) -> None:
+    """Спека §4: «база добавлена, пароль не сохранён», а не «не удалось добавить»."""  # noqa: RUF002
+    errors: list[ServicesError] = []
+    store = MemoryStore()
+    view, *_ = _view(qtbot, workspace_factory, errors=errors, store=store)
+
+    def boom(key: str, secret: str) -> None:
+        raise CredentialBackendError("отказ")
+
+    store.write = boom  # type: ignore[method-assign]
+    dialog = view._build_add_dialog()
+    qtbot.addWidget(dialog)
+    dialog.set_name("Новая")
+    dialog.set_file_path(r"D:\Bases\New")
+    dialog.login_edit().setText("tester")
+    dialog.password_edit().setText("p@ss")
+    dialog.remember_checkbox().setChecked(True)
+
+    view._apply_new_infobase(dialog)
+
+    assert any(i.name == "Новая" for i in view.workspace().items())
+    assert errors and "добавлена" in str(errors[0]) and "пароль" in str(errors[0])
+
+
 def test_apply_new_infobase_reports_invalid_name_and_still_rebuilds(qtbot, workspace_factory):
     """Пустое имя отклоняет `validate_section_name` — ошибка идёт в on_error,
 
@@ -1854,7 +1972,7 @@ def test_add_dialog_is_prefilled_with_the_requested_group(qtbot, workspace_facto
     dialog.set_kind(ConnectKind.FILE)
     dialog.set_file_path(r"D:\bases\new")
     dialog.set_name("Новая")
-    assert dialog.new_record()[2] == "Клиенты"
+    assert dialog.new_record().folder == "Клиенты"
 
 
 def test_empty_space_menu_add_goes_to_root(qtbot, workspace_factory, monkeypatch):
@@ -3335,10 +3453,10 @@ def test_dialog_from_dropped_directory_is_prefilled(
     )
     qtbot.addWidget(dialog)
 
-    name, connect, folder = dialog.new_record()
-    assert name == "Бухгалтерия"
-    assert connect == 'File="' + str(directory) + '";'
-    assert folder == group_path(group.folder, group.name)
+    record = dialog.new_record()
+    assert record.name == "Бухгалтерия"
+    assert record.connect == 'File="' + str(directory) + '";'
+    assert record.folder == group_path(group.folder, group.name)
 
 
 def test_tree_drop_of_a_directory_opens_the_add_dialog(
@@ -3779,6 +3897,190 @@ def test_cache_item_disabled_without_cache_root(qtbot, workspace_factory, tmp_pa
     assert actions["Программный…"].toolTip() == NO_CACHE_ROOT_NOTE
 
 
+# -- Задача 5 (веха v2.1): подменю «Версия платформы» в контекстном меню -----
+#
+# Ускоритель того же выбора, что делает диалог «Свойства…»: пункты — та же
+# `version_options`, что и у диалога записи (спека §6), запись идёт тем же  # noqa: RUF003
+# путём (`update_infobase`), что и у `Ctrl+D` для избранного — сразу, без  # noqa: RUF003
+# подтверждения. Ключ записи — «Демо Бухгалтерия» (id:4444…4), у неё  # noqa: RUF003
+# Version=8.3.25 в фикстуре — маска, не совпадающая буквально ни с одной  # noqa: RUF003
+# установленной строкой (INSTALLED — 8.3.25.1633), поэтому в options
+# появляется третий, отдельный пункт для запрошенной версии (services/
+# display.py, version_options).
+
+_ACCOUNTING_KEY = "id:44444444-4444-4444-4444-444444444444"
+
+
+def _version_submenu(menu: Any) -> Any:
+    for action in menu.actions():
+        if action.text() == "Версия платформы":
+            return action.menu()
+    return None
+
+
+def test_version_submenu_offers_installed_versions(qtbot, workspace_factory):
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    item = next(i for i in view.workspace().items() if i.key == _ACCOUNTING_KEY)
+
+    menu = view._build_menu(item, _ACCOUNTING_KEY)
+    submenu = _version_submenu(menu)
+
+    assert submenu is not None
+    labels = [action.text() for action in submenu.actions() if not action.isSeparator()]
+    assert labels[0].startswith("как установлено")
+    assert str(INSTALLED[0].version) in labels
+
+
+def test_version_submenu_marks_the_current_version_with_a_checkmark(
+    qtbot, workspace_factory
+):
+    """Отмечен галочкой текущий пункт, остальные — нет (спека §6)."""
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    view.set_version(_ACCOUNTING_KEY, "8.3.25.1633")
+    item = next(i for i in view.workspace().items() if i.key == _ACCOUNTING_KEY)
+
+    menu = view._build_menu(item, _ACCOUNTING_KEY)
+    submenu = _version_submenu(menu)
+
+    assert submenu is not None
+    checked = {a.text() for a in submenu.actions() if not a.isSeparator() and a.isChecked()}
+    assert checked == {str(INSTALLED[0].version)}
+
+
+def test_version_submenu_writes_the_chosen_version(qtbot, workspace_factory):
+    """Пишет сразу, как Ctrl+D для избранного (спека §4), прежним путём."""
+    view, _, _, _ = _view(qtbot, workspace_factory)
+
+    view.set_version(_ACCOUNTING_KEY, "8.3.25.1633")
+
+    changed = next(i for i in view.workspace().items() if i.key == _ACCOUNTING_KEY)
+    assert changed.requested_version == "8.3.25.1633"
+
+
+def test_version_submenu_clears_version_for_as_installed(qtbot, workspace_factory):
+    """«как установлено» снимает ключ Version (пишет None), а не пустую строку."""  # noqa: RUF002
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    view.set_version(_ACCOUNTING_KEY, "8.3.25.1633")
+
+    view.set_version(_ACCOUNTING_KEY, None)
+
+    changed = next(i for i in view.workspace().items() if i.key == _ACCOUNTING_KEY)
+    assert changed.requested_version is None
+
+
+def test_version_submenu_is_disabled_for_a_common_list_record(
+    qtbot, workspace_factory, common_base_cfg_paths
+):
+    """Отказ показывается до действия — тем же приёмом, что «Свойства…»."""
+    view, _, _, _ = _view(qtbot, workspace_factory, cfg_paths=common_base_cfg_paths)
+    item = next(i for i in view.workspace().items() if i.key == COMMON_BASE_KEY)
+
+    menu = view._build_menu(item, item.key)
+    action = next(a for a in menu.actions() if a.text() == "Версия платформы")
+
+    assert action.isEnabled() is False
+    assert COMMON_NOTE in action.toolTip()
+    # `toolTip()` возвращает строку независимо от того, показываются ли
+    # подсказки вообще (находка финального ревью) — без этого ассерта
+    # пропажа `setToolTipsVisible(True)` осталась бы незамеченной: тест
+    # был бы зелёным, а пользователь увидел бы серый пункт без единого  # noqa: RUF003
+    # слова о причине.  # noqa: RUF003
+    assert menu.toolTipsVisible()
+
+
+def test_group_menu_has_no_version_submenu(qtbot, workspace_factory):
+    """У строки-группы подменю не показывается вовсе (тот же приём, что у кэша)."""  # noqa: RUF002
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    item = next(i for i in view.workspace().items() if i.key == _CLIENTS_KEY)
+
+    menu = view._group_menu_for(item, _CLIENTS_KEY)
+
+    assert _version_submenu(menu) is None
+
+
+def test_version_submenu_item_trigger_reaches_set_version_with_right_value(
+    qtbot, workspace_factory
+):
+    """Клик пункта подменю доходит до set_version с правильным значением.
+
+    Закрывает находку ревью задачи 5 — тот же класс дефекта, который закрыл
+    ⚠️ ревью задачи 7 у `test_cache_menu_item_trigger_reaches_clear_cache_with_right_kind`
+    чуть ниже по файлу: шесть тестов выше зовут `view.set_version(...)` напрямую,
+    минуя `entry.triggered.connect(...)`, и ни один не проходит цепочку «пункт →
+    лямбда → set_version → update_infobase» целиком — защита от позднего
+    связывания (`v=value` в сигнатуре лямбды) остаётся непроверенной.
+
+    Пункт для клика — конкретная установленная версия (`INSTALLED[0].version`),
+    не первый пункт («как установлено», значение `None`) и не последний
+    (пункт запрошенной-но-не-подошедшей маски `Version=8.3.25` у этой записи,
+    значение `"8.3.25"`, — он добавляется в цикле последним). Без `v=value`
+    все лямбды подменю замкнулись бы на одну и ту же свободную переменную
+    цикла и после его завершения писали бы одно и то же значение последней
+    итерации — «8.3.25»; клик по первому пункту (`None`) отличил бы такую
+    порчу от исправной лямбды не хуже среднего, но не доказывал бы, что дело
+    в позднем связывании, а не в каком-то ином дефекте, теряющем выбор клика
+    вовсе. Средний пункт передаёт оба факта разом: значение дошло, и это
+    значение ИМЕННО этого пункта, а не последнего в списке.
+    """  # noqa: RUF002
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    item = next(i for i in view.workspace().items() if i.key == _ACCOUNTING_KEY)
+    target_version = str(INSTALLED[0].version)
+
+    menu = view._build_menu(item, _ACCOUNTING_KEY)
+    submenu = _version_submenu(menu)
+    assert submenu is not None
+    action = next(a for a in submenu.actions() if a.text() == target_version)
+
+    action.trigger()
+
+    changed = next(i for i in view.workspace().items() if i.key == _ACCOUNTING_KEY)
+    assert changed.requested_version == target_version
+
+
+# -- отказ записи bases.json после смены ключа привязки (финальное ревью) ----
+#
+# `set_version` роняла `rebuild()` через `return` в ветке `except`. Отказ
+# `_store_user` (см. докстринг `Workspace._write`) приходит уже ПОСЛЕ того,
+# как `.v8i` записан и внутренний `_rebuild()` состоялся, — с `return` дерево  # noqa: RUF003
+# осталось бы со старым ключом строки, которого в файле уже нет. Достижимо  # noqa: RUF003
+# у записи без `ID`: `_apply_update` дописывает его при любой правке секции,  # noqa: RUF003
+# ключ привязки меняется, и `_write` пытается перенести избранное/историю
+# на новый ключ — этот перенос и падает здесь.
+
+
+def test_set_version_rebuilds_the_tree_even_when_user_data_write_fails(
+    qtbot, workspace_factory, tmp_path
+):
+    """Дерево обязано перестроиться, даже если отказал перенос bases.json.
+
+    Две установки, а не одна: у записи без `Version` «как установлено»
+    резолвится в МАКСИМАЛЬНУЮ (`resolve_version`), и колонка версии показала
+    бы тот же текст что до, что после правки, — мутация с `return` осталась
+    бы незамеченной. Выбор МЛАДШЕЙ версии даёт текст, различающий «дерево
+    перестроено» от «дерево осталось прежним».
+    """  # noqa: RUF002
+    (tmp_path / "ibases.v8i").write_bytes(
+        '[БезID]\r\nConnect=File="C:\\B";\r\n'.encode()  # noqa: RUF001
+    )
+    installations = [
+        Installation(parse_version("8.3.22.1923"), Path(r"C:\1cv8\8.3.22.1923"), Arch.X64),
+        Installation(parse_version("8.3.25.1633"), Path(r"C:\1cv8\8.3.25.1633"), Arch.X64),
+    ]
+    view, _, errors, _ = _view(qtbot, workspace_factory, installations=installations)
+    item = view.workspace().items()[0]
+    assert item.section_id is None
+    _block_user_data(view)
+
+    view.set_version(item.key, "8.3.22.1923")
+
+    assert len(errors) == 1
+    assert isinstance(errors[0], UserDataWriteError)
+    changed = view.workspace().items()[0]
+    assert changed.key != item.key
+    assert changed.requested_version == "8.3.22.1923"
+    assert any("8.3.22.1923" in text for text in _column_texts(view, column=1))
+
+
 # -- Задача 8: сценарий очистки — замер → подтверждение → удаление → сводка --
 
 
@@ -4032,3 +4334,37 @@ def test_cache_menu_item_trigger_reaches_clear_cache_with_right_kind(
     actions["Программный…"].trigger()
     assert len(asked) == 1
     assert "программный" in asked[0].casefold()
+
+
+class _ReadRefusedStore(MemoryStore):
+    """Машина без Credential Manager: `read` отказывает, остальное живо."""
+
+    def read(self, key: str) -> str | None:
+        raise CredentialBackendError("NoKeyringError")
+
+
+def test_properties_with_unavailable_store_never_calls_set_credentials(
+    qtbot: Any, workspace_factory: Any
+) -> None:
+    """Финальное ревью, I3: на машине без Credential Manager диалог свойств
+    показывал пустой логин у записи с сохранённым логином, и «ОК» затирал его
+    молча — `credentials_changed()` видел «логин сменился на пустой» и уходил
+    в ветку `delete`. Теперь `has_password=None` запирает все три поля.
+    """  # noqa: RUF002
+    store = _ReadRefusedStore()
+    errors: list[ServicesError] = []
+    view, *_ = _view(qtbot, workspace_factory, errors=errors, store=store)
+    view.workspace().set_credentials(_ACCOUNTING_KEY, "tester", None, remember=False)
+    calls: list[str] = []
+    store.write = lambda key, secret: calls.append(f"write {key}")  # type: ignore[method-assign]
+    store.delete = lambda key: calls.append(f"delete {key}")  # type: ignore[method-assign]
+
+    dialog = view._build_properties_dialog(_ACCOUNTING_KEY)
+    assert dialog is not None
+    assert dialog.login_edit().text() == "tester", "логин известен и обязан быть виден"
+
+    view._apply_properties(_ACCOUNTING_KEY, dialog)
+
+    assert calls == []
+    assert view.workspace().credentials_of(_ACCOUNTING_KEY)[0] == "tester"
+    assert errors == []

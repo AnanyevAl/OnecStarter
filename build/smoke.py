@@ -4,8 +4,11 @@
 offscreen и обе фоновые задачи; (2) ярлык, созданный frozen-веткой, целится
 в запущенный exe (шаг 8 задачи 17); (3) лог создан и несёт фазу «окно
 показано» — а также однозначную строку с фактическим `sys.frozen` (задача 10,
-спека §3.3); (4) exe принимает --autostart и завершается штатно. APPDATA
-подменяется — живые данные машины не трогаются.
+спека §3.3); (4) exe принимает --autostart и завершается штатно; (5) `keyring`
+прошёл round-trip внутри самой сборки (спека v2.2, §9) — без `hiddenimports`
+он находит бэкенды через entry points, которых PyInstaller анализом импортов
+не видит, и молча уходит в пустой бэкенд. APPDATA подменяется — живые данные
+машины не трогаются.
 """  # noqa: RUF002
 
 import os
@@ -64,6 +67,12 @@ def main() -> int:
         # собранном exe — задача 10, спека §3.3.
         if "smoke: frozen=True" not in log_text:
             print("smoke: лог не подтверждает sys.frozen == True в сборке")
+            return 1
+        if "smoke: keyring=ok" not in log_text:
+            print(
+                "smoke: хранилище паролей не работает в сборке — "
+                "см. строку smoke: keyring= в логе"
+            )
             return 1
         lnk = out / "smoke.lnk"
         target = shortcut_target(lnk)

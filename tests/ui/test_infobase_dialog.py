@@ -5,13 +5,17 @@ from typing import Any
 
 import pytest
 from PySide6.QtCore import QMimeData, QUrl
-from PySide6.QtWidgets import QDialog
+from PySide6.QtWidgets import QDialog, QLineEdit
 
 from onecstarter.domain.connect import ConnectKind, classify_connect
-from onecstarter.services.model import InfobaseItem, InfobaseSource
+from onecstarter.services.model import InfobaseItem, InfobaseSource, NewInfobase
 from onecstarter.ui.dialogs.group_picker import INDENT
 from onecstarter.ui.dialogs.infobase import (
+    CREDENTIALS_UNAVAILABLE_NOTE,
     HIDDEN_VALUE,
+    PASSWORD_NOT_KEPT_NOTE,
+    STORED_PASSWORD_REMOVAL_NOTE,
+    DialogCredentials,
     InfobaseDialog,
     build_connect,
     dropped_directory,
@@ -577,7 +581,9 @@ def test_new_record_returns_name_connect_and_folder(qtbot: Any) -> None:
     dialog.set_file_path(r"D:\bases\acc")
     dialog.set_name("Бухгалтерия")
     dialog.set_folder("Клиенты")
-    assert dialog.new_record() == ("Бухгалтерия", r'File="D:\bases\acc";', "Клиенты")
+    assert dialog.new_record() == NewInfobase(
+        name="Бухгалтерия", connect=r'File="D:\bases\acc";', folder="Клиенты"
+    )
 
 
 def test_new_record_defaults_kind_to_file(qtbot: Any) -> None:
@@ -586,7 +592,9 @@ def test_new_record_defaults_kind_to_file(qtbot: Any) -> None:
     qtbot.addWidget(dialog)
     dialog.set_file_path(r"D:\bases\acc")
     dialog.set_name("Бухгалтерия")
-    assert dialog.new_record() == ("Бухгалтерия", r'File="D:\bases\acc";', "/")
+    assert dialog.new_record() == NewInfobase(
+        name="Бухгалтерия", connect=r'File="D:\bases\acc";', folder="/"
+    )
 
 
 def test_new_record_server_kind(qtbot: Any) -> None:
@@ -596,20 +604,60 @@ def test_new_record_server_kind(qtbot: Any) -> None:
     dialog.set_server("srv")
     dialog.set_ref("ACC")
     dialog.set_name("Учёт")
-    assert dialog.new_record() == ("Учёт", 'Srvr="srv";Ref="ACC";', "/")
+    assert dialog.new_record() == NewInfobase(
+        name="Учёт", connect='Srvr="srv";Ref="ACC";', folder="/"
+    )
 
 
-def test_new_dialog_has_no_version_app_or_other_keys_widgets(qtbot: Any) -> None:
-    """Workspace.add_infobase не принимает версию/клиента — строить их незачем.
+def test_new_dialog_has_no_hint_os_auth_or_other_keys_widgets(qtbot: Any) -> None:
+    """Записи ещё не существует — показывать расхождение с платформой, WA
+    и прочие ключи секции нечего.
 
-    Косвенная проверка через публичные геттеры, а не через private-атрибуты:
-    `version_hint`/`other_rows` обязаны остаться безопасными для диалога
-    добавления, а не падать `AttributeError`, если кто-то их всё-таки вызовет.
+    Задача 7: «Версия» и «Клиент» диалог добавления теперь строит и
+    показывает (см. `test_add_dialog_offers_version_and_client` ниже) —
+    этот тест больше не о них, а о том, что подсказка версии
+    (`version_hint`), аутентификация ОС и таблица прочих ключей
+    у записи, которой ещё нет, не появляются. Косвенная проверка через
+    публичные геттеры, а не через private-атрибуты: `version_hint`/
+    `other_rows` обязаны остаться безопасными для диалога добавления,
+    а не падать `AttributeError`, если кто-то их всё-таки вызовет.
     """  # noqa: RUF002
     dialog = InfobaseDialog.for_new(groups=["/"], installations=INSTALLED, cfg_rules=[])
     qtbot.addWidget(dialog)
     assert dialog.version_hint() == ""
     assert dialog.other_rows() == []
+
+
+def test_add_dialog_offers_version_and_client(qtbot: Any) -> None:
+    """Задача 7: диалог добавления предлагает то же самое, что диалог правки."""
+    dialog = InfobaseDialog.for_new(groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    dialog.set_file_path(r"D:\Bases\New")
+    dialog.set_name("Новая")
+
+    dialog.set_version("8.3.25.1633")
+    dialog.set_app("ThinClient")
+    record = dialog.new_record()
+
+    assert record.version == "8.3.25.1633"
+    assert record.app == "ThinClient"
+
+
+def test_untouched_add_dialog_asks_for_neither_version_nor_client(qtbot: Any) -> None:
+    """По умолчанию «как установлено» и «Авто» — в файл не пишется ничего.
+
+    `.v8i` читает и перезаписывает штатный стартер 1С: пустая строка вместо
+    отсутствующего ключа — дефект записи, а не мелочь.
+    """  # noqa: RUF002
+    dialog = InfobaseDialog.for_new(groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    dialog.set_file_path(r"D:\Bases\New")
+    dialog.set_name("Новая")
+
+    record = dialog.new_record()
+
+    assert record.version is None
+    assert record.app is None
 
 
 def test_set_kind_rejects_a_value_the_dialog_never_offered(qtbot: Any) -> None:
@@ -894,8 +942,8 @@ def test_dropped_directory_fills_path_and_name(qtbot: Any) -> None:
     dialog = InfobaseDialog.for_new(groups=["/"], installations=INSTALLED, cfg_rules=[])
     qtbot.addWidget(dialog)
     dialog.accept_directory(r"D:\bases\Бухгалтерия")
-    assert dialog.new_record()[0] == "Бухгалтерия"
-    assert dialog.new_record()[1] == r'File="D:\bases\Бухгалтерия";'
+    assert dialog.new_record().name == "Бухгалтерия"
+    assert dialog.new_record().connect == r'File="D:\bases\Бухгалтерия";'
 
 
 def test_dropped_directory_does_not_overwrite_typed_name(qtbot: Any) -> None:
@@ -903,7 +951,7 @@ def test_dropped_directory_does_not_overwrite_typed_name(qtbot: Any) -> None:
     qtbot.addWidget(dialog)
     dialog.set_name("Своё имя")
     dialog.accept_directory(r"D:\bases\Бухгалтерия")
-    assert dialog.new_record()[0] == "Своё имя"
+    assert dialog.new_record().name == "Своё имя"
 
 
 def test_dropped_directory_on_existing_server_record_switches_kind_to_file(qtbot: Any) -> None:
@@ -982,8 +1030,8 @@ def test_browse_button_fills_path_and_name_when_directory_chosen(qtbot: Any) -> 
     )
     qtbot.addWidget(dialog)
     dialog._browse_button.click()
-    assert dialog.new_record()[0] == "Бухгалтерия"
-    assert dialog.new_record()[1] == r'File="D:\bases\Бухгалтерия";'
+    assert dialog.new_record().name == "Бухгалтерия"
+    assert dialog.new_record().connect == r'File="D:\bases\Бухгалтерия";'
 
 
 def test_browse_button_does_not_overwrite_typed_name(qtbot: Any) -> None:
@@ -996,7 +1044,7 @@ def test_browse_button_does_not_overwrite_typed_name(qtbot: Any) -> None:
     qtbot.addWidget(dialog)
     dialog.set_name("Своё имя")
     dialog._browse_button.click()
-    assert dialog.new_record()[0] == "Своё имя"
+    assert dialog.new_record().name == "Своё имя"
 
 
 def test_browse_button_does_nothing_when_cancelled(qtbot: Any) -> None:
@@ -1010,7 +1058,7 @@ def test_browse_button_does_nothing_when_cancelled(qtbot: Any) -> None:
     qtbot.addWidget(dialog)
     dialog.set_file_path(r"D:\already")
     dialog._browse_button.click()
-    assert dialog.new_record()[1] == r'File="D:\already";'
+    assert dialog.new_record().connect == r'File="D:\already";'
 
 
 # -- T-11, п. 6: автоимя из набранного пути и имени в кластере --------------
@@ -1082,3 +1130,130 @@ def test_browse_button_has_russian_label(qtbot: Any) -> None:
     dialog = InfobaseDialog.for_new(groups=["/"], installations=INSTALLED, cfg_rules=[])
     qtbot.addWidget(dialog)
     assert dialog._browse_button.text() == "Обзор…"
+
+
+# -- v2.2: логин, пароль и «Запомнить» в обоих диалогах (задача 5) ----------
+
+
+def test_dialog_offers_login_password_and_remember_off_by_default(qtbot: Any) -> None:
+    dialog = InfobaseDialog.for_new(groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    assert dialog.login_edit().text() == ""
+    assert dialog.password_edit().echoMode() == QLineEdit.EchoMode.Password
+    assert dialog.remember_checkbox().isChecked() is False
+    assert "командной строке" in dialog.credentials_note().text()
+
+
+def test_stored_password_is_not_shown_in_the_dialog(qtbot: Any) -> None:
+    """Спека v2.2, §4: диалог знает только признак — сам пароль не возвращается."""
+    dialog = InfobaseDialog(
+        _item('File="D:\\b";', ()), groups=["/"], installations=INSTALLED,
+        cfg_rules=[], login="tester", has_password=True,
+    )
+    qtbot.addWidget(dialog)
+    assert dialog.login_edit().text() == "tester"
+    assert dialog.password_edit().text() == ""
+    assert "сохранён" in dialog.password_edit().placeholderText()
+    assert dialog.remember_checkbox().isChecked() is True
+    assert dialog.credentials_changed() is False
+
+
+def test_password_without_login_blocks_ok_with_a_hint(qtbot: Any) -> None:
+    dialog = InfobaseDialog.for_new(groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    dialog.set_name("Демо")
+    dialog.set_file_path(r"D:\Bases\Demo")
+    assert dialog.accepts()
+
+    dialog.password_edit().setText("p@ss")
+
+    assert not dialog.accepts()
+    assert "Пользователь" in dialog.required_hint()
+
+
+def test_credentials_accessor_and_repr(qtbot: Any) -> None:
+    dialog = InfobaseDialog.for_new(groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    dialog.login_edit().setText("tester")
+    dialog.password_edit().setText("p@ss")
+    dialog.remember_checkbox().setChecked(True)
+
+    credentials = dialog.credentials()
+
+    assert isinstance(credentials, DialogCredentials)
+    # По полям, не через `==`: у пароля compare=False (иначе упавший assert  # noqa: RUF003
+    # печатал бы его в дифе pytest), и равенство пароль не проверяет.  # noqa: RUF003
+    assert credentials.login == "tester"
+    assert credentials.password == "p@ss"
+    assert credentials.remember is True
+    assert "p@ss" not in repr(credentials)
+    assert dialog.credentials_changed() is True
+
+
+def test_clearing_login_with_stored_password_warns(qtbot: Any) -> None:
+    dialog = InfobaseDialog(
+        _item('File="D:\\b";', ()), groups=["/"], installations=INSTALLED,
+        cfg_rules=[], login="tester", has_password=True,
+    )
+    qtbot.addWidget(dialog)
+    dialog.login_edit().setText("")
+    assert "будет удалён" in dialog.credentials_note().text()
+    assert dialog.credentials_changed() is True
+
+
+# -- финальный fix-раунд v2.2: недоступное хранилище и судьба пароля --------
+
+
+def test_unavailable_store_shows_login_and_locks_credentials(qtbot: Any) -> None:
+    """`has_password=None` — «хранилище недоступно», а не «пароля нет».
+
+    Логин известен (он в `bases.json`) и обязан быть виден; всё, что ведёт
+    к операции над хранилищем, заперто — иначе «ОК» на такой машине молча
+    стирал бы сохранённый логин и уходил в ветку `delete` (I3).
+    """  # noqa: RUF002
+    dialog = InfobaseDialog(
+        _item('Srvr="s";Ref="r";', ()), groups=["/"], installations=INSTALLED,
+        cfg_rules=[], login="tester", has_password=None,
+    )
+    qtbot.addWidget(dialog)
+    assert dialog.login_edit().text() == "tester"
+    assert dialog.login_edit().isReadOnly()
+    assert dialog.password_edit().isEnabled() is False
+    assert dialog.remember_checkbox().isEnabled() is False
+    assert dialog.credentials_note().text() == CREDENTIALS_UNAVAILABLE_NOTE
+    assert dialog.credentials_changed() is False
+
+
+def test_typing_a_password_turns_remember_on(qtbot: Any) -> None:
+    """Спека §4 задаёт умолчание «выключено», но не судьбу введённого пароля:
+    молча выбросить его нельзя. Ввод включает галочку, снять её можно назад."""  # noqa: RUF002
+    dialog = InfobaseDialog.for_new(groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    assert dialog.remember_checkbox().isChecked() is False
+
+    dialog.password_edit().setText("p@ss")
+
+    assert dialog.remember_checkbox().isChecked() is True
+
+
+def test_unchecking_remember_with_a_typed_password_warns(qtbot: Any) -> None:
+    dialog = InfobaseDialog.for_new(groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    dialog.login_edit().setText("tester")
+    dialog.password_edit().setText("p@ss")
+
+    dialog.remember_checkbox().setChecked(False)
+
+    assert dialog.credentials_note().text() == PASSWORD_NOT_KEPT_NOTE
+
+
+def test_unchecking_remember_with_a_stored_password_warns(qtbot: Any) -> None:
+    dialog = InfobaseDialog(
+        _item('Srvr="s";Ref="r";', ()), groups=["/"], installations=INSTALLED,
+        cfg_rules=[], login="tester", has_password=True,
+    )
+    qtbot.addWidget(dialog)
+
+    dialog.remember_checkbox().setChecked(False)
+
+    assert dialog.credentials_note().text() == STORED_PASSWORD_REMOVAL_NOTE

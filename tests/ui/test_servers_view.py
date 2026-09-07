@@ -42,13 +42,9 @@ from onecstarter.platform_1c.process_scan import ProcessInfo
 from onecstarter.platform_1c.server_discovery import ServerInstallation
 from onecstarter.services.servers import ScanSnapshot, ServerStatus, ServersWorkspace
 from onecstarter.ui import theme
+from onecstarter.ui.servers.card_state import CardState, card_state
 from onecstarter.ui.servers.dialog import ServerProfileDialog
-from onecstarter.ui.servers.view import (
-    TITLE_ROW_SPACING,
-    CardState,
-    ServersView,
-    _card_state,
-)
+from onecstarter.ui.servers.view import TITLE_ROW_SPACING, ServersView
 
 RAGENT = r"C:\Program Files\1cv8\8.3.25.1633\bin\ragent.exe"
 FOREIGN_RAGENT = r"C:\Program Files\1cv8\8.3.22.1923\bin\ragent.exe"
@@ -75,9 +71,6 @@ class FakeJob:
         if self.close_error is not None:
             raise self.close_error
         self.closed = True
-
-    def is_empty(self) -> bool:
-        return not self.pids()
 
 
 @dataclass
@@ -176,7 +169,6 @@ def _agent(
         name="ragent.exe",
         executable=Path(exe) if exe else None,
         argv=argv,
-        create_time=100.0 + pid,
     )
 
 
@@ -222,7 +214,7 @@ def application(qapp: QApplication) -> QApplication:
 
 # -- таблица состояний карточки (T-12, задача 5) -----------------------------
 #
-# `_card_state` — чистая функция без Qt, поэтому проверяется табличным
+# `card_state` — чистая функция без Qt, поэтому проверяется табличным
 # тестом на собранном вручную `ServerStatus`, а не через сборку вьюхи:  # noqa: RUF003
 # состояние карточки решают ТОЛЬКО поля Job (`spawned_pid`/`job_pids`),
 # снимок (`processes`) — последний по приоритету и говорит лишь о чужом  # noqa: RUF003
@@ -244,7 +236,7 @@ def _status(**overrides: object) -> ServerStatus:
 
 
 def _matched(pid: int) -> RagentProcess:
-    return RagentProcess(pid=pid, executable=None, argv=("ragent.exe",), create_time=1.0)
+    return RagentProcess(pid=pid, executable=None, argv=("ragent.exe",))
 
 
 @pytest.mark.parametrize(
@@ -259,7 +251,7 @@ def _matched(pid: int) -> RagentProcess:
     ],
 )
 def test_card_state_table(status: ServerStatus, expected: CardState) -> None:
-    assert _card_state(status) is expected
+    assert card_state(status) is expected
 
 
 # -- статусы карточки ---------------------------------------------------------
@@ -391,7 +383,7 @@ def test_foreign_matched_ragents_are_show_only(
     с подсказкой — вместо того чтобы обещать остановку, которая всё равно
     отказала бы («нечего останавливать»).
     Мутация: считать совпавший процесс нашим (например, вернуть в
-    `_card_state` ветку `status.processes → RUNNING` перед проверкой Job
+    `card_state` ветку `status.processes → RUNNING` перед проверкой Job
     или включить FOREIGN в активную кнопку `_button_state`) — кнопка станет
     активной, тест упадёт.
     """  # noqa: RUF002
@@ -534,7 +526,6 @@ def test_foreign_row_limited_form_without_cmdline_access(
         name="ragent.exe",
         executable=Path(FOREIGN_RAGENT),
         argv=None,
-        create_time=100.0,
     )
     workspace.apply_scan(ScanSnapshot(agents=(opaque,), managers=()))
 
@@ -552,7 +543,7 @@ def test_foreign_row_limited_form_without_executable_omits_version(
 ) -> None:
     """Ни командной строки, ни пути исполняемого файла — версии показать нечем."""
     workspace = _workspace(tmp_path, ())
-    opaque = ProcessInfo(pid=777, name="ragent.exe", executable=None, argv=None, create_time=1.0)
+    opaque = ProcessInfo(pid=777, name="ragent.exe", executable=None, argv=None)
     workspace.apply_scan(ScanSnapshot(agents=(opaque,), managers=()))
 
     view = ServersView(workspace, installed=lambda: [], palette=theme.DARK)
@@ -1137,9 +1128,15 @@ def test_remnants_row_offers_extinguish_button_that_closes_the_job(
     assert rescans == [1]
 
 
-def test_no_orphans_means_no_extinguish_button(
+def test_stopped_profile_has_no_extinguish_button_and_no_warnings(
     application: QApplication, tmp_path: Path
 ) -> None:
+    """Профиль в состоянии STOPPED: гасить нечего, предупреждать не о чем.
+
+    Имя приведено к словарю T-12 (долг, п. 9): понятия «сироты», от которого
+    осталось прежнее `no_orphans`, больше нет — состояние карточки решает
+    `card_state`, и здесь оно `STOPPED` (ни Job, ни совпавшего процесса).
+    """  # noqa: RUF002
     profile = _profile()
     workspace = _workspace(tmp_path, (profile,))
     workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
@@ -1164,7 +1161,6 @@ def test_port_holder_line_is_red_and_has_no_button(
         name="rmngr.exe",
         executable=None,
         argv=("rmngr.exe", "-port", str(profile.regport)),
-        create_time=50.0,
     )
     workspace = _workspace(tmp_path, (profile,))
     workspace.apply_scan(ScanSnapshot(agents=(), managers=(holder,)))
@@ -1190,7 +1186,7 @@ def test_path_row_shows_store_path(application: QApplication, tmp_path: Path) ->
     """Строка пути: где лежит `servers.json` и откуда берётся статус карточек.
 
     Волна финального ревью ветки T-12, п. 3: источник статуса — Job Object
-    запуска, а не снимок процессов (`_card_state`: Job спрашивается первым,
+    запуска, а не снимок процессов (`card_state`: Job спрашивается первым,
     снимок — последним). Прежний текст «статус — по живым процессам»
     остался от T-08 и после T-12 лжёт читателю о том, чему верит раздел.
     """  # noqa: RUF002
@@ -1218,6 +1214,33 @@ def test_console_note_shows_registered_version(
     )
     view = ServersView(workspace, installed=lambda: [], palette=theme.DARK)
     assert "8.3.25.1633" in view.console_note()
+
+
+def test_console_note_survives_unreadable_registry(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Долг T-12, п. 11: `OSError` кроме `FileNotFoundError` не оставляет раздел пустым.
+
+    `rebuild()` читает консоль ПОСЛЕ `_clear()`, а `ServersView.__init__`
+    зовёт сам `rebuild()` — незапланированная ошибка чтения HKLM оставляла
+    раздел с очищенным layout и роняла сборку окна целиком. Сказать здесь
+    «не зарегистрирована» нельзя: ключ мог существовать, прочитать его
+    не удалось, и подменять отказ чтения отрицательным ответом — врать
+    пользователю.
+    """  # noqa: RUF002
+
+    def unreadable() -> Path | None:
+        raise PermissionError(5, "Отказано в доступе")
+
+    profile = _profile()
+    workspace = _workspace(tmp_path, (profile,), registered_radmin=unreadable)
+
+    view = ServersView(workspace, installed=lambda: [_installation()], palette=theme.DARK)
+
+    assert "недоступна" in view.console_note()
+    assert "не зарегистрирована" not in view.console_note()
+    # Главное: раздел построен, а не остался с пустым layout после `_clear()`.  # noqa: RUF003
+    assert view.profile_card(0) is not None
 
 
 def test_console_button_calls_on_console(application: QApplication, tmp_path: Path) -> None:
