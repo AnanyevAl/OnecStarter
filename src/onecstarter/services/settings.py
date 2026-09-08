@@ -46,6 +46,7 @@ __all__ = [
     "ListOrder",
     "Settings",
     "ThemeMode",
+    "WebLaunch",
     "load_settings",
     "save_settings",
 ]
@@ -98,6 +99,23 @@ class ListOrder(Enum):
     ALPHABETICAL = "alphabetical"
 
 
+class WebLaunch(Enum):
+    """Чем открывать веб-базу, когда запись не сказала явно (спека v2.3, §5).
+
+    Дефолт `THIN` совпадает со штатным стартером: **[Ф]** T-05.16 № 8 —
+    веб-база с `App=Auto` запускается тонким клиентом, браузер открывается
+    только при `App=WebClient`. Значение выбирает КАНАЛ, а не клиента,
+    поэтому `/AppAutoCheckMode` при нём сохраняется (спека §3).
+    """  # noqa: RUF002
+
+    THIN = "thin"
+    BROWSER = "browser"
+
+    @property
+    def is_browser(self) -> bool:
+        return self is WebLaunch.BROWSER
+
+
 @dataclass(frozen=True)
 class Settings:
     theme: ThemeMode = ThemeMode.AUTO
@@ -119,6 +137,10 @@ class Settings:
     # T-11, п. 2 (решение заказчика 29.08.2026, вариант а): режим показа,  # noqa: RUF003
     # файл `.v8i` не трогается никогда. Дефолт — поведение прежних установок.
     list_order: ListOrder = ListOrder.FILE
+    # Спека v2.3, §5. Дефолт — поведение штатного стартера ([Ф] T-05.16 № 8),
+    # а не прежних установок: до вехи веб-базы всегда открывались браузером,  # noqa: RUF003
+    # и это изменение видимое — потому и вынесено в настройку.
+    web_launch: WebLaunch = WebLaunch.THIN
 
 
 def load_settings(path: Path) -> Settings:
@@ -147,6 +169,7 @@ def load_settings(path: Path) -> Settings:
         servers_root=_servers_root_of(payload.get("servers_root")),
         hide_on_launch=_bool_of(payload.get("hide_on_launch"), default=False),
         list_order=_order_of(payload.get("list_order")),
+        web_launch=_web_launch_of(payload.get("web_launch")),
     )
 
 
@@ -163,6 +186,7 @@ def save_settings(path: Path, settings: Settings) -> None:
         "servers_root": settings.servers_root,
         "hide_on_launch": settings.hide_on_launch,
         "list_order": settings.list_order.value,
+        "web_launch": settings.web_launch.value,
     }
     text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
     atomic_write(path, text.encode("utf-8"))
@@ -190,6 +214,14 @@ def _order_of(value: Any) -> ListOrder:
         return ListOrder(value)
     except ValueError:
         return ListOrder.FILE
+
+
+def _web_launch_of(value: Any) -> WebLaunch:
+    """Незнакомое значение — не порча: более новая версия могла записать своё."""
+    try:
+        return WebLaunch(value)
+    except ValueError:
+        return WebLaunch.THIN
 
 
 def _servers_root_of(value: Any) -> str:
