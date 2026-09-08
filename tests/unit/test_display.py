@@ -226,6 +226,14 @@ def _base(version: str | None, default: str | None = None) -> InfobaseItem:
     return replace(item, requested_version=version, section_default_version=default)
 
 
+def _web_item() -> InfobaseItem:
+    return next(entry for entry in _items() if entry.name == "Портал")
+
+
+def _server_item() -> InfobaseItem:
+    return next(entry for entry in _items() if entry.name == "Учёт серверный")
+
+
 def test_version_cell_shows_choice_with_arch() -> None:
     cell = version_cell(_base("8.3.25.1633"), INSTALLED, [])
     assert cell.text == "8.3.25.1633 x64"
@@ -279,13 +287,24 @@ def test_version_cell_without_any_installation() -> None:
     ("connect", "expected_text"),
     [
         ('File="C:\\demo";', "…"),
-        ('Srvr="s";Ref="d";', "…"),
+        ('File="C:\\other";', "…"),
         ("мусор", "…"),
     ],
 )
 def test_version_cell_pending_shows_ellipsis_without_problem(
     connect: str, expected_text: str
 ) -> None:
+    """«…» — для FILE и UNKNOWN, пока обнаружение платформ не завершилось.
+
+    Серверный кейс (`Srvr=...;Ref=...;`) отсюда убран задачей 5 (спека §4):
+    с неё ветка SERVER в `version_cell` стоит ДО проверки discovery_pending,
+    симметрично уже стоящей там ветке WEB. «Версию определяет кластер» —
+    факт, не зависящий от того, нашли ли мы установленные версии платформы,
+    и подменять его на «…» — прятать известное за неизвестным. Второй
+    параметр теперь тоже FILE-строка (другой путь), чтобы список остался
+    из трёх случаев; поведение SERVER под discovery_pending проверяет
+    отдельный test_server_cell_does_not_wait_for_discovery ниже.
+    """  # noqa: RUF002
     item = InfobaseItem(
         key="id:test", name="Test", folder="/", is_group=False, connect=connect,
         kind=classify_connect(connect), requested_version=None, section_default_version=None,
@@ -305,6 +324,28 @@ def test_version_cell_pending_keeps_web_and_group_behaviour() -> None:
     group = next(entry for entry in _items() if entry.name == "Клиенты")
     group_cell = version_cell(group, [], [], discovery_pending=True)
     assert group_cell.text == ""
+
+
+def test_server_version_cell_says_cluster_decides() -> None:
+    cell = version_cell(_server_item(), INSTALLED, [])
+    assert cell.text == "сервер"
+    assert not cell.problem
+    assert "кластер" in (cell.hint or "").casefold()
+
+
+def test_web_version_cell_explains_publication() -> None:
+    cell = version_cell(_web_item(), INSTALLED, [])
+    assert cell.text == "веб"
+    assert "публикац" in (cell.hint or "").casefold()
+
+
+def test_server_cell_does_not_wait_for_discovery() -> None:
+    """«Версию определяет кластер» не зависит от того, нашли ли мы установки:
+    показывать «…» вместо верного утверждения — прятать факт за неизвестным.
+    Ветка SERVER стоит до проверки discovery_pending, как и ветка WEB.
+    """
+    cell = version_cell(_server_item(), [], [], discovery_pending=True)
+    assert cell.text == "сервер"
 
 
 def _item(*, requested_version: str | None) -> InfobaseItem:
@@ -362,6 +403,15 @@ def test_version_options_deduplicates_installations_sharing_a_version_string() -
     values = [value for _text, value in version_options(installations)]
 
     assert values.count(str(same_version)) == 1
+
+
+def test_version_options_do_not_paste_server_placeholder() -> None:
+    """«как установлено (сервер)» — бессмыслица: фильтр должен пропускать
+    только FILE, где в ячейке настоящая версия.
+    """
+    item = _server_item()
+    options = version_options(INSTALLED, item, version_cell(item, INSTALLED, []))
+    assert options[0][0] == "как установлено"
 
 
 # -- Задача 12: содержимое группы (обязательство 3 блока Б) ----------------

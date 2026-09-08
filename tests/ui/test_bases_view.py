@@ -167,14 +167,19 @@ def _column_texts(view: BasesView, column: int) -> list[str]:
 def test_pending_installations_show_ellipsis_then_versions(qtbot, workspace_factory):
     """Спека T-04.6, §3.4: до готовности обнаружения — «…», не пустой список.
 
-    Веб-база («Портал» в анонимизированной фикстуре) исключена из
-    сравниваемого множества: version_cell отдаёт ей "веб" безусловно,
-    раньше проверки discovery_pending (services/display.py) — у неё нет
-    платформы, которую можно было бы «ещё не обнаружить», и это не имеет
-    отношения к тому, что здесь проверяется.
+    Веб-база («Портал» в анонимизированной фикстуре) и серверная база
+    («Учёт серверный») исключены из сравниваемого множества: version_cell
+    отдаёт им "веб"/"сервер" безусловно, раньше проверки discovery_pending
+    (services/display.py) — ни у той, ни у другой нет версии платформы,
+    которую мы разрешаем сами, и это не имеет отношения к тому, что здесь
+    проверяется. Серверная ветка встала перед discovery_pending задачей 5
+    вехи v2.3 (спека §4), симметрично уже стоявшей там ветке WEB: версию
+    определяет кластер независимо от того, нашли ли мы установки.
     """  # noqa: RUF002
     view, *_ = _view(qtbot, workspace_factory, installations=None)
-    pending_texts = {text for text in _column_texts(view, column=1) if text != "веб"}
+    pending_texts = {
+        text for text in _column_texts(view, column=1) if text not in ("веб", "сервер")
+    }
     assert pending_texts == {"…"}
 
     view.apply_installations(INSTALLED)

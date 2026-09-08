@@ -480,12 +480,18 @@ def test_web_kind_default_version_label_has_no_nonsensical_web_suffix(qtbot: Any
 
     у веб-записи `version_cell` всегда отдаёт `cell.text == "веб"` (Version
     там ни на что не влияет), и подпись читалась как «как установлено (веб)».
+
+    Задача 5 вехи v2.3 (спека §4): с неё `cell.hint` у WEB — больше не
+    `None`, а честная подсказка про публикацию, и слово «веб» законно
+    встречается в её тексте («веб-сервере»). Проверка сужена до самого
+    исходного дефекта — скобочного «(веб)», приклеенного к подписи, а не
+    до полного отсутствия слова «веб» в подсказке.
     """  # noqa: RUF002
     item = _item('ws="http://srv/base";', ())
     dialog = InfobaseDialog(item, groups=["/"], installations=INSTALLED, cfg_rules=[])
     qtbot.addWidget(dialog)
     assert dialog.version_hint().startswith("как установлено")
-    assert "веб" not in dialog.version_hint()
+    assert "(веб)" not in dialog.version_hint()
 
 
 def test_web_kind_with_explicit_version_has_no_nonsensical_web_suffix(qtbot: Any) -> None:
@@ -494,11 +500,15 @@ def test_web_kind_with_explicit_version_has_no_nonsensical_web_suffix(qtbot: Any
     Пункт для запрошенной-но-не-подошедшей версии тоже брал подпись из
     `cell.text` безусловно — веб-запись с `Version=8.3.99.1` показывала бы
     в выпадающем списке пункт с подписью «веб» вместо «8.3.99.1».
+
+    Задача 5 вехи v2.3 (спека §4): проверка сужена так же, как в соседнем
+    тесте выше — «(веб)» скобочным суффиксом быть не должно, но честная
+    подсказка про публикацию законно содержит слово «веб».
     """  # noqa: RUF002
     item = _item('ws="http://srv/base";', (), requested_version="8.3.99.1")
     dialog = InfobaseDialog(item, groups=["/"], installations=INSTALLED, cfg_rules=[])
     qtbot.addWidget(dialog)
-    assert "веб" not in dialog.version_hint()
+    assert "(веб)" not in dialog.version_hint()
     assert "8.3.99.1" in dialog.version_hint()
 
 
