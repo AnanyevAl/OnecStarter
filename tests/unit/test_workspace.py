@@ -567,6 +567,26 @@ def test_duplicate_name_still_blocks_the_same_web_record_without_forced_browser(
     assert "не единственное" in str(error.value)
 
 
+def test_duplicate_name_still_blocks_explicit_thin_client_too(tmp_path: Path) -> None:
+    """Граница пропуска — именно `BROWSER`, не «любой явный канал».
+
+    Повторное ревью ветки (мутационная таблица T-15, строка 15): пара тестов
+    выше берёт `forced=None` (запуск по умолчанию) и `forced=LaunchTarget.BROWSER`,
+    а `LaunchTarget.THIN` нигде не встречается. Условие в `Workspace.launch`
+    — `if forced is not LaunchTarget.BROWSER:` — а не «пропустить проверку для
+    любого явного `forced`»: у тонкого клиента на веб-базе `/IBName` строится
+    по имени, и дубль его так же ломает, как и неявный запуск. Без этого теста
+    мутация `if forced is None:` расширила бы пропуск на все разовые каналы
+    незаметно.
+    """  # noqa: RUF002
+    workspace = _workspace_with_two_web_bases(tmp_path)
+
+    with pytest.raises(LaunchError) as error:
+        workspace.launch("id:77777777-7777-7777-7777-777777777777", LaunchTarget.THIN)
+
+    assert "не единственное" in str(error.value)
+
+
 def test_remove_reports_when_key_changed_externally(tmp_path: Path) -> None:
     """Замерено: внешний процесс дописал `ID` записи без него — `remove` по
     старому ключу возвращал `None` без исключения, а запись оставалась.
