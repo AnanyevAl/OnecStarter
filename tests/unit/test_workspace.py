@@ -512,6 +512,61 @@ def test_duplicate_web_names_are_rejected_before_launch(tmp_path: Path) -> None:
     assert "не единственное" in str(error.value)
 
 
+def _workspace_with_two_web_bases(tmp_path: Path) -> Workspace:
+    """Список из двух веб-записей с ОДНИМ именем и разными адресами.
+
+    Свой файл, а не `anonymized.v8i`: дубль имени нужен именно у веб-записей,
+    а в фикстуре «Портал» ровно один.
+    """  # noqa: RUF002
+    sections = (
+        "[Портал]\r\n"
+        'Connect=ws="http://web-server/resource/";\r\n'
+        "ID=77777777-7777-7777-7777-777777777777\r\n"
+        "[Портал]\r\n"
+        'Connect=ws="http://web-server/other/";\r\n'
+        "ID=88888888-8888-8888-8888-888888888888\r\n"
+    )
+    (tmp_path / "ibases.v8i").write_bytes(sections.encode())
+    return _workspace(tmp_path)
+
+
+def test_explicit_browser_launch_is_not_blocked_by_a_duplicate_name(tmp_path: Path) -> None:
+    """Находка финального ревью ветки, I5: «Открыть в браузере» — единственный
+    канал, где имя базы не участвует вовсе.
+
+    Отказ по дублю имени защищает запуск по `/IBName`: платформа при
+    нескольких базах с одним именем прекращает запуск ([Ф] T-05.3). Разовый
+    выбор `LaunchTarget.BROWSER` идёт не по имени, а по адресу из `ws`, и совет
+    «переименуйте одну из баз» тут предлагает править файл списка ради
+    операции, которой имя безразлично.
+    """  # noqa: RUF002
+    workspace = _workspace_with_two_web_bases(tmp_path)
+
+    outcome = workspace.launch(
+        "id:77777777-7777-7777-7777-777777777777", LaunchTarget.BROWSER
+    )
+
+    assert outcome.kind is LaunchKind.BROWSER
+    assert outcome.url == "http://web-server/resource/"
+
+
+def test_duplicate_name_still_blocks_the_same_web_record_without_forced_browser(
+    tmp_path: Path,
+) -> None:
+    """Обратная сторона теста выше: пропуск проверки — только у явного браузера.
+
+    Без этой пары `_reject_ambiguous_name` мог бы отключиться для веб-записей
+    целиком, и тест выше остался бы зелёным на пустышке. Тот же приём, что
+    у пары `test_workspace_passes_web_setting_to_launch` / `..._goes_to_the_thin_client`.
+    """  # noqa: RUF002
+    workspace = _workspace_with_two_web_bases(tmp_path)
+
+    with pytest.raises(LaunchError) as error:
+        workspace.launch("id:77777777-7777-7777-7777-777777777777")
+
+    assert "не единственное" in str(error.value)
+
+
 def test_remove_reports_when_key_changed_externally(tmp_path: Path) -> None:
     """Замерено: внешний процесс дописал `ID` записи без него — `remove` по
     старому ключу возвращал `None` без исключения, а запись оставалась.
