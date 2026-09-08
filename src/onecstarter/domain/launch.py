@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 
-from onecstarter.domain.connect import parse_connect
+from onecstarter.domain.connect import ConnectKind, parse_connect
 from onecstarter.domain.version import Installation, VersionNumber
 from onecstarter.security.secrets import is_secret_key
 
@@ -120,6 +120,134 @@ def choose_client(
         # А3/А5 протокола t04-8-smoke-protocol.md).  # noqa: RUF003
         return ClientChoice(from_default, auto_check_mode=False)
     return ClientChoice(ClientKind.THIN, auto_check_mode=True)
+
+
+class LaunchTarget(Enum):
+    """Что пользователь запросил разово: клиент или браузер.
+
+    Отдельный тип, а не член `ClientKind`: тот про исполняемый файл
+    (`ClientConvention.executables`), а браузеру файла не соответствует.
+    До v2.3 канал `forced` был типизирован `ClientKind`, выразить в нём
+    «открыть браузером» было нечем, и пункт меню держался на коротком
+    замыкании в `services/launch.py` (спека v2.3, §2).
+    """  # noqa: RUF002
+
+    THIN = "thin"
+    THICK = "thick"
+    DESIGNER = "designer"
+    BROWSER = "browser"
+
+    @property
+    def client(self) -> ClientKind | None:
+        """`None` — только у `BROWSER`."""  # noqa: RUF002
+        return _TARGET_CLIENTS.get(self)
+
+
+_TARGET_CLIENTS = {
+    LaunchTarget.THIN: ClientKind.THIN,
+    LaunchTarget.THICK: ClientKind.THICK,
+    LaunchTarget.DESIGNER: ClientKind.DESIGNER,
+}
+
+
+class RefusalReason(Enum):
+    """Почему запуск невозможен. Текст сообщения строит `services`."""
+
+    THICK_TO_WEB = "thick-to-web"
+    WEB_APP_THICK = "web-app-thick"
+    BROWSER_FOR_SERVER = "browser-for-server"
+    BROWSER_FOR_FILE = "browser-for-file"
+    BROWSER_FOR_UNKNOWN = "browser-for-unknown"
+
+
+@dataclass(frozen=True)
+class LaunchRefusal:
+    reason: RefusalReason
+
+
+@dataclass(frozen=True)
+class LaunchPlan:
+    """`client is None` — открыть браузером; тогда оба флага не значат ничего."""  # noqa: RUF002
+
+    client: ClientKind | None
+    auto_check_mode: bool
+    auto_check_version: bool
+
+
+_BROWSER_REFUSALS = {
+    ConnectKind.SERVER: RefusalReason.BROWSER_FOR_SERVER,
+    ConnectKind.FILE: RefusalReason.BROWSER_FOR_FILE,
+    ConnectKind.UNKNOWN: RefusalReason.BROWSER_FOR_UNKNOWN,
+}
+
+_BROWSER_PLAN = LaunchPlan(client=None, auto_check_mode=False, auto_check_version=False)
+
+
+def choose_launch_plan(
+    kind: ConnectKind,
+    app: str | None,
+    default_app: str | None,
+    *,
+    web_default_is_browser: bool,
+    forced: LaunchTarget | None,
+) -> LaunchPlan | LaunchRefusal:
+    """Чем и как запускать запись. Чистая функция (спека v2.3, §3).
+
+    Полярность `/AppAutoCheckVersion` определяется ВИДОМ базы, а не желанием:
+    **[Ф]** T-05.16 — у веб- и серверных баз версию диктует сервер, и пин
+    чужой версии даёт молчаливый повис. Условие написано перечислением
+    (`FILE or UNKNOWN`), а не отрицанием `not FILE`: второе молча сменило бы
+    полярность у достижимого входа `UNKNOWN`.
+
+    Настройка приходит булевым значением: `domain` не импортирует `services`.
+    """  # noqa: RUF002
+    pins_version = kind is ConnectKind.FILE or kind is ConnectKind.UNKNOWN
+    auto_check_version = not pins_version
+
+    if forced is LaunchTarget.BROWSER:
+        if kind is not ConnectKind.WEB:
+            return LaunchRefusal(_BROWSER_REFUSALS[kind])
+        return _BROWSER_PLAN
+
+    if forced is not None:
+        client = forced.client
+        if client is None:  # pragma: no cover — BROWSER обработан веткой выше
+            raise ValueError("BROWSER должен был быть обработан раньше")
+        if kind is ConnectKind.WEB and client is not ClientKind.THIN:
+            return LaunchRefusal(RefusalReason.THICK_TO_WEB)
+        return LaunchPlan(client, auto_check_mode=False, auto_check_version=auto_check_version)
+
+    if kind is ConnectKind.WEB:
+        return _web_plan(app, web_default_is_browser=web_default_is_browser)
+
+    # Не веб-база: прежний путь без изменений, включая отказ `ValueError`  # noqa: RUF003
+    # на `App=WebClient` у не-ws записи (его ловит и переводит `services`).  # noqa: RUF003
+    choice = choose_client(app, default_app)
+    return LaunchPlan(choice.client, choice.auto_check_mode, auto_check_version)
+
+
+def _web_plan(app: str | None, *, web_default_is_browser: bool) -> LaunchPlan | LaunchRefusal:
+    """Веб-база: решает `App`, а при `Auto`/пусто/нераспознанном — настройка.
+
+    `/AppAutoCheckMode` снимается тогда, и только тогда, когда пользователь
+    выбрал КЛИЕНТА. Настройка выбирает КАНАЛ (браузер против тонкого), поэтому
+    её значение «тонкий» флаг сохраняет — и командная строка совпадает
+    с эталоном **[Ф]** T-05.16 № 8. Нераспознанное значение `App` клиента
+    не даёт (`_client_from_app` вернул бы `None`) и ведёт себя как `Auto`.
+
+    `default_app` здесь не участвует намеренно: «толстый по умолчанию»
+    означал бы запрет запуска всех веб-баз. До v2.3 настройка на них тоже
+    не влияла — короткое замыкание стояло раньше `_choose_client`.
+    """  # noqa: RUF002
+    if is_web_client_app(app):
+        return _BROWSER_PLAN
+    if app is not None and app.casefold() == "thinclient":
+        return LaunchPlan(ClientKind.THIN, auto_check_mode=False, auto_check_version=True)
+    if app is not None and app.casefold() == "thickclient":
+        return LaunchRefusal(RefusalReason.WEB_APP_THICK)
+    if web_default_is_browser:
+        return _BROWSER_PLAN
+    return LaunchPlan(ClientKind.THIN, auto_check_mode=True, auto_check_version=True)
 
 
 def is_web_client_app(app: str | None) -> bool:
