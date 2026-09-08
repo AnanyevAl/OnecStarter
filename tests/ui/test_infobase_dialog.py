@@ -194,6 +194,32 @@ def test_untouched_dialog_writes_nothing_for_edge_case_connect_strings(
     assert dialog.changes() == ({}, None), kind_hint
 
 
+@pytest.mark.parametrize(
+    ("connect", "kind_hint"),
+    [
+        ('File="D:\\b";', "file"),
+        ('Srvr="s";Ref="r";', "server"),
+        ('ws="http://srv/base";', "web"),
+    ],
+)
+@pytest.mark.parametrize("version", ["8.3.25.1633", "8.3.99.1", "8.3"])
+def test_untouched_dialog_with_version_writes_nothing(
+    qtbot: Any, connect: str, kind_hint: str, version: str
+) -> None:
+    """Открыл свойства, нажал ОК — ключ Version остался в секции.
+
+    Дыра, которую закрывает тест: ни один прежний охранный тест не давал
+    записи `requested_version`, а именно на нём стоит риск вехи. Три значения
+    покрывают три ветки `version_options`: установленная, не установленная
+    и маска — у двух последних пункт добавляется отдельно, и без него
+    `findData` вернул бы -1.
+    """  # noqa: RUF002
+    item = _item(connect, (), requested_version=version)
+    dialog = InfobaseDialog(item, groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    assert dialog.changes() == ({}, None), f"{kind_hint} / {version}"
+
+
 def test_rename_only_touches_the_header(qtbot: Any) -> None:
     item = _item('Srvr="s";Ref="r";', ())
     dialog = InfobaseDialog(item, groups=["/"], installations=INSTALLED, cfg_rules=[])
@@ -384,6 +410,14 @@ def test_set_app_rejects_a_value_the_dialog_never_offered(qtbot: Any) -> None:
     qtbot.addWidget(dialog)
     with pytest.raises(ValueError, match="WebClient"):
         dialog.set_app("WebClient")
+
+
+def test_web_record_accepts_web_client_app(qtbot: Any) -> None:
+    item = _item('ws="http://srv/base";', ())
+    dialog = InfobaseDialog(item, groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    dialog.set_app("WebClient")
+    assert dialog.changes() == ({"App": "WebClient"}, None)
 
 
 # -- I4/item 3 (круги правок 1-2): недопустимый символ блокирует ОК -------------  # noqa: RUF003

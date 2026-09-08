@@ -351,6 +351,7 @@ def _app_key(app: str | None) -> str | None:
 
 
 _APP_ITEMS = (("Авто", None), ("Тонкий клиент", "ThinClient"), ("Толстый клиент", "ThickClient"))
+_WEB_APP_ITEM = ("Веб-клиент (браузер)", "WebClient")  # noqa: RUF001
 
 # v2.2: логин/пароль/«Запомнить» — три новых поля формы (`InfobaseDialog.__init__`).
 CREDENTIALS_NOTE = (
@@ -499,7 +500,12 @@ class InfobaseDialog(QDialog):
         self._version.setCurrentIndex(version_index if version_index >= 0 else 0)
 
         self._app = QComboBox()
-        for text, data in _APP_ITEMS:
+        app_items: tuple[tuple[str, str | None], ...] = _APP_ITEMS
+        if item is not None and item.kind is ConnectKind.WEB:
+            # Пункт осмыслен только у ws-записи: у остальных `App=WebClient`  # noqa: RUF003
+            # отвергается на запуске, и предлагать его — приглашать в отказ.  # noqa: RUF003
+            app_items = (*_APP_ITEMS, _WEB_APP_ITEM)
+        for text, data in app_items:
             self._app.addItem(text, data)
         app_index = self._app.findData(_app_key(item.app)) if item is not None else 0
         if item is not None and app_index < 0:
