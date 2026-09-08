@@ -18,7 +18,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from onecstarter.config.v8i import parse_v8i
-from onecstarter.domain.connect import ConnectKind
 from onecstarter.domain.default_version import DefaultVersionRule
 from onecstarter.domain.launch import (
     ClientConvention,
@@ -586,12 +585,17 @@ class Workspace:
 
         Сравнение имён — без учёта регистра: [Ф] T-05.3 — платформа
         считает дублями и имена, различающиеся только регистром, а поиск
-        по `/IBName` регистронезависим. Веб-база не проверяется вовсе:
-        она открывается браузером по адресу из `ws`, имя в этом пути
-        не участвует.
+        по `/IBName` регистронезависим.
+
+        Веб-базы проверяются наравне с остальными: с вехи v2.3 они
+        запускаются тонким клиентом по `/IBName` (**[Ф]** T-05.16 № 1), и имя
+        в этом пути участвует. Прежнее обоснование («открывается браузером
+        по адресу из `ws`») перестало быть верным вместе со сменой пути
+        запуска. Запись, которую пользователь всё же откроет браузером
+        (`App=WebClient` или настройка), проверку тоже проходит — отказ
+        по дублю имени тогда излишен, но безвреден, а ветвление проверки
+        по каналу запуска развело бы её с местом, где канал выбирается.
         """  # noqa: RUF002
-        if item.kind is ConnectKind.WEB:
-            return
         name = item.name.casefold()
         rivals = [
             other

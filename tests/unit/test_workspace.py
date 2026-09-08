@@ -494,6 +494,24 @@ def test_records_word_agrees_with_number(count: int, word: str) -> None:
     assert _records_word(count) == word
 
 
+def test_duplicate_web_names_are_rejected_before_launch(tmp_path: Path) -> None:
+    """Замена удалённого в Task 0 test_duplicate_name_does_not_block_web_base.
+
+    Запуск веб-базы идёт по /IBName ([Ф] T-05.16 № 1), а платформа при дублях
+    имени прекращает запуск с «Не уникальное имя информационной базы»
+    ([Ф] T-05.3). Прежнее обоснование («открывается браузером по адресу
+    из ws, имя в пути не участвует») умерло вместе с браузерным путём.
+    """  # noqa: RUF002
+    workspace = _workspace(tmp_path)
+    workspace.add_infobase("Портал", 'File="C:\\Bases\\Dup";')
+    with pytest.raises(LaunchError) as error:
+        workspace.launch("id:77777777-7777-7777-7777-777777777777")
+    # Бриф проверял подстроку "уникальн" — текст ошибки ПЛАТФОРМЫ, приведённый
+    # в докстринге для обоснования. Наш код бросает "не единственное" (строки
+    # 397, 452 — тот же путь); правило исправлено, см. отчёт задачи 4.
+    assert "не единственное" in str(error.value)
+
+
 def test_remove_reports_when_key_changed_externally(tmp_path: Path) -> None:
     """Замерено: внешний процесс дописал `ID` записи без него — `remove` по
     старому ключу возвращал `None` без исключения, а запись оставалась.
