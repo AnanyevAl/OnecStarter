@@ -64,6 +64,7 @@ from onecstarter.services.settings import (
     DefaultClient,
     ListOrder,
     ThemeMode,
+    WebLaunch,
 )
 from onecstarter.ui.hotkey_edit import HotkeyEdit
 from onecstarter.ui.settings_group import CollapsibleGroup
@@ -80,6 +81,11 @@ CHOICES = (
 CLIENT_CHOICES = (
     (DefaultClient.THIN, "Тонкий"),
     (DefaultClient.THICK, "Толстый"),
+)
+
+WEB_LAUNCH_CHOICES = (
+    (WebLaunch.THIN, "Тонким клиентом"),
+    (WebLaunch.BROWSER, "В браузере"),  # noqa: RUF001
 )
 
 ORDER_CHOICES = (
@@ -154,6 +160,11 @@ class SettingsView(QWidget):
         self._choose_directory = choose_directory
         self._buttons: list[QPushButton] = []
         self._client_buttons: list[QPushButton] = []
+        # Без ведущего подчёркивания: тесты обращаются к списку напрямую
+        # (`view.web_launch_buttons[...]`), как просит бриф задачи 7 — а не  # noqa: RUF003
+        # через отдельный метод-аксессор `client_buttons()`/`order_buttons()`,
+        # как у соседних сегментов.  # noqa: RUF003
+        self.web_launch_buttons: list[QPushButton] = []
         self._order_buttons: list[QPushButton] = []
         self._group_labels: list[str] = []
         self._row_notes: dict[str, QLabel] = {}
@@ -223,9 +234,16 @@ class SettingsView(QWidget):
 
         self._add_row(
             "Клиент по умолчанию",
-            "Чем запускать базу, где клиент не указан. Выбор в записи (App) "
+            "Чем запускать не-веб-базу, где клиент не указан. Выбор в записи (App) "
             "и Ctrl+1/Ctrl+2 главнее",
             self._build_client_segment(),
+        )
+
+        self._add_row(
+            "Веб-базы открывать",  # noqa: RUF001
+            "Для баз, опубликованных на веб-сервере. Выбор в записи (App) "
+            "и «Открыть в браузере» главнее",
+            self._build_web_launch_segment(),
         )
 
         self._add_group("СЕРВЕРЫ")
@@ -451,6 +469,14 @@ class SettingsView(QWidget):
             self._client_buttons,
         )
 
+    def _build_web_launch_segment(self) -> QWidget:
+        return self._build_segment(
+            WEB_LAUNCH_CHOICES,
+            lambda web_launch: web_launch is self._store.settings.web_launch,
+            self._choose_web_launch,
+            self.web_launch_buttons,
+        )
+
     def _build_order_segment(self) -> QWidget:
         return self._build_segment(
             ORDER_CHOICES,
@@ -582,6 +608,19 @@ class SettingsView(QWidget):
     def _choose_client(self, client: DefaultClient) -> None:
         self._store.update(default_client=client)
 
+    def _choose_web_launch(self, web_launch: WebLaunch) -> None:
+        """Сохранить выбор — так же, как `_choose_client`.
+
+        Проводка до `Workspace.set_web_launch` идёт не отсюда: она уже
+        подписана на `store.changed` в `ui/app.py` (`apply_web_launch`,
+        рядом с `apply_default_client` для клиента по умолчанию) — тем же
+        путём, каким соседняя настройка «Клиент по умолчанию» доходит до
+        `Workspace.set_default_app`. Второй прямой вызов отсюда дублировал бы
+        эту проводку и завёл бы второй источник истины о том, кто и когда
+        применяет `web_launch` к `Workspace`.
+        """  # noqa: RUF002
+        self._store.update(web_launch=web_launch)
+
     def _choose_order(self, order: ListOrder) -> None:
         self._store.update(list_order=order)
 
@@ -705,6 +744,11 @@ class SettingsView(QWidget):
             self._client_buttons, CLIENT_CHOICES, strict=True
         ):
             button.setChecked(client is settings.default_client)
+
+        for button, (web_launch, _label) in zip(
+            self.web_launch_buttons, WEB_LAUNCH_CHOICES, strict=True
+        ):
+            button.setChecked(web_launch is settings.web_launch)
 
         for button, (order, _label) in zip(self._order_buttons, ORDER_CHOICES, strict=True):
             button.setChecked(order is settings.list_order)

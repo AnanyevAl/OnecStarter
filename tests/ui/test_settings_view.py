@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton
@@ -12,6 +13,8 @@ from onecstarter.services.settings import (
     ListOrder,
     Settings,
     ThemeMode,
+    WebLaunch,
+    load_settings,
     save_settings,
 )
 from onecstarter.ui.hotkey_edit import HotkeyEdit
@@ -231,6 +234,19 @@ def test_external_change_syncs_buttons(
     store.update(default_client=DefaultClient.THICK)
     assert view.client_buttons()[1].isChecked()
     assert not view.client_buttons()[0].isChecked()
+
+
+def test_web_launch_row_writes_setting(
+    qtbot: Any, application: QApplication, tmp_path: Path
+) -> None:
+    """Выбор в сегменте «Веб-базы открывать» пишется в store и в файл (v2.3, задача 7)."""  # noqa: RUF002
+    view, store = _view(application, tmp_path)
+    qtbot.addWidget(view)
+
+    view.web_launch_buttons[1].click()  # «В браузере»  # noqa: RUF003
+
+    assert store.settings.web_launch is WebLaunch.BROWSER
+    assert load_settings(store.path).web_launch is WebLaunch.BROWSER
 
 
 def test_autostart_disabled_when_not_frozen(
