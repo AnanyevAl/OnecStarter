@@ -15,6 +15,7 @@ from onecstarter.ui.dialogs.infobase import (
     HIDDEN_VALUE,
     PASSWORD_NOT_KEPT_NOTE,
     STORED_PASSWORD_REMOVAL_NOTE,
+    WEB_CLIENT_PLACEMENT_NOTE,
     DialogCredentials,
     InfobaseDialog,
     build_connect,
@@ -418,6 +419,80 @@ def test_web_record_accepts_web_client_app(qtbot: Any) -> None:
     qtbot.addWidget(dialog)
     dialog.set_app("WebClient")
     assert dialog.changes() == ({"App": "WebClient"}, None)
+
+
+# -- I1 финального ревью ветки: «Веб-клиент» плюс не-веб размещение ------------  # noqa: RUF003
+
+
+def test_web_client_app_blocks_ok_after_the_placement_changed(qtbot: Any) -> None:
+    """Находка I1: диалог давал собрать незапускаемую запись и молча её сохранить.
+
+    Пункт «Веб-клиент (браузер)» добавляется по виду СОХРАНЁННОЙ записи
+    (`item.kind`), а размещение меняется тут же, отдельным комбобоксом.
+    Сочетание `App=WebClient` + `File=` отвергается при КАЖДОМ запуске,
+    и связать отказ со сменой размещения, сделанной раньше, пользователь
+    не сможет.
+
+    Путь заполняется намеренно: без него «ОК» и так неактивна («Заполните:
+    «Путь»»), и тест был бы зелёным на пустышке. Разделяет два случая
+    именно текст пояснения.
+    """  # noqa: RUF002
+    item = _item('ws="http://srv/base";', ())
+    dialog = InfobaseDialog(item, groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+
+    dialog.set_app("WebClient")
+    dialog.set_kind(ConnectKind.FILE)
+    dialog.set_file_path("D:\\Bases\\Acc")
+
+    assert not dialog.accepts()
+    assert dialog.required_hint() == WEB_CLIENT_PLACEMENT_NOTE
+
+    # Блокировка не залипает: вернули веб-размещение — «ОК» снова активна.  # noqa: RUF003
+    dialog.set_kind(ConnectKind.WEB)
+    assert dialog.accepts()
+    assert dialog.required_hint() == ""
+
+
+def test_other_client_is_free_to_go_with_any_placement(qtbot: Any) -> None:
+    """Обратная сторона: блокируется ровно веб-клиент, а не смена размещения.
+
+    Без этой пары проверка могла бы запирать «ОК» на любой смене вида,
+    и тест выше остался бы зелёным.
+    """  # noqa: RUF002
+    item = _item('ws="http://srv/base";', ())
+    dialog = InfobaseDialog(item, groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+
+    dialog.set_app("ThinClient")
+    dialog.set_kind(ConnectKind.FILE)
+    dialog.set_file_path("D:\\Bases\\Acc")
+
+    assert dialog.accepts()
+
+
+def test_record_that_already_carries_web_client_app_is_not_locked_out(qtbot: Any) -> None:
+    """Сочетание, уже лежащее в файле, «ОК» не запирает.
+
+    Тот же принцип, что у `_placement_violation`: то, чего пользователь
+    не трогал, — не его ввод. Запись с `App=WebClient` при не-ws строке
+    соединения существует (спека §6), и открыть её ради правки группы
+    или версии обязано быть можно. Пункт достаётся ей существующим
+    механизмом «незнакомое значение сохраняем отдельным пунктом».
+    """  # noqa: RUF002
+    item = _item('File="D:\\b";', (), app="WebClient")
+    dialog = InfobaseDialog(item, groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+
+    assert dialog.accepts()
+    assert dialog.changes() == ({}, None)
+
+    # А вот тронуть размещение и оставить веб-клиент — уже нельзя.  # noqa: RUF003
+    dialog.set_kind(ConnectKind.SERVER)
+    dialog.set_server("srv")
+    dialog.set_ref("acc")
+    assert not dialog.accepts()
+    assert dialog.required_hint() == WEB_CLIENT_PLACEMENT_NOTE
 
 
 # -- I4/item 3 (круги правок 1-2): недопустимый символ блокирует ОК -------------  # noqa: RUF003

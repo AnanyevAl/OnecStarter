@@ -196,6 +196,7 @@ from onecstarter.domain.connect import (
     replace_fragment,
 )
 from onecstarter.domain.default_version import DefaultVersionRule
+from onecstarter.domain.launch import is_web_client_app
 from onecstarter.domain.version import Installation
 from onecstarter.security.secrets import is_secret_key
 from onecstarter.services.connection import BADGE_LABELS, connection_path
@@ -372,6 +373,13 @@ CREDENTIALS_UNAVAILABLE_NOTE = "Хранилище паролей недосту
 # сохранённом пароле объясняет последствие до нажатия «ОК».  # noqa: RUF003
 PASSWORD_NOT_KEPT_NOTE = "Пароль введён, но не будет сохранён — включите «Запомнить»"
 STORED_PASSWORD_REMOVAL_NOTE = "Сохранённый пароль будет удалён"
+# Финальное ревью ветки, I1: пункт «Веб-клиент (браузер)» добавляется по виду  # noqa: RUF003
+# СОХРАНЁННОЙ записи, а размещение меняется в том же диалоге отдельным  # noqa: RUF003
+# комбобоксом — см. `InfobaseDialog._web_client_conflict`.
+WEB_CLIENT_PLACEMENT_NOTE = (
+    "«Веб-клиент (браузер)» работает только у базы, опубликованной на "  # noqa: RUF001
+    "веб-сервере (ws=): выберите другого клиента или верните веб-размещение"
+)
 
 
 @dataclass(frozen=True)
@@ -608,6 +616,10 @@ class InfobaseDialog(QDialog):
         for field in self._placement_widgets().values():
             field.textChanged.connect(self._refresh_ok_state)
         self._kind_box.currentIndexChanged.connect(self._refresh_ok_state)
+        # Финальное ревью ветки, I1: «ОК» зависит и от выбранного клиента —  # noqa: RUF003
+        # пара «Веб-клиент (браузер)» + не-веб размещение незапускаема,  # noqa: RUF003
+        # и собрать её можно с любой из двух сторон.  # noqa: RUF003
+        self._app.currentIndexChanged.connect(self._refresh_ok_state)
         # T-11, п. 6: имя из каталога / имени в кластере, если поле имени
         # пустое. editingFinished, не textChanged: по textChanged имя
         # подставилось бы на первом же символе и дальше не обновлялось.
@@ -764,6 +776,45 @@ class InfobaseDialog(QDialog):
                     return label, char
         return None
 
+    def _web_client_conflict(self) -> bool:
+        """Выбран «Веб-клиент (браузер)», а размещение — не веб-публикация.
+
+        Сочетание незапускаемо: `App=WebClient` при не-ws строке соединения
+        отвергается при КАЖДОМ запуске («задан App=WebClient, но строка
+        соединения не ws=», `services/launch.py`). Собрать его диалог давал
+        молча: пункт добавляется по виду СОХРАНЁННОЙ записи (`item.kind`),
+        а размещение меняется тут же, отдельным комбобоксом (`_kind_box`),
+        и после смены вида состав `_app` остаётся прежним. Пользователь
+        не свяжет отказ запуска со сменой размещения, сделанной раньше,
+        а запись уже в файле, который делится со штатным стартером
+        (финальное ревью ветки, I1: воспроизведено запуском).
+
+        Проверка на `is_web_client_app`, а не на равенство `_WEB_APP_ITEM[1]`:
+        значение «WebClient» может прийти в комбобокс и другим путём — веткой
+        «незнакомое значение сохраняем отдельным пунктом», где регистр
+        произвольный (`app=webclient` в файле). Отказ запуска смотрит на
+        то же самое правило, и разойтись эти два места не должны.
+
+        Сочетание, уже лежащее в файле, НЕ блокируется — тот же принцип, что
+        у `_placement_violation`: то, чего пользователь не трогал, — не его
+        ввод. Запись с `App=WebClient` при не-ws строке соединения существует
+        (спека v2.3, §6), и запирать «ОК» у записи, открытой ради правки
+        группы или версии, нельзя — это ровно та ловушка, из-за которой
+        `_required_placement_fields` исключает нередактируемые поля.
+        """  # noqa: RUF002
+        if not is_web_client_app(self._app.currentData()):
+            return False
+        selected = self._kind_box.currentData()
+        if selected is ConnectKind.WEB:
+            return False
+        item = self._item
+        untouched = (
+            item is not None
+            and selected is item.kind
+            and self._app.currentData() == self._initial_app
+        )
+        return not untouched
+
     def _required_placement_fields(self) -> list[tuple[str, QLineEdit]]:
         """Поля размещения выбранного вида, которые пользователь обязан заполнить.
 
@@ -856,6 +907,15 @@ class InfobaseDialog(QDialog):
             self._required_hint.setText(
                 "Заполните: «Пользователь» — пароль без него не применить"
             )
+
+        # Последним — и потому перебивает предыдущие пояснения (финальное
+        # ревью ветки, I1). Незаполненное поле и пароль без логина — это
+        # «операция не полна»; веб-клиент при не-веб размещении — записанная
+        # в чужой файл незапускаемая запись, о ней сказать важнее. Оба  # noqa: RUF003
+        # состояния одинаково запирают «ОК», разница только в тексте.  # noqa: RUF003
+        if self._web_client_conflict():
+            self._ok_button.setEnabled(False)
+            self._required_hint.setText(WEB_CLIENT_PLACEMENT_NOTE)
 
     def _autocheck_remember(self) -> None:
         """Ввод пароля включает «Запомнить» (финальное ревью, I4).
