@@ -218,7 +218,11 @@ def choose_launch_plan(
         return LaunchPlan(client, auto_check_mode=False, auto_check_version=auto_check_version)
 
     if kind is ConnectKind.WEB:
-        return _web_plan(app, web_default_is_browser=web_default_is_browser)
+        return _web_plan(
+            app,
+            web_default_is_browser=web_default_is_browser,
+            auto_check_version=auto_check_version,
+        )
 
     # Не веб-база: прежний путь без изменений, включая отказ `ValueError`  # noqa: RUF003
     # на `App=WebClient` у не-ws записи (его ловит и переводит `services`).  # noqa: RUF003
@@ -226,7 +230,9 @@ def choose_launch_plan(
     return LaunchPlan(choice.client, choice.auto_check_mode, auto_check_version)
 
 
-def _web_plan(app: str | None, *, web_default_is_browser: bool) -> LaunchPlan | LaunchRefusal:
+def _web_plan(
+    app: str | None, *, web_default_is_browser: bool, auto_check_version: bool
+) -> LaunchPlan | LaunchRefusal:
     """Веб-база: решает `App`, а при `Auto`/пусто/нераспознанном — настройка.
 
     `/AppAutoCheckMode` снимается тогда, и только тогда, когда пользователь
@@ -238,16 +244,30 @@ def _web_plan(app: str | None, *, web_default_is_browser: bool) -> LaunchPlan | 
     `default_app` здесь не участвует намеренно: «толстый по умолчанию»
     означал бы запрет запуска всех веб-баз. До v2.3 настройка на них тоже
     не влияла — короткое замыкание стояло раньше `_choose_client`.
+
+    `auto_check_version` приходит ПАРАМЕТРОМ, а не пишется литералом
+    (финальное ревью ветки, I2). Литерал `True` был верен — сюда попадают
+    только веб-базы, а им версию диктует сервер, — но правило «полярность
+    `/AppAutoCheckVersion` определяется видом базы» оказалось записано
+    дважды: общим `pins_version` в `choose_launch_plan` и двумя литералами
+    здесь. Мутационная проверка вехи (T-15, мутация № 1) это и показала:
+    сломанный `pins_version` веб-ветку не задевал вовсе, то есть расхождение
+    двух мест ни один тест поймать не мог. Цена расхождения — молчаливый
+    повис клиента на десятки секунд, ровно тот дефект, который чинила веха.
     """  # noqa: RUF002
     if is_web_client_app(app):
         return _BROWSER_PLAN
     if app is not None and app.casefold() == "thinclient":
-        return LaunchPlan(ClientKind.THIN, auto_check_mode=False, auto_check_version=True)
+        return LaunchPlan(
+            ClientKind.THIN, auto_check_mode=False, auto_check_version=auto_check_version
+        )
     if app is not None and app.casefold() == "thickclient":
         return LaunchRefusal(RefusalReason.WEB_APP_THICK)
     if web_default_is_browser:
         return _BROWSER_PLAN
-    return LaunchPlan(ClientKind.THIN, auto_check_mode=True, auto_check_version=True)
+    return LaunchPlan(
+        ClientKind.THIN, auto_check_mode=True, auto_check_version=auto_check_version
+    )
 
 
 def is_web_client_app(app: str | None) -> bool:
