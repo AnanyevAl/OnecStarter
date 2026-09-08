@@ -302,9 +302,12 @@ SHA-256 **после** побайтового отката, что доказы�
 | `tests/ui/test_bases_view.py::test_f4_does_nothing_for_web_base` (`:1195`, докстринг `:1196-1201`) | **сначала** перевести на сборщик ошибок (`_view` или явный `on_error`), потом менять поведение; докстринг переписывается **тем же шагом** — отдельной правки текста не будет, см. ниже |
 | `tests/ui/test_bases_view.py` — комментарий на строках 906–914 | переписать: обоснование «явно затребованный клиент для веб-базы — бездействие» больше не действует, его место занимает отказ |
 | `tests/ui/test_bases_view.py:3613-3618` | останется зелёным с ложным докстрингом — переписать текст |
-| `tests/unit/test_services_launch.py::test_web_base_opens_browser` | перестаёт быть общим правилом: остаётся только для `App=WebClient` и для настройки «браузер» |
+| `tests/unit/test_services_launch.py::test_web_base_opens_browser` (`:139`) | **удаляется**: без `App` веб-база идёт тонким клиентом. Роль делят тесты на `App=WebClient` и на настройку «браузер» |
+| `tests/unit/test_services_launch.py::test_forced_designer_uses_thick_executable` (`:131`) | `forced_client=ClientKind.DESIGNER` → `forced_target=LaunchTarget.DESIGNER`: параметр `forced_client` исчезает вместе с `ClientKind` в сигнатуре (§2) |
+| `tests/unit/test_services_launch.py::test_web_base_reports_failed_browser` (`:229`) | **сохраняется**, записи даётся `App=WebClient`. Единственная проверка ветки `open_url() is False`; без неё неоткрывшаяся база пишется в историю как запущенная |
+| `tests/unit/test_workspace.py::test_duplicate_name_does_not_block_web_base` (`:490`) | **удаляется первой задачей**: утверждает обратное §6 и падает дважды — на новом отказе и на `.url`, которого у клиентского запуска нет |
 | `tests/unit/test_display.py` — «…» при `discovery_pending` для серверной базы | переписывается вместе с решением §4.3, с новым обоснованием |
-| `tests/ui/test_infobase_dialog.py:223` (охранный тест `changes()`) | параметризуется по FILE/SERVER/WEB — сегодня построен только на файловой базе и правку, задевающую WEB/SERVER, не поймает |
+| `tests/ui/test_infobase_dialog.py:130` и `:174` (охранные тесты `changes()`) | **не трогаются**: первый построен на серверной записи, второй покрывает одиннадцать краевых строк соединения. Дыра не в видах размещения, а в том, что **ни один охранный тест не даёт записи `requested_version`** — а именно этот путь веха ставит под удар. Добавляется новый тест, параметризованный по видам × трём значениям `Version` (установленная, не установленная, маска) |
 
 **Отдельно и до всего остального.** `test_f4_does_nothing_for_web_base` конструирует
 `BasesView` напрямую, без `on_error`; умолчание —
