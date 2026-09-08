@@ -13,6 +13,7 @@ from onecstarter.services.settings import (
     ListOrder,
     Settings,
     ThemeMode,
+    WebLaunch,
     load_settings,
     save_settings,
 )
@@ -332,15 +333,10 @@ class TestListOrder:
 
 
 def test_web_launch_defaults_to_thin(tmp_path: Path) -> None:
-    # Import should fail at this point, but we'll add it when tests run
-    from onecstarter.services.settings import WebLaunch
-
     assert load_settings(tmp_path / "нет.json").web_launch is WebLaunch.THIN
 
 
 def test_web_launch_roundtrip(tmp_path: Path) -> None:
-    from onecstarter.services.settings import WebLaunch
-
     path = tmp_path / "settings.json"
     save_settings(path, Settings(web_launch=WebLaunch.BROWSER))
     assert load_settings(path).web_launch is WebLaunch.BROWSER
@@ -348,8 +344,6 @@ def test_web_launch_roundtrip(tmp_path: Path) -> None:
 
 def test_unknown_web_launch_is_not_corruption(tmp_path: Path) -> None:
     """Незнакомое значение — более новая версия могла записать своё."""
-    from onecstarter.services.settings import WebLaunch
-
     path = tmp_path / "settings.json"
     save_settings(path, Settings())
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -361,8 +355,6 @@ def test_unknown_web_launch_is_not_corruption(tmp_path: Path) -> None:
 
 def test_settings_file_without_web_launch_reads_without_migration(tmp_path: Path) -> None:
     """Файл прежней установки: ключа нет, схема та же, дефолт подставляется."""
-    from onecstarter.services.settings import WebLaunch
-
     path = tmp_path / "settings.json"
     path.write_text(
         json.dumps({"schema": SCHEMA_VERSION, "theme": "dark"}, ensure_ascii=False),
