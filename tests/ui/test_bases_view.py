@@ -1200,12 +1200,14 @@ def test_f4_does_nothing_for_web_base(qtbot: Any, workspace_factory: Any) -> Non
     задача 8 плана 4a уже закрыла для Ctrl+1/2/3 — здесь он не должен вернуться.
     """
     workspace, calls, opened = workspace_factory()
+    errors: list[ServicesError] = []
     view = BasesView(
         workspace,
         installations=INSTALLED,
         cfg_rules=[],
         recent_limit=lambda: DEFAULT_RECENT_LIMIT,
         list_order=lambda: ListOrder.FILE,
+        on_error=errors.append,
     )
     qtbot.addWidget(view)
     _show_exposed(qtbot, view)
@@ -1215,16 +1217,19 @@ def test_f4_does_nothing_for_web_base(qtbot: Any, workspace_factory: Any) -> Non
 
     assert calls == []
     assert opened == []
+    assert errors == []
 
 
 def test_f3_opens_browser_for_web_base(qtbot: Any, workspace_factory: Any) -> None:
     workspace, _calls, opened = workspace_factory()
+    errors: list[ServicesError] = []
     view = BasesView(
         workspace,
         installations=INSTALLED,
         cfg_rules=[],
         recent_limit=lambda: DEFAULT_RECENT_LIMIT,
         list_order=lambda: ListOrder.FILE,
+        on_error=errors.append,
     )
     qtbot.addWidget(view)
     _show_exposed(qtbot, view)
@@ -1233,6 +1238,7 @@ def test_f3_opens_browser_for_web_base(qtbot: Any, workspace_factory: Any) -> No
     qtbot.keyClick(view, Qt.Key.Key_F3)
 
     assert len(opened) == 1
+    assert errors == []
 
 
 def test_f3_and_f4_shortcuts_are_registered_on_view(qtbot: Any, workspace_factory: Any) -> None:

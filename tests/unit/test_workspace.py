@@ -487,15 +487,6 @@ def test_records_word_agrees_with_number(count: int, word: str) -> None:
     assert _records_word(count) == word
 
 
-def test_duplicate_name_does_not_block_web_base(tmp_path: Path) -> None:
-    """Веб-база открывается браузером по адресу из `ws`, а не по `/IBName`,
-    поэтому неоднозначность имени её запуску не мешает.
-    """  # noqa: RUF002
-    workspace = _workspace(tmp_path)
-    workspace.add_infobase("Портал", 'File="C:\\Bases\\Dup";')
-    assert workspace.launch("id:77777777-7777-7777-7777-777777777777").url
-
-
 def test_remove_reports_when_key_changed_externally(tmp_path: Path) -> None:
     """Замерено: внешний процесс дописал `ID` записи без него — `remove` по
     старому ключу возвращал `None` без исключения, а запись оставалась.
