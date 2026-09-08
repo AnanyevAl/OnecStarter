@@ -45,7 +45,7 @@ from onecstarter.config.shell_link import (
 )
 from onecstarter.domain.connect import ConnectKind
 from onecstarter.domain.default_version import DefaultVersionRule
-from onecstarter.domain.launch import ClientKind
+from onecstarter.domain.launch import LaunchTarget
 from onecstarter.domain.version import Installation
 from onecstarter.services import cache
 from onecstarter.services.catalog import TreeNode
@@ -472,14 +472,14 @@ class BasesView(QWidget):
         self._tree.customContextMenuRequested.connect(self._show_menu)
         QShortcut(QKeySequence("Ctrl+D"), self, self._toggle_current_favorite)
         QShortcut(QKeySequence("Ctrl+N"), self, lambda: self.add_infobase())
-        QShortcut(QKeySequence("Ctrl+1"), self, lambda: self._launch_current(ClientKind.THIN))
-        QShortcut(QKeySequence("Ctrl+2"), self, lambda: self._launch_current(ClientKind.THICK))
-        QShortcut(QKeySequence("Ctrl+3"), self, lambda: self._launch_current(ClientKind.DESIGNER))
+        QShortcut(QKeySequence("Ctrl+1"), self, lambda: self._launch_current(LaunchTarget.THIN))
+        QShortcut(QKeySequence("Ctrl+2"), self, lambda: self._launch_current(LaunchTarget.THICK))
+        QShortcut(QKeySequence("Ctrl+3"), self, lambda: self._launch_current(LaunchTarget.DESIGNER))
         # F3/F4 — как у штатного стартера; заказчик к ним привык.  # noqa: RUF003
         # Ctrl+1/Ctrl+2 остаются: только они дают явный выбор тонкий/толстый,
         # которого у F3 нет. Ctrl+3 дублирует F4 — дубль безвреден.  # noqa: RUF003
         QShortcut(QKeySequence("F3"), self, lambda: self._launch_current(None))
-        QShortcut(QKeySequence("F4"), self, lambda: self._launch_current(ClientKind.DESIGNER))
+        QShortcut(QKeySequence("F4"), self, lambda: self._launch_current(LaunchTarget.DESIGNER))
         # Задача 15: перестановка с клавиатуры, соседа берём из того, что  # noqa: RUF003
         # реально видно (см. _move_current) — тот же приём, что и с мышью  # noqa: RUF003
         # (handle_drop/_reorder), только сосед не из-под курсора, а из модели.  # noqa: RUF003
@@ -743,7 +743,7 @@ class BasesView(QWidget):
 
     # -- запуск и операции ---------------------------------------------------
 
-    def launch_key(self, key: str, forced: ClientKind | None = None) -> None:
+    def launch_key(self, key: str, forced: LaunchTarget | None = None) -> None:
         try:
             self._workspace.launch(key, forced)
         except ServicesError as error:
@@ -912,23 +912,14 @@ class BasesView(QWidget):
         key = index.siblingAtColumn(0).data(KEY_ROLE)
         return key if isinstance(key, str) else None
 
-    def _launch_current(self, forced: ClientKind | None) -> None:
+    def _launch_current(self, forced: LaunchTarget | None) -> None:
+        """Веб-база больше не особый случай: клиент для неё выразим планом
+        (спека v2.3, §3), а невозможные сочетания дают отказ с объяснением,
+        а не тишину. Прежнее бездействие было обходом того, что «браузер»
+        не выражался в `ClientKind`.
+        """  # noqa: RUF002
         key = self._current_base_key()
-        if not key:
-            return
-        item = next((i for i in self._workspace.items() if i.key == key), None)
-        if item is not None and item.kind is ConnectKind.WEB:
-            # launch_infobase игнорирует forced_client для веб-баз (нет
-            # исполняемого файла клиента). Раньше здесь стоял безусловный
-            # launch_key: с Ctrl+1/2/3 это было честно, потому что меню для WEB  # noqa: RUF003
-            # такие пункты прячет. С F4 — уже нет: «Конфигуратор» и «открылся  # noqa: RUF003
-            # браузер» разные вещи. Явно затребованный клиент для веб-базы —
-            # бездействие, режим по умолчанию (forced is None, F3/Enter) —
-            # браузер.
-            if forced is not None:
-                return
-            self.launch_key(key)
-        else:
+        if key:
             self.launch_key(key, forced)
 
     def _toggle_current_favorite(self) -> None:
@@ -1001,7 +992,18 @@ class BasesView(QWidget):
         """  # noqa: RUF002
         menu = QMenu(self)
         if item.kind is ConnectKind.WEB:
-            menu.addAction("Открыть в браузере", lambda: self.launch_key(key))
+            # Веб-база с v2.3 запускается и клиентом: канал решает `App`  # noqa: RUF003
+            # записи, а разовый выбор — этими пунктами. «Толстого клиента»  # noqa: RUF003
+            # и «Конфигуратора» здесь нет: к ws= они не подключаются
+            # (спека v2.3, §3), и пункт-отказ был бы пунктом-обманом.
+            menu.addAction("Запустить\tF3", lambda: self.launch_key(key))
+            menu.addAction(
+                "Тонкий клиент\tCtrl+1", lambda: self.launch_key(key, LaunchTarget.THIN)
+            )
+            # Разовый выбор канала: сильнее и App записи, и настройки.
+            menu.addAction(
+                "Открыть в браузере", lambda: self.launch_key(key, LaunchTarget.BROWSER)
+            )
         else:
             # Подписи — сочетания штатного стартера, к которым привык
             # заказчик (smoke №1, 08.08.2026, замечание 5), а не наши  # noqa: RUF003
@@ -1012,17 +1014,18 @@ class BasesView(QWidget):
             # показывается только F4 — то, что заказчик ждёт увидеть.
             menu.addAction("Запустить\tF3", lambda: self.launch_key(key))
             menu.addAction(
-                "Тонкий клиент\tCtrl+1", lambda: self.launch_key(key, ClientKind.THIN)
+                "Тонкий клиент\tCtrl+1", lambda: self.launch_key(key, LaunchTarget.THIN)
             )
             menu.addAction(
-                "Толстый клиент\tCtrl+2", lambda: self.launch_key(key, ClientKind.THICK)
+                "Толстый клиент\tCtrl+2", lambda: self.launch_key(key, LaunchTarget.THICK)
             )
             menu.addAction(
-                "Конфигуратор\tF4", lambda: self.launch_key(key, ClientKind.DESIGNER)
+                "Конфигуратор\tF4", lambda: self.launch_key(key, LaunchTarget.DESIGNER)
             )
         menu.addSeparator()
         # Ярлык осмыслен и для веб-базы: он зовёт нашу программу
-        # с `--ib-name`, а та открывает браузер (services/launch.py).  # noqa: RUF003
+        # с `--ib-name`, а та выбирает канал по `App` записи и настройке  # noqa: RUF003
+        # (services/launch.py) — так же, как двойной клик в дереве.
         menu.addAction("Создать ярлык…", lambda: self.create_shortcut(key))
         properties = menu.addAction("Свойства…\tAlt+Enter", lambda: self.show_properties(key))
         self._add_version_menu(menu, item, key)

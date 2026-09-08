@@ -3087,3 +3087,32 @@ passed** за 220,01 с, код возврата 0 с первого прого�
     улучшилось, но ни один из трёх новых тестов не опустошает логин при
     набранном пароле (повторная проверка fix-раунда). Условие пересмотра:
     следующая правка `_refresh_ok_state` — добавить тест первой.
+
+## T-15. Веб-запуск: канал по `App`, версия по виду базы — `WIP` (ветка `feat/2026-09-08-v23-web-launch`)
+
+Дизайн — [спека v2.3](superpowers/specs/2026-09-08-v23-web-launch-design.md),
+план — [2026-09-08-v23-web-launch.md](superpowers/plans/2026-09-08-v23-web-launch.md).
+Основание — замеры T-05.16 (строка выше): канал запуска решает `App` записи,
+а не вид строки соединения, и версию у веб- и серверных баз диктует сервер.
+
+### Мутационная проверка — задача 3 (сквозная смена канала)
+
+Протокол — как в T-13 и T-14 (CLAUDE.md, «Мутационная проверка тестов»):
+мутация правкой файла → прогон названного теста → дословный `FAILED` →
+откат правкой файла (не `git checkout`) → тот же тест зелёным повторно.
+
+| # | Мутация | Ф / Т | Результат |
+| --- | --- | --- | --- |
+| 1 | `choose_launch_plan`: `pins_version = kind is ConnectKind.FILE or kind is ConnectKind.UNKNOWN` → `pins_version = True` | `domain/launch.py` / `test_server_base_does_not_pin_version_even_with_unknown_version` | УПАЛ — `LaunchError: Для «Учёт» запрошена версия 8.3.99.1, на этой машине она не установлена (Srvr=srv;Ref=acc;)`, поднят из `_installation_for` (ветка резолва вместо авто-версии). **Уточнение к плану:** предсказанный вторым `test_web_base_does_not_pin_version` эту мутацию НЕ ловит — `_web_plan` задаёт `auto_check_version=True` литералом, а не из `pins_version`, то есть полярность у веб-ветки записана вторым, независимым местом. Проверено отдельной мутацией 1б |
+| 1б | `_web_plan`, ветка `App=ThinClient`: `auto_check_version=True` → `False` | `domain/launch.py` / `test_web_base_does_not_pin_version` | УПАЛ — `assert '/AppAutoCheckVersion-' not in 'ENTERPRISE /IBName"Портал" /AppAutoCheckVersion-'`. Заодно упали `test_web_base_with_thin_app_launches_client_not_browser` (эталон командной строки) и `test_auto_version_path_without_installations_fails_before_spawn` |
+| 2 | `_plan`: `raise LaunchError(_REFUSAL_TEXTS[...])` → `return LaunchPlan(ClientKind.THIN, False, True)` | `services/launch.py` / `test_thick_client_forced_on_web_base_refuses_and_does_not_open_browser`, `test_browser_forced_on_file_base_refuses` | ОБА УПАЛИ — `Failed: процесс не должен порождаться`: вместо отказа план дошёл до `spawn`, сработала ловушка теста. Ни один не выродился в «DID NOT RAISE» — отказ подменён именно запуском |
+| 3 | `Workspace.launch`: проводка снята — `web_default_is_browser=False, forced_target=None` в вызов `launch_infobase` | `services/workspace.py` / три теста проводки | УПАЛИ ТРИ — `test_workspace_passes_web_setting_to_launch`: `assert <LaunchKind.PROCESS> is <LaunchKind.BROWSER>`; `test_workspace_forced_browser_beats_thin_app`: то же; `test_workspace_forced_designer_on_web_base_refuses`: `Failed: DID NOT RAISE LaunchError` |
+| 4 | `BasesView._launch_current`: возвращено прежнее бездействие (`if item.kind is ConnectKind.WEB and forced is not None: return`) | `ui/bases/view.py` / `test_ctrl_1_launches_thin_client_on_web_base`, `test_designer_on_web_base_refuses_and_opens_nothing` | ОБА УПАЛИ — `assert 0 == 1` (`len(calls)`: клиент не порождён) и `assert 0 == 1` (`len(errors)`: отказа нет, молчание вернулось) |
+| 5 | `BasesView._build_menu`, пункт «Открыть в браузере»: `launch_key(key, LaunchTarget.BROWSER)` → `launch_key(key)` | `ui/bases/view.py` / `test_web_menu_browser_action_opens_the_browser` | УПАЛ — `assert [LaunchCommand(... '1cv8c.exe', 'ENTERPRISE /IBName"Портал" /AppAutoCheckVersion /AppAutoCheckMode')] == []`: пункт открыл тонкого клиента вместо браузера, то есть подпись пункта разошлась с его действием |
+
+Пять мутаций плюс одна уточняющая, все убиты названными тестами.
+Мутация № 1 — тот же класс находки, что № 5 в таблице T-14: предсказание
+плана о том, КАКОЙ тест ловит мутацию, оказалось неполным, и это записано,
+а не скрыто. Практический вывод: полярность `/AppAutoCheckVersion` живёт
+в `choose_launch_plan` в двух местах — общем `pins_version` и литералах
+`_web_plan`; их расхождение ни один тест сегодня не поймает.

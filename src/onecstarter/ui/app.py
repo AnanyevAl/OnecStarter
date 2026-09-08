@@ -112,6 +112,7 @@ def build_runtime(env: Mapping[str, str]) -> Runtime:
         conventions=conventions,
         cfg_rules=rules,
         default_app=settings.default_client.default_app,
+        web_default_is_browser=settings.web_launch.is_browser,
         credentials=KeyringStore(),
     )
     servers_path = appdata / "OneCStarter" / "servers.json"
@@ -1043,10 +1044,15 @@ def _build_main_window(
     def apply_default_client() -> None:
         runtime.workspace.set_default_app(store.settings.default_client.default_app)
 
+    def apply_web_launch() -> None:
+        runtime.workspace.set_web_launch(is_browser=store.settings.web_launch.is_browser)
+
     apply_close_to_tray()
     apply_default_client()
+    apply_web_launch()
     store.changed.connect(apply_close_to_tray)
     store.changed.connect(apply_default_client)
+    store.changed.connect(apply_web_launch)
     store.changed.connect(rebuild_if_list_settings_changed)
     settings_view.set_hotkey_handler(apply_hotkey)
 

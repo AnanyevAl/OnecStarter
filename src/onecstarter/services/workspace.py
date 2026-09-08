@@ -20,7 +20,12 @@ from pathlib import Path
 from onecstarter.config.v8i import parse_v8i
 from onecstarter.domain.connect import ConnectKind
 from onecstarter.domain.default_version import DefaultVersionRule
-from onecstarter.domain.launch import ClientConvention, ClientKind, Credentials, LaunchCommand
+from onecstarter.domain.launch import (
+    ClientConvention,
+    Credentials,
+    LaunchCommand,
+    LaunchTarget,
+)
 from onecstarter.domain.version import Installation
 from onecstarter.platform_1c.process import spawn as spawn_process
 from onecstarter.security.credentials import SERVICE, CredentialBackendError, CredentialStore
@@ -97,6 +102,7 @@ class Workspace:
         conventions: Sequence[ClientConvention],
         cfg_rules: Sequence[DefaultVersionRule],
         default_app: str | None = None,
+        web_default_is_browser: bool = False,
         spawn: Callable[[LaunchCommand], int] = spawn_process,
         open_url: Callable[[str], bool] = webbrowser.open,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
@@ -112,6 +118,7 @@ class Workspace:
         self._conventions = list(conventions)
         self._cfg_rules = list(cfg_rules)
         self._default_app = default_app
+        self._web_default_is_browser = web_default_is_browser
         self._spawn = spawn
         self._open_url = open_url
         self._now = now
@@ -170,6 +177,11 @@ class Workspace:
         у `set_installations`).
         """  # noqa: RUF002
         self._default_app = default_app
+
+    def set_web_launch(self, *, is_browser: bool) -> None:
+        """Настройка «Веб-базы открывать». Слабее записи: `App` решает
+        раньше (спека v2.3, §3)."""  # noqa: RUF002
+        self._web_default_is_browser = is_browser
 
     @property
     def common_lists_pending(self) -> bool:
@@ -434,7 +446,7 @@ class Workspace:
         finally:
             self._rebuild()
 
-    def launch(self, key: str, forced_client: ClientKind | None = None) -> LaunchOutcome:
+    def launch(self, key: str, forced: LaunchTarget | None = None) -> LaunchOutcome:
         if self._installations is None:
             # Спека T-04.6, §3.4: запуск до готовности обязан отказать
             # вежливо, а не молча идти дальше с пустым списком установок —  # noqa: RUF003
@@ -454,7 +466,8 @@ class Workspace:
             cfg_rules=self._cfg_rules,
             conventions=self._conventions,
             default_app=self._default_app,
-            forced_client=forced_client,
+            web_default_is_browser=self._web_default_is_browser,
+            forced_target=forced,
             spawn=self._spawn,
             open_url=self._open_url,
             credentials=credentials,

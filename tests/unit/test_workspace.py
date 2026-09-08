@@ -7,7 +7,13 @@ from pathlib import Path
 import pytest
 
 from onecstarter.config.v8i import V8iSection, parse_v8i
-from onecstarter.domain.launch import ClientConvention, ClientKind, LaunchCommand
+from onecstarter.domain.connect import ConnectKind
+from onecstarter.domain.launch import (
+    ClientConvention,
+    ClientKind,
+    LaunchCommand,
+    LaunchTarget,
+)
 from onecstarter.domain.version import Arch, Installation, parse_version
 from onecstarter.security.credentials import CredentialBackendError, CredentialStore, MemoryStore
 from onecstarter.services.catalog import read_common_lists
@@ -22,6 +28,7 @@ from onecstarter.services.errors import (
     UserDataWriteError,
 )
 from onecstarter.services.groups import GroupRemoval
+from onecstarter.services.launch import LaunchKind
 from onecstarter.services.model import InfobaseSource, binding_key, group_binding_key
 from onecstarter.services.user_data import set_login
 from onecstarter.services.workspace import Workspace, WorkspacePaths, _records_word
@@ -1184,3 +1191,75 @@ def test_credentials_of_keeps_login_when_the_store_fails(tmp_path: Path) -> None
     workspace._user = set_login(workspace._user, key, "tester")
 
     assert workspace.credentials_of(key) == ("tester", None)
+
+
+# -- v2.3: канал запуска веб-базы через Workspace ---------------------------
+
+
+def _workspace_with_web_base(
+    tmp_path: Path, app: str | None = None, calls: list[LaunchCommand] | None = None
+) -> Workspace:
+    """Workspace с единственной веб-базой; `app` — значение ключа `App` записи.
+
+    Свой файл, а не `anonymized.v8i`: у «Портала» из фикстуры ключа `App`
+    нет вовсе, а спор «настройка против записи» (спека v2.3, §3) требует
+    уметь собрать обе стороны. Параметр `app` — отклонение от плана,
+    записанное в отчёте задачи 3: план звал этот хелпер без аргумента
+    и одновременно требовал от него и записи без `App` (тогда решает
+    настройка), и записи с `App=ThinClient` (тогда настройка не решает).
+    Одним фиксированным хелпером эти два теста несовместимы.
+    """  # noqa: RUF002
+    section = (
+        "[Портал]\r\n"
+        'Connect=ws="http://web-server/resource/";\r\n'
+        "ID=77777777-7777-7777-7777-777777777777\r\n"
+    )
+    if app is not None:
+        section += f"App={app}\r\n"
+    (tmp_path / "ibases.v8i").write_bytes(section.encode())
+    return _workspace(tmp_path, calls)
+
+
+def _web_key(workspace: Workspace) -> str:
+    return next(
+        item.key
+        for item in workspace.items()
+        if not item.is_group and item.kind is ConnectKind.WEB
+    )
+
+
+def test_workspace_passes_web_setting_to_launch(tmp_path: Path) -> None:
+    workspace = _workspace_with_web_base(tmp_path)
+    workspace.set_web_launch(is_browser=True)
+    assert workspace.launch(_web_key(workspace)).kind is LaunchKind.BROWSER
+
+
+def test_workspace_web_base_without_the_setting_goes_to_the_thin_client(
+    tmp_path: Path,
+) -> None:
+    """Обратная сторона теста выше: без настройки браузер не открывается.
+
+    Без этой пары `set_web_launch` мог бы не делать ничего — веб-база
+    уходила бы в браузер сама, как до вехи, и тест настройки остался бы
+    зелёным на пустышке.
+    """
+    calls: list[LaunchCommand] = []
+    workspace = _workspace_with_web_base(tmp_path, calls=calls)
+    outcome = workspace.launch(_web_key(workspace))
+    assert outcome.kind is LaunchKind.PROCESS
+    assert calls[0].executable.name == "1cv8c.exe"
+
+
+def test_workspace_forced_browser_beats_thin_app(tmp_path: Path) -> None:
+    """«Открыть в браузере» — разовый выбор, сильнее и App, и настройки."""
+    workspace = _workspace_with_web_base(tmp_path, app="ThinClient")
+    outcome = workspace.launch(_web_key(workspace), LaunchTarget.BROWSER)
+    assert outcome.kind is LaunchKind.BROWSER
+
+
+def test_workspace_forced_designer_on_web_base_refuses(tmp_path: Path) -> None:
+    """Отказ доходит до вызывающего целиком — UI показывает его текстом."""  # noqa: RUF002
+    workspace = _workspace_with_web_base(tmp_path, app="ThinClient")
+    with pytest.raises(LaunchError) as error:
+        workspace.launch(_web_key(workspace), LaunchTarget.DESIGNER)
+    assert "ws=" in str(error.value)

@@ -21,7 +21,7 @@ from PySide6.QtWidgets import QApplication, QDialog, QTreeView, QWidget
 
 from onecstarter.config.shell_link import build_shell_link, safe_file_name, shortcut_command
 from onecstarter.domain.connect import ConnectKind
-from onecstarter.domain.launch import ClientKind, LaunchCommand
+from onecstarter.domain.launch import LaunchCommand, LaunchTarget
 from onecstarter.domain.version import Arch, Installation, parse_version
 from onecstarter.security.credentials import CredentialBackendError, MemoryStore
 from onecstarter.services.cache import CacheEntry, CacheKind, EntryKind
@@ -35,7 +35,6 @@ from onecstarter.services.errors import (
     UserDataWriteError,
 )
 from onecstarter.services.groups import GroupRemoval
-from onecstarter.services.launch import LaunchOutcome
 from onecstarter.services.model import InfobaseItem, InfobaseSource, binding_key
 from onecstarter.services.paths import ROOT, group_path, normalize_folder, render_folder
 from onecstarter.services.settings import DEFAULT_RECENT_LIMIT, ListOrder
@@ -232,7 +231,7 @@ def _select_first_file_base(view: BasesView) -> None:
 
 
 def _select_first_web_base(view: BasesView) -> None:
-    """Выбрать первую WEB-базу — явный клиент (F4) для неё не запускается."""
+    """Выбрать первую WEB-базу — у неё свой набор допустимых каналов запуска."""  # noqa: RUF002
     item = next(
         i for i in view.workspace().items()
         if not i.is_group and i.kind is ConnectKind.WEB
@@ -408,17 +407,41 @@ def test_rebuild_rereads_keys_from_workspace(qtbot, workspace_factory):
     assert "Новая" in labels
 
 
-def test_web_base_context_menu_has_only_browser_action(qtbot, workspace_factory):
-    # Ветка ConnectKind.WEB в _build_menu: у веб-базы нет исполняемого файла,  # noqa: RUF003
-    # поэтому пункты клиентов («Тонкий клиент», «Конфигуратор») не показываются
-    # (services/launch.py — веб-база открывается браузером, а не процессом).  # noqa: RUF003
+def test_web_menu_offers_thin_and_browser(qtbot, workspace_factory):
+    """Заменяет test_web_base_context_menu_has_only_browser_action.
+
+    С v2.3 веб-база запускается и клиентом (спека §3), поэтому «Тонкий
+    клиент» в её меню есть. «Толстого» и «Конфигуратора» по-прежнему нет:
+    к ws= они не подключаются, и пункт, который умеет только отказать,
+    был бы пунктом-обманом.
+    """  # noqa: RUF002
     view, _, _, _ = _view(qtbot, workspace_factory)
     item = next(i for i in view.workspace().items() if i.name == "Портал")
-    menu = view._build_menu(item, item.key)
-    texts = [action.text() for action in menu.actions()]
-    assert any("Открыть в браузере" in text for text in texts)
-    assert not any("Тонкий клиент" in text for text in texts)
-    assert not any("Конфигуратор" in text for text in texts)
+    labels = [action.text() for action in view._build_menu(item, item.key).actions()]
+    assert any("Тонкий клиент" in label for label in labels)
+    assert any("Открыть в браузере" in label for label in labels)
+    assert not any("Толстый клиент" in label for label in labels)
+    assert not any("Конфигуратор" in label for label in labels)
+
+
+def test_web_menu_browser_action_opens_the_browser(qtbot, workspace_factory):
+    """Пункт меню действительно ведёт в браузер, а не только называется так.
+
+    Наследник test_f3_opens_browser_for_web_base: у записи без `App` браузер
+    теперь открывает не F3 (та идёт умолчанием, т.е. тонким клиентом),
+    а разовый выбор канала — этот пункт.
+    """  # noqa: RUF002
+    view, calls, errors, opened = _view(qtbot, workspace_factory)
+    item = next(i for i in view.workspace().items() if i.name == "Портал")
+    action = next(
+        a for a in view._build_menu(item, item.key).actions() if a.text() == "Открыть в браузере"
+    )
+
+    action.trigger()
+
+    assert errors == []
+    assert calls == []
+    assert len(opened) == 1
 
 
 def test_context_menu_has_properties_action(qtbot, workspace_factory):
@@ -781,7 +804,7 @@ def test_apply_properties_reports_a_valueerror_from_changes_instead_of_crashing(
 def test_ctrl_1_launches_thin_client_on_current_row(qtbot, workspace_factory):
     view, calls, errors, _ = _view(qtbot, workspace_factory)
     _select_key(view, "id:44444444-4444-4444-4444-444444444444")
-    view._launch_current(ClientKind.THIN)
+    view._launch_current(LaunchTarget.THIN)
     assert errors == []
     assert len(calls) == 1
     assert "1cv8c.exe" in calls[0].command_line
@@ -902,36 +925,40 @@ def test_enter_in_whitespace_only_search_launches_nothing(qtbot, workspace_facto
     assert errors == []
 
 
-def test_ctrl_1_on_web_base_does_nothing(qtbot, workspace_factory):
-    # Пересмотрено задачей 7 плана 4b (было
-    # test_ctrl_1_on_web_base_does_not_pass_forced_client_through, задача 8
-    # плана 4a). Тогда исправили только протаскивание forced_client внутрь
-    # workspace.launch(); сам запуск (браузер) всё равно происходил — для
-    # Ctrl+1/2/3 это было безопасно, потому что меню для WEB прячет эти
-    # пункты. С приходом F4 та же лазейка стала обманом («Конфигуратор»  # noqa: RUF003
-    # против «открылся браузер»), поэтому теперь явно затребованный клиент
-    # для веб-базы — бездействие: workspace.launch не вызывается вовсе, что
-    # здесь проверяется и по перехваченному forced_client, и по исходу.
+def test_ctrl_1_launches_thin_client_on_web_base(qtbot, workspace_factory):
+    """Заменяет test_ctrl_1_on_web_base_does_nothing: бездействие было обходом
+    того, что браузер невыразим в `ClientKind` (спека v2.3, §2).
+
+    Проверяется именно `_launch_current` — там и стояло короткое замыкание
+    «явно затребованный клиент для веб-базы = ничего не делать».
+    """
     view, calls, errors, opened = _view(qtbot, workspace_factory)
-    portal = next(i for i in view.workspace().items() if i.name == "Портал")
-    _select_key(view, portal.key)
+    _select_first_web_base(view)
 
-    workspace = view.workspace()
-    received: list[ClientKind | None] = []
-    original_launch = workspace.launch
+    view._launch_current(LaunchTarget.THIN)
 
-    def spy_launch(key: str, forced_client: ClientKind | None = None) -> LaunchOutcome:
-        received.append(forced_client)
-        return original_launch(key, forced_client)
-
-    workspace.launch = spy_launch  # type: ignore[method-assign]
-
-    view._launch_current(ClientKind.THIN)
-
-    assert received == []
     assert errors == []
-    assert calls == []
     assert opened == []
+    assert len(calls) == 1
+    assert calls[0].executable.name == "1cv8c.exe"
+
+
+def test_designer_on_web_base_refuses_and_opens_nothing(qtbot, workspace_factory):
+    """Дыра, которую закрывало прежнее бездействие («выдать браузер
+    за Конфигуратор»), теперь закрывается отказом — и это надо сторожить.
+
+    Заменяет test_f4_does_nothing_for_web_base: молчание не отличалось
+    от «нажал мимо», а отказ объясняет пользователю, почему Конфигуратор
+    к ws= не подключается.
+    """  # noqa: RUF002
+    view, calls, errors, opened = _view(qtbot, workspace_factory)
+    _select_first_web_base(view)
+
+    view._launch_current(LaunchTarget.DESIGNER)
+
+    assert opened == []
+    assert calls == []
+    assert len(errors) == 1
 
 
 def test_panel_follows_selection(qtbot, workspace_factory):
@@ -1017,7 +1044,7 @@ def test_ctrl_1_after_search_launches_the_selected_base(qtbot, workspace_factory
     key = "id:44444444-4444-4444-4444-444444444444"
     _select_key(view, key)
     _type(view.search(), "демо бух")  # noqa: RUF001
-    view._launch_current(ClientKind.THIN)
+    view._launch_current(LaunchTarget.THIN)
     assert errors == []
     assert len(calls) == 1
     assert "1cv8c.exe" in calls[0].command_line
@@ -1091,7 +1118,7 @@ def test_f3_launches_in_default_mode(qtbot: Any, workspace_factory: Any) -> None
     """F3 — режим «1С:Предприятие», а не выбор клиента.
 
     Тонкий или толстый решает App секции либо платформа ([Ф] T-02.6),
-    поэтому forced_client не передаётся — как у Enter.
+    поэтому разовая цель (`forced`) не передаётся — как у Enter.
     """  # noqa: RUF002
     workspace, calls, _opened = workspace_factory()
     view = BasesView(
@@ -1192,36 +1219,16 @@ def test_alt_enter_on_common_record_does_nothing(
     assert shown == []
 
 
-def test_f4_does_nothing_for_web_base(qtbot: Any, workspace_factory: Any) -> None:
-    """«Открыть Конфигуратор» и «открылся браузер» — разные вещи.
+def test_f3_launches_thin_client_for_web_base(qtbot: Any, workspace_factory: Any) -> None:
+    """F3 на веб-базе без `App` — тонкий клиент, а не браузер.
 
-    launch_infobase для WEB игнорирует forced_client, поэтому наивный вызов
-    launch_key открыл бы браузер и выдал бы это за Конфигуратор. Тот же обман
-    задача 8 плана 4a уже закрыла для Ctrl+1/2/3 — здесь он не должен вернуться.
-    """
+    Был test_f3_opens_browser_for_web_base. Канал с v2.3 решает `App` записи,
+    а при его отсутствии — настройка «Веб-базы открывать», у которой дефолт
+    «тонкий клиент» ([Ф] T-05.16 № 8, штатный стартер делает так же).
+    Проверка идёт через настоящий QShortcut, а не прямой вызов: доставка
+    F3 до виджета — отдельное от плана запуска свойство.
+    """  # noqa: RUF002
     workspace, calls, opened = workspace_factory()
-    errors: list[ServicesError] = []
-    view = BasesView(
-        workspace,
-        installations=INSTALLED,
-        cfg_rules=[],
-        recent_limit=lambda: DEFAULT_RECENT_LIMIT,
-        list_order=lambda: ListOrder.FILE,
-        on_error=errors.append,
-    )
-    qtbot.addWidget(view)
-    _show_exposed(qtbot, view)
-    _select_first_web_base(view)
-
-    qtbot.keyClick(view, Qt.Key.Key_F4)
-
-    assert calls == []
-    assert opened == []
-    assert errors == []
-
-
-def test_f3_opens_browser_for_web_base(qtbot: Any, workspace_factory: Any) -> None:
-    workspace, _calls, opened = workspace_factory()
     errors: list[ServicesError] = []
     view = BasesView(
         workspace,
@@ -1237,8 +1244,10 @@ def test_f3_opens_browser_for_web_base(qtbot: Any, workspace_factory: Any) -> No
 
     qtbot.keyClick(view, Qt.Key.Key_F3)
 
-    assert len(opened) == 1
     assert errors == []
+    assert opened == []
+    assert len(calls) == 1
+    assert calls[0].executable.name == "1cv8c.exe"
 
 
 def test_f3_and_f4_shortcuts_are_registered_on_view(qtbot: Any, workspace_factory: Any) -> None:
@@ -3620,7 +3629,9 @@ def test_web_base_also_offers_a_shortcut(qtbot, workspace_factory):
     """Веб-база тоже запускается через нас — ярлык на неё осмыслен.
 
     Ярлык зовёт нашу программу с `--ib-name`, а та для веб-базы открывает
-    браузер (`services/launch.py`). Пункты клиентов веб-базе не показываются,
+    её тем же каналом, что и двойной клик: по `App` записи, а при его
+    отсутствии — по настройке «Веб-базы открывать» (спека v2.3, §3).
+    Пункты «Толстый клиент» и «Конфигуратор» веб-базе не показываются,
     но этот — показывается.
     """  # noqa: RUF002
     view, _, _, _ = _view(qtbot, workspace_factory)
