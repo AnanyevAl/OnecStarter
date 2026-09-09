@@ -14,7 +14,7 @@ from enum import Enum
 from pathlib import Path
 from typing import cast
 
-from PySide6.QtCore import QModelIndex, QPoint, QStandardPaths, Qt, Signal
+from PySide6.QtCore import QModelIndex, QPoint, QStandardPaths, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QDragEnterEvent,
     QDragMoveEvent,
@@ -48,6 +48,7 @@ from onecstarter.domain.default_version import DefaultVersionRule
 from onecstarter.domain.launch import LaunchTarget
 from onecstarter.domain.version import Installation
 from onecstarter.services import cache
+from onecstarter.services.availability import Availability, probe_targets
 from onecstarter.services.catalog import TreeNode
 from onecstarter.services.connection import panel_card
 from onecstarter.services.display import (
@@ -359,6 +360,10 @@ class BasesView(QWidget):
     # прячет окно в трей по настройке. Все пути запуска из UI (Enter/двойной  # noqa: RUF003
     # клик, поиск, F3/F4/Ctrl+1-3, меню, трей) сходятся в launch_key.
     launched = Signal(str)
+    # Вьюха просит запустить пробу доступности, но объектом пробы не владеет:
+    # он живёт в проводке `ui/app.py` рядом со StartupTasks. Так `F5` работает  # noqa: RUF003
+    # без того, чтобы раздел знал про потоки.
+    probe_requested = Signal()
 
     def __init__(
         self,
@@ -493,6 +498,19 @@ class BasesView(QWidget):
         QShortcut(QKeySequence("Alt+Return"), self, self._show_current_properties)
         QShortcut(QKeySequence("Alt+Enter"), self, self._show_current_properties)
 
+        # Доступность каталогов приходит из фона по одному пути за сигнал
+        # и ключуется НОРМАЛИЗОВАННЫМ ПУТЁМ, а не ключом записи: так дубли  # noqa: RUF003
+        # снимаются сами (две базы в одном каталоге), а правка имени записи  # noqa: RUF003
+        # не теряет уже известный результат (спека §3.5).
+        self._availability: dict[str, Availability] = {}
+        # Коалесинг: проба на пятидесяти базах даёт пятьдесят сигналов подряд,
+        # а пересборка модели целиком стоит дорого. Тот же приём и тот же  # noqa: RUF003
+        # интервал, что гасят дребезг перезаписи файла в ui/watcher.py.
+        self._availability_timer = QTimer(self)
+        self._availability_timer.setSingleShot(True)
+        self._availability_timer.setInterval(200)
+        self._availability_timer.timeout.connect(self.rebuild)
+
         self.rebuild()
 
     # -- доступ для тестов, трея и оболочки --------------------------------
@@ -527,6 +545,13 @@ class BasesView(QWidget):
         """Обнаружение закончилось: показать версии вместо «…»."""
         self._installations = list(installations)
         self.rebuild()
+
+    def apply_availability(self, key: str, state: Availability) -> None:
+        """Один результат пробы: `key` — нормализованный путь, не ключ записи."""
+        if self._availability.get(key) is state:
+            return
+        self._availability[key] = state
+        self._availability_timer.start()
 
     # -- перестройка --------------------------------------------------------
 
@@ -588,7 +613,19 @@ class BasesView(QWidget):
         }
         if not self._filtered:
             self._expansion = self._expanded_keys()
-        model = build_model(self._rows, cells, _format_stamp, self._palette)
+        # Перевод «ключ записи → состояние» из двух готовых отображений:
+        # probe_targets даёт «ключ записи → ключ пути», self._availability —
+        # «ключ пути → состояние». Запись, которую не проверяем вовсе
+        # (не файловая, пустой или относительный путь), в targets не попадает
+        # и получает UNKNOWN (спека §3.5).
+        targets = probe_targets(items)
+        availability = {
+            key: self._availability.get(target.key, Availability.UNKNOWN)
+            for key, target in targets.items()
+        }
+        model = build_model(
+            self._rows, cells, _format_stamp, self._palette, availability=availability
+        )
         self._tree.setModel(model)
         if column_widths is None:
             # Подгонка по содержимому уместна только на самой первой сборке —

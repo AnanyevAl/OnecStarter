@@ -24,8 +24,9 @@ from onecstarter.domain.connect import ConnectKind
 from onecstarter.domain.launch import LaunchCommand, LaunchTarget
 from onecstarter.domain.version import Arch, Installation, parse_version
 from onecstarter.security.credentials import CredentialBackendError, MemoryStore
+from onecstarter.services.availability import Availability, path_key
 from onecstarter.services.cache import CacheEntry, CacheKind, EntryKind
-from onecstarter.services.display import COMMON_NOTE, IMPLICIT_NOTE, RowKind
+from onecstarter.services.display import COMMON_NOTE, IMPLICIT_NOTE, MISSING_SUFFIX, RowKind
 from onecstarter.services.errors import (
     InvalidRequestError,
     LaunchError,
@@ -145,6 +146,16 @@ def _iter_tree(model: Any, parent: QModelIndex | None = None) -> Iterator[QModel
         index = model.index(row, 0, parent)
         yield index
         yield from _iter_tree(model, index)
+
+
+def _all_labels(view: BasesView) -> str:
+    """Все метки дерева одной строкой — для проверок «есть/нет пометки».
+
+    Через `_iter_tree` — единственный обходчик модели на файл (долг ревью
+    4b, №4), а не собственный `walk()`: второй скелет того же рекурсивного
+    обхода был бы ровно тем дублем, который тот долг закрывал.
+    """  # noqa: RUF002
+    return "\n".join(str(index.data()) for index in _iter_tree(view.model()))
 
 
 def _column_texts(view: BasesView, column: int) -> list[str]:
@@ -2633,6 +2644,9 @@ def test_drop_before_or_after_moves_into_the_targets_parent_only(
 # 60.68…, поэтому исходный порядок показа — Розница, затем Демо Бухгалтерия.
 
 _DEMO_ACCOUNTING_KEY = "id:44444444-4444-4444-4444-444444444444"
+# Задача 8 (v2.4): File= той же секции — фикстура anonymized.v8i, строка
+# `Connect=File="C:\Bases\Demo";` (сверено с файлом, не по памяти брифа).  # noqa: RUF003
+_DEMO_ACCOUNTING_PATH = r"C:\Bases\Demo"
 
 
 def _clients_children(view: BasesView) -> list[str]:
@@ -4390,3 +4404,55 @@ def test_properties_with_unavailable_store_never_calls_set_credentials(
     assert calls == []
     assert view.workspace().credentials_of(_ACCOUNTING_KEY)[0] == "tester"
     assert errors == []
+
+
+# -- Задача 8 (v2.4): накопление доступности каталогов и коалесинг ----------
+#
+# Проба живёт вне вьюхи (задача 9 — следующая задача вехи), сюда результат
+# приходит уже готовым сигналом `apply_availability(key, state)`. Ключ —
+# нормализованный ПУТЬ (`path_key`), не ключ записи: контракт `probe_targets`.
+
+
+def test_availability_reaches_the_model_after_debounce(qtbot, workspace_factory):
+    """Результат пробы доезжает до метки строки — через коалесинг в 200 мс."""
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    key = path_key(_DEMO_ACCOUNTING_PATH)
+    view.apply_availability(key, Availability.MISSING)
+    qtbot.waitUntil(lambda: MISSING_SUFFIX in _all_labels(view), timeout=2000)
+
+
+def test_repeated_reports_cause_one_rebuild(qtbot, workspace_factory, monkeypatch):
+    """Коалесинг: пятьдесят сигналов подряд — одна пересборка, не пятьдесят.
+
+    Подмена `rebuild` на ЭКЗЕМПЛЯРЕ уже после того, как `__init__` подключил
+    его к таймеру — приём, который брифу указан как потенциально хрупкий
+    (метод мог быть захвачен `connect()` по значению на момент подключения,
+    и подмена атрибута задним числом осталась бы незамеченной). Проверено
+    мутацией на этой самой вьюхе: `apply_availability`, лишённый коалесинга
+    (прямой вызов `self.rebuild()` вместо `self._availability_timer.start()`),
+    даёт здесь `len(rebuilds) == 50` — тест ловит поломку, а не проходит
+    по совпадению. Значит, PySide6 в этой версии резолвит `self.rebuild`
+    заново на каждый вызов сигнала (а не хранит замороженный bound method),
+    и подмена атрибута инстанса действует на уже установленное соединение.
+    """  # noqa: RUF002
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    rebuilds: list[int] = []
+    original = view.rebuild
+
+    def counted_rebuild() -> None:
+        rebuilds.append(1)
+        original()
+
+    monkeypatch.setattr(view, "rebuild", counted_rebuild)
+    for _ in range(50):
+        view.apply_availability(path_key(_DEMO_ACCOUNTING_PATH), Availability.MISSING)
+    qtbot.waitUntil(lambda: bool(rebuilds), timeout=2000)
+    assert len(rebuilds) == 1
+
+
+def test_unknown_paths_do_not_mark_anything(qtbot, workspace_factory):
+    """Путь, которого нет ни у одной записи, не помечает ничего чужого."""  # noqa: RUF002
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    view.apply_availability(path_key(r"D:\чужой\путь"), Availability.MISSING)
+    qtbot.wait(400)
+    assert MISSING_SUFFIX not in _all_labels(view)
