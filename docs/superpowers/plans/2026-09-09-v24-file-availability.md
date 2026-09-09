@@ -173,7 +173,7 @@ def test_file_base_with_absolute_path_is_a_target() -> None:
 
 
 def test_unc_path_is_a_target_too() -> None:
-    """UNC абсолютен по `os.path.isabs` и проверяется наравне с локальным (спека §2)."""
+    """UNC абсолютен по `Path.is_absolute()` и проверяется наравне с локальным (спека §2)."""
     item = _item(connect=r'File="\\srv\share\acc";')
     assert list(probe_targets([item])) == ["id:a"]
 
@@ -258,6 +258,7 @@ import os
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
 from onecstarter.domain.connect import ConnectKind, find_fragment, parse_connect
 from onecstarter.services.model import InfobaseItem
@@ -315,7 +316,7 @@ def probe_targets(items: Iterable[InfobaseItem]) -> dict[str, ProbeTarget]:
     targets: dict[str, ProbeTarget] = {}
     for item in items:
         value = file_path_of(item)
-        if value is None or not os.path.isabs(value):
+        if value is None or not Path(value).is_absolute():
             continue
         targets[item.key] = ProbeTarget(path_key(value), value)
     return targets
@@ -324,7 +325,7 @@ def probe_targets(items: Iterable[InfobaseItem]) -> dict[str, ProbeTarget]:
 def relative_path_note(item: InfobaseItem) -> str | None:
     """Почему запись не проверялась, если причина — относительный путь."""
     value = file_path_of(item)
-    if value is None or os.path.isabs(value):
+    if value is None or Path(value).is_absolute():
         return None
     return RELATIVE_NOTE
 
@@ -351,7 +352,7 @@ def availability_hint(state: Availability, path: str) -> str | None:
 - [ ] **Step 5: Прогнать тесты**
 
 Run: `uv run pytest tests/unit/test_availability.py tests/unit/test_no_qt_in_core.py -q`
-Expected: PASS, 12 тестов
+Expected: PASS, 14 тестов
 
 - [ ] **Step 6: Линт и типы**
 
