@@ -1584,7 +1584,13 @@ from onecstarter.ui.background import AvailabilityProbe, StartupTasks
     return window, tasks, monitor, start_probe
 ```
 
-Обновить обе распаковки. На строке ~404:
+Обновить **все** распаковки, а не только две в `app.py`. Их больше, чем видно
+при чтении плана: `tests/ui/test_app.py` распаковывает результат в двух десятках
+мест, включая обёртку `_capture_window`. Найди их поиском
+(`grep -rn "_build_main_window("`), а не перечислением по памяти: пропущенная
+распаковка даёт `ValueError: not enough values to unpack` в бою, а не в тестах.
+
+На строке ~404:
 
 ```python
         window, built_tasks, _monitor, _start_probe = _build_main_window(
