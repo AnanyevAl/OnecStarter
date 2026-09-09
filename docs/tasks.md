@@ -3423,10 +3423,10 @@ _process_events` на 34 % (684-й тест по порядку сбора). С�
 
 | # | Находка | Мутация | Ф / Т | Результат |
 | --- | --- | --- | --- | --- |
-| 1 | Task 3 | `_probe_one`: первый `except (OSError, ValueError): return Availability.MISSING` → `return Availability.PRESENT` (отказ `stat` на самом каталоге принят за доступность) | `services/availability.py` / `test_missing_directory_is_missing`, `test_permission_error_counts_as_missing`, `test_arbitrary_oserror_counts_as_missing` | УПАЛИ ВСЕ ТРИ, например: `AssertionError: assert {'d:\\b': <Availability.PRESENT: 'present'>} == {'d:\\b': <Availability.MISSING: 'missing'>}` (`tests\unit\test_availability.py:154`, тот же вид на двух остальных, строки 173 и 181) |
+| 1 | Task 3 | `_probe_one`: первый `except (OSError, ValueError): return Availability.MISSING` → `return Availability.PRESENT` (отказ `stat` на самом каталоге принят за доступность) | `services/availability.py` / `test_missing_directory_is_missing`, `test_permission_error_counts_as_missing`, `test_arbitrary_oserror_counts_as_missing` | УПАЛИ ВСЕ ТРИ, например: `AssertionError: assert {'d:\\b': <Av...T: 'present'>} == {'d:\\b': <Av...G: 'missing'>}` / `Differing items: {'d:\\b': <Availability.PRESENT: 'present'>} != {'d:\\b': <Availability.MISSING: 'missing'>}` (`tests\unit\test_availability.py:154`, тот же вид на двух остальных, строки 173 и 181) |
 | 2 | Task 6 | `_items_for`: `missing = state is Availability.MISSING` → `missing = state is not Availability.PRESENT` (непроверенное `UNKNOWN` тоже красится крестиком) | `ui/bases/tree_model.py` / `test_unknown_state_carries_no_mark`, `test_record_absent_from_the_mapping_is_unknown`, `test_availability_defaults_to_nothing_marked`, `test_relative_path_gets_an_honest_note` | УПАЛИ ВСЕ ЧЕТЫРЕ, например: `AssertionError: assert 'Файловая (нет каталога)' == 'Файловая'` (`tests\ui\test_tree_model.py:185`; тот же суффикс `(нет каталога)` лишний в строках 190, 196, 219) |
 | 3 | Task 3 | `probe_paths`: снята дедупликация — удалены `if target.key in seen: continue` и `seen.add(target.key)` | `services/availability.py` / `test_duplicate_paths_cost_one_stat` | УПАЛ — `AssertionError: assert ['D:\\b', 'D:...\B\\1Cv8.1CD'] == ['D:\\b', 'D:\\b\\1Cv8.1CD']` / `Left contains 2 more items, first extra item: 'd:/B'` (`tests\unit\test_availability.py:205`) — второй путь того же каталога снова стоит вызова `stat` |
-| 4 | Task 3 | `_probe_one`: второй `try`/`except` (проверка файла `DB_FILE_NAME` внутри каталога) удалён целиком | `services/availability.py` / `test_directory_without_the_database_file_is_missing` | УПАЛ — `AssertionError: assert {'d:\\b': <Availability.PRESENT: 'present'>} == {'d:\\b': <Availability.MISSING: 'missing'>}` (`tests\unit\test_availability.py:193`) — каталог без файла базы считается присутствующим |
+| 4 | Task 3 | `_probe_one`: второй `try`/`except` (проверка файла `DB_FILE_NAME` внутри каталога) удалён целиком | `services/availability.py` / `test_directory_without_the_database_file_is_missing` | УПАЛ — `AssertionError: assert {'d:\\b': <Av...T: 'present'>} == {'d:\\b': <Av...G: 'missing'>}` / `Differing items: {'d:\\b': <Availability.PRESENT: 'present'>} != {'d:\\b': <Availability.MISSING: 'missing'>}` (`tests\unit\test_availability.py:193`) — каталог без файла базы считается присутствующим |
 | 5 | Task 8 | `apply_availability`: `self._availability_timer.start()` → `self.rebuild()` (коалесинг снят, каждый сигнал пересобирает дерево немедленно) | `ui/bases/view.py` / `test_repeated_reports_cause_one_rebuild` | **НЕ УПАЛ** — `1 passed, 209 deselected in 0.45s`. Разбор находки ниже |
 | 6 | Task 9 | `refresh_all`: первой строкой добавлен `self._availability.clear()` | `ui/bases/view.py` / `test_refresh_keeps_known_states` | УПАЛ — `KeyError: 'c:\\bases\\demo'` на `assert view._availability[key] is Availability.MISSING` (`tests\ui\test_bases_view.py:4480`) — `F5` погасил уже известный крестик |
 
@@ -3478,11 +3478,17 @@ def test_reports_on_different_paths_still_coalesce_to_one_rebuild(
 len([1, 1, 1, 1, 1, 1, ...])` — и прошёл после отката мутации, вместе
 с исходным `test_repeated_reports_cause_one_rebuild` (оба `passed`). Пробник
 не оставлен в дереве: этот прогон — проверка теста, а не работа над кодом,
-в коммит идёт только этот документ (правило задания). **Долг вехи**: включить
-`test_reports_on_different_paths_still_coalesce_to_one_rebuild` (или
-равносильный тест с разными ключами) в `tests/ui/test_bases_view.py` —
+в коммит идёт только этот документ (правило задания). ~~**Долг вехи**:
+включить `test_reports_on_different_paths_still_coalesce_to_one_rebuild`
+(или равносильный тест с разными ключами) в `tests/ui/test_bases_view.py` —
 единственный сегодняшний тест на коалесинг закрывает не тот сценарий,
-который описан в его собственном докстринге.
+который описан в его собственном докстринге.~~ **ЗАКРЫТО `e57a032`.**
+`test_repeated_reports_cause_one_rebuild` переписан на разные ключи
+(`rf"D:\probe\{i}"` вместо одного `_DEMO_ACCOUNTING_PATH`), сценарий покрыт
+на месте, отдельного теста с новым именем не заводили; докстринг теста
+объясняет причину правки той же находкой. Заодно добавлен
+`test_same_key_and_state_report_is_a_no_op` — отдельная проверка на сам
+сторож `is state`, который и создавал слепую зону.
 
 Итого: пять мутаций из шести убиты названным тестом точно на предсказанной
 строке; одна (№ 5) заявленным тестом не убита — убита сконструированным
