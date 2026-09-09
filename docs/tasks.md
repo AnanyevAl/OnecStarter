@@ -3411,3 +3411,83 @@ _process_events` на 34 % (684-й тест по порядку сбора). С�
 то самое место, которое записано как известное. К правкам волны отношения
 не имеет: `settings_view` ими не тронут, а повторный прогон того же дерева
 прошёл чисто. Проявление зафиксировано здесь; сам пункт T-12 п. 15 не трогался.
+
+### Мутационные проверки вехи v2.4 (09.09.2026)
+
+Веха «Доступность каталогов файловых баз» (Tasks 2–9, ветка
+`feat/2026-09-09-v24-file-availability`). Протокол — тот же, что в предыдущих
+вехах (CLAUDE.md, «Мутационная проверка тестов»): мутация правкой файла →
+прогон только названного теста → дословный `FAILED` → откат правкой файла
+(не `git checkout`) → тот же тест зелёным повторно. Мутации по брифу Task 11 —
+шесть штук, ставил не автор тестов Tasks 2–9, отдельный исполнитель.
+
+| # | Находка | Мутация | Ф / Т | Результат |
+| --- | --- | --- | --- | --- |
+| 1 | Task 3 | `_probe_one`: первый `except (OSError, ValueError): return Availability.MISSING` → `return Availability.PRESENT` (отказ `stat` на самом каталоге принят за доступность) | `services/availability.py` / `test_missing_directory_is_missing`, `test_permission_error_counts_as_missing`, `test_arbitrary_oserror_counts_as_missing` | УПАЛИ ВСЕ ТРИ, например: `AssertionError: assert {'d:\\b': <Availability.PRESENT: 'present'>} == {'d:\\b': <Availability.MISSING: 'missing'>}` (`tests\unit\test_availability.py:154`, тот же вид на двух остальных, строки 173 и 181) |
+| 2 | Task 6 | `_items_for`: `missing = state is Availability.MISSING` → `missing = state is not Availability.PRESENT` (непроверенное `UNKNOWN` тоже красится крестиком) | `ui/bases/tree_model.py` / `test_unknown_state_carries_no_mark`, `test_record_absent_from_the_mapping_is_unknown`, `test_availability_defaults_to_nothing_marked`, `test_relative_path_gets_an_honest_note` | УПАЛИ ВСЕ ЧЕТЫРЕ, например: `AssertionError: assert 'Файловая (нет каталога)' == 'Файловая'` (`tests\ui\test_tree_model.py:185`; тот же суффикс `(нет каталога)` лишний в строках 190, 196, 219) |
+| 3 | Task 3 | `probe_paths`: снята дедупликация — удалены `if target.key in seen: continue` и `seen.add(target.key)` | `services/availability.py` / `test_duplicate_paths_cost_one_stat` | УПАЛ — `AssertionError: assert ['D:\\b', 'D:...\B\\1Cv8.1CD'] == ['D:\\b', 'D:\\b\\1Cv8.1CD']` / `Left contains 2 more items, first extra item: 'd:/B'` (`tests\unit\test_availability.py:205`) — второй путь того же каталога снова стоит вызова `stat` |
+| 4 | Task 3 | `_probe_one`: второй `try`/`except` (проверка файла `DB_FILE_NAME` внутри каталога) удалён целиком | `services/availability.py` / `test_directory_without_the_database_file_is_missing` | УПАЛ — `AssertionError: assert {'d:\\b': <Availability.PRESENT: 'present'>} == {'d:\\b': <Availability.MISSING: 'missing'>}` (`tests\unit\test_availability.py:193`) — каталог без файла базы считается присутствующим |
+| 5 | Task 8 | `apply_availability`: `self._availability_timer.start()` → `self.rebuild()` (коалесинг снят, каждый сигнал пересобирает дерево немедленно) | `ui/bases/view.py` / `test_repeated_reports_cause_one_rebuild` | **НЕ УПАЛ** — `1 passed, 209 deselected in 0.45s`. Разбор находки ниже |
+| 6 | Task 9 | `refresh_all`: первой строкой добавлен `self._availability.clear()` | `ui/bases/view.py` / `test_refresh_keeps_known_states` | УПАЛ — `KeyError: 'c:\\bases\\demo'` на `assert view._availability[key] is Availability.MISSING` (`tests\ui\test_bases_view.py:4480`) — `F5` погасил уже известный крестик |
+
+Все шесть мутаций откачены обратной правкой того же файла; после каждой —
+повторный зелёный прогон того же теста, `git status`/`git diff` по `src/`
+и `tests/` пуст.
+
+**Находка: мутация № 5 не убита названным тестом.** `test_repeated_reports_cause_one_rebuild`
+шлёт 50 РАЗ ОДИН И ТОТ ЖЕ `key`+`state` (`path_key(_DEMO_ACCOUNTING_PATH)`,
+`Availability.MISSING`). Это гасится ДРУГОЙ веткой `apply_availability`,
+раньше таймера — `if self._availability.get(key) is state: return`: первый
+вызов проходит и меняет состояние, все следующие 49 — no-op ещё до строки
+с таймером/`rebuild()`. Коалесинг в принципе не успевает сработать больше
+одного раза — мутация неотличима от немутированного кода на этом сценарии,
+и `1 passed` получается что на правильной реализации, что на сломанной.
+Собственный докстринг теста заявляет обратное («даёт здесь `len(rebuilds) ==
+50`») — это утверждение проверено и оказалось неверным для нынешнего кода;
+скорее всего оно было верным до того, как в `apply_availability` появилась
+проверка `is state` (более ранняя защита от повторных одинаковых отчётов),
+и с тех пор не перепроверялось.
+
+Собран временный пробник — тот же тест, но с 50 РАЗНЫМИ путями
+(`f"d:\\probe\\{i}"` вместо одного `key`), как в реальном сценарии из
+докстринга `BasesView.__init__` («проба на пятидесяти базах даёт пятьдесят
+сигналов подряд»): раз ключ каждый раз новый, ветка `is state` не гасит
+ни один вызов, и коалесинг проверяется по назначению.
+
+```python
+def test_reports_on_different_paths_still_coalesce_to_one_rebuild(
+    qtbot, workspace_factory, monkeypatch
+):
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    rebuilds: list[int] = []
+    original = view.rebuild
+
+    def counted_rebuild() -> None:
+        rebuilds.append(1)
+        original()
+
+    monkeypatch.setattr(view, "rebuild", counted_rebuild)
+    for i in range(50):
+        view.apply_availability(f"d:\\probe\\{i}", Availability.MISSING)
+    qtbot.waitUntil(lambda: bool(rebuilds), timeout=2000)
+    assert len(rebuilds) == 1
+```
+
+На той же мутации (№ 5) этот пробник упал ожидаемо —
+`assert 50 == 1` / `AssertionError: assert 50 == 1` / `+ where 50 =
+len([1, 1, 1, 1, 1, 1, ...])` — и прошёл после отката мутации, вместе
+с исходным `test_repeated_reports_cause_one_rebuild` (оба `passed`). Пробник
+не оставлен в дереве: этот прогон — проверка теста, а не работа над кодом,
+в коммит идёт только этот документ (правило задания). **Долг вехи**: включить
+`test_reports_on_different_paths_still_coalesce_to_one_rebuild` (или
+равносильный тест с разными ключами) в `tests/ui/test_bases_view.py` —
+единственный сегодняшний тест на коалесинг закрывает не тот сценарий,
+который описан в его собственном докстринге.
+
+Итого: пять мутаций из шести убиты названным тестом точно на предсказанной
+строке; одна (№ 5) заявленным тестом не убита — убита сконструированным
+пробником, который в дерево не попал. Формулировка находки не смягчена:
+защита от гонки «пятьдесят сигналов — одна пересборка» сегодня держится
+не на коалесинге, а только на побочном эффекте другой проверки, и ни один
+тест в `tests/ui/test_bases_view.py` не отличает рабочий коалесинг от
+снятого.
