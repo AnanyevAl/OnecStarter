@@ -11,15 +11,17 @@
 """  # noqa: RUF002
 
 import logging
+import os
 import threading
 import time
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
 from onecstarter.domain.version import Installation
+from onecstarter.services.availability import Availability, ProbeTarget, probe_paths
 from onecstarter.services.catalog import EMPTY_COMMON_DATA, CommonListData
 
 _log = logging.getLogger("onecstarter.startup")
@@ -104,3 +106,61 @@ class StartupTasks(QObject):
             len(data.errors),
         )
         self.common_lists_ready.emit(data)
+
+
+class AvailabilityProbe(QObject):
+    """Проверка каталогов файловых баз в фоне — перезапускаемая.
+
+    Отдельно от `StartupTasks`: та поднимает два задания один раз за жизнь
+    окна, а проба перезапускается по `F5` (спека §5). Поток — демон по той же
+    причине, что и там: `stat` на мёртвой сетевой шаре не прерывается
+    (инцидент 15.08.2026), и висящий поток не должен удерживать процесс
+    при выходе.
+
+    Результат отдаётся по одному пути за сигнал, а не пачкой в конце: иначе
+    одна медленная шара держала бы метки всех остальных баз (спека §3.4).
+
+    В лог — счётчики и длительность, не пути: лог прикладывают к issue
+    (докстринг модуля, инвариант 5).
+    """  # noqa: RUF002
+
+    probed = Signal(str, object)  # ключ пути, Availability
+
+    def __init__(
+        self,
+        stat: Callable[[str], os.stat_result] = os.stat,
+        *,
+        spawn: Callable[[Callable[[], None]], None] = _spawn_daemon,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._stat = stat
+        self._spawn = spawn
+
+    def start(self, targets: Sequence[ProbeTarget]) -> None:
+        ordered = list(targets)
+        self._spawn(lambda: self._run(ordered))
+
+    def _run(self, targets: Sequence[ProbeTarget]) -> None:
+        started = time.monotonic()
+        _log.info("доступность каталогов: начато, целей %d", len(targets))
+        missing = 0
+
+        def report(key: str, state: Availability) -> None:
+            nonlocal missing
+            if state is Availability.MISSING:
+                missing += 1
+            self.probed.emit(key, state)
+
+        try:
+            probe_paths(targets, self._stat, report)
+        except Exception as exc:
+            # Падение фона не должно оставлять список без меток молча:
+            # причина уходит в лог теми же местами кадров, без сообщения
+            # исключения (оно несёт путь — см. докстринг _log_failure).
+            _log_failure("доступность каталогов", exc)
+        _log.info(
+            "доступность каталогов: закончено за %d мс, недоступных %d",
+            int((time.monotonic() - started) * 1000),
+            missing,
+        )

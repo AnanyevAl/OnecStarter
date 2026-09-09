@@ -1,14 +1,19 @@
 """StartupTasks: доставка результатов фона сигналами и лог фаз."""
 
 import logging
+import os
 import threading
 from pathlib import Path
+from stat import S_IFDIR
 
 from onecstarter.domain.version import Installation
+from onecstarter.services.availability import Availability, ProbeTarget
 from onecstarter.services.catalog import EMPTY_COMMON_DATA
-from onecstarter.ui.background import StartupTasks
+from onecstarter.ui.background import AvailabilityProbe, StartupTasks
 
 _SYNC = lambda task: task()  # noqa: E731 — синхронный «поток» для детерминизма
+
+_DIR = os.stat_result((S_IFDIR | 0o755, 0, 0, 1, 0, 0, 0, 0, 0, 0))
 
 
 def test_start_emits_both_results(qtbot):
@@ -95,3 +100,58 @@ def test_log_carries_counts_not_paths(caplog):
         tasks.start()
     assert "секретный-сервер" not in caplog.text
     assert "share" not in caplog.text
+
+
+def test_probe_emits_one_signal_per_path(qtbot):
+    got: list[tuple[str, Availability]] = []
+    probe = AvailabilityProbe(lambda _p: _DIR, spawn=_SYNC)
+    probe.probed.connect(lambda key, state: got.append((key, state)))
+    probe.start([ProbeTarget("a", r"D:\a"), ProbeTarget("b", r"D:\b")])
+    assert got == [("a", Availability.PRESENT), ("b", Availability.PRESENT)]
+
+
+def test_probe_reports_missing(qtbot):
+    def stat(_path: str) -> os.stat_result:
+        raise FileNotFoundError
+
+    got: list[Availability] = []
+    probe = AvailabilityProbe(stat, spawn=_SYNC)
+    probe.probed.connect(lambda _key, state: got.append(state))
+    probe.start([ProbeTarget("a", r"D:\a")])
+    assert got == [Availability.MISSING]
+
+
+def test_probe_can_be_restarted(qtbot):
+    """F5 перезапускает пробу — `start` не одноразов, в отличие от StartupTasks."""
+    got: list[str] = []
+    probe = AvailabilityProbe(lambda _p: _DIR, spawn=_SYNC)
+    probe.probed.connect(lambda key, _state: got.append(key))
+    probe.start([ProbeTarget("a", r"D:\a")])
+    probe.start([ProbeTarget("a", r"D:\a")])
+    assert got == ["a", "a"]
+
+
+def test_probe_uses_daemon_threads(qtbot):
+    done = threading.Event()
+    seen: list[bool] = []
+
+    def stat(_path: str) -> os.stat_result:
+        seen.append(threading.current_thread().daemon)
+        done.set()
+        return _DIR
+
+    AvailabilityProbe(stat).start([ProbeTarget("a", r"D:\a")])
+    assert done.wait(5), "проба не завершилась за 5 с"  # noqa: RUF001
+    assert seen[0] is True
+
+
+def test_probe_failure_is_logged_without_the_path(qtbot, caplog):
+    """Инвариант 5: путь пользователя в лог не попадает даже при отказе."""
+
+    def stat(_path: str) -> os.stat_result:
+        raise RuntimeError(r"\\srv\секретная-шара\база")
+
+    with caplog.at_level(logging.ERROR, logger="onecstarter.startup"):
+        AvailabilityProbe(stat, spawn=_SYNC).start([ProbeTarget("a", r"D:\a")])
+    assert "секретная-шара" not in caplog.text
+    assert "доступность каталогов" in caplog.text
