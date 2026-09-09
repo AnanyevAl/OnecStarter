@@ -13,10 +13,11 @@
 """  # noqa: RUF002
 
 import os
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+from stat import S_ISDIR
 
 from onecstarter.domain.connect import ConnectKind, find_fragment, parse_connect
 from onecstarter.services.model import InfobaseItem
@@ -93,3 +94,71 @@ def availability_hint(state: Availability, path: str) -> str | None:
     if state is Availability.MISSING:
         return f"Каталог не найден: {path}"
     return None
+
+
+# Имя файла базы данных внутри каталога файловой ИБ. Единственное место
+# в коде с этим именем — чтобы замер, который его подтвердит или опровергнет,  # noqa: RUF003
+# правил одну строку.
+#
+# Достоверность — **[Д] НЕ ПРОВЕРЕНО**: ни в скиле `v8i-format`, ни в  # noqa: RUF003
+# `platform-launch` этого имени нет, а домысливать предметную область  # noqa: RUF003
+# запрещено правилом проекта. Замер T-05.17 запланирован и обязателен
+# до выпуска вехи; после него пометка меняется на [Ф] со ссылкой  # noqa: RUF003
+# на docs/research/t05-17-file-infobase-directory.md.
+#
+# Если замер покажет другое имя — правится эта строка. Если покажет, что
+# единого имени нет вовсе, — правится правило §2 спеки, а не подгоняется код.  # noqa: RUF003
+DB_FILE_NAME = "1Cv8.1CD"
+
+
+def probe_paths(
+    targets: Iterable[ProbeTarget],
+    stat: Callable[[str], os.stat_result],
+    report: Callable[[str, Availability], None],
+) -> None:
+    """Обойти уникальные цели, отдавая результат по одной через `report`.
+
+    Результат отдаётся по мере готовности, а не пачкой в конце: локальные
+    базы помечаются за миллисекунды и не ждут медленную сетевую шару,
+    которая ответит на порядки позже (спека §3.4).
+
+    Дубли снимаются по нормализованному ключу — две базы в одном каталоге
+    стоят одного вызова `stat`.
+    """  # noqa: RUF002
+    seen: set[str] = set()
+    for target in targets:
+        if target.key in seen:
+            continue
+        seen.add(target.key)
+        report(target.key, _probe_one(target.path, stat))
+
+
+def _probe_one(path: str, stat: Callable[[str], os.stat_result]) -> Availability:
+    """Одна проба: каталог есть и в нём есть файл базы — иначе `MISSING`.
+
+    Любой отказ `stat` — `MISSING`, включая `PermissionError` и отказ сети:
+    решение заказчика 09.09.2026, два состояния в исходе (спека §1).
+    Отдельного «не удалось проверить» в исходе нет; `UNKNOWN` означает
+    только «проверка ещё не дошла».
+
+    Ловится `(OSError, ValueError)`, а не голое `except`: `KeyboardInterrupt`
+    и `SystemExit` из них не наследуются и проходят насквозь. `ValueError`
+    добавлен намеренно (находка ревью Task 2): `path` — значение `File=`
+    из чужого файла (`ibases.v8i` правит и платформа, и человек), и на
+    пути со встроенным нулевым байтом `os.stat` бросает не `OSError`,
+    а `ValueError`. Без этого добавления одна порченая запись обрывала бы
+    обход `probe_paths` на всех остальных путях — решение заказчика
+    «два состояния в исходе» распространяется и на этот случай: порченый
+    путь — тот же `MISSING`, а не третье состояние и не падение обхода.
+    """  # noqa: RUF002
+    try:
+        info = stat(path)
+    except (OSError, ValueError):
+        return Availability.MISSING
+    if not S_ISDIR(info.st_mode):
+        return Availability.MISSING
+    try:
+        stat(str(Path(path) / DB_FILE_NAME))
+    except (OSError, ValueError):
+        return Availability.MISSING
+    return Availability.PRESENT
