@@ -132,3 +132,64 @@ def test_unknown_icon_is_round_not_square(qapp: QApplication) -> None:
     image = placement_icon(ConnectKind.UNKNOWN, theme.DARK).pixmap(16, 16).toImage()
     corners = [(2, 2), (13, 2), (2, 13), (13, 13)]
     assert all(image.pixelColor(x, y).alpha() == 0 for x, y in corners)
+
+
+def test_missing_mark_changes_the_icon(qapp: QApplication) -> None:
+    for kind in _KNOWN:
+        plain = _pixels(placement_icon(kind, theme.DARK))
+        marked = _pixels(placement_icon(kind, theme.DARK, missing=True))
+        assert plain != marked, kind
+
+
+def test_missing_mark_is_drawn_in_the_problem_colour(qapp: QApplication) -> None:
+    """Крестик — цветом проблемы палитры, а не запечённым красным."""  # noqa: RUF002
+    for palette in _PALETTES:
+        drawn = _opaque_colours(placement_icon(ConnectKind.FILE, palette, missing=True))
+        assert palette.problem.casefold() in drawn, palette
+
+
+def test_plain_icon_carries_no_problem_colour(qapp: QApplication) -> None:
+    """Сторож обратной стороны: без флага цвета проблемы в файловом значке нет."""
+    drawn = _opaque_colours(placement_icon(ConnectKind.FILE, theme.DARK))
+    assert theme.DARK.problem.casefold() not in drawn
+
+
+def test_missing_mark_sits_in_the_bottom_right_corner(qapp: QApplication) -> None:
+    """Спека §4.1: справа внизу — там, где его ждёт заказчик."""  # noqa: RUF002
+    image = placement_icon(ConnectKind.FILE, theme.DARK, missing=True).pixmap(16, 16).toImage()
+    problem = theme.DARK.problem.casefold()
+    marked = [
+        (x, y)
+        for x in range(image.width())
+        for y in range(image.height())
+        if image.pixelColor(x, y).name().casefold() == problem
+    ]
+    assert marked, "крестик не найден вовсе"
+    assert all(x >= 8 and y >= 8 for x, y in marked), marked
+
+
+def test_missing_mark_clears_a_notch_in_the_icon(qapp: QApplication) -> None:
+    """Подложка вырезается прозрачностью, а не заливается цветом фона.
+
+    Строка бывает выделенной, и подложка цветом фона на выделении выглядела бы
+    заплаткой. Вырез прозрачностью работает на любом фоне (спека §4.1).
+
+    Буквальная проверка «есть хоть один прозрачный пиксель в углу» зелена
+    и без выреза вовсе: контур папки сам не залит, и в углу и так хватает
+    прозрачных промежутков между линиями (находка мутационной проверки
+    задачи 5, шаг 4 — удаление выреза этот вариант теста не завалило).
+    Различающий признак — не факт прозрачности, а то, что вырез СНИЖАЕТ
+    непрозрачность именно там, где контур папки без метки был непрозрачен:
+    без выреза (крестик поверх контура) эти пиксели остаются такими же
+    или ярче, с вырезом — заметно тусклее.
+    """  # noqa: RUF002
+    plain = placement_icon(ConnectKind.FILE, theme.DARK).pixmap(16, 16).toImage()
+    marked = placement_icon(ConnectKind.FILE, theme.DARK, missing=True).pixmap(16, 16).toImage()
+    cleared = [
+        (x, y)
+        for x in range(9, 16)
+        for y in range(9, 16)
+        if plain.pixelColor(x, y).alpha() > 100
+        and marked.pixelColor(x, y).alpha() < plain.pixelColor(x, y).alpha() // 2
+    ]
+    assert cleared, "выреза нет: крестик нарисован без подложки"

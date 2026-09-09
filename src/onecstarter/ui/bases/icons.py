@@ -41,7 +41,9 @@ def _colour_for(kind: ConnectKind, palette: Palette) -> QColor:
     return QColor(palette.problem if kind is ConnectKind.UNKNOWN else palette.text_dim)
 
 
-def placement_icon(kind: ConnectKind, palette: Palette) -> QIcon:
+def placement_icon(
+    kind: ConnectKind, palette: Palette, *, missing: bool = False
+) -> QIcon:
     pixmap = QPixmap(_SIZE, _SIZE)
     pixmap.fill(Qt.GlobalColor.transparent)
     painter = QPainter(pixmap)
@@ -51,8 +53,41 @@ def placement_icon(kind: ConnectKind, palette: Palette) -> QIcon:
     pen.setWidthF(1.4)
     painter.setPen(pen)
     _DRAW[kind](painter, colour)
+    if missing:
+        _draw_missing_mark(painter, palette)
     painter.end()
     return QIcon(pixmap)
+
+
+def _draw_missing_mark(painter: QPainter, palette: Palette) -> None:
+    """Крестик справа внизу: каталога файловой базы нет (спека §4.1).
+
+    Подложка вырезается прозрачностью (`CompositionMode_Clear`), а не
+    заливается цветом фона: строка бывает выделенной, и заплатка цветом
+    фона на выделении была бы видна. Вырез читается на любом фоне.
+
+    Без подложки крестик сливался бы с контуром значка на пересечении —
+    все значки набора контурные, не залитые (докстринг модуля).
+    """  # noqa: RUF002
+    box = QRectF(9.0, 9.0, 6.0, 6.0)
+    diagonals = (
+        (box.topLeft(), box.bottomRight()),
+        (box.topRight(), box.bottomLeft()),
+    )
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Clear)
+    notch = QPen(QColor(Qt.GlobalColor.transparent))
+    notch.setWidthF(3.4)
+    notch.setCapStyle(Qt.PenCapStyle.RoundCap)
+    painter.setPen(notch)
+    for start, end in diagonals:
+        painter.drawLine(start, end)
+    painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
+    mark = QPen(QColor(palette.problem))
+    mark.setWidthF(1.6)
+    mark.setCapStyle(Qt.PenCapStyle.RoundCap)
+    painter.setPen(mark)
+    for start, end in diagonals:
+        painter.drawLine(start, end)
 
 
 def _draw_file(painter: QPainter, colour: QColor) -> None:
