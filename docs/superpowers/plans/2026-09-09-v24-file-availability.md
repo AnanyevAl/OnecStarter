@@ -735,14 +735,23 @@ def test_missing_mark_clears_a_notch_in_the_icon(qapp: QApplication) -> None:
 
     Строка бывает выделенной, и подложка цветом фона на выделении выглядела бы
     заплаткой. Вырез прозрачностью работает на любом фоне (спека §4.1).
-    """
-    image = placement_icon(ConnectKind.FILE, theme.DARK, missing=True).pixmap(16, 16).toImage()
-    corner = [
-        image.pixelColor(x, y).alpha()
+
+    Буквальная проверка «есть хоть один прозрачный пиксель в углу» зелена
+    и без выреза вовсе: контур папки сам не залит, и в углу и так хватает
+    прозрачных промежутков между линиями. Различающий признак — не факт
+    прозрачности, а то, что вырез СНИЖАЕТ непрозрачность именно там, где
+    контур папки без метки был непрозрачен.
+    """  # noqa: RUF002
+    plain = placement_icon(ConnectKind.FILE, theme.DARK).pixmap(16, 16).toImage()
+    marked = placement_icon(ConnectKind.FILE, theme.DARK, missing=True).pixmap(16, 16).toImage()
+    cleared = [
+        (x, y)
         for x in range(9, 16)
         for y in range(9, 16)
+        if plain.pixelColor(x, y).alpha() > 100
+        and marked.pixelColor(x, y).alpha() < plain.pixelColor(x, y).alpha() // 2
     ]
-    assert 0 in corner, "выреза нет: крестик нарисован без подложки"
+    assert cleared, "выреза нет: крестик нарисован без подложки"
 ```
 
 - [ ] **Step 2: Прогнать и убедиться, что падают**
@@ -814,6 +823,11 @@ Expected: PASS
 
 Спека §4.1 требует смотреть глазами: на 16 px крестик 6×6 — четыре пикселя линии.
 
+Пробник живёт в `.superpowers/` — каталоге, который в `.gitignore`. **В git его
+не добавлять**, в том числе через `git add -f`: файл там невидим для `ruff check .`
+(ruff уважает `.gitignore`), и `All checks passed!` про него ничего не значило бы.
+Пробник — черновик на машине разработчика, как и всё в `.superpowers/`.
+
 Дописать в `.superpowers/sdd/2026-08-08-v1-plan4b-ui-edit/icons_probe.py` показ
 файлового значка с `missing=True` рядом с обычным, натурально и увеличенно,
 в обеих палитрах. Запустить, сохранить снимок и **остановиться**: показать
@@ -826,7 +840,7 @@ Expected: PASS
 
 ```bash
 uv run ruff check . && uv run mypy
-git add src/onecstarter/ui/bases/icons.py tests/ui/test_icons.py .superpowers/sdd/2026-08-08-v1-plan4b-ui-edit/icons_probe.py
+git add src/onecstarter/ui/bases/icons.py tests/ui/test_icons.py
 git commit -m "feat(ui): крестик отсутствующего каталога на значке размещения"
 ```
 
