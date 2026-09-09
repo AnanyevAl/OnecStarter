@@ -18,9 +18,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from onecstarter.config.v8i import parse_v8i
-from onecstarter.domain.connect import ConnectKind
 from onecstarter.domain.default_version import DefaultVersionRule
-from onecstarter.domain.launch import ClientConvention, ClientKind, Credentials, LaunchCommand
+from onecstarter.domain.launch import (
+    ClientConvention,
+    Credentials,
+    LaunchCommand,
+    LaunchTarget,
+)
 from onecstarter.domain.version import Installation
 from onecstarter.platform_1c.process import spawn as spawn_process
 from onecstarter.security.credentials import SERVICE, CredentialBackendError, CredentialStore
@@ -97,6 +101,7 @@ class Workspace:
         conventions: Sequence[ClientConvention],
         cfg_rules: Sequence[DefaultVersionRule],
         default_app: str | None = None,
+        web_default_is_browser: bool = False,
         spawn: Callable[[LaunchCommand], int] = spawn_process,
         open_url: Callable[[str], bool] = webbrowser.open,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
@@ -112,6 +117,7 @@ class Workspace:
         self._conventions = list(conventions)
         self._cfg_rules = list(cfg_rules)
         self._default_app = default_app
+        self._web_default_is_browser = web_default_is_browser
         self._spawn = spawn
         self._open_url = open_url
         self._now = now
@@ -170,6 +176,11 @@ class Workspace:
         у `set_installations`).
         """  # noqa: RUF002
         self._default_app = default_app
+
+    def set_web_launch(self, *, is_browser: bool) -> None:
+        """Настройка «Веб-базы открывать». Слабее записи: `App` решает
+        раньше (спека v2.3, §3)."""  # noqa: RUF002
+        self._web_default_is_browser = is_browser
 
     @property
     def common_lists_pending(self) -> bool:
@@ -434,7 +445,7 @@ class Workspace:
         finally:
             self._rebuild()
 
-    def launch(self, key: str, forced_client: ClientKind | None = None) -> LaunchOutcome:
+    def launch(self, key: str, forced: LaunchTarget | None = None) -> LaunchOutcome:
         if self._installations is None:
             # Спека T-04.6, §3.4: запуск до готовности обязан отказать
             # вежливо, а не молча идти дальше с пустым списком установок —  # noqa: RUF003
@@ -446,7 +457,11 @@ class Workspace:
                 "повторите попытку через несколько секунд"
             )
         item = self._item(key)
-        self._reject_ambiguous_name(item)
+        if forced is not LaunchTarget.BROWSER:
+            # Разовый «Открыть в браузере» — единственный канал, где имя базы
+            # не участвует вовсе: открывается URL из `ws`, `/IBName` не строится
+            # (финальное ревью ветки, I5). См. `_reject_ambiguous_name`.
+            self._reject_ambiguous_name(item)
         credentials, store_failure = self._credentials_for_launch(key)
         outcome = launch_infobase(
             item,
@@ -454,7 +469,8 @@ class Workspace:
             cfg_rules=self._cfg_rules,
             conventions=self._conventions,
             default_app=self._default_app,
-            forced_client=forced_client,
+            web_default_is_browser=self._web_default_is_browser,
+            forced_target=forced,
             spawn=self._spawn,
             open_url=self._open_url,
             credentials=credentials,
@@ -573,12 +589,25 @@ class Workspace:
 
         Сравнение имён — без учёта регистра: [Ф] T-05.3 — платформа
         считает дублями и имена, различающиеся только регистром, а поиск
-        по `/IBName` регистронезависим. Веб-база не проверяется вовсе:
-        она открывается браузером по адресу из `ws`, имя в этом пути
-        не участвует.
+        по `/IBName` регистронезависим.
+
+        Веб-базы проверяются наравне с остальными: с вехи v2.3 они
+        запускаются тонким клиентом по `/IBName` (**[Ф]** T-05.16 № 1), и имя
+        в этом пути участвует. Прежнее обоснование («открывается браузером
+        по адресу из `ws`») перестало быть верным вместе со сменой пути
+        запуска.
+
+        Единственное исключение делает **вызывающий** (`launch`): разовый
+        `LaunchTarget.BROWSER`. Это единственный канал, где имя базы не
+        участвует вовсе — открывается URL из `ws`, `/IBName` не строится, —
+        и отказ с советом «переименуйте одну из баз» предлагал бы править
+        файл списка ради операции, которой имя безразлично (финальное ревью
+        ветки, I5: воспроизведено запуском). Запись, которая уходит в браузер
+        не разовым выбором, а `App=WebClient` или настройкой, проверку
+        по-прежнему проходит: ветвление по итогу `choose_launch_plan` развело
+        бы проверку с местом, где канал выбирается, а разовый выбор известен
+        уже здесь, до всякого плана.
         """  # noqa: RUF002
-        if item.kind is ConnectKind.WEB:
-            return
         name = item.name.casefold()
         rivals = [
             other

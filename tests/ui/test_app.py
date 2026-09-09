@@ -48,6 +48,7 @@ from onecstarter.services.settings import (
     ListOrder,
     Settings,
     ThemeMode,
+    WebLaunch,
     save_settings,
 )
 from onecstarter.services.workspace import Workspace, WorkspacePaths
@@ -1720,6 +1721,51 @@ def test_default_client_change_reaches_workspace_without_rebuild(
     store.update(default_client=DefaultClient.THICK)
     workspace.launch(key)
     assert calls[-1].executable.name == "1cv8.exe"
+
+
+def test_web_launch_setting_change_reaches_workspace_without_rebuild(
+    qtbot, monkeypatch, qapp, workspace_factory, tmp_path
+):
+    """store.changed → apply_web_launch: следующий запуск веб-базы уходит в браузер.
+
+    Задача 7a (находка ревью Task 7): `test_web_launch_row_writes_setting`
+    (`tests/ui/test_settings_view.py`) проверяет только запись в хранилище
+    и остался бы зелёным при оборванной проводке `apply_web_launch`
+    (`ui/app.py:1047-1055`). Здесь — по образцу
+    `test_default_client_change_reaches_workspace_without_rebuild` выше:
+    проверка **поведением**, куда ушёл следующий запуск, через инжектированные
+    эффекты `Workspace` (`calls`/`opened` из `workspace_factory`), а не чтением
+    `Workspace._web_default_is_browser` — прямая запись поля дала бы зелёный
+    тест и при полностью оборванной проводке (брифом task-7a, п. 1).
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    # Секция без ключа `App` — «Auto» по факту отсутствия ключа: у веб-базы  # noqa: RUF003
+    # без App или с App=Auto/нераспознанным решает настройка, а не запись  # noqa: RUF003
+    # (`domain/launch.py`, `_web_plan`, спека v2.3 §3). Запись с явным  # noqa: RUF003
+    # App=ThinClient/ThickClient ничего не проверила бы (брифом, п. 2).
+    (tmp_path / "ibases.v8i").write_bytes(
+        '[ВебБаза]\r\nConnect=ws="http://web-server/resource/";\r\n'.encode()
+    )
+    workspace, calls, opened = workspace_factory()
+    runtime = app_module.Runtime(
+        workspace=workspace, cfg_rules=[], conventions=[],
+        settings=tmp_path / "settings.json",
+        servers=tmp_path / "servers.json",
+    )
+    window, _tasks, _monitor = _build_main_window(qapp, runtime, {"APPDATA": str(tmp_path)})
+    qtbot.addWidget(window)
+    key = workspace.items()[0].key
+
+    workspace.launch(key)
+    assert calls[-1].executable.name == "1cv8c.exe"
+    assert opened == []
+
+    store: Any = window.settings_store
+    store.update(web_launch=WebLaunch.BROWSER)
+    workspace.launch(key)
+
+    assert opened, "запуск веб-базы не ушёл в браузер — проводка настройки оборвана"
+    assert len(calls) == 1  # второй запуск не породил ещё один процесс
 
 
 def test_build_main_window_installs_the_hotkey_native_filter(

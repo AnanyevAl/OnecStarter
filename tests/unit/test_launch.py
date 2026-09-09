@@ -2,15 +2,21 @@ from pathlib import Path
 
 import pytest
 
+from onecstarter.domain.connect import ConnectKind
 from onecstarter.domain.launch import (
     ClientChoice,
     ClientConvention,
     ClientKind,
     Credentials,
     LaunchCommand,
+    LaunchPlan,
+    LaunchRefusal,
+    LaunchTarget,
+    RefusalReason,
     build_arguments,
     build_launch_command,
     choose_client,
+    choose_launch_plan,
     convention_for,
     quote_launch_value,
 )
@@ -373,3 +379,86 @@ def test_build_launch_command_composes_path() -> None:
     assert command.command_line == (
         '"C:\\Program Files\\1cv8\\8.3.25.1633\\bin\\1cv8c.exe" ENTERPRISE'
     )
+
+
+WEB = ConnectKind.WEB
+SRV = ConnectKind.SERVER
+FILE = ConnectKind.FILE
+UNK = ConnectKind.UNKNOWN
+
+
+@pytest.mark.parametrize(
+    ("kind", "app", "forced", "browser_default", "expected"),
+    [
+        # Веб-база: решает App, потом настройка  # noqa: RUF003
+        (WEB, "WebClient", None, False, LaunchPlan(None, False, False)),
+        (WEB, "ThinClient", None, False, LaunchPlan(ClientKind.THIN, False, True)),
+        (WEB, "ThickClient", None, False, LaunchRefusal(RefusalReason.WEB_APP_THICK)),
+        (WEB, None, None, False, LaunchPlan(ClientKind.THIN, True, True)),
+        (WEB, "Auto", None, False, LaunchPlan(ClientKind.THIN, True, True)),
+        (WEB, "Мусор", None, False, LaunchPlan(ClientKind.THIN, True, True)),  # noqa: RUF001
+        (WEB, None, None, True, LaunchPlan(None, False, False)),
+        (WEB, "Auto", None, True, LaunchPlan(None, False, False)),
+        # Веб-база: разовый выбор сильнее и App, и настройки  # noqa: RUF003
+        (WEB, "WebClient", LaunchTarget.THIN, True, LaunchPlan(ClientKind.THIN, False, True)),
+        (WEB, "ThinClient", LaunchTarget.BROWSER, False, LaunchPlan(None, False, False)),
+        (WEB, None, LaunchTarget.THICK, False, LaunchRefusal(RefusalReason.THICK_TO_WEB)),
+        (WEB, None, LaunchTarget.DESIGNER, False, LaunchRefusal(RefusalReason.THICK_TO_WEB)),
+        # Серверная: клиент как раньше, версию не пиним
+        (SRV, None, None, False, LaunchPlan(ClientKind.THIN, True, True)),
+        (SRV, "ThickClient", None, False, LaunchPlan(ClientKind.THICK, False, True)),
+        (SRV, None, LaunchTarget.DESIGNER, False, LaunchPlan(ClientKind.DESIGNER, False, True)),
+        (SRV, None, LaunchTarget.BROWSER, False, LaunchRefusal(RefusalReason.BROWSER_FOR_SERVER)),
+        # Файловая: всё как было, версию пиним
+        (FILE, None, None, False, LaunchPlan(ClientKind.THIN, True, False)),
+        (FILE, "ThinClient", None, False, LaunchPlan(ClientKind.THIN, False, False)),
+        (FILE, None, LaunchTarget.DESIGNER, False, LaunchPlan(ClientKind.DESIGNER, False, False)),
+        (FILE, None, LaunchTarget.BROWSER, False, LaunchRefusal(RefusalReason.BROWSER_FOR_FILE)),
+        # Неразобранная строка соединения идёт файловым путём — маршрут не меняем
+        (UNK, None, None, False, LaunchPlan(ClientKind.THIN, True, False)),
+        (UNK, None, LaunchTarget.BROWSER, False, LaunchRefusal(RefusalReason.BROWSER_FOR_UNKNOWN)),
+    ],
+)
+def test_choose_launch_plan(
+    kind: ConnectKind,
+    app: str | None,
+    forced: LaunchTarget | None,
+    browser_default: bool,
+    expected: LaunchPlan | LaunchRefusal,
+) -> None:
+    assert (
+        choose_launch_plan(
+            kind, app, None, web_default_is_browser=browser_default, forced=forced
+        )
+        == expected
+    )
+
+
+def test_web_plan_ignores_default_client_setting() -> None:
+    """«Клиент по умолчанию» = толстый не должен запрещать запуск веб-баз.
+
+    До вехи настройка на веб-базы не влияла вовсе (короткое замыкание стояло
+    раньше `_choose_client`), и это сохраняется намеренно: толстый клиент
+    через `ws=` не подключается, и «толстый по умолчанию» означал бы запрет
+    запуска всех веб-баз.
+    """
+    plan = choose_launch_plan(
+        WEB, None, "ThickClient", web_default_is_browser=False, forced=None
+    )
+    assert plan == LaunchPlan(ClientKind.THIN, True, True)
+
+
+def test_launch_target_browser_has_no_client() -> None:
+    assert LaunchTarget.BROWSER.client is None
+    assert LaunchTarget.THIN.client is ClientKind.THIN
+
+
+def test_web_client_app_on_non_web_still_raises() -> None:
+    """Прежний отказ не тронут вехой: у не-ws записи App=WebClient — ValueError
+    из `choose_client`, а не `LaunchRefusal`. Два механизма сосуществуют
+    намеренно (спека §3): новые причины типизированы, старая ветка не трогается.
+    """  # noqa: RUF002
+    with pytest.raises(ValueError):
+        choose_launch_plan(
+            FILE, "WebClient", None, web_default_is_browser=False, forced=None
+        )

@@ -15,6 +15,7 @@ from onecstarter.ui.dialogs.infobase import (
     HIDDEN_VALUE,
     PASSWORD_NOT_KEPT_NOTE,
     STORED_PASSWORD_REMOVAL_NOTE,
+    WEB_CLIENT_PLACEMENT_NOTE,
     DialogCredentials,
     InfobaseDialog,
     build_connect,
@@ -192,6 +193,32 @@ def test_untouched_dialog_writes_nothing_for_edge_case_connect_strings(
     dialog = InfobaseDialog(item, groups=["/"], installations=INSTALLED, cfg_rules=[])
     qtbot.addWidget(dialog)
     assert dialog.changes() == ({}, None), kind_hint
+
+
+@pytest.mark.parametrize(
+    ("connect", "kind_hint"),
+    [
+        ('File="D:\\b";', "file"),
+        ('Srvr="s";Ref="r";', "server"),
+        ('ws="http://srv/base";', "web"),
+    ],
+)
+@pytest.mark.parametrize("version", ["8.3.25.1633", "8.3.99.1", "8.3"])
+def test_untouched_dialog_with_version_writes_nothing(
+    qtbot: Any, connect: str, kind_hint: str, version: str
+) -> None:
+    """Открыл свойства, нажал ОК — ключ Version остался в секции.
+
+    Дыра, которую закрывает тест: ни один прежний охранный тест не давал
+    записи `requested_version`, а именно на нём стоит риск вехи. Три значения
+    покрывают три ветки `version_options`: установленная, не установленная
+    и маска — у двух последних пункт добавляется отдельно, и без него
+    `findData` вернул бы -1.
+    """  # noqa: RUF002
+    item = _item(connect, (), requested_version=version)
+    dialog = InfobaseDialog(item, groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    assert dialog.changes() == ({}, None), f"{kind_hint} / {version}"
 
 
 def test_rename_only_touches_the_header(qtbot: Any) -> None:
@@ -386,6 +413,88 @@ def test_set_app_rejects_a_value_the_dialog_never_offered(qtbot: Any) -> None:
         dialog.set_app("WebClient")
 
 
+def test_web_record_accepts_web_client_app(qtbot: Any) -> None:
+    item = _item('ws="http://srv/base";', ())
+    dialog = InfobaseDialog(item, groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    dialog.set_app("WebClient")
+    assert dialog.changes() == ({"App": "WebClient"}, None)
+
+
+# -- I1 финального ревью ветки: «Веб-клиент» плюс не-веб размещение ------------  # noqa: RUF003
+
+
+def test_web_client_app_blocks_ok_after_the_placement_changed(qtbot: Any) -> None:
+    """Находка I1: диалог давал собрать незапускаемую запись и молча её сохранить.
+
+    Пункт «Веб-клиент (браузер)» добавляется по виду СОХРАНЁННОЙ записи
+    (`item.kind`), а размещение меняется тут же, отдельным комбобоксом.
+    Сочетание `App=WebClient` + `File=` отвергается при КАЖДОМ запуске,
+    и связать отказ со сменой размещения, сделанной раньше, пользователь
+    не сможет.
+
+    Путь заполняется намеренно: без него «ОК» и так неактивна («Заполните:
+    «Путь»»), и тест был бы зелёным на пустышке. Разделяет два случая
+    именно текст пояснения.
+    """  # noqa: RUF002
+    item = _item('ws="http://srv/base";', ())
+    dialog = InfobaseDialog(item, groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+
+    dialog.set_app("WebClient")
+    dialog.set_kind(ConnectKind.FILE)
+    dialog.set_file_path("D:\\Bases\\Acc")
+
+    assert not dialog.accepts()
+    assert dialog.required_hint() == WEB_CLIENT_PLACEMENT_NOTE
+
+    # Блокировка не залипает: вернули веб-размещение — «ОК» снова активна.  # noqa: RUF003
+    dialog.set_kind(ConnectKind.WEB)
+    assert dialog.accepts()
+    assert dialog.required_hint() == ""
+
+
+def test_other_client_is_free_to_go_with_any_placement(qtbot: Any) -> None:
+    """Обратная сторона: блокируется ровно веб-клиент, а не смена размещения.
+
+    Без этой пары проверка могла бы запирать «ОК» на любой смене вида,
+    и тест выше остался бы зелёным.
+    """  # noqa: RUF002
+    item = _item('ws="http://srv/base";', ())
+    dialog = InfobaseDialog(item, groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+
+    dialog.set_app("ThinClient")
+    dialog.set_kind(ConnectKind.FILE)
+    dialog.set_file_path("D:\\Bases\\Acc")
+
+    assert dialog.accepts()
+
+
+def test_record_that_already_carries_web_client_app_is_not_locked_out(qtbot: Any) -> None:
+    """Сочетание, уже лежащее в файле, «ОК» не запирает.
+
+    Тот же принцип, что у `_placement_violation`: то, чего пользователь
+    не трогал, — не его ввод. Запись с `App=WebClient` при не-ws строке
+    соединения существует (спека §6), и открыть её ради правки группы
+    или версии обязано быть можно. Пункт достаётся ей существующим
+    механизмом «незнакомое значение сохраняем отдельным пунктом».
+    """  # noqa: RUF002
+    item = _item('File="D:\\b";', (), app="WebClient")
+    dialog = InfobaseDialog(item, groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+
+    assert dialog.accepts()
+    assert dialog.changes() == ({}, None)
+
+    # А вот тронуть размещение и оставить веб-клиент — уже нельзя.  # noqa: RUF003
+    dialog.set_kind(ConnectKind.SERVER)
+    dialog.set_server("srv")
+    dialog.set_ref("acc")
+    assert not dialog.accepts()
+    assert dialog.required_hint() == WEB_CLIENT_PLACEMENT_NOTE
+
+
 # -- I4/item 3 (круги правок 1-2): недопустимый символ блокирует ОК -------------  # noqa: RUF003
 
 
@@ -480,12 +589,18 @@ def test_web_kind_default_version_label_has_no_nonsensical_web_suffix(qtbot: Any
 
     у веб-записи `version_cell` всегда отдаёт `cell.text == "веб"` (Version
     там ни на что не влияет), и подпись читалась как «как установлено (веб)».
+
+    Задача 5 вехи v2.3 (спека §4): с неё `cell.hint` у WEB — больше не
+    `None`, а честная подсказка про публикацию, и слово «веб» законно
+    встречается в её тексте («веб-сервере»). Проверка сужена до самого
+    исходного дефекта — скобочного «(веб)», приклеенного к подписи, а не
+    до полного отсутствия слова «веб» в подсказке.
     """  # noqa: RUF002
     item = _item('ws="http://srv/base";', ())
     dialog = InfobaseDialog(item, groups=["/"], installations=INSTALLED, cfg_rules=[])
     qtbot.addWidget(dialog)
     assert dialog.version_hint().startswith("как установлено")
-    assert "веб" not in dialog.version_hint()
+    assert "(веб)" not in dialog.version_hint()
 
 
 def test_web_kind_with_explicit_version_has_no_nonsensical_web_suffix(qtbot: Any) -> None:
@@ -494,11 +609,15 @@ def test_web_kind_with_explicit_version_has_no_nonsensical_web_suffix(qtbot: Any
     Пункт для запрошенной-но-не-подошедшей версии тоже брал подпись из
     `cell.text` безусловно — веб-запись с `Version=8.3.99.1` показывала бы
     в выпадающем списке пункт с подписью «веб» вместо «8.3.99.1».
+
+    Задача 5 вехи v2.3 (спека §4): проверка сужена так же, как в соседнем
+    тесте выше — «(веб)» скобочным суффиксом быть не должно, но честная
+    подсказка про публикацию законно содержит слово «веб».
     """  # noqa: RUF002
     item = _item('ws="http://srv/base";', (), requested_version="8.3.99.1")
     dialog = InfobaseDialog(item, groups=["/"], installations=INSTALLED, cfg_rules=[])
     qtbot.addWidget(dialog)
-    assert "веб" not in dialog.version_hint()
+    assert "(веб)" not in dialog.version_hint()
     assert "8.3.99.1" in dialog.version_hint()
 
 

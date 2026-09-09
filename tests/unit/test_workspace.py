@@ -7,7 +7,13 @@ from pathlib import Path
 import pytest
 
 from onecstarter.config.v8i import V8iSection, parse_v8i
-from onecstarter.domain.launch import ClientConvention, ClientKind, LaunchCommand
+from onecstarter.domain.connect import ConnectKind
+from onecstarter.domain.launch import (
+    ClientConvention,
+    ClientKind,
+    LaunchCommand,
+    LaunchTarget,
+)
 from onecstarter.domain.version import Arch, Installation, parse_version
 from onecstarter.security.credentials import CredentialBackendError, CredentialStore, MemoryStore
 from onecstarter.services.catalog import read_common_lists
@@ -22,6 +28,7 @@ from onecstarter.services.errors import (
     UserDataWriteError,
 )
 from onecstarter.services.groups import GroupRemoval
+from onecstarter.services.launch import LaunchKind
 from onecstarter.services.model import InfobaseSource, binding_key, group_binding_key
 from onecstarter.services.user_data import set_login
 from onecstarter.services.workspace import Workspace, WorkspacePaths, _records_word
@@ -487,13 +494,97 @@ def test_records_word_agrees_with_number(count: int, word: str) -> None:
     assert _records_word(count) == word
 
 
-def test_duplicate_name_does_not_block_web_base(tmp_path: Path) -> None:
-    """Веб-база открывается браузером по адресу из `ws`, а не по `/IBName`,
-    поэтому неоднозначность имени её запуску не мешает.
+def test_duplicate_web_names_are_rejected_before_launch(tmp_path: Path) -> None:
+    """Замена удалённого в Task 0 test_duplicate_name_does_not_block_web_base.
+
+    Запуск веб-базы идёт по /IBName ([Ф] T-05.16 № 1), а платформа при дублях
+    имени прекращает запуск с «Не уникальное имя информационной базы»
+    ([Ф] T-05.3). Прежнее обоснование («открывается браузером по адресу
+    из ws, имя в пути не участвует») умерло вместе с браузерным путём.
     """  # noqa: RUF002
     workspace = _workspace(tmp_path)
     workspace.add_infobase("Портал", 'File="C:\\Bases\\Dup";')
-    assert workspace.launch("id:77777777-7777-7777-7777-777777777777").url
+    with pytest.raises(LaunchError) as error:
+        workspace.launch("id:77777777-7777-7777-7777-777777777777")
+    # Бриф проверял подстроку "уникальн" — текст ошибки ПЛАТФОРМЫ, приведённый
+    # в докстринге для обоснования. Наш код бросает "не единственное" (строки
+    # 397, 452 — тот же путь); правило исправлено, см. отчёт задачи 4.
+    assert "не единственное" in str(error.value)
+
+
+def _workspace_with_two_web_bases(tmp_path: Path) -> Workspace:
+    """Список из двух веб-записей с ОДНИМ именем и разными адресами.
+
+    Свой файл, а не `anonymized.v8i`: дубль имени нужен именно у веб-записей,
+    а в фикстуре «Портал» ровно один.
+    """  # noqa: RUF002
+    sections = (
+        "[Портал]\r\n"
+        'Connect=ws="http://web-server/resource/";\r\n'
+        "ID=77777777-7777-7777-7777-777777777777\r\n"
+        "[Портал]\r\n"
+        'Connect=ws="http://web-server/other/";\r\n'
+        "ID=88888888-8888-8888-8888-888888888888\r\n"
+    )
+    (tmp_path / "ibases.v8i").write_bytes(sections.encode())
+    return _workspace(tmp_path)
+
+
+def test_explicit_browser_launch_is_not_blocked_by_a_duplicate_name(tmp_path: Path) -> None:
+    """Находка финального ревью ветки, I5: «Открыть в браузере» — единственный
+    канал, где имя базы не участвует вовсе.
+
+    Отказ по дублю имени защищает запуск по `/IBName`: платформа при
+    нескольких базах с одним именем прекращает запуск ([Ф] T-05.3). Разовый
+    выбор `LaunchTarget.BROWSER` идёт не по имени, а по адресу из `ws`, и совет
+    «переименуйте одну из баз» тут предлагает править файл списка ради
+    операции, которой имя безразлично.
+    """  # noqa: RUF002
+    workspace = _workspace_with_two_web_bases(tmp_path)
+
+    outcome = workspace.launch(
+        "id:77777777-7777-7777-7777-777777777777", LaunchTarget.BROWSER
+    )
+
+    assert outcome.kind is LaunchKind.BROWSER
+    assert outcome.url == "http://web-server/resource/"
+
+
+def test_duplicate_name_still_blocks_the_same_web_record_without_forced_browser(
+    tmp_path: Path,
+) -> None:
+    """Обратная сторона теста выше: пропуск проверки — только у явного браузера.
+
+    Без этой пары `_reject_ambiguous_name` мог бы отключиться для веб-записей
+    целиком, и тест выше остался бы зелёным на пустышке. Тот же приём, что
+    у пары `test_workspace_passes_web_setting_to_launch` / `..._goes_to_the_thin_client`.
+    """  # noqa: RUF002
+    workspace = _workspace_with_two_web_bases(tmp_path)
+
+    with pytest.raises(LaunchError) as error:
+        workspace.launch("id:77777777-7777-7777-7777-777777777777")
+
+    assert "не единственное" in str(error.value)
+
+
+def test_duplicate_name_still_blocks_explicit_thin_client_too(tmp_path: Path) -> None:
+    """Граница пропуска — именно `BROWSER`, не «любой явный канал».
+
+    Повторное ревью ветки (мутационная таблица T-15, строка 15): пара тестов
+    выше берёт `forced=None` (запуск по умолчанию) и `forced=LaunchTarget.BROWSER`,
+    а `LaunchTarget.THIN` нигде не встречается. Условие в `Workspace.launch`
+    — `if forced is not LaunchTarget.BROWSER:` — а не «пропустить проверку для
+    любого явного `forced`»: у тонкого клиента на веб-базе `/IBName` строится
+    по имени, и дубль его так же ломает, как и неявный запуск. Без этого теста
+    мутация `if forced is None:` расширила бы пропуск на все разовые каналы
+    незаметно.
+    """  # noqa: RUF002
+    workspace = _workspace_with_two_web_bases(tmp_path)
+
+    with pytest.raises(LaunchError) as error:
+        workspace.launch("id:77777777-7777-7777-7777-777777777777", LaunchTarget.THIN)
+
+    assert "не единственное" in str(error.value)
 
 
 def test_remove_reports_when_key_changed_externally(tmp_path: Path) -> None:
@@ -1193,3 +1284,75 @@ def test_credentials_of_keeps_login_when_the_store_fails(tmp_path: Path) -> None
     workspace._user = set_login(workspace._user, key, "tester")
 
     assert workspace.credentials_of(key) == ("tester", None)
+
+
+# -- v2.3: канал запуска веб-базы через Workspace ---------------------------
+
+
+def _workspace_with_web_base(
+    tmp_path: Path, app: str | None = None, calls: list[LaunchCommand] | None = None
+) -> Workspace:
+    """Workspace с единственной веб-базой; `app` — значение ключа `App` записи.
+
+    Свой файл, а не `anonymized.v8i`: у «Портала» из фикстуры ключа `App`
+    нет вовсе, а спор «настройка против записи» (спека v2.3, §3) требует
+    уметь собрать обе стороны. Параметр `app` — отклонение от плана,
+    записанное в отчёте задачи 3: план звал этот хелпер без аргумента
+    и одновременно требовал от него и записи без `App` (тогда решает
+    настройка), и записи с `App=ThinClient` (тогда настройка не решает).
+    Одним фиксированным хелпером эти два теста несовместимы.
+    """  # noqa: RUF002
+    section = (
+        "[Портал]\r\n"
+        'Connect=ws="http://web-server/resource/";\r\n'
+        "ID=77777777-7777-7777-7777-777777777777\r\n"
+    )
+    if app is not None:
+        section += f"App={app}\r\n"
+    (tmp_path / "ibases.v8i").write_bytes(section.encode())
+    return _workspace(tmp_path, calls)
+
+
+def _web_key(workspace: Workspace) -> str:
+    return next(
+        item.key
+        for item in workspace.items()
+        if not item.is_group and item.kind is ConnectKind.WEB
+    )
+
+
+def test_workspace_passes_web_setting_to_launch(tmp_path: Path) -> None:
+    workspace = _workspace_with_web_base(tmp_path)
+    workspace.set_web_launch(is_browser=True)
+    assert workspace.launch(_web_key(workspace)).kind is LaunchKind.BROWSER
+
+
+def test_workspace_web_base_without_the_setting_goes_to_the_thin_client(
+    tmp_path: Path,
+) -> None:
+    """Обратная сторона теста выше: без настройки браузер не открывается.
+
+    Без этой пары `set_web_launch` мог бы не делать ничего — веб-база
+    уходила бы в браузер сама, как до вехи, и тест настройки остался бы
+    зелёным на пустышке.
+    """
+    calls: list[LaunchCommand] = []
+    workspace = _workspace_with_web_base(tmp_path, calls=calls)
+    outcome = workspace.launch(_web_key(workspace))
+    assert outcome.kind is LaunchKind.PROCESS
+    assert calls[0].executable.name == "1cv8c.exe"
+
+
+def test_workspace_forced_browser_beats_thin_app(tmp_path: Path) -> None:
+    """«Открыть в браузере» — разовый выбор, сильнее и App, и настройки."""
+    workspace = _workspace_with_web_base(tmp_path, app="ThinClient")
+    outcome = workspace.launch(_web_key(workspace), LaunchTarget.BROWSER)
+    assert outcome.kind is LaunchKind.BROWSER
+
+
+def test_workspace_forced_designer_on_web_base_refuses(tmp_path: Path) -> None:
+    """Отказ доходит до вызывающего целиком — UI показывает его текстом."""  # noqa: RUF002
+    workspace = _workspace_with_web_base(tmp_path, app="ThinClient")
+    with pytest.raises(LaunchError) as error:
+        workspace.launch(_web_key(workspace), LaunchTarget.DESIGNER)
+    assert "ws=" in str(error.value)

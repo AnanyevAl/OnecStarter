@@ -15,17 +15,20 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
 
-from onecstarter.domain.connect import ConnectKind, find_fragment, parse_connect
+from onecstarter.domain.connect import find_fragment, parse_connect
 from onecstarter.domain.default_version import DefaultVersionRule
 from onecstarter.domain.launch import (
-    ClientChoice,
     ClientConvention,
     ClientKind,
     Credentials,
     LaunchCommand,
+    LaunchPlan,
+    LaunchRefusal,
+    LaunchTarget,
+    RefusalReason,
     build_arguments,
     build_launch_command,
-    choose_client,
+    choose_launch_plan,
     convention_for,
     is_web_client_app,
 )
@@ -61,12 +64,19 @@ def launch_infobase(
     cfg_rules: Sequence[DefaultVersionRule],
     conventions: Sequence[ClientConvention],
     default_app: str | None,
-    forced_client: ClientKind | None = None,
+    web_default_is_browser: bool = False,
+    forced_target: LaunchTarget | None = None,
     spawn: Callable[[LaunchCommand], int] = spawn_process,
     open_url: Callable[[str], bool] = webbrowser.open,
     credentials: Credentials | None = None,
 ) -> LaunchOutcome:
-    """Запустить базу: процесс клиента или браузер для веб-базы.
+    """Запустить базу: процесс клиента или браузер.
+
+    Канал решает `App` записи, а не вид строки соединения (спека v2.3, §3):
+    веб-база с `App=ThinClient` уходит тонким клиентом по `/IBName`, а браузер
+    открывается только там, где план сказал «клиента нет». До v2.3 здесь
+    стояло короткое замыкание `kind is WEB -> браузер`, из-за которого
+    `App`, разовый выбор клиента и учётные данные до веб-базы не доходили.
 
     Уникальность имени в списке проверяет вызывающий: запуск идёт по `/IBName`,
     а платформа при нескольких базах с одним именем прекращает запуск с ошибкой
@@ -76,13 +86,119 @@ def launch_infobase(
     if item.is_group or item.connect is None:
         raise LaunchError(f"«{item.name}» — группа, а не информационная база")  # noqa: RUF001
 
-    if item.kind is ConnectKind.WEB:
+    plan = _plan(item, default_app, web_default_is_browser, forced_target)
+    if plan.client is None:
         return _launch_web(item, open_url)
 
-    # App=WebClient на не-веб базе отсеивается до разбора версии: исполняемого
-    # файла у веб-клиента нет, а открывать браузером нечего — строка соединения  # noqa: RUF003
-    # не ws=. Ошибка про версию тут увела бы пользователя не туда.
-    choice = _choose_client(item, default_app, forced_client)
+    installation, version = _installation_for(item, plan, installations, cfg_rules)
+    convention = convention_for(installation.version, conventions)
+    if convention is None:
+        raise LaunchError(
+            f"Для версии {installation.version} нет соглашения раскладки в реестре версий"
+        )
+    arguments = build_arguments(
+        plan.client,
+        ib_name=item.name,
+        auto_check_version=plan.auto_check_version,
+        auto_check_mode=plan.auto_check_mode,
+        credentials=credentials,
+    )
+    command = build_launch_command(installation, convention, plan.client, arguments)
+    try:
+        pid = spawn(command)
+    except OSError as error:
+        # Спека 4a, §3: командная строка в сообщении — для «скопировать
+        # для отчёта». С v2.2 в аргументах может быть /P — показывается  # noqa: RUF003
+        # только редактированная форма (спека v2.2, §6).
+        raise LaunchError(
+            f"Не удалось запустить клиента для «{item.name}»: {error}.\n"  # noqa: RUF001
+            f"Команда: \"{command.executable}\" {redact_arguments(command.arguments)}"
+        ) from error
+    return LaunchOutcome(
+        kind=LaunchKind.PROCESS,
+        client=plan.client,
+        command_line=f'"{command.executable}" {redact_arguments(command.arguments)}',
+        url=None,
+        pid=pid,
+        version=version,
+    )
+
+
+_REFUSAL_TEXTS = {
+    RefusalReason.THICK_TO_WEB: (
+        "«{name}» опубликована на веб-сервере (ws=): её открывает тонкий клиент "
+        "или браузер, толстый клиент и Конфигуратор к ней не подключаются"
+    ),
+    RefusalReason.WEB_APP_THICK: (
+        "Для «{name}» в записи задан App=ThickClient, но база опубликована "
+        "на веб-сервере (ws=) — толстый клиент к ней не подключается"
+    ),
+    RefusalReason.BROWSER_FOR_SERVER: (
+        "«{name}» — серверная база, браузером её не открыть: в браузере "
+        "работают только базы, опубликованные на веб-сервере"
+    ),
+    RefusalReason.BROWSER_FOR_FILE: (
+        "«{name}» — файловая база, браузером её не открыть: в браузере "
+        "работают только базы, опубликованные на веб-сервере"
+    ),
+    RefusalReason.BROWSER_FOR_UNKNOWN: (
+        "У «{name}» не разобран вид размещения, браузером её не открыть: "  # noqa: RUF001
+        "в браузере работают только базы, опубликованные на веб-сервере"
+    ),
+}
+
+
+def _plan(
+    item: InfobaseItem,
+    default_app: str | None,
+    web_default_is_browser: bool,
+    forced_target: LaunchTarget | None,
+) -> LaunchPlan:
+    """План запуска; оба вида отказа переводятся в `LaunchError` здесь.
+
+    Отказов два происхождения. Типизированный `LaunchRefusal` — новые причины
+    вехи v2.3 (спека §3): их пять, и различить их вызывающему можно только
+    по `reason`. `ValueError` из `choose_client` — прежний путь `App=WebClient`
+    у не-ws записи, он не тронут вехой и сохраняет своё сообщение.
+    """  # noqa: RUF002
+    try:
+        outcome = choose_launch_plan(
+            item.kind,
+            item.app,
+            default_app,
+            web_default_is_browser=web_default_is_browser,
+            forced=forced_target,
+        )
+    except ValueError as error:
+        source = "в записи" if is_web_client_app(item.app) else "умолчанием машины"
+        raise LaunchError(
+            f"Для «{item.name}» {source} задан App=WebClient, но строка соединения "
+            "не ws= — веб-клиент запускать нечем"
+        ) from error
+    if isinstance(outcome, LaunchRefusal):
+        raise LaunchError(_REFUSAL_TEXTS[outcome.reason].format(name=item.name))
+    return outcome
+
+
+def _installation_for(
+    item: InfobaseItem,
+    plan: LaunchPlan,
+    installations: Sequence[Installation],
+    cfg_rules: Sequence[DefaultVersionRule],
+) -> tuple[Installation, VersionNumber | None]:
+    """Установка, из которой порождать процесс, и версия для `LaunchOutcome`.
+
+    При `auto_check_version` версию выбирает платформа по ответу сервера
+    (**[Ф]** T-05.16 № 4, 7): порождаем максимальную установленную, наш
+    процесс завершается за секунды, платформа поднимает нужную. Возвращаемая
+    версия при этом `None` — какая запустится, мы не знаем, и врать в UI нельзя.
+    """
+    if plan.auto_check_version:
+        if not installations:
+            raise LaunchError(
+                f"Для «{item.name}» не найдено ни одной установленной версии платформы"
+            )
+        return max(installations, key=lambda installation: installation.version), None
 
     resolution = resolve_version(
         item.requested_version,
@@ -97,57 +213,7 @@ def launch_infobase(
         for installation in installations
         if installation.version == resolution.version
     )
-    convention = convention_for(resolution.version, conventions)
-    if convention is None:
-        raise LaunchError(
-            f"Для версии {resolution.version} нет соглашения раскладки в реестре версий"
-        )
-    arguments = build_arguments(
-        choice.client,
-        ib_name=item.name,
-        auto_check_version=False,
-        auto_check_mode=choice.auto_check_mode,
-        credentials=credentials,
-    )
-    command = build_launch_command(installation, convention, choice.client, arguments)
-    try:
-        pid = spawn(command)
-    except OSError as error:
-        # Спека 4a, §3: командная строка в сообщении — для «скопировать
-        # для отчёта». С v2.2 в аргументах может быть /P — показывается  # noqa: RUF003
-        # только редактированная форма (спека v2.2, §6).
-        raise LaunchError(
-            f"Не удалось запустить клиента для «{item.name}»: {error}.\n"  # noqa: RUF001
-            f"Команда: \"{command.executable}\" {redact_arguments(command.arguments)}"
-        ) from error
-    return LaunchOutcome(
-        kind=LaunchKind.PROCESS,
-        client=choice.client,
-        command_line=f'"{command.executable}" {redact_arguments(command.arguments)}',
-        url=None,
-        pid=pid,
-        version=resolution.version,
-    )
-
-
-def _choose_client(
-    item: InfobaseItem, default_app: str | None, forced_client: ClientKind | None
-) -> ClientChoice:
-    """Выбрать клиента, переведя отказ домена в ошибку слоя.
-
-    Единственный отказ `choose_client` — `App=WebClient`: у веб-клиента нет
-    исполняемого файла. Какое из двух значений `App` до него дошло, решает
-    сам `choose_client`, поэтому источник определяется по факту, а порядок
-    разрешения здесь не дублируется.
-    """  # noqa: RUF002
-    try:
-        return choose_client(item.app, default_app, forced_client)
-    except ValueError as error:
-        source = "в записи" if is_web_client_app(item.app) else "умолчанием машины"
-        raise LaunchError(
-            f"Для «{item.name}» {source} задан App=WebClient, но строка соединения "
-            "не ws= — веб-клиент запускать нечем"
-        ) from error
+    return installation, resolution.version
 
 
 def _launch_web(item: InfobaseItem, open_url: Callable[[str], bool]) -> LaunchOutcome:
