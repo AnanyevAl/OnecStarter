@@ -910,8 +910,14 @@ def test_availability_defaults_to_nothing_marked(qapp: QApplication) -> None:
 
 
 def test_missing_base_icon_differs_from_present(qapp: QApplication) -> None:
-    missing = _model_with({"id:file": Availability.MISSING}).item(0, 0)
-    present = _model_with({"id:file": Availability.PRESENT}).item(0, 0)
+    # Модели держим переменными: без ссылки QStandardItemModel собирается
+    # сборщиком мусора вместе со своими QStandardItem (тот же приём, что
+    # в тесте файла про битую запись) — иначе .icon() валится на удалённом
+    # C++ объекте: «Internal C++ object (QStandardItem) already deleted».
+    missing_model = _model_with({"id:file": Availability.MISSING})
+    present_model = _model_with({"id:file": Availability.PRESENT})
+    missing = missing_model.item(0, 0)
+    present = present_model.item(0, 0)
     assert (
         missing.icon().pixmap(16, 16).toImage()
         != present.icon().pixmap(16, 16).toImage()
