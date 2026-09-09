@@ -14,6 +14,7 @@ CORE = (
     "onecstarter.services.autostart",
     "onecstarter.services.settings",
     "onecstarter.services.connection",
+    "onecstarter.services.availability",
     "onecstarter.services.cache",
     "onecstarter.services.server_store",
     "onecstarter.services.server_journal",
