@@ -2,10 +2,12 @@ from dataclasses import replace
 from datetime import UTC, datetime
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QStandardItemModel
 from PySide6.QtWidgets import QApplication
 
 from onecstarter.domain.connect import ConnectKind
-from onecstarter.services.display import Row, RowKind, VersionCell
+from onecstarter.services.availability import Availability
+from onecstarter.services.display import MISSING_SUFFIX, Row, RowKind, VersionCell
 from onecstarter.services.model import InfobaseItem, InfobaseSource
 from onecstarter.ui import theme
 from onecstarter.ui.bases.tree_model import COLUMNS, KEY_ROLE, KIND_ROLE, build_model
@@ -154,3 +156,64 @@ def test_groups_have_no_placement_icon(qapp: QApplication) -> None:
     rows = [Row(RowKind.GROUP, "Клиенты", _group_item())]
     model = build_model(rows, {}, _stamp, theme.DARK)
     assert model.item(0, 0).icon().isNull()
+
+
+def _model_with(availability: dict[str, Availability]) -> QStandardItemModel:
+    row = Row(RowKind.BASE, "Файловая", _file_item())
+    return build_model([row], {}, _stamp, theme.DARK, availability=availability)
+
+
+def test_missing_base_gets_the_suffix(qapp: QApplication) -> None:
+    model = _model_with({"id:file": Availability.MISSING})
+    assert model.item(0, 0).text() == f"Файловая {MISSING_SUFFIX}"
+
+
+def test_missing_base_tooltip_names_the_directory(qapp: QApplication) -> None:
+    model = _model_with({"id:file": Availability.MISSING})
+    assert r"Каталог не найден: D:\bases\acc" in model.item(0, 0).toolTip()
+
+
+def test_present_base_carries_no_mark(qapp: QApplication) -> None:
+    model = _model_with({"id:file": Availability.PRESENT})
+    assert model.item(0, 0).text() == "Файловая"
+    assert "Каталог не найден" not in model.item(0, 0).toolTip()
+
+
+def test_unknown_state_carries_no_mark(qapp: QApplication) -> None:
+    """Пока проход идёт, крестика нет — иначе список на старте весь битый (спека §1)."""
+    model = _model_with({"id:file": Availability.UNKNOWN})
+    assert model.item(0, 0).text() == "Файловая"
+
+
+def test_record_absent_from_the_mapping_is_unknown(qapp: QApplication) -> None:
+    model = _model_with({})
+    assert model.item(0, 0).text() == "Файловая"
+
+
+def test_availability_defaults_to_nothing_marked(qapp: QApplication) -> None:
+    row = Row(RowKind.BASE, "Файловая", _file_item())
+    model = build_model([row], {}, _stamp, theme.DARK)
+    assert model.item(0, 0).text() == "Файловая"
+
+
+def test_missing_base_icon_differs_from_present(qapp: QApplication) -> None:
+    # Модели держим переменными: без ссылки QStandardItemModel собирается
+    # сборщиком мусора вместе со своими QStandardItem (как в тесте выше про  # noqa: RUF003
+    # битую запись) — иначе .icon() валится на удалённом C++ объекте.
+    missing_model = _model_with({"id:file": Availability.MISSING})
+    present_model = _model_with({"id:file": Availability.PRESENT})
+    missing = missing_model.item(0, 0)
+    present = present_model.item(0, 0)
+    assert (
+        missing.icon().pixmap(16, 16).toImage()
+        != present.icon().pixmap(16, 16).toImage()
+    )
+
+
+def test_relative_path_gets_an_honest_note(qapp: QApplication) -> None:
+    """Относительный путь не проверяется — и тултип об этом говорит (спека §2)."""  # noqa: RUF002
+    item = replace(_file_item(), connect='File="bases\\acc";')
+    row = Row(RowKind.BASE, "Относительная", item)
+    model = build_model([row], {}, _stamp, theme.DARK, availability={})
+    assert "Путь относительный" in model.item(0, 0).toolTip()
+    assert model.item(0, 0).text() == "Относительная"
