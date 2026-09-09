@@ -4422,18 +4422,37 @@ def test_availability_reaches_the_model_after_debounce(qtbot, workspace_factory)
 
 
 def test_repeated_reports_cause_one_rebuild(qtbot, workspace_factory, monkeypatch):
-    """Коалесинг: пятьдесят сигналов подряд — одна пересборка, не пятьдесят.
+    """Коалесинг: пятьдесят сигналов подряд по РАЗНЫМ путям — одна пересборка.
+
+    Ключи ОБЯЗАНЫ быть разными. `apply_availability` сама отсекает повторный
+    отчёт с тем же `key`+`state` сторожем `if self._availability.get(key)
+    is state: return` — ДО строки с таймером коалесинга. Если слать один
+    и тот же путь пятьдесят раз (как делала более ранняя версия этого
+    теста), первый вызов проходит сторож и заводит таймер, а оставшиеся
+    49 отсекаются сторожем и до таймера не доходят вовсе — `len(rebuilds)
+    == 1` получается что с коалесингом, что без него. Тест был бы неотличим
+    от сломанной реализации.
+
+    Находка мутационной проверки вехи v2.4 (Task 11, мутация № 5,
+    docs/tasks.md, «мутация не убита названным тестом»): замена
+    `self._availability_timer.start()` на прямой `self.rebuild()` в
+    `apply_availability` (коалесинг снят) этим тестом в его прежнем виде
+    НЕ убивалась — `1 passed` и на исходном, и на сломанном коде. Прежний
+    докстринг заявлял, что мутация даёт `len(rebuilds) == 50`; это было
+    неверно и не перепроверялось после того, как в `apply_availability`
+    появился сторож `is state`. Разные ключи каждый раз проходят сторож
+    и реально доезжают до таймера — только тогда пятьдесят вызовов вообще
+    способны собраться в одну пересборку, а не остаться единственной от
+    первого. Сторож сам по себе — предмет отдельного теста ниже,
+    `test_same_key_and_state_report_is_a_no_op`.
 
     Подмена `rebuild` на ЭКЗЕМПЛЯРЕ уже после того, как `__init__` подключил
     его к таймеру — приём, который брифу указан как потенциально хрупкий
     (метод мог быть захвачен `connect()` по значению на момент подключения,
-    и подмена атрибута задним числом осталась бы незамеченной). Проверено
-    мутацией на этой самой вьюхе: `apply_availability`, лишённый коалесинга
-    (прямой вызов `self.rebuild()` вместо `self._availability_timer.start()`),
-    даёт здесь `len(rebuilds) == 50` — тест ловит поломку, а не проходит
-    по совпадению. Значит, PySide6 в этой версии резолвит `self.rebuild`
-    заново на каждый вызов сигнала (а не хранит замороженный bound method),
-    и подмена атрибута инстанса действует на уже установленное соединение.
+    и подмена атрибута задним числом осталась бы незамеченной). Проверено:
+    PySide6 в этой версии резолвит `self.rebuild` заново на каждый вызов
+    сигнала (а не хранит замороженный bound method), и подмена атрибута
+    инстанса действует на уже установленное соединение.
     """  # noqa: RUF002
     view, _, _, _ = _view(qtbot, workspace_factory)
     rebuilds: list[int] = []
@@ -4444,10 +4463,43 @@ def test_repeated_reports_cause_one_rebuild(qtbot, workspace_factory, monkeypatc
         original()
 
     monkeypatch.setattr(view, "rebuild", counted_rebuild)
-    for _ in range(50):
-        view.apply_availability(path_key(_DEMO_ACCOUNTING_PATH), Availability.MISSING)
+    for i in range(50):
+        # Разные пути — единственный способ провести все 50 отчётов мимо
+        # сторожа `is state` до таймера коалесинга (см. докстринг выше).
+        view.apply_availability(path_key(rf"D:\probe\{i}"), Availability.MISSING)
     qtbot.waitUntil(lambda: bool(rebuilds), timeout=2000)
     assert len(rebuilds) == 1
+
+
+def test_same_key_and_state_report_is_a_no_op(qtbot, workspace_factory, monkeypatch):
+    """Сторож: повторный отчёт с тем же путём и тем же статусом — не событие.
+
+    `apply_availability`: `if self._availability.get(key) is state: return`.
+    До задачи 11 этот сторож проверялся только побочно — тестом на
+    коалесинг, который (по ошибке, см. докстринг
+    `test_repeated_reports_cause_one_rebuild`) слал один и тот же ключ
+    пятьдесят раз и поэтому не отличал работу сторожа от работы коалесинга.
+    Здесь — сторож проверяется напрямую: второй отчёт с тем же `key`/`state`
+    не должен даже завести таймер коалесинга, не то что вызвать пересборку.
+    """  # noqa: RUF002
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    rebuilds: list[int] = []
+    original = view.rebuild
+
+    def counted_rebuild() -> None:
+        rebuilds.append(1)
+        original()
+
+    monkeypatch.setattr(view, "rebuild", counted_rebuild)
+    key = path_key(_DEMO_ACCOUNTING_PATH)
+
+    view.apply_availability(key, Availability.MISSING)
+    qtbot.waitUntil(lambda: bool(rebuilds), timeout=2000)
+    assert len(rebuilds) == 1
+
+    view.apply_availability(key, Availability.MISSING)  # тот же key, тот же state
+    qtbot.wait(400)  # дольше интервала таймера (200 мс) — дать шанс сработать
+    assert len(rebuilds) == 1, "повторный тот же отчёт не должен запускать пересборку"
 
 
 def test_unknown_paths_do_not_mark_anything(qtbot, workspace_factory):
