@@ -485,6 +485,10 @@ class BasesView(QWidget):
         # которого у F3 нет. Ctrl+3 дублирует F4 — дубль безвреден.  # noqa: RUF003
         QShortcut(QKeySequence("F3"), self, lambda: self._launch_current(None))
         QShortcut(QKeySequence("F4"), self, lambda: self._launch_current(LaunchTarget.DESIGNER))
+        # Задача 9 (v2.4): периодической перепроверки каталогов нет намеренно
+        # (спека §5) — только явная команда. F5 — как «обновить» привычно
+        # для списков в Windows.
+        QShortcut(QKeySequence("F5"), self, self.refresh_all)
         # Задача 15: перестановка с клавиатуры, соседа берём из того, что  # noqa: RUF003
         # реально видно (см. _move_current) — тот же приём, что и с мышью  # noqa: RUF003
         # (handle_drop/_reorder), только сосед не из-под курсора, а из модели.  # noqa: RUF003
@@ -647,6 +651,17 @@ class BasesView(QWidget):
         if selection is not None:
             selection.currentChanged.connect(lambda *_: self._sync_panel())
         self._sync_panel()
+
+    def refresh_all(self) -> None:
+        """`F5`: перечитать файл, пересобрать дерево, попросить новую пробу.
+
+        Накопленные состояния НЕ сбрасываются в `UNKNOWN`: иначе каждое `F5`
+        гасило бы все крестики и зажигало их заново, и список мигал бы
+        на ровном месте (спека §5). Результаты заменяются по мере готовности.
+        """  # noqa: RUF002
+        self._workspace.reload_if_changed()
+        self.rebuild()
+        self.probe_requested.emit()
 
     @staticmethod
     def _marker(index: QModelIndex, path: str) -> str:
@@ -1577,8 +1592,13 @@ class BasesView(QWidget):
         return [ROOT, *sorted(set(paths))]
 
     def _build_empty_space_menu(self) -> QMenu:
-        """Меню пустого места дерева — добавление записи и создание группы в корне."""
+        """Меню пустого места дерева — обновление, добавление записи, создание группы.
+
+        «Обновить» — первым пунктом (задача 9, v2.4): та же команда, что `F5`,
+        для пользователя без клавиатурного сочетания под рукой.
+        """
         menu = QMenu(self)
+        menu.addAction("Обновить\tF5", self.refresh_all)
         menu.addAction("Добавить базу…", lambda: self.add_infobase(ROOT))
         menu.addAction("Создать группу…", lambda: self.add_group(ROOT))
         return menu

@@ -4456,3 +4456,31 @@ def test_unknown_paths_do_not_mark_anything(qtbot, workspace_factory):
     view.apply_availability(path_key(r"D:\чужой\путь"), Availability.MISSING)
     qtbot.wait(400)
     assert MISSING_SUFFIX not in _all_labels(view)
+
+
+# -- Задача 9 (v2.4): `F5` и пункт «Обновить» --------------------------------
+#
+# Периодической перепроверки нет намеренно (спека §5) — проба идёт один раз
+# в фоне при старте. `F5`/пункт меню — явная команда: перечитать файл,
+# пересобрать дерево и попросить новую пробу заново.
+
+
+def test_refresh_all_asks_for_a_new_probe(qtbot, workspace_factory):
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    with qtbot.waitSignal(view.probe_requested, timeout=1000):
+        view.refresh_all()
+
+
+def test_refresh_keeps_known_states(qtbot, workspace_factory):
+    """F5 не сбрасывает известное в UNKNOWN — иначе крестики мигали бы (спека §5)."""
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    key = path_key(_DEMO_ACCOUNTING_PATH)
+    view.apply_availability(key, Availability.MISSING)
+    view.refresh_all()
+    assert view._availability[key] is Availability.MISSING
+
+
+def test_empty_space_menu_offers_refresh(qtbot, workspace_factory):
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    menu = view._build_empty_space_menu()
+    assert "Обновить\tF5" in [action.text() for action in menu.actions()]

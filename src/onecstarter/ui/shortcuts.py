@@ -27,6 +27,7 @@ BASES_SHORTCUTS: tuple[ShortcutSpec, ...] = (
     ShortcutSpec("Enter", "Запустить выбранную базу; в поиске — первую найденную", ()),
     ShortcutSpec("F3", "Запустить (1С:Предприятие)", ("F3",)),  # noqa: RUF001
     ShortcutSpec("F4", "Конфигуратор", ("F4",)),
+    ShortcutSpec("F5", "Обновить список и перепроверить доступность каталогов", ("F5",)),
     ShortcutSpec("Ctrl+1", "Тонкий клиент", ("Ctrl+1",)),
     ShortcutSpec("Ctrl+2", "Толстый клиент", ("Ctrl+2",)),
     ShortcutSpec("Ctrl+3", "Конфигуратор (то же, что F4)", ("Ctrl+3",)),
