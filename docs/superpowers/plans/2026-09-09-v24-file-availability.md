@@ -1249,11 +1249,23 @@ def test_availability_reaches_the_model_after_debounce(qtbot, workspace_factory)
 
 
 def test_repeated_reports_cause_one_rebuild(qtbot, workspace_factory, monkeypatch):
-    """Коалесинг: пятьдесят сигналов подряд — одна пересборка, не пятьдесят."""
+    """Коалесинг: пятьдесят сигналов подряд — одна пересборка, не пятьдесят.
+
+    Подмена `rebuild` на ЭКЗЕМПЛЯРЕ уже после того, как `__init__` подключил его
+    к таймеру, — приём с виду хрупкий: метод мог быть захвачен `connect()`
+    по значению, и подмена задним числом осталась бы незамеченной. Проверено
+    мутацией: `apply_availability` без коалесинга даёт здесь `len(rebuilds) == 50`,
+    то есть тест ловит поломку, а не проходит по совпадению.
+    """  # noqa: RUF002
     view, _, _, _ = _view(qtbot, workspace_factory)
     rebuilds: list[int] = []
     original = view.rebuild
-    monkeypatch.setattr(view, "rebuild", lambda: (rebuilds.append(1), original())[1])
+
+    def counted_rebuild() -> None:
+        rebuilds.append(1)
+        original()
+
+    monkeypatch.setattr(view, "rebuild", counted_rebuild)
     for _ in range(50):
         view.apply_availability(path_key(_DEMO_ACCOUNTING_PATH), Availability.MISSING)
     qtbot.waitUntil(lambda: bool(rebuilds), timeout=2000)
@@ -1271,19 +1283,17 @@ def test_unknown_paths_do_not_mark_anything(qtbot, workspace_factory):
 
 ```python
 def _all_labels(view: BasesView) -> str:
-    """Все метки дерева одной строкой — для проверок «есть/нет пометки»."""
-    model = view._tree.model()
-    labels: list[str] = []
+    """Все метки дерева одной строкой — для проверок «есть/нет пометки».
 
-    def walk(parent) -> None:
-        for row in range(model.rowCount(parent)):
-            index = model.index(row, 0, parent)
-            labels.append(str(index.data()))
-            walk(index)
-
-    walk(QModelIndex())
-    return "\n".join(labels)
+    Обход берётся у существующего `_iter_tree` файла, а не пишется заново:
+    в файле уже действует правило «один обходчик дерева на файл».
+    """
+    return "\n".join(str(index.data()) for index in _iter_tree(view))
 ```
+
+Сверься с фактической сигнатурой `_iter_tree` — приведённая форма предполагает,
+что он отдаёт индексы колонки имени по всему дереву, включая вложенные группы.
+Если это не так, подгони вызов, а не пиши второй обходчик.
 
 `_DEMO_ACCOUNTING_PATH` — путь файловой базы из фикстуры, на которой стоит
 `_DEMO_ACCOUNTING_KEY` (он в файле уже есть). Взять значение `File=` из
