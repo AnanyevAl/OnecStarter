@@ -74,6 +74,21 @@ def test_drive_relative_path_is_not_a_target() -> None:
     assert probe_targets([_item(connect='File="D:acc";')]) == {}
 
 
+def test_driveless_rooted_path_is_not_a_target() -> None:
+    """`\\база` — корень без буквы диска, платформа его не разрешит однозначно.
+
+    До Python 3.13 `os.path.isabs` и `Path.is_absolute` расходились ровно
+    на этом случае; на используемой версии оба согласны — не абсолютный.
+    Явная проверка `file_path_of` перед `probe_targets` — гарантия, что
+    `File=` действительно разобрался в один ведущий разделитель, а не
+    в UNC (`\\\\bases\\acc`, два разделителя), который абсолютен и был бы
+    неверным основанием для этого теста.
+    """  # noqa: RUF002
+    item = _item(connect=r'File="\bases\acc";')
+    assert file_path_of(item) == "\\bases\\acc"
+    assert probe_targets([item]) == {}
+
+
 def test_two_bases_in_one_directory_share_one_path_key() -> None:
     first = _item(key="id:a", connect=r'File="D:\bases\acc";')
     second = _item(key="id:b", connect=r'File="d:/BASES/acc";')
