@@ -552,18 +552,23 @@ def _probe_one(path: str, stat: Callable[[str], os.stat_result]) -> Availability
     Отдельного «не удалось проверить» в исходе нет; `UNKNOWN` означает
     только «проверка ещё не дошла».
 
-    Ловится `OSError`, а не голое `except`: `KeyboardInterrupt` и
-    `SystemExit` из него не наследуются и проходят насквозь.
+    Ловится `(OSError, ValueError)`, а не голое `except`: `KeyboardInterrupt`
+    и `SystemExit` из них не наследуются и проходят насквозь. `ValueError`
+    добавлен намеренно: `path` — значение `File=` из ЧУЖОГО файла, и на пути
+    со встроенным нулевым байтом `os.stat` бросает не `OSError`, а `ValueError`.
+    Без этого одна порченая запись обрывала бы обход на всех остальных путях.
+    Тест на это обязателен: `\x00` в первом пути, проверка, что обход дошёл
+    до второго.
     """  # noqa: RUF002
     try:
         info = stat(path)
-    except OSError:
+    except (OSError, ValueError):
         return Availability.MISSING
     if not S_ISDIR(info.st_mode):
         return Availability.MISSING
     try:
-        stat(os.path.join(path, DB_FILE_NAME))
-    except OSError:
+        stat(str(Path(path) / DB_FILE_NAME))
+    except (OSError, ValueError):
         return Availability.MISSING
     return Availability.PRESENT
 ```
@@ -571,7 +576,7 @@ def _probe_one(path: str, stat: Callable[[str], os.stat_result]) -> Availability
 - [ ] **Step 4: Прогнать тесты**
 
 Run: `uv run pytest tests/unit/test_availability.py -q`
-Expected: PASS, 20 тестов
+Expected: PASS, 23 теста
 
 - [ ] **Step 5: Линт и типы**
 
