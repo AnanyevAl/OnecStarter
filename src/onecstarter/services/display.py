@@ -43,6 +43,7 @@ EMPTY_CONNECT_NOTE = (
 # Видимые пометки в самой метке строки. Тултипа недостаточно: раздел
 # рассчитан на работу с клавиатуры, наведения мышью может не быть вовсе.  # noqa: RUF003
 BROKEN_SUFFIX = "(не разобрано)"
+MISSING_SUFFIX = "(нет каталога)"
 COMMON_SUFFIX = "(в общем списке)"
 
 
@@ -211,13 +212,17 @@ def sort_rows(rows: Sequence[Row]) -> list[Row]:
     ]
 
 
-def row_label(row: Row) -> str:
+def row_label(row: Row, *, missing: bool = False) -> str:
     """Метка строки с видимыми пометками — то, что рисуется в колонке имени.
 
     Считается здесь, а не в Qt-слое: пометка «не разобрано» — обязательство
     спеки 4a, §2, и его нужно проверять табличным тестом, а не через
     QStandardItem. Само `row.label` остаётся чистым именем — по нему идёт
     поиск, и суффикс не должен ни мешать найти базу, ни находиться сам.
+
+    `missing` — флаг, а не состояние `Availability`: витрина дерева
+    не должна зависеть от модуля доступности ради одного булева значения,
+    а решение «крестик или нет» уже принято вызывающим (спека §4.2).
     """  # noqa: RUF002
     item = row.item
     if item is None:
@@ -225,6 +230,8 @@ def row_label(row: Row) -> str:
     parts = [row.label]
     if item.parse_error:
         parts.append(BROKEN_SUFFIX)
+    if missing:
+        parts.append(MISSING_SUFFIX)
     if item.in_common_list:
         parts.append(COMMON_SUFFIX)
     return " ".join(parts)
