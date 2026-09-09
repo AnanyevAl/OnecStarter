@@ -43,6 +43,7 @@ from onecstarter.platform_1c.server_discovery import ServerInstallation, server_
 from onecstarter.platform_1c.server_spawn import spawn_server
 from onecstarter.security.credentials import KeyringStore
 from onecstarter.services import autostart
+from onecstarter.services.availability import probe_targets
 from onecstarter.services.catalog import CommonListData, read_common_lists
 from onecstarter.services.errors import (
     ConsoleRegistrationDeclinedError,
@@ -56,7 +57,7 @@ from onecstarter.services.servers import ScanSnapshot, ServersWorkspace
 from onecstarter.services.settings import load_settings
 from onecstarter.services.workspace import Workspace, WorkspacePaths
 from onecstarter.ui import app_icon, rail_icons, theme
-from onecstarter.ui.background import StartupTasks
+from onecstarter.ui.background import AvailabilityProbe, StartupTasks
 from onecstarter.ui.bases.view import BasesView
 from onecstarter.ui.dialogs.buttons import ask_confirmation
 from onecstarter.ui.hotkey import GlobalHotkey
@@ -401,7 +402,7 @@ def run_smoke(
     # закрыть, ей ни к чему. Передаётся сам класс, не экземпляр:
     # `job_factory` — фабрика, координатор зовёт её на каждый запуск.
     try:
-        window, built_tasks, _monitor = _build_main_window(
+        window, built_tasks, _monitor, _start_probe = _build_main_window(
             application,
             runtime,
             env,
@@ -670,7 +671,7 @@ def _build_main_window(
     registered_radmin: Callable[[], Path | None] | None = None,
     quit_dialog: Callable[[QWidget, str], bool] | None = None,
     job_factory: Callable[[], Job] | None = None,
-) -> tuple[MainWindow, StartupTasks, ServerMonitor]:
+) -> tuple[MainWindow, StartupTasks, ServerMonitor, Callable[[], None]]:
     """Собрать окно, трей, хоткей, watcher и фоновые задачи, не запуская их.
 
     Вынесено из `main()` (спека T-04.6, §3.2): окно обязано появиться
@@ -680,6 +681,9 @@ def _build_main_window(
     здесь задачи и монитор серверов только собираются и подключаются
     к `Workspace`/`BasesView`/`ServersWorkspace`/`ServersView`, `start()`
     не вызывается ни разу («собрать, не запуская», T-08, задача 16).
+    Проба доступности каталогов (T-10) — та же дисциплина: собирается
+    и подключается здесь, а запускается только через возвращённый
+    `start_probe`, которую зовёт `main()` рядом с `tasks.start()`.
 
     `process_scanner` — та же инъекция для `run_smoke`, что и
     `autostart_registry`: `None` собирает настоящий `PsutilScanner`,
@@ -1095,7 +1099,17 @@ def _build_main_window(
     tasks.installations_ready.connect(on_installations)
     tasks.common_lists_ready.connect(on_common)
 
-    return window, tasks, monitor
+    probe = AvailabilityProbe(parent=window)
+    probe.probed.connect(view.apply_availability)
+
+    def start_probe() -> None:
+        probe.start(list(probe_targets(runtime.workspace.items()).values()))
+
+    # F5 во вьюхе просит пробу, не владея ею: раздел «Базы» о потоках  # noqa: RUF003
+    # не знает (спека §3, докстринг `BasesView.probe_requested`).
+    view.probe_requested.connect(start_probe)
+
+    return window, tasks, monitor, start_probe
 
 
 def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
@@ -1131,7 +1145,7 @@ def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
         return 1
 
     try:
-        window, tasks, monitor = _build_main_window(
+        window, tasks, monitor, start_probe = _build_main_window(
             application, runtime, os.environ, quit_dialog=_ask_quit_confirmation
         )
     except ServerError as error:
@@ -1149,6 +1163,10 @@ def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
         window.show()
         _log.info("окно показано")
     tasks.start()
+    # Проба доступности — там же, где остальной фон, и по той же причине:
+    # обращения к сетевым шарам не должны начаться раньше, чем окно решило,
+    # показываться ему или остаться скрытым в трее.
+    start_probe()
     # Монитор серверов — рядом с tasks.start(), не внутри _build_main_window  # noqa: RUF003
     # (её докстринг, «собрать, не запуская»): периодический скан обязан
     # начаться только после того, как окно решило, показываться ему сразу

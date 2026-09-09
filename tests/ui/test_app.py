@@ -34,6 +34,7 @@ from onecstarter.platform_1c.job import JobError, NullJob
 from onecstarter.platform_1c.process_scan import NullScanner, ProcessInfo
 from onecstarter.platform_1c.server_discovery import ServerInstallation
 from onecstarter.security.credentials import MemoryStore
+from onecstarter.services.availability import Availability, path_key
 from onecstarter.services.catalog import EMPTY_COMMON_DATA
 from onecstarter.services.errors import (
     ConsoleRegistrationDeclinedError,
@@ -642,6 +643,30 @@ class _FakeServerMonitor(QObject):
         pass
 
 
+class _FakeAvailabilityProbe(QObject):
+    """Двойник `AvailabilityProbe` — тот же довод, что у двух двойников выше:
+
+    настоящий поднимает поток-демон, который обращается к диску (`os.stat`)
+    по путям файловых баз, а `_assemble` разбирает дерево виджетов вручную
+    сразу после `main()` (`window.close()`/`deleteLater()` ниже) — настоящий
+    поток может пережить эту разборку и вызвать `apply_availability` на уже
+    уничтоженной вьюхе. Сигнал настоящий (та же причина, что у
+    `_FakeStartupTasks`); саму проводку `probed` → `apply_availability` и
+    `probe_requested` → `start()` проверяет отдельный тест, который зовёт
+    `_build_main_window` напрямую и эмитирует сигналы руками — здесь важен
+    только факт вызова `start()` (T-10, задача 10).
+    """  # noqa: RUF002
+
+    probed = Signal(str, object)  # ключ пути, Availability
+
+    def __init__(self, *args: Any, parent: Any = None, **_kwargs: Any) -> None:
+        super().__init__(parent)
+        self.start_calls: list[list[Any]] = []
+
+    def start(self, targets: Any) -> None:
+        self.start_calls.append(list(targets))
+
+
 @dataclass
 class _Assembly:
     code: int
@@ -658,6 +683,7 @@ class _Assembly:
     stylesheets_before_controller: list[str]
     tasks: _FakeStartupTasks
     monitor: _FakeServerMonitor
+    probe: _FakeAvailabilityProbe
     store: SettingsStore
     shown: list[int]
 
@@ -756,6 +782,11 @@ def _assemble(
         captured["monitor"] = monitor
         return monitor
 
+    def fake_availability_probe(*args: Any, **kwargs: Any) -> _FakeAvailabilityProbe:
+        probe = _FakeAvailabilityProbe(*args, **kwargs)
+        captured["probe"] = probe
+        return probe
+
     monkeypatch.setattr(app_module, "SettingsStore", _CapturingStore)
     monkeypatch.setattr(app_module, "ThemeController", _CapturingController)
     monkeypatch.setattr(app_module, "BasesView", _CapturingView)
@@ -765,6 +796,7 @@ def _assemble(
     monkeypatch.setattr(app_module, "GlobalHotkey", fake_hotkey)
     monkeypatch.setattr(app_module, "StartupTasks", fake_startup_tasks)
     monkeypatch.setattr(app_module, "ServerMonitor", fake_server_monitor)
+    monkeypatch.setattr(app_module, "AvailabilityProbe", fake_availability_probe)
     # QApplication уже создан фикстурой qtbot; второй экземпляр PySide6
     # создать не даёт — main() получает живой.
     monkeypatch.setattr(app_module, "QApplication", lambda argv: qapp)
@@ -848,6 +880,7 @@ def _assemble(
         stylesheets_before_controller=captured["stylesheets_before_controller"],
         tasks=captured["tasks"],
         monitor=captured["monitor"],
+        probe=captured["probe"],
         store=captured["store"],
         shown=captured["shown"],
     )
@@ -950,6 +983,20 @@ def test_main_starts_the_server_monitor(assembled: _Assembly) -> None:
     обновлялся бы никогда, даже по первому тику.
     """  # noqa: RUF002
     assert assembled.monitor.started is True
+
+
+def test_main_starts_the_availability_probe(assembled: _Assembly) -> None:
+    """main() обязан звать start_probe() рядом с tasks.start()/monitor.start() (T-10, задача 10).
+
+    `_build_main_window` сама пробу не стартует («собрать, не запуская»,
+    её докстринг) — тот же довод и тот же сторож, что у двух тестов выше,
+    только для доступности каталогов файловых баз: без вызова список
+    поднялся бы, но крестики недоступности не появлялись бы никогда, даже
+    по первому проходу. Отдельным прямым тестом на `_build_main_window`
+    (`test_main_window_wires_the_availability_probe`) проверено обратное —
+    что сборка окна пробу НЕ стартует; здесь — что `main()` её стартует.
+    """  # noqa: RUF002
+    assert assembled.probe.start_calls, "main() обязан запустить пробу доступности"
 
 
 def test_main_repaints_the_bases_view_on_theme_change(assembled: _Assembly) -> None:
@@ -1380,7 +1427,7 @@ def test_build_main_window_wires_background_results(
     assert runtime.workspace.installations_pending
     assert runtime.workspace.common_lists_pending
 
-    window, tasks, _monitor = _build_main_window(qapp, runtime, env)
+    window, tasks, _monitor, _start_probe = _build_main_window(qapp, runtime, env)
     qtbot.addWidget(window)
     view = window.current_section()
     assert isinstance(view, BasesView)
@@ -1392,6 +1439,57 @@ def test_build_main_window_wires_background_results(
     assert not runtime.workspace.installations_pending
     assert not runtime.workspace.common_lists_pending
     assert "…" not in _version_column_texts(view)
+
+
+def test_main_window_wires_the_availability_probe(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """Проба заведена, подписана на вьюху и не стартует внутри сборки окна.
+
+    `_build_main_window` собирает, но не запускает (её докстринг, T-10,
+    задача 10): проба обязана стартовать только после того, как окно
+    решило, показываться ему сразу или остаться скрытым в трее — тот же
+    довод, что у `tasks`/`monitor` (спека §3, докстринг
+    `BasesView.probe_requested`).
+
+    `AvailabilityProbe` подменена двойником (`_FakeAvailabilityProbe`,
+    используется и в `_assemble`) по тому же довод, что `StartupTasks`/
+    `ServerMonitor` там же: настоящая проба поднимает поток-демон
+    с `os.stat`, а здесь сигнал и запуск проверяются руками, без реального
+    потока.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    monkeypatch.setattr(app_module, "AvailabilityProbe", _FakeAvailabilityProbe)
+    start = tmp_path / "1C" / "1CEStart"
+    start.mkdir(parents=True)
+    (start / "ibases.v8i").write_bytes('[Демо]\r\nConnect=File="C:\\Demo";\r\n'.encode())
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+
+    window, _tasks, _monitor, start_probe = _build_main_window(qapp, runtime, env)
+    qtbot.addWidget(window)
+    view = window.current_section()
+    assert isinstance(view, BasesView)
+    probe = window.findChildren(_FakeAvailabilityProbe)[0]
+
+    # Требование 1: сборка окна не запускает пробу — обращения к каталогам
+    # не должны начаться раньше, чем окно решит, показываться ему сразу
+    # или остаться скрытым в трее.
+    assert probe.start_calls == [], "_build_main_window не должна стартовать пробу"
+
+    # Требование 2: probed доходит до view.apply_availability.
+    key = path_key("C:\\Demo")
+    probe.probed.emit(key, Availability.MISSING)
+    assert view._availability[key] is Availability.MISSING
+
+    # Требование 3: start_probe запускает пробу с целями рабочего пространства.  # noqa: RUF003
+    start_probe()
+    assert len(probe.start_calls) == 1
+    assert [target.key for target in probe.start_calls[0]] == [key]
+
+    # Требование 4: F5 во вьюхе (probe_requested) запускает ту же пробу.
+    view.probe_requested.emit()
+    assert len(probe.start_calls) == 2
 
 
 def test_build_main_window_sets_the_application_icon(
@@ -1412,7 +1510,7 @@ def test_build_main_window_sets_the_application_icon(
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
 
-    window, _tasks, _monitor = _build_main_window(qapp, runtime, env)
+    window, _tasks, _monitor, _start_probe = _build_main_window(qapp, runtime, env)
     qtbot.addWidget(window)
 
     assert qapp.windowIcon().availableSizes()
@@ -1429,7 +1527,7 @@ def test_build_main_window_has_three_sections_in_mockup_order(
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
 
-    window, _tasks, _monitor = _build_main_window(qapp, runtime, env)
+    window, _tasks, _monitor, _start_probe = _build_main_window(qapp, runtime, env)
     qtbot.addWidget(window)
 
     labels = [button.text() for button in window.section_buttons()]
@@ -1447,7 +1545,7 @@ def test_servers_section_has_an_icon(
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
 
-    window, _tasks, _monitor = _build_main_window(qapp, runtime, env)
+    window, _tasks, _monitor, _start_probe = _build_main_window(qapp, runtime, env)
     qtbot.addWidget(window)
 
     labels = [button.text() for button in window.section_buttons()]
@@ -1469,7 +1567,7 @@ def test_build_main_window_creates_servers_view_with_journal_panel(
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
 
-    window, _tasks, _monitor = _build_main_window(qapp, runtime, env)
+    window, _tasks, _monitor, _start_probe = _build_main_window(qapp, runtime, env)
     qtbot.addWidget(window)
 
     labels = [button.text() for button in window.section_buttons()]
@@ -1545,7 +1643,7 @@ def test_on_installations_populates_server_installed_and_rebuilds_the_view(
     )
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, tasks, _monitor = _build_main_window(qapp, runtime, env)
+    window, tasks, _monitor, _start_probe = _build_main_window(qapp, runtime, env)
     qtbot.addWidget(window)
     labels = [button.text() for button in window.section_buttons()]
     window.show_section(labels.index("Серверы"))
@@ -1578,7 +1676,7 @@ def test_monitor_wires_scan_into_servers_workspace_and_view(
     monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, _tasks, monitor = _build_main_window(
+    window, _tasks, monitor, _start_probe = _build_main_window(
         qapp, runtime, env, process_scanner=NullScanner()
     )
     qtbot.addWidget(window)
@@ -1639,7 +1737,7 @@ def test_build_main_window_repaints_the_servers_view_on_theme_change(
     monkeypatch.setattr(app_module, "ThemeController", _CapturingController)
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, _tasks, _monitor = _build_main_window(qapp, runtime, env)
+    window, _tasks, _monitor, _start_probe = _build_main_window(qapp, runtime, env)
     qtbot.addWidget(window)
     labels = [button.text() for button in window.section_buttons()]
     window.show_section(labels.index("Серверы"))
@@ -1682,7 +1780,9 @@ def test_startup_log_has_no_connect_strings(
     )
 
     with caplog.at_level(logging.INFO):
-        window, _tasks, _monitor = _build_main_window(qapp, runtime, {"APPDATA": str(tmp_path)})
+        window, _tasks, _monitor, _start_probe = _build_main_window(
+            qapp, runtime, {"APPDATA": str(tmp_path)}
+        )
         window.show()
     qtbot.addWidget(window)
 
@@ -1707,7 +1807,9 @@ def test_default_client_change_reaches_workspace_without_rebuild(
         settings=tmp_path / "settings.json",
         servers=tmp_path / "servers.json",
     )
-    window, _tasks, _monitor = _build_main_window(qapp, runtime, {"APPDATA": str(tmp_path)})
+    window, _tasks, _monitor, _start_probe = _build_main_window(
+        qapp, runtime, {"APPDATA": str(tmp_path)}
+    )
     qtbot.addWidget(window)
     key = workspace.items()[0].key
 
@@ -1752,7 +1854,9 @@ def test_web_launch_setting_change_reaches_workspace_without_rebuild(
         settings=tmp_path / "settings.json",
         servers=tmp_path / "servers.json",
     )
-    window, _tasks, _monitor = _build_main_window(qapp, runtime, {"APPDATA": str(tmp_path)})
+    window, _tasks, _monitor, _start_probe = _build_main_window(
+        qapp, runtime, {"APPDATA": str(tmp_path)}
+    )
     qtbot.addWidget(window)
     key = workspace.items()[0].key
 
@@ -1793,7 +1897,7 @@ def test_build_main_window_installs_the_hotkey_native_filter(
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
 
-    window, _tasks, _monitor = _build_main_window(qapp, runtime, env)
+    window, _tasks, _monitor, _start_probe = _build_main_window(qapp, runtime, env)
     qtbot.addWidget(window)
 
     assert installed == [window.global_hotkey]
@@ -1842,7 +1946,7 @@ def test_build_main_window_disposes_hotkey_and_removes_filter_together_on_quit(
 
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, _tasks, _monitor = _build_main_window(qapp, runtime, env)
+    window, _tasks, _monitor, _start_probe = _build_main_window(qapp, runtime, env)
     qtbot.addWidget(window)
 
     dispose_hotkey = next(
@@ -1929,7 +2033,7 @@ def _window_with_settings(
     monkeypatch.setattr("onecstarter.ui.app.GlobalHotkey", make_hotkey)
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, _tasks, _monitor = _build_main_window(qapp, runtime, env)
+    window, _tasks, _monitor, _start_probe = _build_main_window(qapp, runtime, env)
     return window
 
 
@@ -2202,9 +2306,9 @@ def _capture_window(monkeypatch: Any) -> dict[str, Any]:
     real_build = app_module._build_main_window
 
     def capturing(application: Any, runtime: Any, env: Any, **kwargs: Any) -> Any:
-        window, tasks, monitor = real_build(application, runtime, env, **kwargs)
+        window, tasks, monitor, start_probe = real_build(application, runtime, env, **kwargs)
         captured["window"] = window
-        return window, tasks, monitor
+        return window, tasks, monitor, start_probe
 
     monkeypatch.setattr(app_module, "_build_main_window", capturing)
     return captured
@@ -2360,7 +2464,7 @@ def test_settings_view_reads_the_registry_when_frozen(
 
     application = QApplication.instance()
     assert isinstance(application, QApplication)
-    window, _tasks, _monitor = app_module._build_main_window(
+    window, _tasks, _monitor, _start_probe = app_module._build_main_window(
         application, runtime, {"APPDATA": str(tmp_path / "appdata")}
     )
     window.close()
@@ -2826,7 +2930,9 @@ def test_console_flow_survives_unreadable_job(
 
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, _tasks, _monitor = _build_main_window(qapp, runtime, env, job_factory=job_factory)
+    window, _tasks, _monitor, _start_probe = _build_main_window(
+        qapp, runtime, env, job_factory=job_factory
+    )
     qtbot.addWidget(window)
     labels = [button.text() for button in window.section_buttons()]
     window.show_section(labels.index("Серверы"))
@@ -2876,7 +2982,7 @@ def test_console_lists_our_just_started_server_before_the_first_scan(
 
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, tasks, _monitor = _build_main_window(
+    window, tasks, _monitor, _start_probe = _build_main_window(
         qapp, runtime, env, job_factory=lambda: _FakeJob((4646,))
     )
     qtbot.addWidget(window)
@@ -3006,7 +3112,7 @@ def test_close_without_servers_needs_no_confirmation(
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
 
-    window, _tasks, _monitor = _build_main_window(
+    window, _tasks, _monitor, _start_probe = _build_main_window(
         qapp, runtime, env, quit_dialog=_fake_quit_dialog(asked, answer=False)
     )
     qtbot.addWidget(window)
@@ -3031,7 +3137,7 @@ def test_close_with_running_server_and_declined_dialog_keeps_confirm_quit_false(
     asked: list[str] = []
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, _tasks, _monitor = _build_main_window(
+    window, _tasks, _monitor, _start_probe = _build_main_window(
         qapp,
         runtime,
         env,
@@ -3071,7 +3177,7 @@ def test_confirm_quit_true_logs_shutdown_event_for_running_profile(
     monkeypatch.setattr(app_module, "spawn_server", lambda command, log, job: 4646)
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, _tasks, _monitor = _build_main_window(
+    window, _tasks, _monitor, _start_probe = _build_main_window(
         qapp,
         runtime,
         env,
@@ -3121,7 +3227,7 @@ def test_confirm_quit_survives_unreadable_job(
 
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, _tasks, _monitor = _build_main_window(
+    window, _tasks, _monitor, _start_probe = _build_main_window(
         qapp,
         runtime,
         env,
@@ -3169,7 +3275,7 @@ def test_confirm_quit_accepted_survives_unreadable_job_in_log_shutdown(
 
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, _tasks, _monitor = _build_main_window(
+    window, _tasks, _monitor, _start_probe = _build_main_window(
         qapp,
         runtime,
         env,
@@ -3221,7 +3327,7 @@ def test_closing_window_without_quit_dialog_never_shows_a_confirmation_dialog(
     monkeypatch.setattr(app_module, "spawn_server", lambda command, log, job: 4646)
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, _tasks, _monitor = _build_main_window(
+    window, _tasks, _monitor, _start_probe = _build_main_window(
         qapp, runtime, env, job_factory=lambda: _FakeJob((4646,))
     )
     qtbot.addWidget(window)
@@ -3265,7 +3371,7 @@ def test_request_quit_declined_does_not_quit_the_application(
     monkeypatch.setattr(app_module, "spawn_server", lambda command, log, job: 4646)
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, _tasks, _monitor = _build_main_window(
+    window, _tasks, _monitor, _start_probe = _build_main_window(
         qapp,
         runtime,
         env,
@@ -3302,7 +3408,7 @@ def test_request_quit_without_quit_dialog_quits_immediately(
     monkeypatch.setattr(app_module, "create_tray", fake_create_tray)
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, _tasks, _monitor = _build_main_window(qapp, runtime, env)
+    window, _tasks, _monitor, _start_probe = _build_main_window(qapp, runtime, env)
     qtbot.addWidget(window)
 
     captured["on_quit"]()
