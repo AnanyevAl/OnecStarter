@@ -2791,6 +2791,14 @@ class TestProjects:
         with pytest.raises(UnknownItemError):
             _workspace(tmp_path).update_project(_project("a", id="ghost"))
 
+    def test_update_with_unknown_group_raises_and_keeps_record(self, tmp_path: Path) -> None:
+        ws = _workspace(tmp_path)
+        added = ws.add_project(_project("a"))
+        with pytest.raises(UnknownItemError):
+            ws.update_project(EdtProject(id=added.id, name="a", workspace=added.workspace, group_id="ghost"))
+        assert ws.project(added.id).group_id is None
+        assert [p.id for p in ws.children(None)[1]] == [added.id]
+
 
 class TestGroups:
     def test_add_rename_remove_promotes_children(self, tmp_path: Path) -> None:
@@ -2974,6 +2982,8 @@ class EdtWorkspace:
 
     def update_project(self, project: EdtProject) -> None:
         self._validate_project(project)
+        if project.group_id is not None:
+            self._group(project.group_id)  # неизвестная группа — UnknownItemError, как в add
         index = self._project_index(project.id)
         self._projects[index] = project
         self._save()
@@ -3050,7 +3060,7 @@ class EdtWorkspace:
 
     @staticmethod
     def _insert_index(
-        items: list[EdtGroup] | list[EdtProject], parent: str | None, position: int
+        items: Sequence[EdtGroup | EdtProject], parent: str | None, position: int
     ) -> int:
         """Индекс в общем массиве, соответствующий `position` среди соседей."""
         siblings = [
@@ -3078,7 +3088,7 @@ class EdtWorkspace:
             raise InvalidRequestError("Имя записи пусто")
         if not project.workspace.strip():
             raise InvalidRequestError("Путь workspace пуст")
-        if not os.path.isabs(project.workspace):
+        if not Path(project.workspace).is_absolute():  # без обращения к диску (ruff PTH117)
             raise InvalidRequestError("Путь workspace должен быть абсолютным")
 
     def _project_index(self, project_id: str) -> int:
@@ -3100,7 +3110,7 @@ class EdtWorkspace:
         save_registry(self._path, EdtRegistry(tuple(self._groups), tuple(self._projects)))
 ```
 
-`os.path.isabs` — без обращения к диску; проверка существования каталога — не здесь (спека §8: отсутствующий каталог — метка, не отказ).
+`Path.is_absolute()` — без обращения к диску; проверка существования каталога — не здесь (спека §8: отсутствующий каталог — метка, не отказ). **Правка по итогам реализации (ef66de3):** `os.path.isabs` заменён на `Path.is_absolute()` (ruff PTH117), `_insert_index` типизирован `Sequence[EdtGroup | EdtProject]` (mypy strict); `update_project` проверяет `group_id` как `add_project` — находка ревью.
 
 - [ ] **Step 4: Сторож инварианта 1**
 
