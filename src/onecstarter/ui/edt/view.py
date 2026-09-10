@@ -61,6 +61,7 @@ class EdtView(QWidget):
         self._request_discover = request_discover
         self._show_error = show_error or self._default_show_error
         self._model = QStandardItemModel()
+        self._built = False  # первая сборка раскрывает всё; дальше — по запомненным id
 
         self._search = QLineEdit()
         self._search.setPlaceholderText("Поиск: начните вводить имя проекта")
@@ -126,12 +127,12 @@ class EdtView(QWidget):
 
     def rebuild(self) -> None:
         expanded = self._expanded_ids()
-        first_build = self._model.rowCount() == 0 and not expanded
         self._model = build_edt_model(self._workspace, self._search.text(), self._palette)
         self._tree.setModel(self._model)
         self._tree.setColumnWidth(0, 320)
         self._tree.setColumnWidth(1, 110)
-        self._restore_expansion(expanded, expand_all=first_build)
+        self._restore_expansion(expanded, expand_all=not self._built)
+        self._built = True
         self._banner.setVisible(
             not self._workspace.projects() and self._workspace.edtstart_available()
         )

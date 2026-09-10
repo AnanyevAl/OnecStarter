@@ -187,3 +187,18 @@ def test_expansion_survives_rebuild(harness: Harness, qtbot) -> None:  # type: i
     view.tree().expand(view.model().index(0, 0))
     view.rebuild()
     assert view.tree().isExpanded(view.model().index(0, 0)) is True
+
+
+def test_collapse_survives_empty_filter_round_trip(  # type: ignore[no-untyped-def]
+    harness: Harness, qtbot
+) -> None:
+    """Фильтр без совпадений опустошает модель; сброс фильтра не должен раскрывать свёрнутое."""  # noqa: RUF002
+    g = harness.workspace.add_group("2025", None)
+    _add(harness, "a", group_id=g.id)
+    view = harness.view()
+    qtbot.addWidget(view)
+    view.tree().collapse(view.model().index(0, 0))
+    view.search().setText("нет такого")
+    assert view.model().rowCount() == 0
+    view.search().setText("")
+    assert view.tree().isExpanded(view.model().index(0, 0)) is False
