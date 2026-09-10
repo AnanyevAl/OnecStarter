@@ -3601,7 +3601,7 @@ def scan_edt(
             raise EdtLaunchError(f"Не удалось запустить: {command.executable} ({error})") from error
 ```
 
-- [ ] **Step 4: Прогнать, затем две мутации**
+- [ ] **Step 4: Прогнать, затем три мутации**
 
 Run: `uv run pytest tests/unit/test_edt_workspace.py -q && uv run ruff check . && uv run mypy`
 Expected: зелёное.
