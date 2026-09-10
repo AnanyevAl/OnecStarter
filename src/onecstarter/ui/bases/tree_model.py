@@ -11,6 +11,12 @@ from datetime import datetime
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor, QStandardItem, QStandardItemModel
 
+from onecstarter.services.availability import (
+    Availability,
+    availability_hint,
+    file_path_of,
+    relative_path_note,
+)
 from onecstarter.services.connection import BADGE_LABELS
 from onecstarter.services.display import Row, RowKind, VersionCell, row_label
 from onecstarter.ui.bases.icons import placement_icon
@@ -27,11 +33,23 @@ def build_model(
     cells: Mapping[str, VersionCell],
     format_stamp: Callable[[datetime], str],
     palette: Palette,
+    *,
+    availability: Mapping[str, Availability] | None = None,
 ) -> QStandardItemModel:
+    """Собрать модель дерева целиком.
+
+    `availability` ключуется **ключом записи**, не путём: перевод «ключ пути →
+    ключ записи» делает вьюха, у которой есть и список записей, и накопленные
+    результаты пробы (спека §3.5). Умолчание `None` — «ничего не помечено»:
+    единственный боевой вызов передаёт отображение явно и покрыт тестом
+    вьюхи, а десятки тестов модели, к доступности отношения не имеющих,
+    не обязаны его знать.
+    """  # noqa: RUF002
+    states = availability or {}
     model = QStandardItemModel(0, len(COLUMNS))
     model.setHorizontalHeaderLabels(list(COLUMNS))
     for row in rows:
-        model.appendRow(_items_for(row, cells, format_stamp, palette))
+        model.appendRow(_items_for(row, cells, format_stamp, palette, states))
     return model
 
 
@@ -40,12 +58,19 @@ def _items_for(
     cells: Mapping[str, VersionCell],
     format_stamp: Callable[[datetime], str],
     palette: Palette,
+    states: Mapping[str, Availability],
 ) -> list[QStandardItem]:
     # Пометки считает витрина (services/display.row_label): «в общем списке» —
     # дубль «пользовательская + общая», штатное состояние после первого
     # запуска общей базы ([Ф] T-05.2), удалять его не предлагаем; «не  # noqa: RUF003
     # разобрано» — битая запись (спека 4a, §2). Здесь только рисуем.
-    name = QStandardItem(row_label(row))
+    state = (
+        states.get(row.item.key, Availability.UNKNOWN)
+        if row.item is not None
+        else Availability.UNKNOWN
+    )
+    missing = state is Availability.MISSING
+    name = QStandardItem(row_label(row, missing=missing))
     version = QStandardItem("")
     launched = QStandardItem("")
     for item in (name, version, launched):
@@ -69,9 +94,16 @@ def _items_for(
         name.setForeground(QBrush(QColor(palette.text_dim)))
     if row.item is not None:
         if has_placement_icon:
-            name.setIcon(placement_icon(row.item.kind, palette))
-            label = BADGE_LABELS[row.item.kind]
-            name.setToolTip(f"{row.note}\n{label}" if row.note else label)
+            name.setIcon(placement_icon(row.item.kind, palette, missing=missing))
+            parts = [row.note] if row.note else []
+            parts.append(BADGE_LABELS[row.item.kind])
+            path = file_path_of(row.item)
+            extra = (
+                availability_hint(state, path) if path is not None else None
+            ) or relative_path_note(row.item)
+            if extra:
+                parts.append(extra)
+            name.setToolTip("\n".join(parts))
         if row.item.parse_error:
             name.setForeground(QBrush(QColor(palette.problem)))
         name.setData(row.item.key, KEY_ROLE)
@@ -85,5 +117,5 @@ def _items_for(
         if row.item.last_launched_at is not None:
             launched.setText(format_stamp(row.item.last_launched_at))
     for child in row.children:
-        name.appendRow(_items_for(child, cells, format_stamp, palette))
+        name.appendRow(_items_for(child, cells, format_stamp, palette, states))
     return [name, version, launched]

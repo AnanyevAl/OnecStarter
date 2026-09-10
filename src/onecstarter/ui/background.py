@@ -11,15 +11,17 @@
 """  # noqa: RUF002
 
 import logging
+import os
 import threading
 import time
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Signal
 
 from onecstarter.domain.version import Installation
+from onecstarter.services.availability import Availability, ProbeTarget, probe_paths
 from onecstarter.services.catalog import EMPTY_COMMON_DATA, CommonListData
 
 _log = logging.getLogger("onecstarter.startup")
@@ -104,3 +106,93 @@ class StartupTasks(QObject):
             len(data.errors),
         )
         self.common_lists_ready.emit(data)
+
+
+class AvailabilityProbe(QObject):
+    """Проверка каталогов файловых баз в фоне — перезапускаемая.
+
+    Отдельно от `StartupTasks`: та поднимает два задания один раз за жизнь
+    окна, а проба перезапускается по `F5` (спека §5). Поток — демон по той же
+    причине, что и там: `stat` на мёртвой сетевой шаре не прерывается
+    (инцидент 15.08.2026), и висящий поток не должен удерживать процесс
+    при выходе.
+
+    Результат отдаётся по одному пути за сигнал, а не пачкой в конце: иначе
+    одна медленная шара держала бы метки всех остальных баз (спека §3.4).
+
+    Поколения (§3.4, находка I-2): каждый `start()` заводит новое поколение,
+    и сигналы устаревшего (перекрытого следующим `start()`) молчат — иначе
+    F5 поверх зависшей пробы мог бы задним числом затереть свежий результат
+    старым.
+
+    В лог — счётчики и длительность, не пути: лог прикладывают к issue
+    (докстринг модуля, инвариант 5).
+    """  # noqa: RUF002
+
+    probed = Signal(str, object)  # ключ пути, Availability
+
+    def __init__(
+        self,
+        stat: Callable[[str], os.stat_result] = os.stat,
+        *,
+        spawn: Callable[[Callable[[], None]], None] = _spawn_daemon,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._stat = stat
+        self._spawn = spawn
+        # Поколение пробы (находка I-2 финального ревью ветки, спека §3.4):
+        # `start()` пишет из главного потока при каждом перезапуске (F5 поверх
+        # ещё не завершённой пробы), `report` внутри `_run` читает его из  # noqa: RUF003
+        # рабочего потока. `int` в CPython — атомарный тип (GIL сериализует
+        # каждую байткод-операцию чтения/записи ссылки), гонки на самом
+        # значении нет, и отдельный `Lock` был бы лишним усложнением.
+        # Устаревший результат (захваченное в `_run` поколение не совпадает
+        # с текущим `self._generation`) отбрасывается молча: зависший поток  # noqa: RUF003
+        # старой пробы, дождавшись отказа сети, иначе отдал бы MISSING поверх
+        # свежего PRESENT новой пробы.
+        self._generation = 0
+
+    def start(self, targets: Sequence[ProbeTarget]) -> None:
+        ordered = list(targets)
+        self._generation += 1
+        generation = self._generation
+        self._spawn(lambda: self._run(ordered, generation))
+
+    def _run(self, targets: Sequence[ProbeTarget], generation: int) -> None:
+        started = time.monotonic()
+        _log.info("доступность каталогов: начато, целей %d", len(targets))
+        missing = 0
+
+        def report(key: str, state: Availability) -> None:
+            nonlocal missing
+            if state is Availability.MISSING:
+                missing += 1
+            # Молчаливый сброс устаревшего результата — см. комментарий  # noqa: RUF003
+            # у self._generation в __init__.  # noqa: RUF003
+            # Признание, не гарантия: между этой проверкой и `emit` ниже
+            # главный поток успевает увеличить `self._generation` и запустить
+            # новую пробу — окно в единицы байткодов, но оно есть. Если та,
+            # новая, отчитается по тому же пути раньше, этот устаревший
+            # `emit` ляжет поверх свежего результата. Раньше то же самое
+            # решал десятки секунд SMB-таймаута мёртвой шары, теперь —
+            # единицы байткодов, но ноль не гарантирован никогда. `Lock`
+            # вокруг `emit` при прямом соединении сигнала добавил бы риск
+            # реентерабельности — поэтому оставлено как есть.
+            if generation == self._generation:
+                self.probed.emit(key, state)
+
+        try:
+            probe_paths(targets, self._stat, report)
+        except Exception as exc:
+            # Падение фона не должно оставлять список без меток молча:
+            # причина уходит в лог теми же местами кадров, без сообщения
+            # исключения (оно несёт путь — см. докстринг _log_failure).
+            _log_failure("доступность каталогов", exc)
+        stale = generation != self._generation
+        _log.info(
+            "доступность каталогов: закончено%s за %d мс, недоступных %d",
+            " (устарела)" if stale else "",
+            int((time.monotonic() - started) * 1000),
+            missing,
+        )

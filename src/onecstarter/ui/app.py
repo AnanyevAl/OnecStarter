@@ -43,6 +43,7 @@ from onecstarter.platform_1c.server_discovery import ServerInstallation, server_
 from onecstarter.platform_1c.server_spawn import spawn_server
 from onecstarter.security.credentials import KeyringStore
 from onecstarter.services import autostart
+from onecstarter.services.availability import probe_targets
 from onecstarter.services.catalog import CommonListData, read_common_lists
 from onecstarter.services.errors import (
     ConsoleRegistrationDeclinedError,
@@ -56,7 +57,7 @@ from onecstarter.services.servers import ScanSnapshot, ServersWorkspace
 from onecstarter.services.settings import load_settings
 from onecstarter.services.workspace import Workspace, WorkspacePaths
 from onecstarter.ui import app_icon, rail_icons, theme
-from onecstarter.ui.background import StartupTasks
+from onecstarter.ui.background import AvailabilityProbe, StartupTasks
 from onecstarter.ui.bases.view import BasesView
 from onecstarter.ui.dialogs.buttons import ask_confirmation
 from onecstarter.ui.hotkey import GlobalHotkey
@@ -401,7 +402,16 @@ def run_smoke(
     # закрыть, ей ни к чему. Передаётся сам класс, не экземпляр:
     # `job_factory` — фабрика, координатор зовёт её на каждый запуск.
     try:
-        window, built_tasks, _monitor = _build_main_window(
+        # `_start_probe` возвращается, но не вызывается напрямую: smoke не должен
+        # сам инициировать проверку каталогов файловых баз. Это не значит, что
+        # проба не запускается вовсе — `on_common` внутри `_build_main_window`
+        # (находка I-1) зовёт `start_probe()` сама по приходу общих списков, а  # noqa: RUF003
+        # `tasks.start()` ниже эти списки как раз запрашивает. То есть smoke  # noqa: RUF003
+        # косвенно поднимает настоящую пробу — демон-поток со `stat` по всем  # noqa: RUF003
+        # путям файловых баз, включая сетевые шары. Это принято: тот же класс
+        # побочного эффекта read-only, что чтение `CommonInfoBases` с шары  # noqa: RUF003
+        # здесь же.
+        window, built_tasks, _monitor, _start_probe = _build_main_window(
             application,
             runtime,
             env,
@@ -670,7 +680,7 @@ def _build_main_window(
     registered_radmin: Callable[[], Path | None] | None = None,
     quit_dialog: Callable[[QWidget, str], bool] | None = None,
     job_factory: Callable[[], Job] | None = None,
-) -> tuple[MainWindow, StartupTasks, ServerMonitor]:
+) -> tuple[MainWindow, StartupTasks, ServerMonitor, Callable[[], None]]:
     """Собрать окно, трей, хоткей, watcher и фоновые задачи, не запуская их.
 
     Вынесено из `main()` (спека T-04.6, §3.2): окно обязано появиться
@@ -680,6 +690,9 @@ def _build_main_window(
     здесь задачи и монитор серверов только собираются и подключаются
     к `Workspace`/`BasesView`/`ServersWorkspace`/`ServersView`, `start()`
     не вызывается ни разу («собрать, не запуская», T-08, задача 16).
+    Проба доступности каталогов (T-10) — та же дисциплина: собирается
+    и подключается здесь, а запускается только через возвращённый
+    `start_probe`, которую зовёт `main()` рядом с `tasks.start()`.
 
     `process_scanner` — та же инъекция для `run_smoke`, что и
     `autostart_registry`: `None` собирает настоящий `PsutilScanner`,
@@ -1091,11 +1104,35 @@ def _build_main_window(
     def on_common(data: CommonListData) -> None:
         runtime.workspace.apply_common_lists(data)
         view.rebuild()
+        # Второй проход пробы (находка I-1 финального ревью ветки, спека §5):
+        # common_lists_ready приходит из демон-потока, а этот слот исполняется  # noqa: RUF003
+        # только внутри application.exec() — то есть ПОСЛЕ того, как main()
+        # уже позвал start_probe() в первый раз. Без повторного запуска
+        # файловая база, присутствующая только в общем списке
+        # (CommonInfoBases лежит чаще всего на сетевой шаре — целевой случай
+        # вехи), оставалась бы UNKNOWN до первого F5. Повторный stat локальных
+        # баз стоит миллисекунды; ссылка на start_probe разрешается только
+        # в момент вызова этого замыкания (сигнал придёт не раньше, чем
+        # _build_main_window вернёт управление), так что порядок определений
+        # ниже безопасен. Поколения проб (ui/background.py) делают этот
+        # проход авторитетным — устаревший результат зависшей первой пробы
+        # его не перекроет.  # noqa: RUF003
+        start_probe()
 
     tasks.installations_ready.connect(on_installations)
     tasks.common_lists_ready.connect(on_common)
 
-    return window, tasks, monitor
+    probe = AvailabilityProbe(parent=window)
+    probe.probed.connect(view.apply_availability)
+
+    def start_probe() -> None:
+        probe.start(list(probe_targets(runtime.workspace.items()).values()))
+
+    # F5 во вьюхе просит пробу, не владея ею: раздел «Базы» о потоках  # noqa: RUF003
+    # не знает (спека §3, докстринг `BasesView.probe_requested`).
+    view.probe_requested.connect(start_probe)
+
+    return window, tasks, monitor, start_probe
 
 
 def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
@@ -1131,7 +1168,7 @@ def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
         return 1
 
     try:
-        window, tasks, monitor = _build_main_window(
+        window, tasks, monitor, start_probe = _build_main_window(
             application, runtime, os.environ, quit_dialog=_ask_quit_confirmation
         )
     except ServerError as error:
@@ -1149,6 +1186,10 @@ def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
         window.show()
         _log.info("окно показано")
     tasks.start()
+    # Проба доступности — там же, где остальной фон, и по той же причине:
+    # обращения к сетевым шарам не должны начаться раньше, чем окно решило,
+    # показываться ему или остаться скрытым в трее.
+    start_probe()
     # Монитор серверов — рядом с tasks.start(), не внутри _build_main_window  # noqa: RUF003
     # (её докстринг, «собрать, не запуская»): периодический скан обязан
     # начаться только после того, как окно решило, показываться ему сразу

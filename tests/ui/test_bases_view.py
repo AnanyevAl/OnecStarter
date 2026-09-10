@@ -24,8 +24,9 @@ from onecstarter.domain.connect import ConnectKind
 from onecstarter.domain.launch import LaunchCommand, LaunchTarget
 from onecstarter.domain.version import Arch, Installation, parse_version
 from onecstarter.security.credentials import CredentialBackendError, MemoryStore
+from onecstarter.services.availability import Availability, path_key
 from onecstarter.services.cache import CacheEntry, CacheKind, EntryKind
-from onecstarter.services.display import COMMON_NOTE, IMPLICIT_NOTE, RowKind
+from onecstarter.services.display import COMMON_NOTE, IMPLICIT_NOTE, MISSING_SUFFIX, RowKind
 from onecstarter.services.errors import (
     InvalidRequestError,
     LaunchError,
@@ -145,6 +146,16 @@ def _iter_tree(model: Any, parent: QModelIndex | None = None) -> Iterator[QModel
         index = model.index(row, 0, parent)
         yield index
         yield from _iter_tree(model, index)
+
+
+def _all_labels(view: BasesView) -> str:
+    """Все метки дерева одной строкой — для проверок «есть/нет пометки».
+
+    Через `_iter_tree` — единственный обходчик модели на файл (долг ревью
+    4b, №4), а не собственный `walk()`: второй скелет того же рекурсивного
+    обхода был бы ровно тем дублем, который тот долг закрывал.
+    """  # noqa: RUF002
+    return "\n".join(str(index.data()) for index in _iter_tree(view.model()))
 
 
 def _column_texts(view: BasesView, column: int) -> list[str]:
@@ -2633,6 +2644,9 @@ def test_drop_before_or_after_moves_into_the_targets_parent_only(
 # 60.68…, поэтому исходный порядок показа — Розница, затем Демо Бухгалтерия.
 
 _DEMO_ACCOUNTING_KEY = "id:44444444-4444-4444-4444-444444444444"
+# Задача 8 (v2.4): File= той же секции — фикстура anonymized.v8i, строка
+# `Connect=File="C:\Bases\Demo";` (сверено с файлом, не по памяти брифа).  # noqa: RUF003
+_DEMO_ACCOUNTING_PATH = r"C:\Bases\Demo"
 
 
 def _clients_children(view: BasesView) -> list[str]:
@@ -4390,3 +4404,152 @@ def test_properties_with_unavailable_store_never_calls_set_credentials(
     assert calls == []
     assert view.workspace().credentials_of(_ACCOUNTING_KEY)[0] == "tester"
     assert errors == []
+
+
+# -- Задача 8 (v2.4): накопление доступности каталогов и коалесинг ----------
+#
+# Проба живёт вне вьюхи (задача 9 — следующая задача вехи), сюда результат
+# приходит уже готовым сигналом `apply_availability(key, state)`. Ключ —
+# нормализованный ПУТЬ (`path_key`), не ключ записи: контракт `probe_targets`.
+
+
+def test_availability_reaches_the_model_after_debounce(qtbot, workspace_factory):
+    """Результат пробы доезжает до метки строки — через коалесинг в 200 мс."""
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    key = path_key(_DEMO_ACCOUNTING_PATH)
+    view.apply_availability(key, Availability.MISSING)
+    qtbot.waitUntil(lambda: MISSING_SUFFIX in _all_labels(view), timeout=2000)
+
+
+def test_repeated_reports_cause_one_rebuild(qtbot, workspace_factory, monkeypatch):
+    """Коалесинг: пятьдесят сигналов подряд по РАЗНЫМ путям — одна пересборка.
+
+    Ключи ОБЯЗАНЫ быть разными. `apply_availability` сама отсекает повторный
+    отчёт с тем же `key`+`state` сторожем `if self._availability.get(key)
+    is state: return` — ДО строки с таймером коалесинга. Если слать один
+    и тот же путь пятьдесят раз (как делала более ранняя версия этого
+    теста), первый вызов проходит сторож и заводит таймер, а оставшиеся
+    49 отсекаются сторожем и до таймера не доходят вовсе — `len(rebuilds)
+    == 1` получается что с коалесингом, что без него. Тест был бы неотличим
+    от сломанной реализации.
+
+    Находка мутационной проверки вехи v2.4 (Task 11, мутация № 5,
+    docs/tasks.md, «мутация не убита названным тестом»): замена
+    `self._availability_timer.start()` на прямой `self.rebuild()` в
+    `apply_availability` (коалесинг снят) этим тестом в его прежнем виде
+    НЕ убивалась — `1 passed` и на исходном, и на сломанном коде. Прежний
+    докстринг заявлял, что мутация даёт `len(rebuilds) == 50`; это было
+    неверно и не перепроверялось после того, как в `apply_availability`
+    появился сторож `is state`. Разные ключи каждый раз проходят сторож
+    и реально доезжают до таймера — только тогда пятьдесят вызовов вообще
+    способны собраться в одну пересборку, а не остаться единственной от
+    первого. Сторож сам по себе — предмет отдельного теста ниже,
+    `test_same_key_and_state_report_is_a_no_op`.
+
+    Подмена `rebuild` на ЭКЗЕМПЛЯРЕ уже после того, как `__init__` подключил
+    его к таймеру — приём, который брифу указан как потенциально хрупкий
+    (метод мог быть захвачен `connect()` по значению на момент подключения,
+    и подмена атрибута задним числом осталась бы незамеченной). Проверено:
+    PySide6 в этой версии резолвит `self.rebuild` заново на каждый вызов
+    сигнала (а не хранит замороженный bound method), и подмена атрибута
+    инстанса действует на уже установленное соединение.
+    """  # noqa: RUF002
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    rebuilds: list[int] = []
+    original = view.rebuild
+
+    def counted_rebuild() -> None:
+        rebuilds.append(1)
+        original()
+
+    monkeypatch.setattr(view, "rebuild", counted_rebuild)
+    for i in range(50):
+        # Разные пути — единственный способ провести все 50 отчётов мимо
+        # сторожа `is state` до таймера коалесинга (см. докстринг выше).
+        view.apply_availability(path_key(rf"D:\probe\{i}"), Availability.MISSING)
+    qtbot.waitUntil(lambda: bool(rebuilds), timeout=2000)
+    assert len(rebuilds) == 1
+
+
+def test_same_key_and_state_report_is_a_no_op(qtbot, workspace_factory, monkeypatch):
+    """Сторож: повторный отчёт с тем же путём и тем же статусом — не событие.
+
+    `apply_availability`: `if self._availability.get(key) is state: return`.
+    До задачи 11 этот сторож проверялся только побочно — тестом на
+    коалесинг, который (по ошибке, см. докстринг
+    `test_repeated_reports_cause_one_rebuild`) слал один и тот же ключ
+    пятьдесят раз и поэтому не отличал работу сторожа от работы коалесинга.
+    Здесь — сторож проверяется напрямую: второй отчёт с тем же `key`/`state`
+    не должен даже завести таймер коалесинга, не то что вызвать пересборку.
+    """  # noqa: RUF002
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    rebuilds: list[int] = []
+    original = view.rebuild
+
+    def counted_rebuild() -> None:
+        rebuilds.append(1)
+        original()
+
+    monkeypatch.setattr(view, "rebuild", counted_rebuild)
+    key = path_key(_DEMO_ACCOUNTING_PATH)
+
+    view.apply_availability(key, Availability.MISSING)
+    qtbot.waitUntil(lambda: bool(rebuilds), timeout=2000)
+    assert len(rebuilds) == 1
+
+    view.apply_availability(key, Availability.MISSING)  # тот же key, тот же state
+    qtbot.wait(400)  # дольше интервала таймера (200 мс) — дать шанс сработать
+    assert len(rebuilds) == 1, "повторный тот же отчёт не должен запускать пересборку"
+
+
+def test_unknown_paths_do_not_mark_anything(qtbot, workspace_factory, monkeypatch):
+    """Путь, которого нет ни у одной записи, не помечает ничего чужого (М-7, МУТАЦИЯ).
+
+    Раньше тест ждал 400 мс и проверял только отсутствие суффикса — этого
+    недостаточно, чтобы отличить «пересборка была и не пометила» от
+    «пересборки не было вовсе». Состояние для неизвестного пути всё равно
+    записывается (`apply_availability` не отличает известный ключ от
+    чужого), поэтому таймер коалесинга обязан сработать — `rebuilds`,
+    тот же приём, что в соседних тестах файла (`counted_rebuild`).
+    """  # noqa: RUF002
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    rebuilds: list[int] = []
+    original = view.rebuild
+
+    def counted_rebuild() -> None:
+        rebuilds.append(1)
+        original()
+
+    monkeypatch.setattr(view, "rebuild", counted_rebuild)
+    view.apply_availability(path_key(r"D:\чужой\путь"), Availability.MISSING)
+    qtbot.wait(400)
+    assert rebuilds, "неизвестный путь обязан запустить пересборку — иначе тест ничего не отличает"
+    assert MISSING_SUFFIX not in _all_labels(view)
+
+
+# -- Задача 9 (v2.4): `F5` и пункт «Обновить» --------------------------------
+#
+# Периодической перепроверки нет намеренно (спека §5) — проба идёт один раз
+# в фоне при старте. `F5`/пункт меню — явная команда: перечитать файл,
+# пересобрать дерево и попросить новую пробу заново.
+
+
+def test_refresh_all_asks_for_a_new_probe(qtbot, workspace_factory):
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    with qtbot.waitSignal(view.probe_requested, timeout=1000):
+        view.refresh_all()
+
+
+def test_refresh_keeps_known_states(qtbot, workspace_factory):
+    """F5 не сбрасывает известное в UNKNOWN — иначе крестики мигали бы (спека §5)."""
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    key = path_key(_DEMO_ACCOUNTING_PATH)
+    view.apply_availability(key, Availability.MISSING)
+    view.refresh_all()
+    assert view._availability[key] is Availability.MISSING
+
+
+def test_empty_space_menu_offers_refresh(qtbot, workspace_factory):
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    menu = view._build_empty_space_menu()
+    assert "Обновить\tF5" in [action.text() for action in menu.actions()]

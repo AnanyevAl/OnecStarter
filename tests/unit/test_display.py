@@ -14,6 +14,7 @@ from onecstarter.services.display import (
     EMPTY_CONNECT_NOTE,
     GROUP_CONTENT_MARK,
     IMPLICIT_NOTE,
+    MISSING_SUFFIX,
     Row,
     RowKind,
     collation_key,
@@ -157,6 +158,36 @@ def test_label_of_healthy_row_is_untouched() -> None:
     item = replace(_broken_item(), parse_error=None)
     assert row_label(Row(RowKind.BASE, item.name, item)) == "Битая"
     assert row_label(Row(RowKind.SECTION, "Избранное", None)) == "Избранное"
+
+
+def test_missing_directory_shows_in_the_label() -> None:
+    """Тултипа мало: раздел рассчитан на работу с клавиатуры (спека §4.2)."""  # noqa: RUF002
+    item = replace(_item(requested_version=None), name="Бухгалтерия")
+    row = Row(RowKind.BASE, item.name, item)
+    assert row_label(row, missing=True) == f"Бухгалтерия {MISSING_SUFFIX}"
+
+
+def test_missing_suffix_defaults_to_absent() -> None:
+    item = replace(_item(requested_version=None), name="Бухгалтерия")
+    assert row_label(Row(RowKind.BASE, item.name, item)) == "Бухгалтерия"
+
+
+def test_all_three_marks_keep_their_order() -> None:
+    """Порядок фиксирован спекой §4.2: разбор, каталог, общий список."""
+    item = replace(
+        _item(requested_version=None),
+        name="Битая",
+        parse_error="OrderInList не число",
+        in_common_list=True,
+    )
+    row = Row(RowKind.BASE, item.name, item)
+    assert row_label(row, missing=True) == (
+        f"Битая {BROKEN_SUFFIX} {MISSING_SUFFIX} {COMMON_SUFFIX}"
+    )
+
+
+def test_rows_without_an_item_ignore_the_flag() -> None:
+    assert row_label(Row(RowKind.SECTION, "Избранное", None), missing=True) == "Избранное"
 
 
 def test_filter_matches_name_without_the_marker() -> None:

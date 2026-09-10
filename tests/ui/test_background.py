@@ -1,14 +1,20 @@
 """StartupTasks: доставка результатов фона сигналами и лог фаз."""
 
 import logging
+import os
 import threading
+from collections.abc import Callable
 from pathlib import Path
+from stat import S_IFDIR
 
 from onecstarter.domain.version import Installation
+from onecstarter.services.availability import Availability, ProbeTarget
 from onecstarter.services.catalog import EMPTY_COMMON_DATA
-from onecstarter.ui.background import StartupTasks
+from onecstarter.ui.background import AvailabilityProbe, StartupTasks
 
 _SYNC = lambda task: task()  # noqa: E731 — синхронный «поток» для детерминизма
+
+_DIR = os.stat_result((S_IFDIR | 0o755, 0, 0, 1, 0, 0, 0, 0, 0, 0))
 
 
 def test_start_emits_both_results(qtbot):
@@ -95,3 +101,105 @@ def test_log_carries_counts_not_paths(caplog):
         tasks.start()
     assert "секретный-сервер" not in caplog.text
     assert "share" not in caplog.text
+
+
+def test_probe_emits_one_signal_per_path(qtbot):
+    got: list[tuple[str, Availability]] = []
+    probe = AvailabilityProbe(lambda _p: _DIR, spawn=_SYNC)
+    probe.probed.connect(lambda key, state: got.append((key, state)))
+    probe.start([ProbeTarget("a", r"D:\a"), ProbeTarget("b", r"D:\b")])
+    assert got == [("a", Availability.PRESENT), ("b", Availability.PRESENT)]
+
+
+def test_probe_reports_missing(qtbot):
+    def stat(_path: str) -> os.stat_result:
+        raise FileNotFoundError
+
+    got: list[Availability] = []
+    probe = AvailabilityProbe(stat, spawn=_SYNC)
+    probe.probed.connect(lambda _key, state: got.append(state))
+    probe.start([ProbeTarget("a", r"D:\a")])
+    assert got == [Availability.MISSING]
+
+
+def test_probe_can_be_restarted(qtbot):
+    """F5 перезапускает пробу — `start` не одноразов, в отличие от StartupTasks."""
+    got: list[str] = []
+    probe = AvailabilityProbe(lambda _p: _DIR, spawn=_SYNC)
+    probe.probed.connect(lambda key, _state: got.append(key))
+    probe.start([ProbeTarget("a", r"D:\a")])
+    probe.start([ProbeTarget("a", r"D:\a")])
+    assert got == ["a", "a"]
+
+
+def test_stale_generation_is_discarded_on_restart(qtbot):
+    """I-2: F5 поверх зависшей пробы не должен затереть свежий результат старым.
+
+    `spawn` здесь только складывает задания в список, ничего не запуская, —
+    это и моделирует «зависшую» пробу: оба `start()` уже случились (значит,
+    текущее поколение — уже второе) раньше, чем выполнится хоть одно
+    задание. `tasks[0]` — первая (устаревшая) проба, `tasks[1]` — вторая
+    (текущая); порядок выполнения ниже — первая после того, как обе стартовали.
+    """  # noqa: RUF002
+    tasks: list[Callable[[], None]] = []
+    probe = AvailabilityProbe(lambda _p: _DIR, spawn=tasks.append)
+    got: list[tuple[str, Availability]] = []
+    probe.probed.connect(lambda key, state: got.append((key, state)))
+
+    probe.start([ProbeTarget("old", r"D:\old")])
+    probe.start([ProbeTarget("new", r"D:\new")])
+    assert len(tasks) == 2
+
+    tasks[0]()  # устаревшая проба — поколение к этому моменту уже второе
+    assert got == [], "результат устаревшей пробы не должен доходить до сигнала"
+
+    tasks[1]()  # текущая проба — её поколение всё ещё актуально
+    assert got == [("new", Availability.PRESENT)]
+
+
+def test_single_start_still_emits_as_before(qtbot):
+    """Регрессия: без перезапуска поколения не мешают обычному одиночному старту."""
+    tasks: list[Callable[[], None]] = []
+    probe = AvailabilityProbe(lambda _p: _DIR, spawn=tasks.append)
+    got: list[tuple[str, Availability]] = []
+    probe.probed.connect(lambda key, state: got.append((key, state)))
+
+    probe.start([ProbeTarget("a", r"D:\a")])
+    assert len(tasks) == 1
+    tasks[0]()
+    assert got == [("a", Availability.PRESENT)]
+
+
+def test_probe_uses_daemon_threads(qtbot):
+    done = threading.Event()
+    seen: list[bool] = []
+
+    def stat(_path: str) -> os.stat_result:
+        seen.append(threading.current_thread().daemon)
+        done.set()
+        return _DIR
+
+    AvailabilityProbe(stat).start([ProbeTarget("a", r"D:\a")])
+    assert done.wait(5), "проба не завершилась за 5 с"  # noqa: RUF001
+    assert seen[0] is True
+
+
+def test_probe_failure_is_logged_without_the_path(qtbot, caplog):
+    """Инвариант 5: путь пользователя не попадает ни в одну строку лога (МУТАЦИЯ).
+
+    М-5: `caplog.at_level(logging.ERROR, ...)` фильтровал INFO-записи
+    («начато», «закончено») — путь, попавший бы в них, тест бы не увидел.
+    Уровень поднят до INFO (тот же, на котором работает сторож `StartupTasks`
+    на счётчики, `test_log_carries_counts_not_paths`); отсутствие пути
+    проверяется по ВСЕМУ тексту лога, а сам факт отказа — отдельно, строкой
+    с меткой стадии и типом исключения.
+    """  # noqa: RUF002
+
+    def stat(_path: str) -> os.stat_result:
+        raise RuntimeError(r"\\srv\секретная-шара\база")
+
+    with caplog.at_level(logging.INFO, logger="onecstarter.startup"):
+        AvailabilityProbe(stat, spawn=_SYNC).start([ProbeTarget("a", r"D:\a")])
+    assert "секретная-шара" not in caplog.text
+    assert "доступность каталогов: отказ" in caplog.text
+    assert "RuntimeError" in caplog.text
