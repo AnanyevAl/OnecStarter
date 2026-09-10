@@ -2062,7 +2062,14 @@ class TestActivateWindow:
         assert brought == [10]
 
     def test_no_window_is_false_without_bring(self) -> None:
-        assert activate_window(42, windows=lambda: [SPLASH], bring=lambda h: True) is False
+        brought: list[int] = []
+
+        def bring(hwnd: int) -> bool:
+            brought.append(hwnd)
+            return True
+
+        assert activate_window(42, windows=lambda: [SPLASH], bring=bring) is False
+        assert brought == []
 
     def test_bring_failure_is_false(self) -> None:
         assert activate_window(42, windows=lambda: [MAIN], bring=lambda h: False) is False
@@ -2097,6 +2104,31 @@ from dataclasses import dataclass
 __all__ = ["WindowInfo", "activate_window", "bring_to_front", "enumerate_windows", "pick_window"]
 
 _SW_RESTORE = 9
+_GW_OWNER = 4
+
+# Один WinDLL на модуль, argtypes/restype у каждой функции — та же гигиена
+# ctypes, что в `platform_1c/job.py` (долг T-10). Без argtypes целый `hwnd`
+# уходил бы 32-битным `long` (LLP64), без restype HWND возвращался бы `c_int`.
+_WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+_user32 = ctypes.WinDLL("user32", use_last_error=True)
+_user32.EnumWindows.restype = wintypes.BOOL
+_user32.EnumWindows.argtypes = [_WNDENUMPROC, wintypes.LPARAM]
+_user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+_user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+_user32.GetWindowTextLengthW.restype = ctypes.c_int
+_user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+_user32.GetWindowTextW.restype = ctypes.c_int
+_user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+_user32.IsWindowVisible.restype = wintypes.BOOL
+_user32.IsWindowVisible.argtypes = [wintypes.HWND]
+_user32.GetWindow.restype = wintypes.HWND
+_user32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+_user32.IsIconic.restype = wintypes.BOOL
+_user32.IsIconic.argtypes = [wintypes.HWND]
+_user32.ShowWindow.restype = wintypes.BOOL
+_user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+_user32.SetForegroundWindow.restype = wintypes.BOOL
+_user32.SetForegroundWindow.argtypes = [wintypes.HWND]
 
 
 @dataclass(frozen=True)
@@ -2116,36 +2148,37 @@ def pick_window(windows: Sequence[WindowInfo], pid: int) -> int | None:
 
 
 def enumerate_windows() -> list[WindowInfo]:
-    user32 = ctypes.WinDLL("user32", use_last_error=True)
-    proc_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     found: list[WindowInfo] = []
 
     def visit(hwnd: int, _lparam: int) -> bool:
         pid = wintypes.DWORD()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        length = user32.GetWindowTextLengthW(hwnd)
+        _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        length = _user32.GetWindowTextLengthW(hwnd)
         buffer = ctypes.create_unicode_buffer(length + 1)
-        user32.GetWindowTextW(hwnd, buffer, length + 1)
+        _user32.GetWindowTextW(hwnd, buffer, length + 1)
+        owner = _user32.GetWindow(hwnd, _GW_OWNER)
         found.append(
             WindowInfo(
                 hwnd=hwnd,
                 pid=pid.value,
-                visible=bool(user32.IsWindowVisible(hwnd)),
+                visible=bool(_user32.IsWindowVisible(hwnd)),
                 title=buffer.value,
-                owner=int(user32.GetWindow(hwnd, 4) or 0),  # GW_OWNER = 4
+                owner=int(owner) if owner else 0,
             )
         )
         return True
 
-    user32.EnumWindows(proc_type(visit), 0)
+    # Ссылка на callback живёт до возврата EnumWindows — локальная переменная,
+    # не временный объект внутри вызова.
+    callback = _WNDENUMPROC(visit)
+    _user32.EnumWindows(callback, 0)
     return found
 
 
 def bring_to_front(hwnd: int) -> bool:
-    user32 = ctypes.WinDLL("user32", use_last_error=True)
-    if user32.IsIconic(hwnd):
-        user32.ShowWindow(hwnd, _SW_RESTORE)
-    return bool(user32.SetForegroundWindow(hwnd))
+    if _user32.IsIconic(hwnd):
+        _user32.ShowWindow(hwnd, _SW_RESTORE)
+    return bool(_user32.SetForegroundWindow(hwnd))
 
 
 def activate_window(
