@@ -1146,14 +1146,20 @@ def test_probe_uses_daemon_threads(qtbot):
 
 
 def test_probe_failure_is_logged_without_the_path(qtbot, caplog):
-    """Инвариант 5: путь пользователя в лог не попадает даже при отказе."""
+    """Инвариант 5: путь пользователя не попадает ни в одну строку лога.
+
+    Уровень — INFO, не ERROR: на ERROR записи «начато»/«закончено» отфильтрованы,
+    и путь, попавший в них, тест не увидел бы (финальное ревью, M-5). Путь
+    проверяется по ВСЕМУ тексту лога, а сам факт отказа — отдельно.
+    """  # noqa: RUF002
     def stat(_path: str) -> os.stat_result:
         raise RuntimeError(r"\\srv\секретная-шара\база")
 
-    with caplog.at_level(logging.ERROR, logger="onecstarter.startup"):
+    with caplog.at_level(logging.INFO, logger="onecstarter.startup"):
         AvailabilityProbe(stat, spawn=_SYNC).start([ProbeTarget("a", r"D:\a")])
     assert "секретная-шара" not in caplog.text
-    assert "доступность каталогов" in caplog.text
+    assert "доступность каталогов: отказ" in caplog.text
+    assert "RuntimeError" in caplog.text
 ```
 
 - [ ] **Step 2: Прогнать и убедиться, что падают**
@@ -1341,10 +1347,27 @@ def test_same_key_and_state_report_is_a_no_op(qtbot, workspace_factory, monkeypa
     assert len(rebuilds) == 1
 
 
-def test_unknown_paths_do_not_mark_anything(qtbot, workspace_factory):
+def test_unknown_paths_do_not_mark_anything(qtbot, workspace_factory, monkeypatch):
+    """Путь, которого нет ни у одной записи, не помечает ничего чужого.
+
+    Одного «подождать 400 мс и не найти суффикс» мало: так не отличить
+    «пересборка была и не пометила» от «пересборки не было вовсе»
+    (финальное ревью, M-7). Состояние для неизвестного пути всё равно
+    записывается, поэтому таймер коалесинга обязан сработать — считаем
+    пересборки тем же приёмом, что соседние тесты файла.
+    """  # noqa: RUF002
     view, _, _, _ = _view(qtbot, workspace_factory)
+    rebuilds: list[int] = []
+    original = view.rebuild
+
+    def counted_rebuild() -> None:
+        rebuilds.append(1)
+        original()
+
+    monkeypatch.setattr(view, "rebuild", counted_rebuild)
     view.apply_availability(path_key(r"D:\чужой\путь"), Availability.MISSING)
     qtbot.wait(400)
+    assert rebuilds, "неизвестный путь обязан запустить пересборку — иначе тест ничего не отличает"
     assert MISSING_SUFFIX not in _all_labels(view)
 ```
 
