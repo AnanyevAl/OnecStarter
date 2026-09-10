@@ -528,6 +528,12 @@ def join_vm_args(max_heap_mb: int | None, language: str | None, rest: Sequence[s
     return " ".join(tokens)
 ```
 
+**Правка по итогам реализации (10.09.2026, коммит `a6bdd13`).** `shlex.split(text, posix=False)`
+не держит кавычку внутри токена: `-Dfoo="a b" -Xmx2g` → `['-Dfoo="a', 'b"', '-Xmx2g']`, и тест
+таблицы выше на нём падает. `_tokens` реализован своим проходом по строке: разделитель —
+пробел вне двойных кавычек, кавычки остаются в токене, незакрытая кавычка — вся строка
+одним токеном. Одинарные кавычки — обычные символы (спека §2: «кавычки Windows»).
+
 - [ ] **Step 4: Прогнать**
 
 Run: `uv run pytest tests/unit/test_edt_domain.py -q && uv run ruff check . && uv run mypy`
@@ -550,7 +556,7 @@ git commit -m "feat(domain): фасады памяти и языка над ст
 
 **Interfaces:**
 - Consumes: `EdtInstallation`, `EdtProject` (Task 1).
-- Produces: `pick_jvm(*, product: Path | None, ini: Path | None, settings: Path | None, auto: Sequence[tuple[int, Path]], required_java: int) -> tuple[Path, str] | None`; `build_edt_command(exe: Path, workspace: str, jvm_dir: Path, installation_vm_args: str, project_vm_args: str) -> LaunchCommand`; `effective_jvm(project: EdtProject, installation: EdtInstallation) -> Path | None`.
+- Produces: `pick_jvm(*, product: Path | None, ini: Path | None, settings: Path | None, auto: Sequence[tuple[str, Path]], required_java: int) -> tuple[Path, str] | None` (`auto` — пары «строка `JAVA_VERSION` из `release`, каталог `bin`»; среди подходящих по major побеждает старшая полная версия, сравниваемая числами); `java_version_key(version: str) -> tuple[int, ...]`; `build_edt_command(exe: Path, workspace: str, jvm_dir: Path, installation_vm_args: str, project_vm_args: str) -> LaunchCommand`; `effective_jvm(project: EdtProject, installation: EdtInstallation) -> Path | None`.
 
 - [ ] **Step 1: Написать падающие тесты**
 
@@ -563,6 +569,7 @@ from onecstarter.domain.edt import (
     EdtInstallation,
     build_edt_command,
     effective_jvm,
+    java_version_key,
     pick_jvm,
 )
 
@@ -575,7 +582,7 @@ MINE = Path(r"D:\jdk\bin")
 class TestPickJvm:
     def test_products_json_wins(self) -> None:
         assert pick_jvm(
-            product=JDK17, ini=ZULU, settings=MINE, auto=[(25, JDK25)], required_java=17
+            product=JDK17, ini=ZULU, settings=MINE, auto=[("25.0.2", JDK25)], required_java=17
         ) == (JDK17, "products.json")
 
     def test_ini_when_no_product(self) -> None:
@@ -592,16 +599,34 @@ class TestPickJvm:
 
     def test_auto_picks_newest_fitting(self) -> None:
         assert pick_jvm(
-            product=None, ini=None, settings=None, auto=[(17, JDK17), (25, JDK25)], required_java=17
+            product=None, ini=None, settings=None,
+            auto=[("17.0.16", JDK17), ("25.0.2", JDK25)], required_java=17,
         ) == (JDK25, "auto")
+
+    def test_auto_same_major_picks_newest_full_version_numerically(self) -> None:
+        older = Path(r"C:\jdk\axiom-jdk-full-17.0.9+7-x86_64\bin")
+        assert pick_jvm(
+            product=None, ini=None, settings=None,
+            auto=[("17.0.9", older), ("17.0.16", JDK17)], required_java=17,
+        ) == (JDK17, "auto")  # строкой "17.0.9" > "17.0.16" — потому сравнение числами
 
     def test_auto_skips_too_old(self) -> None:
         assert pick_jvm(
-            product=None, ini=None, settings=None, auto=[(11, MINE), (17, JDK17)], required_java=17
+            product=None, ini=None, settings=None,
+            auto=[("11.0.2", MINE), ("17.0.16", JDK17)], required_java=17,
         ) == (JDK17, "auto")
 
     def test_nothing_fits(self) -> None:
-        assert pick_jvm(product=None, ini=None, settings=None, auto=[(11, MINE)], required_java=17) is None
+        assert pick_jvm(
+            product=None, ini=None, settings=None, auto=[("11.0.2", MINE)], required_java=17
+        ) is None
+
+    @pytest.mark.parametrize(
+        ("version", "expected"),
+        [("17.0.16", (17, 0, 16)), ("25", (25,)), ("1.8.0_392", (1, 8, 0, 392)), ("", ()), ("x", ())],
+    )
+    def test_java_version_key(self, version: str, expected: tuple[int, ...]) -> None:
+        assert java_version_key(version) == expected
 
 
 def _installation(**overrides: object) -> EdtInstallation:
@@ -670,27 +695,38 @@ Expected: `ImportError` на `build_edt_command`.
 Добавить в `src/onecstarter/domain/edt.py` (импорт `from onecstarter.domain.launch import LaunchCommand` — в шапку):
 
 ```python
+def java_version_key(version: str) -> tuple[int, ...]:
+    """`17.0.16` → (17, 0, 16); `1.8.0_392` → (1, 8, 0, 392) — для сравнения числами."""
+    return tuple(int(part) for part in re.findall(r"\d+", version))
+
+
 def pick_jvm(
     *,
     product: Path | None,
     ini: Path | None,
     settings: Path | None,
-    auto: Sequence[tuple[int, Path]],
+    auto: Sequence[tuple[str, Path]],
     required_java: int,
 ) -> tuple[Path, str] | None:
     """Цепочка спеки §3: products.json → 1cedt.ini → настройка → старший подходящий JDK.
 
     Все пути уже проверены на существование вызывающим (иначе `None`);
-    здесь — только порядок предпочтения. Возвращает путь и имя источника
-    для показа в диалоге записи.
+    здесь — только порядок предпочтения. `auto` — пары «`JAVA_VERSION`
+    из `release`, каталог bin»: подходит major ≥ требуемого, побеждает старшая
+    полная версия, сравниваемая числами (строкой `17.0.9` > `17.0.16` —
+    находка ревью Task 3). Возвращает путь и имя источника для диалога записи.
     """
     for path, source in ((product, "products.json"), (ini, "1cedt.ini"), (settings, "settings")):
         if path is not None:
             return path, source
-    fitting = [(major, path) for major, path in auto if major >= required_java]
+    fitting = [
+        (version, path)
+        for version, path in auto
+        if (java_major(version) or 0) >= required_java
+    ]
     if not fitting:
         return None
-    _major, best = max(fitting, key=lambda pair: (pair[0], str(pair[1])))
+    _version, best = max(fitting, key=lambda pair: (java_version_key(pair[0]), str(pair[1])))
     return best, "auto"
 
 
@@ -1587,6 +1623,13 @@ class TestDiscover:
         [found] = discover_edt([tmp_path], None, "")
         assert found.jvm_dir is None
 
+    def test_same_major_newest_full_version_wins(self, tmp_path: Path) -> None:
+        _edt(tmp_path, "2025.2.6+4")
+        _jdk(tmp_path, "17.0.9")
+        newest = _jdk(tmp_path, "17.0.16")
+        [found] = discover_edt([tmp_path], None, "")
+        assert found.jvm_dir == newest / "bin"
+
     def test_product_location_outside_roots(self, tmp_path: Path) -> None:
         elsewhere = _edt(tmp_path / "elsewhere", "2025.2.6+4")
         registry = EdtStartRegistry(
@@ -1679,14 +1722,14 @@ def _children(root: Path) -> list[Path]:
         return []
 
 
-def _auto_jdks(roots: Sequence[Path]) -> list[tuple[int, Path]]:
-    found: list[tuple[int, Path]] = []
+def _auto_jdks(roots: Sequence[Path]) -> list[tuple[str, Path]]:
+    """Пары «JAVA_VERSION из release, каталог bin» — выбор делает `pick_jvm`."""
+    found: list[tuple[str, Path]] = []
     for root in roots:
         for child in _children(root):
             version = read_jdk_version(child)
-            major = java_major(version) if version else None
-            if major is not None and (child / "bin").is_dir():
-                found.append((major, child / "bin"))
+            if version and java_major(version) is not None and (child / "bin").is_dir():
+                found.append((version, child / "bin"))
     return found
 
 
