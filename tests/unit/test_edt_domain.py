@@ -146,6 +146,10 @@ class TestSplitVmArgs:
             ),
             ("-Xmxabc", VmArgsParts(None, None, ("-Xmxabc",))),  # неразбираемый
             ('-Dbroken="unterminated', VmArgsParts(None, None, ('-Dbroken="unterminated',))),
+            (
+                "-Dmsg=Don't stop -Xmx8192m",
+                VmArgsParts(8192, None, ("-Dmsg=Don't", "stop")),
+            ),  # апостроф в значении — не конец токена
         ],
     )
     def test_table(self, text: str, expected: VmArgsParts) -> None:
@@ -174,6 +178,7 @@ class TestJoinVmArgs:
             "-Xmx8192m",
             "-Dx=1 -Xmx8192m -Duser.language=ru",
             "-DnativeFormBufferedLayoutRender=true",
+            '-Dfoo="a b"',
         ],
     )
     def test_roundtrip(self, text: str) -> None:

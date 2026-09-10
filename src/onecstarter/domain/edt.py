@@ -154,16 +154,12 @@ def _tokens(text: str) -> list[str]:
     tokens: list[str] = []
     current_token = ""
     in_double_quotes = False
-    in_single_quotes = False
 
     for char in text:
-        if char == '"' and not in_single_quotes:
+        if char == '"':
             in_double_quotes = not in_double_quotes
             current_token += char
-        elif char == "'" and not in_double_quotes:
-            in_single_quotes = not in_single_quotes
-            current_token += char
-        elif char == " " and not in_double_quotes and not in_single_quotes:
+        elif char == " " and not in_double_quotes:
             if current_token:
                 tokens.append(current_token)
                 current_token = ""
@@ -171,7 +167,7 @@ def _tokens(text: str) -> list[str]:
             current_token += char
 
     if current_token:
-        if in_double_quotes or in_single_quotes:
+        if in_double_quotes:
             return [text.strip()]
         tokens.append(current_token)
 
