@@ -1,17 +1,23 @@
 """Домен EDT: модель, разбор имён каталогов, 1cedt.ini и release JDK (спека §0, §3)."""
 
+from pathlib import Path
+
 import pytest
 
 from onecstarter.domain.edt import (
     DEFAULT_REQUIRED_JAVA,
     LANGUAGES,
+    EdtInstallation,
     EdtProject,
     IniInfo,
     VmArgsParts,
+    build_edt_command,
+    effective_jvm,
     java_major,
     join_vm_args,
     parse_ini,
     parse_release,
+    pick_jvm,
     split_vm_args,
     version_from_dir_name,
     workspace_key,
@@ -189,3 +195,100 @@ class TestJoinVmArgs:
 def test_languages_have_default_first() -> None:
     assert LANGUAGES[0] == ("", "По умолчанию")
     assert [code for code, _label in LANGUAGES] == ["", "ru", "en"]
+
+
+JDK17 = Path(r"C:\Program Files\1C\1CE\components\axiom-jdk-full-17.0.16+12-x86_64\bin")
+JDK25 = Path(r"C:\Program Files\1C\1CE\components\axiom-jdk-full-25.0.2+12-x86_64\bin")
+ZULU = Path(r"C:\Program Files\Zulu\zulu-17\bin")
+MINE = Path(r"D:\jdk\bin")
+
+
+class TestPickJvm:
+    def test_products_json_wins(self) -> None:
+        assert pick_jvm(
+            product=JDK17, ini=ZULU, settings=MINE, auto=[(25, JDK25)], required_java=17
+        ) == (JDK17, "products.json")
+
+    def test_ini_when_no_product(self) -> None:
+        assert pick_jvm(product=None, ini=ZULU, settings=MINE, auto=[], required_java=17) == (
+            ZULU,
+            "1cedt.ini",
+        )
+
+    def test_settings_when_no_product_and_ini(self) -> None:
+        assert pick_jvm(product=None, ini=None, settings=MINE, auto=[], required_java=17) == (
+            MINE,
+            "settings",
+        )
+
+    def test_auto_picks_newest_fitting(self) -> None:
+        assert pick_jvm(
+            product=None, ini=None, settings=None, auto=[(17, JDK17), (25, JDK25)], required_java=17
+        ) == (JDK25, "auto")
+
+    def test_auto_skips_too_old(self) -> None:
+        assert pick_jvm(
+            product=None, ini=None, settings=None, auto=[(11, MINE), (17, JDK17)], required_java=17
+        ) == (JDK17, "auto")
+
+    def test_nothing_fits(self) -> None:
+        assert (
+            pick_jvm(product=None, ini=None, settings=None, auto=[(11, MINE)], required_java=17)
+            is None
+        )
+
+
+def _installation(**overrides: object) -> EdtInstallation:
+    values: dict[str, object] = {
+        "version": "2025.2.6+4",
+        "exe": Path(r"C:\Program Files\1C\1CE\components\1c-edt-2025.2.6+4-x86_64\1cedt.exe"),
+        "jvm_dir": JDK17,
+        "vm_args": "-Xmx8192m -DnativeFormBufferedLayoutRender=true",
+        "required_java": 17,
+        "jvm_source": "products.json",
+    }
+    values.update(overrides)
+    return EdtInstallation(**values)  # type: ignore[arg-type]
+
+
+class TestBuildEdtCommand:
+    def test_repeats_edt_start_line(self) -> None:
+        # [Ф] спека §0: снято с живого процесса 1cedt.exe  # noqa: RUF003
+        command = build_edt_command(
+            _installation().exe,
+            r"D:\edt\2025\retail",
+            JDK17,
+            "-Xmx8192m -DnativeFormBufferedLayoutRender=true",
+            "-Xmx8192m",
+        )
+        assert command.executable == _installation().exe
+        assert command.arguments == (
+            f'-data "D:\\edt\\2025\\retail" -vm "{JDK17}" --launcher.appendVmargs '
+            "-vmargs -Xmx8192m -DnativeFormBufferedLayoutRender=true "
+            "-Djava.library.path= -Xmx8192m"
+        )
+
+    def test_empty_args_on_both_levels(self) -> None:
+        command = build_edt_command(_installation().exe, r"D:\edt\a b", JDK17, "", "")
+        assert command.arguments == (
+            f'-data "D:\\edt\\a b" -vm "{JDK17}" --launcher.appendVmargs '
+            "-vmargs -Djava.library.path="
+        )
+
+    def test_command_line_quotes_executable(self) -> None:
+        command = build_edt_command(_installation().exe, r"D:\edt\a", JDK17, "", "")
+        assert command.command_line.startswith('"C:\\Program Files\\1C\\1CE\\')
+
+
+class TestEffectiveJvm:
+    def test_project_override_wins(self) -> None:
+        project = EdtProject(id="p", name="n", workspace=r"D:\w", jvm_dir=str(MINE))
+        assert effective_jvm(project, _installation()) == MINE
+
+    def test_installation_when_project_empty(self) -> None:
+        project = EdtProject(id="p", name="n", workspace=r"D:\w")
+        assert effective_jvm(project, _installation()) == JDK17
+
+    def test_none_when_neither(self) -> None:
+        project = EdtProject(id="p", name="n", workspace=r"D:\w")
+        assert effective_jvm(project, _installation(jvm_dir=None)) is None

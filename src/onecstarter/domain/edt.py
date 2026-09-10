@@ -11,6 +11,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from onecstarter.domain.launch import LaunchCommand
+
 EDT_EXE = "1cedt.exe"  # [Ф] спека §0: каталог установки
 CLI_EXE = "1cedtcli.exe"  # [Ф] спека §0-Д: консольная подсистема
 # [Ф] -Dosgi.requiredJavaVersion=17 у всех трёх установок  # noqa: RUF003
@@ -212,3 +214,57 @@ def join_vm_args(max_heap_mb: int | None, language: str | None, rest: Sequence[s
     if language:
         tokens.append(f"-Duser.language={language}")
     return " ".join(tokens)
+
+
+def pick_jvm(
+    *,
+    product: Path | None,
+    ini: Path | None,
+    settings: Path | None,
+    auto: Sequence[tuple[int, Path]],
+    required_java: int,
+) -> tuple[Path, str] | None:
+    """Цепочка спеки §3: products.json → 1cedt.ini → настройка → старший подходящий JDK.
+
+    Все пути уже проверены на существование вызывающим (иначе `None`);
+    здесь — только порядок предпочтения. Возвращает путь и имя источника
+    для показа в диалоге записи.
+    """  # noqa: RUF002
+    for path, source in ((product, "products.json"), (ini, "1cedt.ini"), (settings, "settings")):
+        if path is not None:
+            return path, source
+    fitting = [(major, path) for major, path in auto if major >= required_java]
+    if not fitting:
+        return None
+    _major, best = max(fitting, key=lambda pair: (pair[0], str(pair[1])))
+    return best, "auto"
+
+
+def effective_jvm(project: EdtProject, installation: EdtInstallation) -> Path | None:
+    if project.jvm_dir:
+        return Path(project.jvm_dir)
+    return installation.jvm_dir
+
+
+def build_edt_command(
+    exe: Path,
+    workspace: str,
+    jvm_dir: Path,
+    installation_vm_args: str,
+    project_vm_args: str,
+) -> LaunchCommand:
+    """Дословно строка EDT Start ([Ф] спека §0), включая `-Djava.library.path=`.
+
+    Аргументы установки идут до аргументов записи: при повторе `-Xmx`
+    JVM берёт последний ([?] спека §0, эксперимент 1), и запись побеждает.
+    """
+    parts = [
+        f'-data "{workspace}"',
+        f'-vm "{jvm_dir}"',
+        "--launcher.appendVmargs",
+        "-vmargs",
+        installation_vm_args.strip(),
+        "-Djava.library.path=",
+        project_vm_args.strip(),
+    ]
+    return LaunchCommand(executable=exe, arguments=" ".join(part for part in parts if part))
