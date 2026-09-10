@@ -84,6 +84,8 @@ class EdtWorkspace:
 
     def update_project(self, project: EdtProject) -> None:
         self._validate_project(project)
+        if project.group_id is not None:
+            self._group(project.group_id)
         index = self._project_index(project.id)
         self._projects[index] = project
         self._save()

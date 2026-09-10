@@ -63,6 +63,16 @@ class TestProjects:
         with pytest.raises(UnknownItemError):
             _workspace(tmp_path).update_project(_project("a", id="ghost"))
 
+    def test_update_with_unknown_group_raises_and_keeps_record(self, tmp_path: Path) -> None:
+        ws = _workspace(tmp_path)
+        added = ws.add_project(_project("a"))
+        with pytest.raises(UnknownItemError):
+            ws.update_project(
+                EdtProject(id=added.id, name="a", workspace=added.workspace, group_id="ghost")
+            )
+        assert ws.project(added.id).group_id is None
+        assert [p.id for p in ws.children(None)[1]] == [added.id]
+
 
 class TestGroups:
     def test_add_rename_remove_promotes_children(self, tmp_path: Path) -> None:
