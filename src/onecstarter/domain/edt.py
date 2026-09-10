@@ -7,7 +7,7 @@
 
 import os
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -89,6 +89,12 @@ class EdtStartProject:
 
 
 @dataclass(frozen=True)
+class ImportCandidate:
+    project: EdtProject
+    version_known: bool  # False — productId без продукта в products.json (спека §6)
+
+
+@dataclass(frozen=True)
 class IniInfo:
     vm: str | None
     required_java: int
@@ -101,6 +107,42 @@ def workspace_key(path: str) -> str:
     потому что `domain` не импортирует `services`.
     """  # noqa: RUF002
     return os.path.normcase(os.path.normpath(path))
+
+
+def import_candidates(
+    projects: Sequence[EdtStartProject],
+    products: Sequence[EdtStartProduct],
+    existing: Iterable[EdtProject],
+    new_id: Callable[[], str],
+) -> list[ImportCandidate]:
+    """Кандидат — проект EDT Start, чьего workspace у нас ещё нет (спека §6).
+
+    `args` продукта в запись не копируются: они остаются на уровне установки
+    и читаются вживую (спека §2, три уровня). Повторный вызов на результате
+    предыдущего пуст — идемпотентность проверяется тестом и мутацией (§9).
+    """  # noqa: RUF002
+    known = {workspace_key(project.workspace) for project in existing}
+    versions = {product.id: product.version for product in products}
+    result: list[ImportCandidate] = []
+    for source in projects:
+        workspace = str(source.workspace)
+        if workspace_key(workspace) in known:
+            continue
+        version = versions.get(source.product_id)
+        result.append(
+            ImportCandidate(
+                EdtProject(
+                    id=new_id(),
+                    name=source.label or source.workspace.name,
+                    workspace=workspace,
+                    edt_version=version or "",
+                    jvm_dir=str(source.jvm_dir) if source.jvm_dir is not None else "",
+                    vm_args=" ".join(source.args),
+                ),
+                version_known=version is not None,
+            )
+        )
+    return result
 
 
 def version_from_dir_name(name: str) -> str | None:

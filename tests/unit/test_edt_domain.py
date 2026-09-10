@@ -1,5 +1,7 @@
 """Домен EDT: модель, разбор имён каталогов, 1cedt.ini и release JDK (спека §0, §3)."""
 
+from collections.abc import Callable
+from itertools import count
 from pathlib import Path
 
 import pytest
@@ -11,10 +13,14 @@ from onecstarter.domain.edt import (
     EditorResolution,
     EdtInstallation,
     EdtProject,
+    EdtStartProduct,
+    EdtStartProject,
+    ImportCandidate,
     IniInfo,
     VmArgsParts,
     build_edt_command,
     effective_jvm,
+    import_candidates,
     java_major,
     java_version_key,
     join_vm_args,
@@ -400,3 +406,74 @@ class TestResolveEditor:
         assert resolve_editor("", False, None, []) == EditorResolution(
             None, "", EDITOR_MISSING_NOTE
         )
+
+
+PRODUCT = EdtStartProduct(
+    id="prod-1",
+    version="2025.2.6+4",
+    exe=Path(EXE),
+    jvm_dir=JDK17,
+    args=("-Xmx8192m", "-DnativeFormBufferedLayoutRender=true"),
+)
+
+
+def _es_project(**overrides: object) -> EdtStartProject:
+    values: dict[str, object] = {
+        "id": "es-1",
+        "label": "(2025) Проект А",  # noqa: RUF001
+        "workspace": Path(r"D:\edt\2025\a"),
+        "product_id": "prod-1",
+        "args": ("-Xmx8192m",),
+        "jvm_dir": None,
+    }
+    values.update(overrides)
+    return EdtStartProject(**values)  # type: ignore[arg-type]
+
+
+def _ids() -> Callable[[], str]:
+    counter = count(1)
+    return lambda: f"id-{next(counter)}"
+
+
+class TestImportCandidates:
+    def test_maps_fields(self) -> None:
+        [candidate] = import_candidates([_es_project()], [PRODUCT], [], _ids())
+        assert candidate == ImportCandidate(
+            EdtProject(
+                id="id-1",
+                name="(2025) Проект А",  # noqa: RUF001
+                workspace=r"D:\edt\2025\a",
+                project_dir="",
+                edt_version="2025.2.6+4",
+                jvm_dir="",
+                vm_args="-Xmx8192m",
+                group_id=None,
+            ),
+            version_known=True,
+        )
+
+    def test_product_args_not_copied_into_record(self) -> None:
+        [candidate] = import_candidates([_es_project()], [PRODUCT], [], _ids())
+        assert "nativeFormBufferedLayoutRender" not in candidate.project.vm_args
+
+    def test_existing_workspace_excluded_by_normalized_key(self) -> None:
+        existing = [EdtProject(id="x", name="есть", workspace=r"d:/EDT/2025/A/")]
+        assert import_candidates([_es_project()], [PRODUCT], existing, _ids()) == []
+
+    def test_idempotent_second_pass(self) -> None:
+        first = import_candidates([_es_project()], [PRODUCT], [], _ids())
+        second = import_candidates([_es_project()], [PRODUCT], [c.project for c in first], _ids())
+        assert second == []
+
+    def test_unknown_product_marked(self) -> None:
+        [candidate] = import_candidates([_es_project(product_id="gone")], [PRODUCT], [], _ids())
+        assert candidate.version_known is False
+        assert candidate.project.edt_version == ""
+
+    def test_project_jvm_override_copied(self) -> None:
+        [candidate] = import_candidates([_es_project(jvm_dir=MINE)], [PRODUCT], [], _ids())
+        assert candidate.project.jvm_dir == str(MINE)
+
+    def test_empty_label_falls_back_to_dir_name(self) -> None:
+        [candidate] = import_candidates([_es_project(label="")], [PRODUCT], [], _ids())
+        assert candidate.project.name == "a"
