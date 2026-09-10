@@ -2338,6 +2338,15 @@ class TestBadFile:
         assert not path.exists()
         assert (tmp_path / "edt.json.bad").read_text(encoding="utf-8") == text
 
+    def test_unreadable_file_raises_not_empty(self, tmp_path: Path) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ: недоступный файл — ошибка, не пустой список и не `.bad`."""
+        directory = tmp_path / "edt.json"
+        directory.mkdir()  # каталог на месте файла: IsADirectoryError=OSError
+        with pytest.raises(EdtUnavailableError):
+            load_registry(directory)
+        assert directory.exists()
+        assert not (tmp_path / "edt.json.bad").exists()
+
     def test_cannot_move_aside_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         path = tmp_path / "edt.json"
         path.write_text("{", encoding="utf-8")
@@ -2411,8 +2420,13 @@ def load_registry(path: Path) -> EdtRegistry:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return EdtRegistry((), ())
-    except (OSError, UnicodeDecodeError):
+    except UnicodeDecodeError:
         return _move_aside(path)
+    except OSError as error:
+        # Файл есть, но недоступен: блокировка, права, отвалившийся диск. Это
+        # не порча содержимого — в `.bad` его не уносим и пустым не подменяем:
+        # следующее сохранение затёрло бы записи пользователя (как в server_store).
+        raise EdtUnavailableError(f"{path} недоступен для чтения") from error
     try:
         payload = json.loads(raw)
         if not isinstance(payload, dict) or payload.get("schema") != SCHEMA_VERSION:
