@@ -7,6 +7,7 @@
 
 import os
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -19,6 +20,22 @@ DEFAULT_REQUIRED_JAVA = 17
 _EDT_DIR = re.compile(r"^1c-edt-(?P<version>\d[0-9A-Za-z.+]*)-x86_64$")
 _REQUIRED_JAVA = re.compile(r"^-Dosgi\.requiredJavaVersion=(\d+)$")
 _RELEASE_VERSION = re.compile(r'^JAVA_VERSION="([^"]+)"$', re.MULTILINE)
+
+LANGUAGES: tuple[tuple[str, str], ...] = (
+    ("", "По умолчанию"),
+    ("ru", "Русский"),
+    ("en", "English"),
+)
+
+_XMX = re.compile(r"^-Xmx(\d+)([kKmMgG]?)$")
+_LANGUAGE = re.compile(r"^-Duser\.language=(.+)$")
+
+
+@dataclass(frozen=True)
+class VmArgsParts:
+    max_heap_mb: int | None
+    language: str | None
+    rest: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -123,3 +140,79 @@ def java_major(version: str) -> int | None:
         except ValueError:
             return None
     return first
+
+
+def _tokens(text: str) -> list[str]:
+    """Разбить строку аргументов, сохраняя кавычки в токенах.
+
+    Незакрытая кавычка — не повод терять текст: вся строка становится
+    одним токеном и уходит в «прочее» как есть.
+    """
+    if not text.strip():
+        return []
+
+    tokens: list[str] = []
+    current_token = ""
+    in_double_quotes = False
+    in_single_quotes = False
+
+    for char in text:
+        if char == '"' and not in_single_quotes:
+            in_double_quotes = not in_double_quotes
+            current_token += char
+        elif char == "'" and not in_double_quotes:
+            in_single_quotes = not in_single_quotes
+            current_token += char
+        elif char == " " and not in_double_quotes and not in_single_quotes:
+            if current_token:
+                tokens.append(current_token)
+                current_token = ""
+        else:
+            current_token += char
+
+    if current_token:
+        if in_double_quotes or in_single_quotes:
+            return [text.strip()]
+        tokens.append(current_token)
+
+    return tokens
+
+
+def _heap_mb(amount: str, unit: str) -> int | None:
+    value = int(amount)
+    unit = unit.lower()
+    if unit == "m":
+        return value
+    if unit == "g":
+        return value * 1024
+    if unit == "k":
+        return value // 1024
+    return value // (1024 * 1024)
+
+
+def split_vm_args(text: str) -> VmArgsParts:
+    """Память и язык — из токенов; при повторе `-Xmx` действует последний (спека §2)."""
+    heap: int | None = None
+    language: str | None = None
+    rest: list[str] = []
+    for token in _tokens(text):
+        xmx = _XMX.match(token)
+        if xmx:
+            heap = _heap_mb(xmx.group(1), xmx.group(2))
+            continue
+        lang = _LANGUAGE.match(token)
+        if lang:
+            language = lang.group(1)
+            continue
+        rest.append(token)
+    return VmArgsParts(max_heap_mb=heap, language=language, rest=tuple(rest))
+
+
+def join_vm_args(max_heap_mb: int | None, language: str | None, rest: Sequence[str]) -> str:
+    """Порядок сборки: прочее, затем `-Xmx`, затем `-Duser.language` (спека §2)."""
+    tokens = list(rest)
+    if max_heap_mb is not None:
+        tokens.append(f"-Xmx{max_heap_mb}m")
+    if language:
+        tokens.append(f"-Duser.language={language}")
+    return " ".join(tokens)

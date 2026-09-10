@@ -4,11 +4,15 @@ import pytest
 
 from onecstarter.domain.edt import (
     DEFAULT_REQUIRED_JAVA,
+    LANGUAGES,
     EdtProject,
     IniInfo,
+    VmArgsParts,
     java_major,
+    join_vm_args,
     parse_ini,
     parse_release,
+    split_vm_args,
     version_from_dir_name,
     workspace_key,
 )
@@ -120,3 +124,63 @@ class TestRelease:
     )
     def test_java_major(self, version: str, expected: int | None) -> None:
         assert java_major(version) == expected
+
+
+class TestSplitVmArgs:
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            ("", VmArgsParts(None, None, ())),
+            ("-Xmx8192m", VmArgsParts(8192, None, ())),
+            ("-Xmx8g", VmArgsParts(8192, None, ())),
+            ("-Xmx524288k", VmArgsParts(512, None, ())),
+            ("-Xmx1073741824", VmArgsParts(1024, None, ())),
+            ("-Duser.language=ru", VmArgsParts(None, "ru", ())),
+            (
+                "-Xmx4096m -DnativeFormBufferedLayoutRender=true -Xmx8192m",
+                VmArgsParts(8192, None, ("-DnativeFormBufferedLayoutRender=true",)),
+            ),  # повтор -Xmx — берётся последний (спека §2)
+            (
+                '-Dfoo="a b" -Xmx2g',
+                VmArgsParts(2048, None, ('-Dfoo="a b"',)),
+            ),
+            ("-Xmxabc", VmArgsParts(None, None, ("-Xmxabc",))),  # неразбираемый
+            ('-Dbroken="unterminated', VmArgsParts(None, None, ('-Dbroken="unterminated',))),
+        ],
+    )
+    def test_table(self, text: str, expected: VmArgsParts) -> None:
+        assert split_vm_args(text) == expected
+
+
+class TestJoinVmArgs:
+    @pytest.mark.parametrize(
+        ("heap", "language", "rest", "expected"),
+        [
+            (None, None, (), ""),
+            (8192, None, (), "-Xmx8192m"),
+            (None, "ru", (), "-Duser.language=ru"),
+            (8192, "en", ("-Dx=1",), "-Dx=1 -Xmx8192m -Duser.language=en"),
+            (None, "", ("-Dx=1",), "-Dx=1"),  # пустой язык = по умолчанию
+        ],
+    )
+    def test_table(
+        self, heap: int | None, language: str | None, rest: tuple[str, ...], expected: str
+    ) -> None:
+        assert join_vm_args(heap, language, rest) == expected
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "-Xmx8192m",
+            "-Dx=1 -Xmx8192m -Duser.language=ru",
+            "-DnativeFormBufferedLayoutRender=true",
+        ],
+    )
+    def test_roundtrip(self, text: str) -> None:
+        parts = split_vm_args(text)
+        assert split_vm_args(join_vm_args(parts.max_heap_mb, parts.language, parts.rest)) == parts
+
+
+def test_languages_have_default_first() -> None:
+    assert LANGUAGES[0] == ("", "По умолчанию")
+    assert [code for code, _label in LANGUAGES] == ["", "ru", "en"]
