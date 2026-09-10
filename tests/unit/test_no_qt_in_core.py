@@ -40,6 +40,7 @@ CORE = (
     "onecstarter.platform_1c.edtstart_registry",
     "onecstarter.platform_1c.edt_discovery",
     "onecstarter.platform_1c.editors",
+    "onecstarter.platform_1c.window_activate",
     "onecstarter.security.secrets",
     "onecstarter.security.credentials",
 )
