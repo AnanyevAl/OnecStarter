@@ -7,12 +7,23 @@
 
 Порядок записей и групп — порядок в массиве (спека §2): перестановка —
 удаление из одного места и вставка в другое, без арифметики `OrderInList`.
+
+Эта задача (Task 13) добавляет сами эффекты: установки (`refresh_installations`,
+`installation_for` — точное совпадение версии, спека §2), запуск (`launch` —
+активация уже запущенного окна вместо второго процесса, спека §4; отказ до
+порождения процесса при не найденной версии или JDK), внешние редакторы
+(`open_in_editor`, `open_folder`) и импорт из EDT Start (`import_candidates`,
+`import_projects` — идемпотентно по нормализованному workspace, спека §6).
+Статус записи (`status`) — производная от последнего применённого скана
+(`apply_scan`) и списка установок; сам скан (`scan_edt`) — модульная функция
+без состояния, зовётся из потока-демона по образцу `servers.py::scan_servers`.
 """
 
 import os
 import uuid
 from collections.abc import Callable, Sequence
-from dataclasses import replace
+from dataclasses import dataclass, replace
+from enum import Enum
 from pathlib import Path
 
 from onecstarter.domain.edt import (
@@ -20,19 +31,72 @@ from onecstarter.domain.edt import (
     EdtGroup,
     EdtInstallation,
     EdtProject,
+    ImportCandidate,
+    build_edt_command,
+    effective_jvm,
+    import_candidates,
+    running_workspaces,
 )
 from onecstarter.domain.launch import LaunchCommand
 from onecstarter.platform_1c import process, window_activate
 from onecstarter.platform_1c.editors import EditorKind
 from onecstarter.platform_1c.edtstart_registry import EdtStartRegistry
+from onecstarter.platform_1c.process_scan import ProcessScanner
 from onecstarter.services.edt_store import EdtRegistry, load_registry, save_registry
-from onecstarter.services.errors import InvalidRequestError, UnknownItemError
+from onecstarter.services.errors import (
+    EdtError,
+    EdtLaunchError,
+    InvalidRequestError,
+    UnknownItemError,
+)
 
-__all__ = ["EdtWorkspace"]
+__all__ = [
+    "EDT_PROCESS_NAMES",
+    "EdtScan",
+    "EdtStatus",
+    "EdtWorkspace",
+    "LaunchOutcome",
+    "scan_edt",
+]
 
 
 def _new_id() -> str:
     return uuid.uuid4().hex
+
+
+EDT_PROCESS_NAMES = frozenset({"1cedt.exe"})
+
+
+class LaunchOutcome(Enum):
+    STARTED = "started"
+    ACTIVATED = "activated"
+    ACTIVATION_MISSED = "missed"  # окно не нашлось — молча (спека §4)
+
+
+@dataclass(frozen=True)
+class EdtScan:
+    running: dict[str, int]
+    present: dict[str, bool]
+
+
+@dataclass(frozen=True)
+class EdtStatus:
+    running_pid: int | None
+    workspace_present: bool | None
+    installed: bool
+    cli_busy: bool = False
+
+
+def scan_edt(
+    scanner: ProcessScanner,
+    projects: Sequence[EdtProject],
+    is_dir: Callable[[str], bool] = os.path.isdir,
+) -> EdtScan:
+    """Снимок для монитора: кто запущен и чьи каталоги на месте. Зовётся из потока-демона."""
+    processes = scanner.snapshot(EDT_PROCESS_NAMES)
+    running = running_workspaces(((p.pid, p.argv) for p in processes), projects)
+    present = {project.id: is_dir(project.workspace) for project in projects}
+    return EdtScan(running=running, present=present)
 
 
 class EdtWorkspace:
@@ -61,6 +125,8 @@ class EdtWorkspace:
         self._projects: list[EdtProject] = list(registry.projects)
         self._installations: list[EdtInstallation] = []
         self._installations_ready = False
+        self._running: dict[str, int] = {}
+        self._present: dict[str, bool] = {}
 
     # --- записи -----------------------------------------------------------
 
@@ -160,6 +226,120 @@ class EdtWorkspace:
         self._groups.insert(self._insert_index(self._groups, parent_id, position), moved)
         self._save()
 
+    # --- установки --------------------------------------------------------
+
+    def set_installations(self, installations: Sequence[EdtInstallation]) -> None:
+        self._installations = list(installations)
+        self._installations_ready = True
+
+    def refresh_installations(self) -> list[EdtInstallation]:
+        self.set_installations(self._discover())
+        return self.installations()
+
+    def installations(self) -> list[EdtInstallation]:
+        return list(self._installations)
+
+    def installations_ready(self) -> bool:
+        return self._installations_ready
+
+    def installation_for(self, project: EdtProject) -> EdtInstallation | None:
+        """Точное совпадение строки версии (спека §2) — никакой «ближайшей»."""
+        for installation in self._installations:
+            if installation.version == project.edt_version:
+                return installation
+        return None
+
+    # --- статус -----------------------------------------------------------
+
+    def apply_scan(self, scan: EdtScan) -> None:
+        self._running = dict(scan.running)
+        self._present.update(scan.present)
+
+    def running_pid(self, project_id: str) -> int | None:
+        return self._running.get(project_id)
+
+    def status(self, project_id: str) -> EdtStatus:
+        project = self.project(project_id)
+        return EdtStatus(
+            running_pid=self._running.get(project_id),
+            workspace_present=self._present.get(project_id),
+            installed=self.installation_for(project) is not None,
+        )
+
+    # --- запуск -----------------------------------------------------------
+
+    def launch(self, project_id: str) -> LaunchOutcome:
+        project = self.project(project_id)
+        pid = self._running.get(project_id)
+        if pid is not None:
+            if self._activate(pid):
+                return LaunchOutcome.ACTIVATED
+            return LaunchOutcome.ACTIVATION_MISSED
+        installation = self.installation_for(project)
+        if installation is None:
+            raise EdtLaunchError(
+                f"EDT {project.edt_version or '(версия не задана)'} не найден среди установок"
+            )
+        jvm = effective_jvm(project, installation)
+        if jvm is None:
+            raise EdtLaunchError(
+                f"JDK для EDT {installation.version} не найден: нужна Java "
+                f"{installation.required_java}+; укажите каталог bin JDK в Настройках "
+                "или в записи"
+            )
+        command = build_edt_command(
+            installation.exe, project.workspace, jvm, installation.vm_args, project.vm_args
+        )
+        self._run(command)
+        return LaunchOutcome.STARTED
+
+    def editor(self, kind: EditorKind) -> EditorResolution:
+        return self._editors(kind)
+
+    def open_in_editor(self, project_id: str, kind: EditorKind) -> None:
+        project = self.project(project_id)
+        resolution = self._editors(kind)
+        if resolution.path is None:
+            raise EdtError(resolution.note)
+        arguments = f'"{self._folder(project)}"'
+        self._run(LaunchCommand(executable=resolution.path, arguments=arguments))
+
+    def open_folder(self, project_id: str) -> None:
+        try:
+            self._open_file(self._folder(self.project(project_id)))
+        except OSError as error:
+            raise EdtError(f"Не удалось открыть каталог: {error}") from error  # noqa: RUF001
+
+    # --- импорт -----------------------------------------------------------
+
+    def edtstart_available(self) -> bool:
+        return self._edtstart() is not None
+
+    def edtstart_skipped(self) -> int:
+        registry = self._edtstart()
+        return registry.skipped if registry is not None else 0
+
+    def import_candidates(self) -> list[ImportCandidate] | None:
+        registry = self._edtstart()
+        if registry is None:
+            return None
+        return import_candidates(
+            registry.projects, registry.products, self._projects, self._new_id
+        )
+
+    def import_projects(self, candidates: Sequence[ImportCandidate]) -> int:
+        known = {p.workspace for p in self._projects}
+        added = 0
+        for candidate in candidates:
+            if candidate.project.workspace in known:
+                continue
+            self._projects.append(candidate.project)
+            known.add(candidate.project.workspace)
+            added += 1
+        if added:
+            self._save()
+        return added
+
     # --- внутреннее -------------------------------------------------------
 
     @staticmethod
@@ -212,3 +392,14 @@ class EdtWorkspace:
 
     def _save(self) -> None:
         save_registry(self._path, EdtRegistry(tuple(self._groups), tuple(self._projects)))
+
+    @staticmethod
+    def _folder(project: EdtProject) -> str:
+        return project.project_dir or project.workspace
+
+    def _run(self, command: LaunchCommand) -> None:
+        try:
+            self._spawn(command)
+        except OSError as error:
+            message = f"Не удалось запустить: {command.executable} ({error})"  # noqa: RUF001
+            raise EdtLaunchError(message) from error
