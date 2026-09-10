@@ -14,6 +14,7 @@ from onecstarter.domain.edt import (
     build_edt_command,
     effective_jvm,
     java_major,
+    java_version_key,
     join_vm_args,
     parse_ini,
     parse_release,
@@ -206,7 +207,7 @@ MINE = Path(r"D:\jdk\bin")
 class TestPickJvm:
     def test_products_json_wins(self) -> None:
         assert pick_jvm(
-            product=JDK17, ini=ZULU, settings=MINE, auto=[(25, JDK25)], required_java=17
+            product=JDK17, ini=ZULU, settings=MINE, auto=[("25.0.2", JDK25)], required_java=17
         ) == (JDK17, "products.json")
 
     def test_ini_when_no_product(self) -> None:
@@ -223,19 +224,49 @@ class TestPickJvm:
 
     def test_auto_picks_newest_fitting(self) -> None:
         assert pick_jvm(
-            product=None, ini=None, settings=None, auto=[(17, JDK17), (25, JDK25)], required_java=17
+            product=None,
+            ini=None,
+            settings=None,
+            auto=[("17.0.16", JDK17), ("25.0.2", JDK25)],
+            required_java=17,
         ) == (JDK25, "auto")
+
+    def test_auto_same_major_picks_newest_full_version_numerically(self) -> None:
+        older = Path(r"C:\jdk\axiom-jdk-full-17.0.9+7-x86_64\bin")
+        assert pick_jvm(
+            product=None,
+            ini=None,
+            settings=None,
+            auto=[("17.0.9", older), ("17.0.16", JDK17)],
+            required_java=17,
+        ) == (JDK17, "auto")  # строкой "17.0.9" > "17.0.16" — потому сравнение числами
 
     def test_auto_skips_too_old(self) -> None:
         assert pick_jvm(
-            product=None, ini=None, settings=None, auto=[(11, MINE), (17, JDK17)], required_java=17
+            product=None,
+            ini=None,
+            settings=None,
+            auto=[("11.0.2", MINE), ("17.0.16", JDK17)],
+            required_java=17,
         ) == (JDK17, "auto")
 
     def test_nothing_fits(self) -> None:
-        assert (
-            pick_jvm(product=None, ini=None, settings=None, auto=[(11, MINE)], required_java=17)
-            is None
-        )
+        assert pick_jvm(
+            product=None, ini=None, settings=None, auto=[("11.0.2", MINE)], required_java=17
+        ) is None
+
+    @pytest.mark.parametrize(
+        ("version", "expected"),
+        [
+            ("17.0.16", (17, 0, 16)),
+            ("25", (25,)),
+            ("1.8.0_392", (1, 8, 0, 392)),
+            ("", ()),
+            ("x", ()),
+        ],
+    )
+    def test_java_version_key(self, version: str, expected: tuple[int, ...]) -> None:
+        assert java_version_key(version) == expected
 
 
 def _installation(**overrides: object) -> EdtInstallation:
@@ -278,6 +309,15 @@ class TestBuildEdtCommand:
     def test_command_line_quotes_executable(self) -> None:
         command = build_edt_command(_installation().exe, r"D:\edt\a", JDK17, "", "")
         assert command.command_line.startswith('"C:\\Program Files\\1C\\1CE\\')
+
+    def test_installation_args_project_empty_no_trailing_space(self) -> None:
+        command = build_edt_command(
+            _installation().exe, r"D:\edt\a", JDK17, "-Xmx8192m", ""
+        )
+        assert command.arguments == (
+            f'-data "D:\\edt\\a" -vm "{JDK17}" --launcher.appendVmargs '
+            "-vmargs -Xmx8192m -Djava.library.path="
+        )
 
 
 class TestEffectiveJvm:

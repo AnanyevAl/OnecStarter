@@ -216,27 +216,38 @@ def join_vm_args(max_heap_mb: int | None, language: str | None, rest: Sequence[s
     return " ".join(tokens)
 
 
+def java_version_key(version: str) -> tuple[int, ...]:
+    """`17.0.16` → (17, 0, 16); `1.8.0_392` → (1, 8, 0, 392) — для сравнения числами."""
+    return tuple(int(part) for part in re.findall(r"\d+", version))
+
+
 def pick_jvm(
     *,
     product: Path | None,
     ini: Path | None,
     settings: Path | None,
-    auto: Sequence[tuple[int, Path]],
+    auto: Sequence[tuple[str, Path]],
     required_java: int,
 ) -> tuple[Path, str] | None:
     """Цепочка спеки §3: products.json → 1cedt.ini → настройка → старший подходящий JDK.
 
     Все пути уже проверены на существование вызывающим (иначе `None`);
-    здесь — только порядок предпочтения. Возвращает путь и имя источника
-    для показа в диалоге записи.
+    здесь — только порядок предпочтения. `auto` — пары «`JAVA_VERSION`
+    из `release`, каталог bin»: подходит major ≥ требуемого, побеждает старшая
+    полная версия, сравниваемая числами (строкой `17.0.9` > `17.0.16` —
+    находка ревью Task 3). Возвращает путь и имя источника для диалога записи.
     """  # noqa: RUF002
     for path, source in ((product, "products.json"), (ini, "1cedt.ini"), (settings, "settings")):
         if path is not None:
             return path, source
-    fitting = [(major, path) for major, path in auto if major >= required_java]
+    fitting = [
+        (version, path)
+        for version, path in auto
+        if (java_major(version) or 0) >= required_java
+    ]
     if not fitting:
         return None
-    _major, best = max(fitting, key=lambda pair: (pair[0], str(pair[1])))
+    _version, best = max(fitting, key=lambda pair: (java_version_key(pair[0]), str(pair[1])))
     return best, "auto"
 
 
