@@ -31,8 +31,13 @@ def load_registry(path: Path) -> EdtRegistry:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return EdtRegistry((), ())
-    except (OSError, UnicodeDecodeError):
+    except UnicodeDecodeError:
         return _move_aside(path)
+    except OSError as error:
+        # Файл есть, но недоступен: блокировка, права, отвалившийся диск. Это
+        # не порча содержимого — в `.bad` его не уносим и пустым не подменяем:  # noqa: RUF003
+        # следующее сохранение затёрло бы записи пользователя (как в server_store).
+        raise EdtUnavailableError(f"{path} недоступен для чтения") from error
     try:
         payload = json.loads(raw)
         if not isinstance(payload, dict) or payload.get("schema") != SCHEMA_VERSION:

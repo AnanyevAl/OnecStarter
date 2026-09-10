@@ -122,3 +122,12 @@ class TestBadFile:
         with pytest.raises(EdtUnavailableError):
             load_registry(path)
         assert path.exists()
+
+    def test_unreadable_file_raises_not_empty(self, tmp_path: Path) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ: недоступный файл — ошибка, не пустой список и не `.bad`."""  # noqa: RUF002
+        directory = tmp_path / "edt.json"
+        directory.mkdir()  # каталог на месте файла: IsADirectoryError=OSError
+        with pytest.raises(EdtUnavailableError):
+            load_registry(directory)
+        assert directory.exists()
+        assert not (tmp_path / "edt.json.bad").exists()
