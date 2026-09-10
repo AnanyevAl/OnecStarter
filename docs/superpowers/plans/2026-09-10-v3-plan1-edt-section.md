@@ -1603,7 +1603,9 @@ class TestDiscover:
         assert found.jvm_source == "1cedt.ini"
 
     def test_ini_vm_missing_on_disk_ignored(self, tmp_path: Path) -> None:
-        ini = "-vm\nC:\\Program Files\\Zulu\\zulu-17\\bin\\javaw.exe\n-vmargs\n"
+        # Путь из tmp_path, не реальный Zulu: на машине заказчика Zulu 17 существует
+        # (находка Task 7, спека §0 исправлена).
+        ini = f"-vm\n{tmp_path / 'gone' / 'bin' / 'javaw.exe'}\n-vmargs\n"
         _edt(tmp_path, "2024.2.6+7", ini)
         [found] = discover_edt([tmp_path], None, "")
         assert found.jvm_dir is None
