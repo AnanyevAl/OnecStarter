@@ -4502,11 +4502,28 @@ def test_same_key_and_state_report_is_a_no_op(qtbot, workspace_factory, monkeypa
     assert len(rebuilds) == 1, "повторный тот же отчёт не должен запускать пересборку"
 
 
-def test_unknown_paths_do_not_mark_anything(qtbot, workspace_factory):
-    """Путь, которого нет ни у одной записи, не помечает ничего чужого."""  # noqa: RUF002
+def test_unknown_paths_do_not_mark_anything(qtbot, workspace_factory, monkeypatch):
+    """Путь, которого нет ни у одной записи, не помечает ничего чужого (М-7, МУТАЦИЯ).
+
+    Раньше тест ждал 400 мс и проверял только отсутствие суффикса — этого
+    недостаточно, чтобы отличить «пересборка была и не пометила» от
+    «пересборки не было вовсе». Состояние для неизвестного пути всё равно
+    записывается (`apply_availability` не отличает известный ключ от
+    чужого), поэтому таймер коалесинга обязан сработать — `rebuilds`,
+    тот же приём, что в соседних тестах файла (`counted_rebuild`).
+    """  # noqa: RUF002
     view, _, _, _ = _view(qtbot, workspace_factory)
+    rebuilds: list[int] = []
+    original = view.rebuild
+
+    def counted_rebuild() -> None:
+        rebuilds.append(1)
+        original()
+
+    monkeypatch.setattr(view, "rebuild", counted_rebuild)
     view.apply_availability(path_key(r"D:\чужой\путь"), Availability.MISSING)
     qtbot.wait(400)
+    assert rebuilds, "неизвестный путь обязан запустить пересборку — иначе тест ничего не отличает"
     assert MISSING_SUFFIX not in _all_labels(view)
 
 

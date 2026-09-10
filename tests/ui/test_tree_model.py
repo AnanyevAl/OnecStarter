@@ -173,6 +173,24 @@ def test_missing_base_tooltip_names_the_directory(qapp: QApplication) -> None:
     assert r"Каталог не найден: D:\bases\acc" in model.item(0, 0).toolTip()
 
 
+def test_missing_base_tooltip_never_leaks_the_password(qapp: QApplication) -> None:
+    """Инвариант 5: тултип берёт только фрагмент File, не строку соединения целиком (М-6, МУТАЦИЯ).
+
+    Структурно недостижимо прямо сейчас (`file_path_of` уже берёт один
+    фрагмент) — но это ровно то место, куда незаметно протечёт будущая
+    правка «показать всю строку соединения в подсказке». Сторож ловит
+    именно такую регрессию, а не сегодняшнее поведение.
+    """  # noqa: RUF002
+    item = replace(_file_item(), connect='File="D:\\b";Usr="u";Pwd="секрет";')
+    row = Row(RowKind.BASE, "Файловая", item)
+    model = build_model(
+        [row], {}, _stamp, theme.DARK, availability={"id:file": Availability.MISSING}
+    )
+    tooltip = model.item(0, 0).toolTip()
+    assert "секрет" not in tooltip
+    assert "Pwd" not in tooltip
+
+
 def test_present_base_carries_no_mark(qapp: QApplication) -> None:
     model = _model_with({"id:file": Availability.PRESENT})
     assert model.item(0, 0).text() == "Файловая"

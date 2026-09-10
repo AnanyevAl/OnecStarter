@@ -50,7 +50,10 @@ def test_file_base_with_absolute_path_is_a_target() -> None:
 
 
 def test_unc_path_is_a_target_too() -> None:
-    """UNC абсолютен по `os.path.isabs` и проверяется наравне с локальным (спека §2)."""  # noqa: RUF002
+    """UNC абсолютен по `Path.is_absolute()`, проверяется наравне с локальным.
+
+    Спека §2, решение заказчика 86e67a8.
+    """  # noqa: RUF002
     item = _item(connect=r'File="\\srv\share\acc";')
     assert list(probe_targets([item])) == ["id:a"]
 
@@ -82,10 +85,11 @@ def test_drive_relative_path_is_not_a_target() -> None:
 
 
 def test_driveless_rooted_path_is_not_a_target() -> None:
-    """`\\база` — корень без буквы диска, платформа его не разрешит однозначно.
+    """`\\база` — корень без буквы диска: не абсолютный по `Path.is_absolute()`.
 
-    До Python 3.13 `os.path.isabs` и `Path.is_absolute` расходились ровно
-    на этом случае; на используемой версии оба согласны — не абсолютный.
+    Проверке не подлежит (спека §2). До Python 3.13 `os.path.isabs`
+    и `Path.is_absolute` расходились ровно на этом случае; на используемой
+    версии оба согласны — не абсолютный.
     Явная проверка `file_path_of` перед `probe_targets` — гарантия, что
     `File=` действительно разобрался в один ведущий разделитель, а не
     в UNC (`\\\\bases\\acc`, два разделителя), который абсолютен и был бы
