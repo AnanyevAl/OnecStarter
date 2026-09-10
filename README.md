@@ -77,9 +77,9 @@
 
 ## Установка
 
-- **Установщик:** `OneCStarter-2.3.0-setup.exe` — per-user, права
+- **Установщик:** `OneCStarter-2.4.0-setup.exe` — per-user, права
   администратора не нужны.
-- **Portable:** распаковать `OneCStarter-2.3.0-portable.zip`, запустить
+- **Portable:** распаковать `OneCStarter-2.4.0-portable.zip`, запустить
   `OneCStarter.exe`.
 
 SmartScreen при первом запуске предупредит о неизвестном издателе:
