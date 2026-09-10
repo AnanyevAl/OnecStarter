@@ -45,12 +45,17 @@ class TestActivateWindow:
         assert brought == [10]
 
     def test_no_window_is_false_without_bring(self) -> None:
+        brought: list[int] = []
+
+        def bring(hwnd: int) -> bool:
+            brought.append(hwnd)
+            return True
+
         assert (
-            activate_window(
-                42, windows=lambda: [SPLASH], bring=lambda h: True
-            )
+            activate_window(42, windows=lambda: [SPLASH], bring=bring)
             is False
         )
+        assert brought == []
 
     def test_bring_failure_is_false(self) -> None:
         assert (
