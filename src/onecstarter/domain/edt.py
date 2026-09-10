@@ -7,7 +7,7 @@
 
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -279,3 +279,60 @@ def build_edt_command(
         project_vm_args.strip(),
     ]
     return LaunchCommand(executable=exe, arguments=" ".join(part for part in parts if part))
+
+
+EDITOR_MISSING_NOTE = "Не найден — укажите путь в Настройках"  # noqa: RUF001
+
+
+def running_workspaces(
+    processes: Iterable[tuple[int, tuple[str, ...] | None]],
+    projects: Iterable[EdtProject],
+) -> dict[str, int]:
+    """`-data <путь>` в argv `1cedt.exe` → запись с тем же ключом workspace (спека §4).
+
+    `argv is None` — нет доступа к процессу, пропускается. Первый найденный
+    pid остаётся: второго EDT на том же workspace не бывает (блокировка Eclipse),
+    а если снимок застал два — активировать первый не хуже второго.
+    """  # noqa: RUF002
+    by_key = {workspace_key(project.workspace): project.id for project in projects}
+    result: dict[str, int] = {}
+    for pid, argv in processes:
+        if not argv:
+            continue
+        for index, token in enumerate(argv[:-1]):
+            if token != "-data":
+                continue
+            project_id = by_key.get(workspace_key(argv[index + 1].strip('"')))
+            if project_id is not None and project_id not in result:
+                result[project_id] = pid
+            break
+    return result
+
+
+@dataclass(frozen=True)
+class EditorResolution:
+    path: Path | None
+    source: str  # "settings" | "PATH" | "known" | ""
+    note: str  # причина отказа для подсказки; "" — найден
+
+
+def resolve_editor(
+    setting: str,
+    setting_exists: bool,
+    found_in_path: Path | None,
+    known_existing: Sequence[Path],
+) -> EditorResolution:
+    """Приоритет спеки §5: настройка непуста — только она; пуста — PATH, затем каталоги.
+
+    Явно указанный несуществующий путь — «не найден», без тихого отката
+    к автопоиску: пользователь увидит в Настройках, что путь не существует.
+    """
+    if setting:
+        if setting_exists:
+            return EditorResolution(Path(setting), "settings", "")
+        return EditorResolution(None, "settings", f"Указанный путь не существует: {setting}")
+    if found_in_path is not None:
+        return EditorResolution(found_in_path, "PATH", "")
+    if known_existing:
+        return EditorResolution(known_existing[0], "known", "")
+    return EditorResolution(None, "", EDITOR_MISSING_NOTE)

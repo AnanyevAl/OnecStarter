@@ -6,7 +6,9 @@ import pytest
 
 from onecstarter.domain.edt import (
     DEFAULT_REQUIRED_JAVA,
+    EDITOR_MISSING_NOTE,
     LANGUAGES,
+    EditorResolution,
     EdtInstallation,
     EdtProject,
     IniInfo,
@@ -19,6 +21,8 @@ from onecstarter.domain.edt import (
     parse_ini,
     parse_release,
     pick_jvm,
+    resolve_editor,
+    running_workspaces,
     split_vm_args,
     version_from_dir_name,
     workspace_key,
@@ -332,3 +336,67 @@ class TestEffectiveJvm:
     def test_none_when_neither(self) -> None:
         project = EdtProject(id="p", name="n", workspace=r"D:\w")
         assert effective_jvm(project, _installation(jvm_dir=None)) is None
+
+
+EXE = r"C:\Program Files\1C\1CE\components\1c-edt-2025.2.6+4-x86_64\1cedt.exe"
+
+
+def _argv(workspace: str) -> tuple[str, ...]:
+    # [Ф] спека §0: форма argv живого 1cedt.exe
+    return (EXE, "-data", workspace, "-vm", str(JDK17), "--launcher.appendVmargs", "-vmargs")
+
+
+class TestRunningWorkspaces:
+    def test_matches_by_normalized_workspace(self) -> None:
+        projects = [EdtProject(id="p1", name="a", workspace=r"D:\edt\Retail")]
+        result = running_workspaces([(4242, _argv(r"d:/EDT/retail/"))], projects)
+        assert result == {"p1": 4242}
+
+    def test_quoted_data_value(self) -> None:
+        projects = [EdtProject(id="p1", name="a", workspace=r"D:\edt\a b")]
+        result = running_workspaces([(1, _argv('"D:\\edt\\a b"'))], projects)
+        assert result == {"p1": 1}
+
+    def test_unrelated_process_ignored(self) -> None:
+        projects = [EdtProject(id="p1", name="a", workspace=r"D:\edt\a")]
+        assert running_workspaces([(1, _argv(r"D:\edt\other"))], projects) == {}
+
+    def test_argv_none_skipped(self) -> None:
+        projects = [EdtProject(id="p1", name="a", workspace=r"D:\edt\a")]
+        assert running_workspaces([(1, None)], projects) == {}
+
+    def test_data_without_value_skipped(self) -> None:
+        projects = [EdtProject(id="p1", name="a", workspace=r"D:\edt\a")]
+        assert running_workspaces([(1, (EXE, "-data"))], projects) == {}
+
+    def test_first_pid_kept_for_duplicate(self) -> None:
+        projects = [EdtProject(id="p1", name="a", workspace=r"D:\edt\a")]
+        result = running_workspaces([(1, _argv(r"D:\edt\a")), (2, _argv(r"D:\edt\a"))], projects)
+        assert result == {"p1": 1}
+
+
+CODE = Path(r"C:\Users\u\AppData\Local\Programs\Microsoft VS Code\bin\code.cmd")
+
+
+class TestResolveEditor:
+    def test_setting_existing_wins(self) -> None:
+        assert resolve_editor(r"D:\tools\code.cmd", True, CODE, [CODE]) == EditorResolution(
+            Path(r"D:\tools\code.cmd"), "settings", ""
+        )
+
+    def test_setting_missing_is_not_replaced_silently(self) -> None:
+        result = resolve_editor(r"D:\tools\code.cmd", False, CODE, [CODE])
+        assert result.path is None
+        assert result.source == "settings"
+        assert result.note == r"Указанный путь не существует: D:\tools\code.cmd"
+
+    def test_path_hit(self) -> None:
+        assert resolve_editor("", False, CODE, []) == EditorResolution(CODE, "PATH", "")
+
+    def test_known_dir_fallback(self) -> None:
+        assert resolve_editor("", False, None, [CODE]) == EditorResolution(CODE, "known", "")
+
+    def test_nothing(self) -> None:
+        assert resolve_editor("", False, None, []) == EditorResolution(
+            None, "", EDITOR_MISSING_NOTE
+        )
