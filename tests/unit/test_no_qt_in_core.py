@@ -37,6 +37,7 @@ CORE = (
     "onecstarter.platform_1c.registry",
     "onecstarter.platform_1c.server_discovery",
     "onecstarter.platform_1c.server_spawn",
+    "onecstarter.platform_1c.edtstart_registry",
     "onecstarter.security.secrets",
     "onecstarter.security.credentials",
 )
