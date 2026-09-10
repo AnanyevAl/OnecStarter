@@ -27,6 +27,7 @@ CORE = (
     "onecstarter.domain.selection",
     "onecstarter.domain.server",
     "onecstarter.domain.server_match",
+    "onecstarter.domain.edt",
     "onecstarter.platform_1c.console",
     "onecstarter.platform_1c.discovery",
     "onecstarter.platform_1c.elevation",
