@@ -17,6 +17,7 @@ CORE = (
     "onecstarter.services.availability",
     "onecstarter.services.cache",
     "onecstarter.services.server_store",
+    "onecstarter.services.edt_store",
     "onecstarter.services.server_journal",
     "onecstarter.services.servers",
     "onecstarter.config.v8i",

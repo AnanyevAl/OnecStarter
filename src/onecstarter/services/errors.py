@@ -104,3 +104,15 @@ class ConsoleRegistrationError(ServerError):
 
 class ConsoleRegistrationDeclinedError(ServerError):
     """Пользователь отклонил запрос прав администратора — штатный исход, не сбой."""
+
+
+class EdtError(ServicesError):
+    """Отказ раздела «EDT» (спека v3, §8)."""
+
+
+class EdtUnavailableError(EdtError):
+    """`edt.json` повреждён и не переносится в `.bad` — раздел недоступен."""
+
+
+class EdtLaunchError(EdtError):
+    """Запуск EDT или редактора отказал до или при порождении процесса."""
