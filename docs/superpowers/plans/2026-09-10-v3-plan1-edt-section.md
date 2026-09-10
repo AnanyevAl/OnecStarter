@@ -1958,9 +1958,10 @@ _PATH_NAMES: dict[EditorKind, tuple[str, ...]] = {
 def known_locations(kind: EditorKind, env: Mapping[str, str]) -> list[Path]:
     local = Path(env.get("LOCALAPPDATA", ".")) / "Programs"
     if kind is EditorKind.VSCODE:
+        program_files = Path(env.get("ProgramFiles", r"C:\Program Files"))
         return [
             local / "Microsoft VS Code" / "bin" / "code.cmd",
-            Path(env.get("ProgramFiles", r"C:\Program Files")) / "Microsoft VS Code" / "bin" / "code.cmd",
+            program_files / "Microsoft VS Code" / "bin" / "code.cmd",
         ]
     return [local / "Antigravity IDE" / "bin" / "antigravity-ide.cmd"]
 
