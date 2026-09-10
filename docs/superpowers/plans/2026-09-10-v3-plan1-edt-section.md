@@ -1513,7 +1513,7 @@ class TestDiscover:
         assert found[0].jvm_source == "auto"
         assert found[0].required_java == 17
         assert found[0].vm_args == ""
-        assert jdk17.exists()
+        assert found[0].jvm_dir != jdk17 / "bin"  # старший из подходящих, не первый
 
     def test_products_json_enriches_jvm_and_args(self, tmp_path: Path) -> None:
         edt = _edt(tmp_path, "2025.2.6+4")
@@ -3066,7 +3066,6 @@ def scan_edt(scanner: ProcessScanner, projects: Sequence[EdtProject], is_dir: Ca
 Добавить в `tests/unit/test_edt_workspace.py`:
 
 ```python
-from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from onecstarter.domain.edt import (
@@ -3560,7 +3559,8 @@ git commit -m "feat(services): запуск EDT с активацией окна
 def test_edt_icon_is_not_empty(qapp: QApplication) -> None:
     icon = rail_icons.edt_icon(DARK)
     assert not icon.isNull()
-    assert icon.pixmap(16, 16).toImage().pixelColor(8, 8).alpha() >= 0
+    # Слэш глифа проходит через центр — пиксель (8, 8) непрозрачен.
+    assert icon.pixmap(16, 16).toImage().pixelColor(8, 8).alpha() > 0
 ```
 
 (`DARK`/`qapp` — как в соседних тестах файла; если палитра там называется иначе — взять её имя.)
@@ -3596,7 +3596,6 @@ def edt_icon(palette: Palette) -> QIcon:
 from itertools import count
 from pathlib import Path
 
-import pytest
 from PySide6.QtGui import QColor, QStandardItemModel
 
 from onecstarter.domain.edt import EdtInstallation, EdtProject
@@ -4036,7 +4035,6 @@ Run: `uv run pytest tests/ui/test_edt_monitor.py -q` — зелёное.
 ```python
 """EdtView: дерево, фильтр, запуск по Enter/двойному клику, статус, F5 (спека §7)."""
 
-from collections.abc import Callable
 from itertools import count
 from pathlib import Path
 
@@ -4474,8 +4472,6 @@ git commit -m "feat(ui): раздел EDT — значок, модель дер�
 """Диалог записи EDT: поля, фасады vm_args, версия не из списка, проверки (спека §7)."""
 
 from pathlib import Path
-
-import pytest
 
 from onecstarter.domain.edt import EdtInstallation, EdtProject
 from onecstarter.ui.edt.dialog import (
