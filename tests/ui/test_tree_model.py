@@ -187,6 +187,9 @@ def test_missing_base_tooltip_never_leaks_the_password(qapp: QApplication) -> No
         [row], {}, _stamp, theme.DARK, availability={"id:file": Availability.MISSING}
     )
     tooltip = model.item(0, 0).toolTip()
+    # Позитивный якорь: доказывает, что сторож смотрит на настоящую подсказку
+    # доступности, а не проходит вхолостую на пустом тултипе.  # noqa: RUF003
+    assert r"Каталог не найден: D:\b" in tooltip
     assert "секрет" not in tooltip
     assert "Pwd" not in tooltip
 
