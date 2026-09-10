@@ -5,12 +5,26 @@ from pathlib import Path
 
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QMenu
 
 from onecstarter.domain.edt import EditorResolution, EdtInstallation, EdtProject
 from onecstarter.domain.launch import LaunchCommand
+from onecstarter.platform_1c.editors import EditorKind
 from onecstarter.services.edt import EdtScan, EdtWorkspace
 from onecstarter.ui.edt.tree_model import ID_ROLE, RUNNING_GLYPH
-from onecstarter.ui.edt.view import EdtView
+from onecstarter.ui.edt.view import (
+    MENU_ADD,
+    MENU_ADD_GROUP,
+    MENU_EDIT,
+    MENU_IMPORT,
+    MENU_OPEN_EDT,
+    MENU_OPEN_EXPLORER,
+    MENU_REMOVE,
+    MENU_REMOVE_GROUP,
+    MENU_RENAME_GROUP,
+    DropTarget,
+    EdtView,
+)
 from onecstarter.ui.theme import DARK
 
 INSTALLED = [
@@ -202,3 +216,182 @@ def test_collapse_survives_empty_filter_round_trip(  # type: ignore[no-untyped-d
     assert view.model().rowCount() == 0
     view.search().setText("")
     assert view.tree().isExpanded(view.model().index(0, 0)) is False
+
+
+def _actions(menu: QMenu) -> dict[str, bool]:
+    return {a.text(): a.isEnabled() for a in menu.actions() if not a.isSeparator()}
+
+
+def test_project_menu_items_and_editor_state(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    p = _add(harness, "a")
+    view = harness.view()
+    qtbot.addWidget(view)
+    actions = _actions(view.build_menu("project", p.id))
+    assert actions[MENU_OPEN_EDT] is True
+    assert actions["Открыть в VS Code"] is False  # редактор не найден
+    assert actions["Открыть в Antigravity"] is False
+    assert actions[MENU_OPEN_EXPLORER] is True
+    assert {MENU_ADD, MENU_EDIT, MENU_REMOVE, MENU_ADD_GROUP, MENU_IMPORT} <= actions.keys()
+    tooltips = {a.text(): a.toolTip() for a in view.build_menu("project", p.id).actions()}
+    assert tooltips["Открыть в VS Code"] == "Не найден — укажите путь в Настройках"  # noqa: RUF001
+
+
+def test_project_menu_open_edt_disabled_when_not_installed(  # type: ignore[no-untyped-def]
+    harness: Harness, qtbot
+) -> None:
+    p = _add(harness, "a", edt_version="2024.2.6+7")
+    view = harness.view()
+    qtbot.addWidget(view)
+    menu = view.build_menu("project", p.id)
+    action = next(a for a in menu.actions() if a.text() == MENU_OPEN_EDT)
+    assert action.isEnabled() is False
+    assert action.toolTip() == "EDT 2024.2.6+7 не найден"
+
+
+def test_editor_enabled_when_found_and_opens_folder(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    harness.editor = EditorResolution(Path(r"C:\code\code.cmd"), "PATH", "")
+    p = _add(harness, "a", project_dir=r"D:\edt\a\proj")
+    view = harness.view()
+    qtbot.addWidget(view)
+    assert _actions(view.build_menu("project", p.id))["Открыть в VS Code"] is True
+    view.open_in_editor(p.id, EditorKind.VSCODE)
+    assert harness.spawned[-1].arguments == '"D:\\edt\\a\\proj"'
+    view.open_folder(p.id)
+    assert harness.opened == [r"D:\edt\a\proj"]
+
+
+def test_group_and_empty_menus(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    g = harness.workspace.add_group("2025", None)
+    view = harness.view()
+    qtbot.addWidget(view)
+    group_actions = _actions(view.build_menu("group", g.id))
+    assert {MENU_ADD, MENU_ADD_GROUP, MENU_RENAME_GROUP, MENU_REMOVE_GROUP} <= group_actions.keys()
+    assert MENU_OPEN_EDT not in group_actions
+    empty_actions = _actions(view.build_menu(None, None))
+    assert set(empty_actions) == {MENU_ADD, MENU_ADD_GROUP, MENU_IMPORT}
+
+
+def test_add_project_via_dialog(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    g = harness.workspace.add_group("2025", None)
+    view = harness.view()
+    qtbot.addWidget(view)
+
+    def fake_exec(dialog):
+        dialog.name_edit().setText("Новая")
+        dialog.workspace_edit().setText(r"D:\edt\new")
+        return True
+
+    monkeypatch.setattr(view, "_run_dialog", fake_exec)
+    view.add_project(g.id)
+    [project] = harness.workspace.projects()
+    assert project.name == "Новая"
+    assert project.group_id == g.id
+    assert project.vm_args == "-Xmx8192m"  # умолчание из dialog_defaults
+
+
+def test_edit_and_remove_project(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    p = _add(harness, "a")
+    view = harness.view()
+    qtbot.addWidget(view)
+
+    def rename(dialog):
+        dialog.name_edit().setText("b")
+        return True
+
+    monkeypatch.setattr(view, "_run_dialog", rename)
+    view.edit_project(p.id)
+    assert harness.workspace.project(p.id).name == "b"
+    confirmed: list[str] = []
+
+    def confirm(parent: object, title: str, text: str) -> bool:
+        confirmed.append(text)
+        return True
+
+    monkeypatch.setattr(view, "_confirm", confirm)
+    view.remove_project(p.id)
+    assert harness.workspace.projects() == []
+    assert confirmed == ["Удалить запись «b»? Каталоги на диске не трогаются."]
+
+
+def test_remove_declined_keeps_project(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    p = _add(harness, "a")
+    view = harness.view()
+    qtbot.addWidget(view)
+    monkeypatch.setattr(view, "_confirm", lambda parent, title, text: False)
+    view.remove_project(p.id)
+    assert len(harness.workspace.projects()) == 1
+
+
+def test_group_lifecycle_via_view(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    view = harness.view()
+    qtbot.addWidget(view)
+    names = iter(["2025", "Опт"])
+
+    def name_dialog(dialog):
+        dialog.name_edit().setText(next(names))
+        return True
+
+    monkeypatch.setattr(view, "_run_dialog", name_dialog)
+    view.add_group(None)
+    [g] = harness.workspace.groups()
+    assert g.name == "2025"
+    view.rename_group(g.id)
+    assert harness.workspace.groups()[0].name == "Опт"
+    monkeypatch.setattr(view, "_confirm", lambda parent, title, text: True)
+    view.remove_group(g.id)
+    assert harness.workspace.groups() == []
+
+
+def test_handle_drop_moves_project_into_group_and_reorders(  # type: ignore[no-untyped-def]
+    harness: Harness, qtbot
+) -> None:
+    g = harness.workspace.add_group("2025", None)
+    a = _add(harness, "a")
+    b = _add(harness, "b")
+    view = harness.view()
+    qtbot.addWidget(view)
+    view.handle_drop(("project", a.id), ("group", g.id), DropTarget.INTO)
+    assert harness.workspace.project(a.id).group_id == g.id
+    view.handle_drop(("project", a.id), ("project", b.id), DropTarget.BEFORE)
+    assert [p.id for p in harness.workspace.children(None)[1]] == [a.id, b.id]
+    view.handle_drop(("project", a.id), ("project", b.id), DropTarget.AFTER)
+    assert [p.id for p in harness.workspace.children(None)[1]] == [b.id, a.id]
+    view.handle_drop(("project", a.id), None, DropTarget.INTO)
+    assert harness.workspace.project(a.id).group_id is None
+
+
+def test_handle_drop_group_into_descendant_shows_error(  # type: ignore[no-untyped-def]
+    harness: Harness, qtbot
+) -> None:
+    root = harness.workspace.add_group("root", None)
+    child = harness.workspace.add_group("child", root.id)
+    view = harness.view()
+    qtbot.addWidget(view)
+    view.handle_drop(("group", root.id), ("group", child.id), DropTarget.INTO)
+    assert harness.errors == ["Группу нельзя переместить внутрь самой себя"]
+
+
+def test_directory_drop_opens_prefilled_dialog(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    g = harness.workspace.add_group("2025", None)
+    view = harness.view()
+    qtbot.addWidget(view)
+    seen: list[tuple[str, str]] = []
+
+    def capture(dialog):
+        seen.append((dialog.workspace_edit().text(), dialog.name_edit().text()))
+        return False
+
+    monkeypatch.setattr(view, "_run_dialog", capture)
+    view.add_project_from_directory(r"D:\edt\dropped", ("group", g.id))
+    assert seen == [(r"D:\edt\dropped", "dropped")]
+    assert harness.workspace.projects() == []
+
+
+def test_delete_key_removes_current_with_confirm(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    p = _add(harness, "a")
+    view = harness.view()
+    qtbot.addWidget(view)
+    _select(view, p.id)
+    monkeypatch.setattr(view, "_confirm", lambda parent, title, text: True)
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Delete)
+    assert harness.workspace.projects() == []
