@@ -51,6 +51,11 @@ def test_schema_is_written(tmp_path: Path) -> None:
         "hide_on_launch": False,
         "list_order": "file",
         "web_launch": "thin",
+        "edt_jvm_dir": "",
+        "edt_default_max_heap_mb": 8192,
+        "edt_default_language": "",
+        "editor_vscode": "",
+        "editor_antigravity": "",
     }
 
 
@@ -363,3 +368,50 @@ def test_settings_file_without_web_launch_reads_without_migration(tmp_path: Path
     settings = load_settings(path)
     assert settings.web_launch is WebLaunch.THIN
     assert settings.theme is ThemeMode.DARK
+
+
+def test_edt_fields_round_trip(tmp_path: Path) -> None:
+    path = tmp_path / "settings.json"
+    settings = Settings(
+        edt_jvm_dir=r"D:\jdk\bin",
+        edt_default_max_heap_mb=4096,
+        edt_default_language="ru",
+        editor_vscode=r"D:\code\code.cmd",
+        editor_antigravity=r"D:\ag\antigravity-ide.cmd",
+    )
+    save_settings(path, settings)
+    assert load_settings(path) == settings
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(4096, 4096), (True, 8192), ("8192", 8192), (0, 8192), (-5, 8192), (256, 256), (255, 8192)],
+)
+def test_edt_heap_tolerance(tmp_path: Path, value: object, expected: int) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text(
+        json.dumps({"schema": SCHEMA_VERSION, "edt_default_max_heap_mb": value}), encoding="utf-8"
+    )
+    assert load_settings(path).edt_default_max_heap_mb == expected
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"), [("ru", "ru"), ("en", "en"), ("", ""), ("xx", ""), (5, "")]
+)
+def test_edt_language_tolerance(tmp_path: Path, value: object, expected: str) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text(
+        json.dumps({"schema": SCHEMA_VERSION, "edt_default_language": value}), encoding="utf-8"
+    )
+    assert load_settings(path).edt_default_language == expected
+
+
+def test_edt_path_fields_non_string_is_empty(tmp_path: Path) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text(
+        json.dumps({"schema": SCHEMA_VERSION, "edt_jvm_dir": 1, "editor_vscode": None}),
+        encoding="utf-8",
+    )
+    loaded = load_settings(path)
+    assert loaded.edt_jvm_dir == ""
+    assert loaded.editor_vscode == ""
