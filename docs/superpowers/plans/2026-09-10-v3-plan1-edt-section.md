@@ -4314,6 +4314,19 @@ def test_expansion_survives_rebuild(harness: Harness, qtbot) -> None:  # type: i
     view.tree().expand(view.model().index(0, 0))
     view.rebuild()
     assert view.tree().isExpanded(view.model().index(0, 0)) is True
+
+
+def test_collapse_survives_empty_filter_round_trip(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    """Фильтр без совпадений опустошает модель; сброс фильтра не должен раскрывать свёрнутое."""
+    g = harness.workspace.add_group("2025", None)
+    _add(harness, "a", group_id=g.id)
+    view = harness.view()
+    qtbot.addWidget(view)
+    view.tree().collapse(view.model().index(0, 0))
+    view.search().setText("нет такого")
+    assert view.model().rowCount() == 0
+    view.search().setText("")
+    assert view.tree().isExpanded(view.model().index(0, 0)) is False
 ```
 
 - [ ] **Step 7: Каркас вьюхи — реализация**
@@ -4384,6 +4397,7 @@ class EdtView(QWidget):
         self._request_discover = request_discover
         self._show_error = show_error or self._default_show_error
         self._model = QStandardItemModel()
+        self._built = False  # первая сборка раскрывает всё; дальше — по запомненным id
 
         self._search = QLineEdit()
         self._search.setPlaceholderText("Поиск: начните вводить имя проекта")
@@ -4449,12 +4463,12 @@ class EdtView(QWidget):
 
     def rebuild(self) -> None:
         expanded = self._expanded_ids()
-        first_build = self._model.rowCount() == 0 and not expanded
         self._model = build_edt_model(self._workspace, self._search.text(), self._palette)
         self._tree.setModel(self._model)
         self._tree.setColumnWidth(0, 320)
         self._tree.setColumnWidth(1, 110)
-        self._restore_expansion(expanded, expand_all=first_build)
+        self._restore_expansion(expanded, expand_all=not self._built)
+        self._built = True
         self._banner.setVisible(
             not self._workspace.projects() and self._workspace.edtstart_available()
         )
@@ -4542,6 +4556,8 @@ class EdtView(QWidget):
 
 `test_expansion_survives_rebuild`: первая сборка раскрывает всё (`expand_all`), дальше —
 по запомненным id; поэтому после `collapse` + `rebuild` группа остаётся свёрнутой.
+Признак первой сборки — флаг `_built`, а не «модель пуста»: пустая модель бывает и после
+фильтра без совпадений, и тогда сброс фильтра раскрыл бы свёрнутое (находка ревью Task 14).
 
 - [ ] **Step 8: Прогнать**
 
