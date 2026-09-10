@@ -35,7 +35,7 @@ from onecstarter.platform_1c.process_scan import NullScanner, ProcessInfo
 from onecstarter.platform_1c.server_discovery import ServerInstallation
 from onecstarter.security.credentials import MemoryStore
 from onecstarter.services.availability import Availability, path_key
-from onecstarter.services.catalog import EMPTY_COMMON_DATA
+from onecstarter.services.catalog import EMPTY_COMMON_DATA, CommonListData
 from onecstarter.services.errors import (
     ConsoleRegistrationDeclinedError,
     ConsoleRegistrationError,
@@ -1490,6 +1490,49 @@ def test_main_window_wires_the_availability_probe(
     # Требование 4: F5 во вьюхе (probe_requested) запускает ту же пробу.
     view.probe_requested.emit()
     assert len(probe.start_calls) == 2
+
+
+def test_common_lists_ready_starts_the_probe_a_second_time(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """I-1: общие списки приходят ПОСЛЕ первого `start_probe()` — второй проход обязателен.
+
+    `common_lists_ready` эмитится демон-потоком, но его слот `on_common`
+    исполняется только внутри `application.exec()`, то есть уже после
+    первого `start_probe()` из `main()` (докстринг `on_common` в `app.py`,
+    находка финального ревью ветки I-1). Первая проба поэтому не видит
+    записей, пришедших только из общего списка (`CommonInfoBases` — чаще
+    всего сетевая шара, целевой случай вехи), и без второго прохода такая
+    база висела бы без метки до `F5`.
+
+    Тот же тест закрывает отложенный Minor Task 10: второй `start_probe()`
+    обязан видеть цели, которых не было при сборке окна (пользовательский
+    файл содержит только «Демо», общий список добавляет «Общая»).
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    monkeypatch.setattr(app_module, "AvailabilityProbe", _FakeAvailabilityProbe)
+    start = tmp_path / "1C" / "1CEStart"
+    start.mkdir(parents=True)
+    (start / "ibases.v8i").write_bytes('[Демо]\r\nConnect=File="C:\\Demo";\r\n'.encode())
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+
+    window, tasks, _monitor, start_probe = _build_main_window(qapp, runtime, env)
+    qtbot.addWidget(window)
+    probe = window.findChildren(_FakeAvailabilityProbe)[0]
+
+    start_probe()
+    assert len(probe.start_calls) == 1
+
+    common_payload = '[Общая]\r\nConnect=File="C:\\Common";\r\n'.encode("utf-8-sig")
+    data = CommonListData(((tmp_path / "common.v8i", common_payload),), ())
+    tasks.common_lists_ready.emit(data)
+
+    assert len(probe.start_calls) == 2, "приход общих списков обязан перезапустить пробу"
+    common_key = path_key("C:\\Common")
+    assert common_key in [target.key for target in probe.start_calls[1]], (
+        "второй запуск обязан видеть цель из общего списка"
+    )
 
 
 def test_build_main_window_sets_the_application_icon(

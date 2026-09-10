@@ -120,6 +120,11 @@ class AvailabilityProbe(QObject):
     Результат отдаётся по одному пути за сигнал, а не пачкой в конце: иначе
     одна медленная шара держала бы метки всех остальных баз (спека §3.4).
 
+    Поколения (§3.4, находка I-2): каждый `start()` заводит новое поколение,
+    и сигналы устаревшего (перекрытого следующим `start()`) молчат — иначе
+    F5 поверх зависшей пробы мог бы задним числом затереть свежий результат
+    старым.
+
     В лог — счётчики и длительность, не пути: лог прикладывают к issue
     (докстринг модуля, инвариант 5).
     """  # noqa: RUF002
@@ -136,12 +141,25 @@ class AvailabilityProbe(QObject):
         super().__init__(parent)
         self._stat = stat
         self._spawn = spawn
+        # Поколение пробы (находка I-2 финального ревью ветки, спека §3.4):
+        # `start()` пишет из главного потока при каждом перезапуске (F5 поверх
+        # ещё не завершённой пробы), `report` внутри `_run` читает его из  # noqa: RUF003
+        # рабочего потока. `int` в CPython — атомарный тип (GIL сериализует
+        # каждую байткод-операцию чтения/записи ссылки), гонки на самом
+        # значении нет, и отдельный `Lock` был бы лишним усложнением.
+        # Устаревший результат (захваченное в `_run` поколение не совпадает
+        # с текущим `self._generation`) отбрасывается молча: зависший поток  # noqa: RUF003
+        # старой пробы, дождавшись отказа сети, иначе отдал бы MISSING поверх
+        # свежего PRESENT новой пробы.
+        self._generation = 0
 
     def start(self, targets: Sequence[ProbeTarget]) -> None:
         ordered = list(targets)
-        self._spawn(lambda: self._run(ordered))
+        self._generation += 1
+        generation = self._generation
+        self._spawn(lambda: self._run(ordered, generation))
 
-    def _run(self, targets: Sequence[ProbeTarget]) -> None:
+    def _run(self, targets: Sequence[ProbeTarget], generation: int) -> None:
         started = time.monotonic()
         _log.info("доступность каталогов: начато, целей %d", len(targets))
         missing = 0
@@ -150,7 +168,10 @@ class AvailabilityProbe(QObject):
             nonlocal missing
             if state is Availability.MISSING:
                 missing += 1
-            self.probed.emit(key, state)
+            # Молчаливый сброс устаревшего результата — см. комментарий  # noqa: RUF003
+            # у self._generation в __init__.  # noqa: RUF003
+            if generation == self._generation:
+                self.probed.emit(key, state)
 
         try:
             probe_paths(targets, self._stat, report)
@@ -159,8 +180,10 @@ class AvailabilityProbe(QObject):
             # причина уходит в лог теми же местами кадров, без сообщения
             # исключения (оно несёт путь — см. докстринг _log_failure).
             _log_failure("доступность каталогов", exc)
+        stale = generation != self._generation
         _log.info(
-            "доступность каталогов: закончено за %d мс, недоступных %d",
+            "доступность каталогов: закончено%s за %d мс, недоступных %d",
+            " (устарела)" if stale else "",
             int((time.monotonic() - started) * 1000),
             missing,
         )

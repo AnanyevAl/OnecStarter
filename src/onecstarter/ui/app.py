@@ -1095,6 +1095,20 @@ def _build_main_window(
     def on_common(data: CommonListData) -> None:
         runtime.workspace.apply_common_lists(data)
         view.rebuild()
+        # Второй проход пробы (находка I-1 финального ревью ветки, спека §5):
+        # common_lists_ready приходит из демон-потока, а этот слот исполняется  # noqa: RUF003
+        # только внутри application.exec() — то есть ПОСЛЕ того, как main()
+        # уже позвал start_probe() в первый раз. Без повторного запуска
+        # файловая база, присутствующая только в общем списке
+        # (CommonInfoBases лежит чаще всего на сетевой шаре — целевой случай
+        # вехи), оставалась бы UNKNOWN до первого F5. Повторный stat локальных
+        # баз стоит миллисекунды; ссылка на start_probe разрешается только
+        # в момент вызова этого замыкания (сигнал придёт не раньше, чем
+        # _build_main_window вернёт управление), так что порядок определений
+        # ниже безопасен. Поколения проб (ui/background.py) делают этот
+        # проход авторитетным — устаревший результат зависшей первой пробы
+        # его не перекроет.  # noqa: RUF003
+        start_probe()
 
     tasks.installations_ready.connect(on_installations)
     tasks.common_lists_ready.connect(on_common)
