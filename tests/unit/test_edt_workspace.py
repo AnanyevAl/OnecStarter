@@ -12,6 +12,7 @@ from onecstarter.domain.edt import (
     EdtProject,
     EdtStartProduct,
     EdtStartProject,
+    ImportCandidate,
 )
 from onecstarter.domain.launch import LaunchCommand
 from onecstarter.platform_1c.editors import EditorKind
@@ -405,6 +406,27 @@ class TestImport:
         h = _harness(tmp_path, edtstart=EdtStartRegistry((PRODUCT,), (ES_PROJECT,), 0))
         assert h.workspace.import_projects([]) == 0
         assert h.workspace.projects() == []
+
+    def test_import_skips_workspace_present_by_key(self, tmp_path: Path) -> None:
+        """Минор финального ревью: `import_projects` сравнивает по `workspace_key`.
+
+        `import_candidates` нормализует путь (регистр, разделители, хвостовой
+        слеш), а `import_projects` сравнивал сырые строки — кандидат, собранный
+        не через `import_candidates` (или файл, где путь записан иначе),
+        давал дубликат записи.
+        """  # noqa: RUF002
+        h = _harness(tmp_path)
+        h.workspace.add_project(_project("a", workspace=r"d:/EDT/2025/A/"))
+        candidates = [
+            ImportCandidate(EdtProject(id="x1", name="A", workspace=r"D:\edt\2025\a"), True),
+            ImportCandidate(EdtProject(id="x2", name="B", workspace="D:\\edt\\2025\\b\\"), True),
+            ImportCandidate(EdtProject(id="x3", name="B2", workspace=r"d:/edt/2025/B"), True),
+        ]
+        assert h.workspace.import_projects(candidates) == 1
+        assert [p.workspace for p in h.workspace.projects()] == [
+            r"d:/EDT/2025/A/",
+            "D:\\edt\\2025\\b\\",
+        ]
 
 
 class TestSettingsNotes:

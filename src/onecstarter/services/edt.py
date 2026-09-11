@@ -36,6 +36,7 @@ from onecstarter.domain.edt import (
     effective_jvm,
     import_candidates,
     running_workspaces,
+    workspace_key,
 )
 from onecstarter.domain.launch import LaunchCommand
 from onecstarter.platform_1c import process, window_activate
@@ -360,13 +361,20 @@ class EdtWorkspace:
         )
 
     def import_projects(self, candidates: Sequence[ImportCandidate]) -> int:
-        known = {p.workspace for p in self._projects}
+        """Добавить выбранных кандидатов; ключ уникальности — `workspace_key` (спека §6).
+
+        Тот же ключ, что у `import_candidates`: сырые строки различали бы
+        `d:/EDT/A/` и `D:\\edt\\a` и давали дубликат записи (минор финального
+        ревью ветки).
+        """  # noqa: RUF002
+        known = {workspace_key(p.workspace) for p in self._projects}
         added = 0
         for candidate in candidates:
-            if candidate.project.workspace in known:
+            key = workspace_key(candidate.project.workspace)
+            if key in known:
                 continue
             self._projects.append(candidate.project)
-            known.add(candidate.project.workspace)
+            known.add(key)
             added += 1
         if added:
             self._save()
