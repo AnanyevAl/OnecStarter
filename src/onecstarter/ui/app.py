@@ -16,11 +16,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
 
-from PySide6.QtCore import QEventLoop, QTimer
+from PySide6.QtCore import QEventLoop, Qt, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
+    QLabel,
     QMessageBox,
     QProgressDialog,
     QSystemTrayIcon,
@@ -52,6 +53,7 @@ from onecstarter.services.catalog import CommonListData, read_common_lists
 from onecstarter.services.edt import EdtWorkspace, settings_notes
 from onecstarter.services.errors import (
     ConsoleRegistrationDeclinedError,
+    EdtUnavailableError,
     ServerError,
     ServicesError,
     UserDataUnavailableError,
@@ -481,8 +483,14 @@ def run_smoke(
         # обоснование не трогать процессы машины сборщика, что у NullScanner  # noqa: RUF003
         # выше, здесь неприменимо: discover_edt не сканирует процессы вовсе,
         # только каталоги установок и JDK (задача 19, спека v3 §3).
-        edt_workspace = cast(EdtWorkspace, window.edt_workspace)
-        _log.info("smoke: edt=%d", len(edt_workspace.refresh_installations()))
+        # `None` — раздел заменён заглушкой (C2 финального ревью ветки v3):
+        # `edt.json` недоступен для чтения, обнаруживать нечего и незачем.
+        edt_workspace = window.edt_workspace
+        if edt_workspace is None:
+            _log.info("smoke: edt=unavailable")
+        else:
+            installations = cast(EdtWorkspace, edt_workspace).refresh_installations()
+            _log.info("smoke: edt=%d", len(installations))
         return 0
     finally:
         # `run_smoke` не крутит `application.exec()` — `aboutToQuit` не
@@ -685,6 +693,21 @@ def _ask_quit_confirmation(parent: QWidget, message: str) -> bool:
     return ask_confirmation(parent, "OneCStarter", message)
 
 
+def _edt_unavailable_placeholder(reason: str) -> QLabel:
+    """Заглушка раздела «EDT» вместо `EdtView` (C2 финального ревью ветки v3).
+
+    Решение заказчика (спека §2/§8): недоступный `edt.json` не роняет
+    программу — раздел показывает причину, «Базы», «Серверы» и «Настройки»
+    работают. `objectName` — для тестов и таблицы стилей.
+    """
+    label = QLabel(f"Раздел EDT недоступен: {reason}")
+    label.setObjectName("EdtUnavailable")
+    label.setWordWrap(True)
+    label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+    label.setContentsMargins(16, 16, 16, 16)
+    return label
+
+
 def _build_main_window(
     application: QApplication,
     runtime: Runtime,
@@ -695,7 +718,7 @@ def _build_main_window(
     registered_radmin: Callable[[], Path | None] | None = None,
     quit_dialog: Callable[[QWidget, str], bool] | None = None,
     job_factory: Callable[[], Job] | None = None,
-) -> tuple[MainWindow, StartupTasks, ServerMonitor, Callable[[], None], EdtMonitor]:
+) -> tuple[MainWindow, StartupTasks, ServerMonitor, Callable[[], None], EdtMonitor | None]:
     """Собрать окно, трей, хоткей, watcher и фоновые задачи, не запуская их.
 
     Вынесено из `main()` (спека T-04.6, §3.2): окно обязано появиться
@@ -758,6 +781,13 @@ def _build_main_window(
     и от собственного рисунка трея. `application_icon()` — тот же QIcon,
     что теперь собирает и `ui/tray.py::make_icon`, единственный источник
     глифа — `onecstarter.ui.app_icon`.
+
+    Пятый элемент кортежа — `None`, если `edt.json` недоступен для чтения
+    (C2 финального ревью ветки v3, решение заказчика — спека §2/§8): раздел
+    «EDT» заменяется заглушкой с причиной, монитор EDT не собирается,
+    остальные разделы и `main()` работают как обычно. Это не путь
+    `ServerError` → `QMessageBox.critical` → выход: от `edt.json` ничто,
+    кроме самого раздела, не зависит, и ронять программу из-за него незачем.
     """  # noqa: RUF002
     application.setWindowIcon(app_icon.application_icon())
     store = SettingsStore(runtime.settings, parent=application)
@@ -789,12 +819,25 @@ def _build_main_window(
         registry = read_registry(default_edtstart_root(env))
         return discover_edt(default_roots(env), registry, store.settings.edt_jvm_dir)
 
-    edt_workspace = EdtWorkspace(
-        runtime.edt,
-        discover=edt_discover,
-        edtstart=lambda: read_registry(default_edtstart_root(env)),
-        editors=edt_editor,
-    )
+    # C2 финального ревью ветки: `load_registry` внутри конструктора отказывает
+    # `EdtUnavailableError`, когда `edt.json` есть, но не читается (права,
+    # блокировка, каталог на месте файла) или повреждён и не переносится
+    # в `.bad`. Раздел становится заглушкой с причиной, остальное работает  # noqa: RUF003
+    # (докстринг выше). `edt_failure` — текст для заглушки; секретов в нём
+    # нет (путь к нашему файлу), инвариант 5 соблюдён.
+    edt_workspace: EdtWorkspace | None
+    edt_failure = ""
+    try:
+        edt_workspace = EdtWorkspace(
+            runtime.edt,
+            discover=edt_discover,
+            edtstart=lambda: read_registry(default_edtstart_root(env)),
+            editors=edt_editor,
+        )
+    except EdtUnavailableError as error:
+        _log.error("раздел EDT недоступен: %s", error)
+        edt_workspace = None
+        edt_failure = str(error)
     settings_view = SettingsView(
         controller,
         store,
@@ -903,25 +946,43 @@ def _build_main_window(
         on_console=on_console,
     )
 
-    # `request_scan`/`request_discover` — та же вперёдссылка на `edt_monitor`,
+    # `edt_scan_now`/`edt_discover_now` — та же вперёдссылка на `edt_monitor`,
     # что у `servers_view` на `monitor` выше: он собирается ниже (ему нужен  # noqa: RUF003
-    # уже построенный `window` как родитель), обе лямбды читают имя только  # noqa: RUF003
-    # по настоящему клику/F5, много позже возврата из этой функции.
-    edt_view = EdtView(
-        edt_workspace,
-        palette=controller.palette,
-        request_scan=lambda: edt_monitor.scan_now(),
-        request_discover=lambda: edt_monitor.discover_now(),
-        dialog_defaults=lambda: (
-            store.settings.edt_default_max_heap_mb,
-            store.settings.edt_default_language,
-        ),
-    )
+    # уже построенный `window` как родитель), обе функции читают имя только  # noqa: RUF003
+    # по настоящему клику/F5, много позже возврата из этой функции. Проверка
+    # на `None` — для mypy: монитора нет только вместе с вьюхой (C2), так что  # noqa: RUF003
+    # по факту ветка «монитор не собран» из вьюхи недостижима.
+    edt_monitor: EdtMonitor | None = None
+
+    def edt_scan_now() -> None:
+        if edt_monitor is not None:
+            edt_monitor.scan_now()
+
+    def edt_discover_now() -> None:
+        if edt_monitor is not None:
+            edt_monitor.discover_now()
+
+    edt_view: EdtView | None = None
+    edt_section_widget: QWidget
+    if edt_workspace is not None:
+        edt_view = EdtView(
+            edt_workspace,
+            palette=controller.palette,
+            request_scan=edt_scan_now,
+            request_discover=edt_discover_now,
+            dialog_defaults=lambda: (
+                store.settings.edt_default_max_heap_mb,
+                store.settings.edt_default_language,
+            ),
+        )
+        edt_section_widget = edt_view
+    else:
+        edt_section_widget = _edt_unavailable_placeholder(edt_failure)
 
     sections = [
         ("Базы", view),
         ("Серверы", servers_view),
-        ("EDT", edt_view),
+        ("EDT", edt_section_widget),
         ("Настройки", settings_view),
     ]
     # Ключ — сам объект вьюхи, а не подпись: подпись показывается пользователю  # noqa: RUF003
@@ -929,7 +990,7 @@ def _build_main_window(
     # `StopIteration` ещё до создания окна (находка ревью ветки 22.08.2026).
     bases_section = next(i for i, (_t, w) in enumerate(sections) if w is view)
     servers_section = next(i for i, (_t, w) in enumerate(sections) if w is servers_view)
-    edt_section = next(i for i, (_t, w) in enumerate(sections) if w is edt_view)
+    edt_section = next(i for i, (_t, w) in enumerate(sections) if w is edt_section_widget)
     settings_section = next(i for i, (_t, w) in enumerate(sections) if w is settings_view)
     window = MainWindow(sections, palette=controller.palette)
     window.set_section_icon(bases_section, rail_icons.bases_icon)
@@ -951,16 +1012,19 @@ def _build_main_window(
 
     monitor.snapshot_ready.connect(on_scan)
 
-    edt_monitor = EdtMonitor(
-        process_scanner if process_scanner is not None else PsutilScanner(),
-        edt_workspace.projects,
-        edt_discover,
-        parent=window,
-    )
-    edt_monitor.scan_ready.connect(edt_view.on_scan)
-    edt_monitor.installations_ready.connect(edt_view.on_installations)
-    # Смена JDK по умолчанию в Настройках — повод переобнаружить установки.
-    store.changed.connect(edt_monitor.discover_now)
+    # Без воркспейса (C2) монитора нет: сканировать процессы и каталоги
+    # не для кого, а `main()`/`run_smoke` получают `None` пятым элементом.  # noqa: RUF003
+    if edt_workspace is not None and edt_view is not None:
+        edt_monitor = EdtMonitor(
+            process_scanner if process_scanner is not None else PsutilScanner(),
+            edt_workspace.projects,
+            edt_discover,
+            parent=window,
+        )
+        edt_monitor.scan_ready.connect(edt_view.on_scan)
+        edt_monitor.installations_ready.connect(edt_view.on_installations)
+        # Смена JDK по умолчанию в Настройках — повод переобнаружить установки.
+        store.changed.connect(edt_monitor.discover_now)
 
     def on_theme_changed() -> None:
         # settings_view красится общим stylesheet (ThemeController._apply) —
@@ -970,7 +1034,8 @@ def _build_main_window(
         # пара пиксмапов из палитры.
         view.apply_palette(controller.palette)
         servers_view.apply_palette(controller.palette)
-        edt_view.apply_palette(controller.palette)
+        if edt_view is not None:
+            edt_view.apply_palette(controller.palette)
         window.apply_palette(controller.palette)
 
     controller.changed.connect(on_theme_changed)
@@ -1081,7 +1146,7 @@ def _build_main_window(
     window.global_hotkey = hotkey
     # Тем же образцом — но, в отличие от них, этот `run_smoke` реально
     # читает: настоящее (только диск) обнаружение установок EDT для строки
-    # `smoke: edt=…` (задача 19).
+    # `smoke: edt=…` (задача 19). `None` — раздел заменён заглушкой (C2).
     window.edt_workspace = edt_workspace
 
     def apply_close_to_tray() -> None:
@@ -1270,5 +1335,8 @@ def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
     # начаться только после того, как окно решило, показываться ему сразу
     # или остаться скрытым в трее.
     monitor.start()
-    edt_monitor.start()
+    # `None` — раздел EDT заменён заглушкой (C2 финального ревью ветки v3):
+    # мониторить нечего, программа работает без него.
+    if edt_monitor is not None:
+        edt_monitor.start()
     return application.exec()

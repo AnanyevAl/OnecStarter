@@ -6345,6 +6345,33 @@ from onecstarter.ui.edt.view import EdtView
     edt_monitor.start()
 ```
 
+**Правка по итогам финального ревью (11.09.2026, C2).** `EdtUnavailableError` из
+конструктора `EdtWorkspace` (Task 10: `edt.json` есть, но не читается, либо повреждён
+и не переносится в `.bad`) не ловил никто — `main()` перехватывает только `ServerError`,
+и программа падала целиком. Решение заказчика (спека §2/§8): **раздел становится
+недоступным, программа работает.** Реализация:
+
+- `EdtWorkspace(...)` оборачивается в `try/except EdtUnavailableError as error`;
+  при отказе `edt_workspace = None`, текст ошибки уходит в заглушку.
+- На месте `EdtView` в секцию «EDT» ставится `_edt_unavailable_placeholder(reason)` —
+  `QLabel` с переносом строк, `objectName="EdtUnavailable"`, текст
+  `Раздел EDT недоступен: <str(error)>`. `EdtView` и `EdtMonitor` не собираются;
+  `request_scan`/`request_discover` — именованные функции `edt_scan_now`/`edt_discover_now`
+  с проверкой `edt_monitor is not None` (для mypy; по факту из вьюхи недостижимо).
+- Пятый элемент кортежа типизирован `EdtMonitor | None`; `main()` зовёт
+  `edt_monitor.start()` только при `is not None`; `run_smoke` при `window.edt_workspace
+  is None` пишет `smoke: edt=unavailable` вместо `smoke: edt=<N>`.
+- `SettingsView` собирается как раньше: её `edt_notes`-лямбда от воркспейса не зависит.
+
+Тесты (`tests/ui/test_app.py`): `test_build_main_window_replaces_edt_section_when_edt_json_unreadable`
+(каталог на месте `%APPDATA%\OneCStarter\edt.json` — тот же приём, что у `servers.json`;
+секция — `QLabel` с нужным `objectName` и текстом, пятый элемент `None`, Настройки на месте),
+`test_main_keeps_working_when_edt_json_unreadable` (фикстура `assembled_edt_unavailable`
+поверх `_assemble`: `main()` доходит до `exec()`, код 0, `QMessageBox.critical` не показан),
+`test_run_smoke_reports_edt_unavailable_when_edt_json_unreadable`. Мутация «убрать
+`if edt_monitor is not None` в `main()`» — `AttributeError: 'NoneType' object has no
+attribute 'start'`, проверено 11.09.2026.
+
 В `run_smoke` после строки `smoke: keyring=…`:
 
 ```python

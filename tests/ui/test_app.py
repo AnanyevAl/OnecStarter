@@ -20,6 +20,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtWidgets import (
     QApplication,
+    QLabel,
     QMessageBox,
     QProgressDialog,
     QPushButton,
@@ -711,7 +712,7 @@ class _Assembly:
     stylesheets_before_controller: list[str]
     tasks: _FakeStartupTasks
     monitor: _FakeServerMonitor
-    edt_monitor: _FakeEdtMonitor
+    edt_monitor: _FakeEdtMonitor | None  # None — раздел EDT заменён заглушкой (C2)
     probe: _FakeAvailabilityProbe
     store: SettingsStore
     shown: list[int]
@@ -918,7 +919,7 @@ def _assemble(
         stylesheets_before_controller=captured["stylesheets_before_controller"],
         tasks=captured["tasks"],
         monitor=captured["monitor"],
-        edt_monitor=captured["edt_monitor"],
+        edt_monitor=captured.get("edt_monitor"),
         probe=captured["probe"],
         store=captured["store"],
         shown=captured["shown"],
@@ -952,6 +953,15 @@ def assembled_with_tray(
     monkeypatch: Any, qapp: Any, workspace_factory: Any, tmp_path: Any
 ) -> Iterator[_Assembly]:
     yield from _assemble(monkeypatch, qapp, workspace_factory, tmp_path, _FakeTray())
+
+
+@pytest.fixture
+def assembled_edt_unavailable(
+    monkeypatch: Any, qapp: Any, workspace_factory: Any, tmp_path: Any
+) -> Iterator[_Assembly]:
+    """`edt.json` — каталог: `load_registry` отказывает `EdtUnavailableError` (C2)."""
+    (tmp_path / "edt.json").mkdir()
+    yield from _assemble(monkeypatch, qapp, workspace_factory, tmp_path, None)
 
 
 @pytest.fixture
@@ -3546,6 +3556,7 @@ def test_main_wires_the_quit_confirmation_gate(assembled: _Assembly) -> None:
 
 def test_main_starts_the_edt_monitor(assembled: _Assembly) -> None:
     """main() обязан звать edt_monitor.start() рядом с monitor.start() (спека v3, §4)."""  # noqa: RUF002
+    assert assembled.edt_monitor is not None
     assert assembled.edt_monitor.started is True
 
 
@@ -3566,3 +3577,95 @@ def test_build_main_window_has_edt_section(
     window.show_section(labels.index("EDT"))
     assert isinstance(window.current_section(), EdtView)
     assert isinstance(edt_monitor, EdtMonitor)
+
+
+# -- C2 финального ревью ветки v3: edt.json недоступен для чтения -----------
+
+
+def _edt_unavailable_runtime(tmp_path: Any) -> tuple[Any, dict[str, str]]:
+    """Runtime с каталогом на месте `edt.json` — `load_registry` упадёт `OSError`'ом.
+
+    Тот же честный приём, что у `servers.json` в
+    `test_main_reports_servers_workspace_unavailable_instead_of_crashing`:
+    `Path.read_text()` каталога отказывает без подмены реального доступа
+    к диску, `edt_store.load_registry` переводит это в `EdtUnavailableError`.
+    """  # noqa: RUF002
+    env = {"APPDATA": str(tmp_path), "LOCALAPPDATA": str(tmp_path), "ProgramFiles": str(tmp_path)}
+    runtime = build_runtime(env)
+    runtime.edt.parent.mkdir(parents=True, exist_ok=True)
+    runtime.edt.mkdir()
+    return runtime, env
+
+
+def test_build_main_window_replaces_edt_section_when_edt_json_unreadable(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ (C2 финального ревью ветки, решение заказчика).
+
+    `EdtUnavailableError` из конструктора `EdtWorkspace` внутри
+    `_build_main_window` не ловил никто: `main()` перехватывает только
+    `ServerError`, и повреждённый или заблокированный `edt.json` ронял всю
+    программу, хотя разделы «Базы», «Серверы» и «Настройки» от него не
+    зависят. Спека §2/§8: раздел заменяется заглушкой с причиной, остальное
+    работает; монитор EDT не собирается (пятый элемент — `None`).
+
+    Мутация: убрать `try/except EdtUnavailableError` вокруг `EdtWorkspace(...)`
+    в `_build_main_window` — тест обязан упасть непойманным исключением.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    runtime, env = _edt_unavailable_runtime(tmp_path)
+
+    window, _tasks, _monitor, _start_probe, edt_monitor = _build_main_window(
+        qapp, runtime, env, process_scanner=NullScanner()
+    )
+    qtbot.addWidget(window)
+
+    assert edt_monitor is None
+    assert window.edt_workspace is None
+    labels = [button.toolTip() or button.text() for button in window.section_buttons()]
+    window.show_section(labels.index("EDT"))
+    placeholder = window.current_section()
+    assert isinstance(placeholder, QLabel)
+    assert placeholder.objectName() == "EdtUnavailable"
+    assert placeholder.text().startswith("Раздел EDT недоступен: ")
+    assert str(runtime.edt) in placeholder.text(), "причина обязана назвать файл"
+    assert placeholder.wordWrap() is True
+    # Остальные разделы на месте и работают: Настройки собраны с живыми  # noqa: RUF003
+    # подписями группы «EDT» (их лямбда от воркспейса не зависит).
+    window.show_section(labels.index("Настройки"))
+    assert isinstance(window.current_section(), SettingsView)
+
+
+def test_main_keeps_working_when_edt_json_unreadable(
+    assembled_edt_unavailable: _Assembly, shown_errors: list[str]
+) -> None:
+    """`main()` не падает и не выходит с ошибкой: раздел EDT — заглушка, программа живёт.
+
+    `_assemble` сам сторожит, что `main()` дошёл до цикла событий
+    (`exec_calls == [1]`) и показал окно. Здесь — что монитор EDT не собран
+    (`captured` без `edt_monitor`), а `edt_monitor.start()` в `main()` не
+    вызван на `None`. Мутация: убрать `if edt_monitor is not None` перед
+    `edt_monitor.start()` в `main()` — `AttributeError` уронит тест.
+    """  # noqa: RUF002
+    assert assembled_edt_unavailable.code == 0
+    assert assembled_edt_unavailable.edt_monitor is None
+    assert shown_errors == [], "отказ раздела — заглушка на месте раздела, не модальное окно"
+
+
+def test_run_smoke_reports_edt_unavailable_when_edt_json_unreadable(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any, caplog: Any
+) -> None:
+    """Самопроверка сборки с недоступным `edt.json`: код 0, строка `smoke: edt=unavailable`."""  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    appdata = tmp_path / "appdata"
+    (appdata / "OneCStarter").mkdir(parents=True)
+    (appdata / "OneCStarter" / "edt.json").mkdir()
+    target = tmp_path / "out"
+    target.mkdir()
+
+    with caplog.at_level(logging.INFO):
+        assert run_smoke(str(target), {"APPDATA": str(appdata)}) == 0
+
+    assert "smoke: edt=unavailable" in caplog.text
+    qtbot.addWidget(captured["window"])
