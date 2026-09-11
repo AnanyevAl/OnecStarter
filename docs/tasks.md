@@ -3691,3 +3691,51 @@ len([1, 1, 1, 1, 1, 1, ...])` — и прошёл после отката мут
    метки на живых базах. Заодно — версии в README (`## Установка`
    до сих пор называет артефакты `2.3.0`) обновляются на `2.4.0` вместе
    с самой сборкой, а не раньше неё.
+
+---
+
+## T-17. Проекты EDT — `IN PROGRESS` (ветка `feat/2026-09-10-v3-edt`)
+
+Дизайн — [спека v3](superpowers/specs/2026-09-10-v3-edt-design.md). Планы:
+[план 1 — раздел](superpowers/plans/2026-09-10-v3-plan1-edt-section.md) (этот),
+[план 2 — CLI и консоль](superpowers/plans/2026-09-10-v3-plan2-edt-cli.md),
+[план 3 — эксперименты, скил, документы, выпуск](superpowers/plans/2026-09-10-v3-plan3-edt-closing.md).
+
+| # | Задача | Статус |
+| --- | --- | --- |
+| T-17.1 | План 1: раздел «EDT» — домен, обнаружение, реестр EDT Start, хранилище, координатор, UI, настройки, сборка (20 задач) | DONE |
+| T-17.2 | План 2: CLI EDT и консоль (спека §14) | — |
+| T-17.3 | План 3: эксперименты 1–7 (спека §10), скил `edt-launch`, документы, выпуск 3.0.0 | — |
+
+### Ход плана 1
+
+20 задач; восемь прошли раунд правок по находкам ревью — Tasks 2, 3, 8, 9, 10, 12, 14, 16
+(последняя, Task 16, закрыта решением заказчика, а не правкой кода). Три факта/правила
+самого плана исправлены вслед за находками: токенизатор `vm_args` в Task 2 — план
+предписывал `shlex.split(text, posix=False)`, он режет кавычки внутри токена, по факту
+реализации заменён на собственный посимвольный разбор, сохраняющий кавычки; `pick_jvm`
+(находка ревью Task 3) должен сравнивать JDK по полной версии числами, а не по строке
+пути (`17.0.9` больше `17.0.16` как число, но меньше как строка); Zulu 17 из `-vm`
+2024.2.6 действительно существует (находка Task 7) — спека §0 и план 3 исправлены вслед.
+
+### Мутационные проверки плана 1 (11.09.2026)
+
+Протокол — тот же, что в предыдущих вехах (CLAUDE.md, «Мутационная проверка тестов»):
+мутация правкой файла → прогон только названного теста → дословный `FAILED` → откат
+правкой файла (не `git checkout`) → тот же тест зелёным повторно. Мутации по брифу
+Task 20 — шесть штук, ставил не автор тестов Tasks 6, 10, 13, 14, 16, отдельный исполнитель.
+
+| # | Задача | Мутация | Ф / Т | Результат |
+| --- | --- | --- | --- | --- |
+| 1 | 10 | `_move_aside` без `replace` | `services/edt_store.py` / `test_corrupt_moves_aside_and_starts_empty`, `test_cannot_move_aside_raises` | УПАЛИ ВСЕ ПЯТЬ (4 параметра первого теста + второй): `AssertionError: assert not True` — `path.exists()` осталось `True`, `.bad` не создан (`tests/unit/test_edt_store.py:109`); `Failed: DID NOT RAISE EdtUnavailableError` (`tests/unit/test_edt_store.py:122`) |
+| 2 | 13 | `launch` без отказа при `jvm is None` | `services/edt.py` / `test_no_jvm_refuses_before_spawn` | УПАЛ — `Failed: DID NOT RAISE EdtLaunchError` (`tests/unit/test_edt_workspace.py:341`) |
+| 3 | 13 | `launch` без ветки активации | `services/edt.py` / `test_running_activates_instead_of_spawn` | УПАЛ — `AssertionError: assert <LaunchOutcome.STARTED: 'started'> is <LaunchOutcome.ACTIVATED: 'activated'>` (`tests/unit/test_edt_workspace.py:316`) |
+| 4 | 6 | `import_candidates` без фильтра по `known` | `domain/edt.py` / `test_idempotent_second_pass`, `test_import_adds_selected_and_is_idempotent` | УПАЛИ ОБА — `AssertionError: assert [ImportCandidate(...)] == []`, второй проход находит уже импортированный workspace заново (`tests/unit/test_edt_domain.py:466`, `tests/unit/test_edt_workspace.py:402`) |
+| 5 | 14 | `_project_row`: инверсия проверки пустой версии | `ui/edt/tree_model.py` / `test_version_column_marks_not_installed`, `test_empty_version_shows_dash` | УПАЛИ ОБА — `AssertionError: assert 'Версия EDT не задана' == 'EDT 2024.2.6+7 не найден'` (`tests/ui/test_edt_tree_model.py:96`); `AssertionError: assert 'EDT  не найден' == 'Версия EDT не задана'` (`tests/ui/test_edt_tree_model.py:107`) — метки поменялись местами |
+| 6 | 16 | `_fill_project_menu` без `setEnabled(False)` | `ui/edt/view.py` / `test_project_menu_open_edt_disabled_when_not_installed` | УПАЛ — `AssertionError: assert True is False` (`tests/ui/test_edt_view.py:259`) |
+
+Все шесть мутаций откачены обратной правкой того же файла; после каждой — повторный
+зелёный прогон того же теста; `git status` после отката всех шести пуст. Полный прогон
+перед мутационной стадией (шаг 1, 11.09.2026): `uv run pytest -q` — `2274 passed in
+342.54s (0:05:42)`, без `failed`/`error`; `uv run ruff check .` — `All checks passed!`;
+`uv run mypy` — `Success: no issues found in 202 source files`.
