@@ -6223,7 +6223,7 @@ git commit -m "feat(ui): группа EDT в Настройках — JDK, па�
 
 **Interfaces:**
 - Consumes: всё из Tasks 7–18; `Runtime`, `_build_main_window`, `run_smoke`, `main` (существуют).
-- Produces: `Runtime.edt: Path` (`%APPDATA%\OneCStarter\edt.json`); `_build_main_window` возвращает пятый элемент — `EdtMonitor`; раздел «EDT» между «Серверы» и «Настройки»; `main()` зовёт `edt_monitor.start()` рядом с `monitor.start()`; строка `smoke: edt=<число установок>` в самопроверке.
+- Produces: `Runtime.edt: Path` (`%APPDATA%\OneCStarter\edt.json`); `_build_main_window` возвращает пятый элемент — `EdtMonitor` (с 11.09.2026 — `EdtMonitor | None`, правка C2 ниже); раздел «EDT» между «Серверы» и «Настройки»; `main()` зовёт `edt_monitor.start()` рядом с `monitor.start()`; строка `smoke: edt=<число установок>` в самопроверке.
 
 - [ ] **Step 1: Падающие тесты**
 
@@ -6549,3 +6549,28 @@ git commit -m "docs: T-17 — план 1 вехи v3 закрыт, мутаци�
 - **Сохранение раскрытия групп между сеансами, ширины колонок** — не в спеке.
 - **Общий монитор с серверами** — спека §4 допускает лишь при параметризации без правки
   поведения; калька дешевле и не трогает раздел «Серверы».
+
+---
+
+## Правки по итогам финального ревью (11.09.2026)
+
+Ревью всей ветки после закрытия Task 20 (HEAD `3b9567d`). Два Critical, три Important
+и два минора приняты в правку; каждая — своим коммитом, TDD (RED → GREEN), правки кода
+блоков плана — в соответствующих задачах выше («правка по итогам финального ревью»).
+Полный прогон после волны: `uv run pytest -q` — `2284 passed in 273.69s`;
+`uv run ruff check .` — `All checks passed!`; `uv run mypy` — `Success: no issues found
+in 202 source files`.
+
+| # | Находка | Где | Правка | Тесты | Коммит |
+| --- | --- | --- | --- | --- | --- |
+| C1 | Пустая группа не видна в дереве: `_fill` добавлял группу только при видимых записях даже без фильтра — «Создать группу» писала в `edt.json` группу, которую нечем показать, использовать и удалить | `ui/edt/tree_model.py::_fill` (Task 14) | Без фильтра группа видна всегда; под непустым фильтром — только группы с совпадениями. Спека §7 дополнена предложением | `test_empty_group_visible_without_filter`, `test_empty_group_hidden_under_filter`; строка группы после `add_group` в `test_group_lifecycle_via_view` | `60e0d7f` |
+| C2 | `EdtUnavailableError` из `EdtWorkspace(...)` в `_build_main_window` не ловил никто (`main()` — только `ServerError`): недоступный `edt.json` ронял программу | `ui/app.py` (Task 19) | Решение заказчика: раздел недоступен, программа работает. `QLabel` `EdtUnavailable` «Раздел EDT недоступен: …» вместо `EdtView`, монитор не собирается (пятый элемент `EdtMonitor \| None`), `main()` не стартует `None`, `run_smoke` пишет `smoke: edt=unavailable`. Спека §8 дополнена | `test_build_main_window_replaces_edt_section_when_edt_json_unreadable`, `test_main_keeps_working_when_edt_json_unreadable`, `test_run_smoke_reports_edt_unavailable_when_edt_json_unreadable`; мутация «убрать `if edt_monitor is not None`» — `AttributeError` | `8d95391` |
+| I1 | `running_workspaces`: `by_key = {ключ: id}` — при двух записях на один workspace (спека §1 допускает) pid получала только последняя | `domain/edt.py` (Task 4) | `by_key: dict[str, list[str]]`, pid получает каждая запись; блокировка Eclipse в докстринге помечена `[?]` | `TestRunningWorkspaces::test_two_records_on_one_workspace_both_running` | `871e8f2` |
+| I2 | `rebuild()` на каждом тике монитора сбрасывал текущую строку и ширины колонок, рвал начатое перетаскивание | `ui/edt/view.py::on_scan`, `rebuild` (Task 14) | `on_scan` хранит `_last_scan` и пропускает `rebuild()` при равном снимке; `rebuild()` возвращает `current()` и ширины первых двух колонок, умолчания — только при первой сборке | `test_unchanged_scan_does_not_rebuild`, `test_current_row_and_widths_survive_rebuild` | `e5cf839` |
+| I3 | Подписи группы «EDT» в Настройках считались один раз в конструкторе — после смены JDK или пути редактора врали до перезапуска | `ui/settings_view.py` (Task 18) | `_path_control(after_save=...)`; три строки группы зовут `_refresh_edt_notes` после каждого сохранения (ввод и обзор); память и язык подписи не трогают | `test_edt_notes_refresh_after_edit` | `305f53e` |
+| минор | `import_projects` сравнивал сырые строки workspace, `import_candidates` — `workspace_key` | `services/edt.py` (Task 13) | Ключ уникальности — `workspace_key` | `TestImport::test_import_skips_workspace_present_by_key` | `d957ec0` |
+| минор | `test_edt_heap_tolerance`: случай `("8192", 8192)` не отличал отказ строки от `int("8192")` | `tests/unit/test_settings.py` (Task 11) | Заменён на `("4096", 8192)` | — (сам тест) | `bb3f5ab` |
+
+Из отложенных миноров задач (`deferred.md` волны, вне репозитория) этой волной закрыты
+три: метка `[?]` у блокировки Eclipse (Task 4), случай `"8192"` в `test_edt_heap_tolerance`
+(Task 11), ключ сравнения в `import_projects` (Task 13). Остальные остаются отложенными.
