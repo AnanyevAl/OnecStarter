@@ -17,7 +17,14 @@ from onecstarter.domain.launch import LaunchCommand
 from onecstarter.platform_1c.editors import EditorKind
 from onecstarter.platform_1c.edtstart_registry import EdtStartRegistry
 from onecstarter.platform_1c.process_scan import ProcessInfo
-from onecstarter.services.edt import EdtScan, EdtWorkspace, LaunchOutcome, scan_edt
+from onecstarter.services.edt import (
+    EdtNotes,
+    EdtScan,
+    EdtWorkspace,
+    LaunchOutcome,
+    scan_edt,
+    settings_notes,
+)
 from onecstarter.services.edt_store import load_registry
 from onecstarter.services.errors import (
     EdtError,
@@ -398,3 +405,35 @@ class TestImport:
         h = _harness(tmp_path, edtstart=EdtStartRegistry((PRODUCT,), (ES_PROJECT,), 0))
         assert h.workspace.import_projects([]) == 0
         assert h.workspace.projects() == []
+
+
+class TestSettingsNotes:
+    def test_empty_jvm_explains_auto(self) -> None:
+        notes: EdtNotes = settings_notes(
+            "", lambda kind: EditorResolution(None, "", "x"), lambda p: None
+        )
+        assert notes.jvm == (
+            "Не задан — JDK подбирается из products.json, 1cedt.ini или соседних JDK"  # noqa: RUF001
+        )
+
+    def test_jvm_with_release(self) -> None:
+        notes = settings_notes(
+            r"C:\jdk\bin", lambda kind: EditorResolution(None, "", "x"), lambda p: "17.0.16"
+        )
+        assert notes.jvm == "Java 17.0.16"
+
+    def test_jvm_without_release(self) -> None:
+        notes = settings_notes(
+            r"C:\nope\bin", lambda kind: EditorResolution(None, "", "x"), lambda p: None
+        )
+        assert notes.jvm == "Файл release не найден: версия неизвестна"
+
+    def test_editor_notes(self) -> None:
+        def editors(kind: EditorKind) -> EditorResolution:
+            if kind is EditorKind.VSCODE:
+                return EditorResolution(Path(r"C:\code\code.cmd"), "PATH", "")
+            return EditorResolution(None, "", "Не найден — укажите путь в Настройках")  # noqa: RUF001
+
+        notes = settings_notes("", editors, lambda p: None)
+        assert notes.vscode == r"Найден: C:\code\code.cmd"
+        assert notes.antigravity == "Не найден — укажите путь в Настройках"  # noqa: RUF001

@@ -52,11 +52,13 @@ from onecstarter.services.errors import (
 
 __all__ = [
     "EDT_PROCESS_NAMES",
+    "EdtNotes",
     "EdtScan",
     "EdtStatus",
     "EdtWorkspace",
     "LaunchOutcome",
     "scan_edt",
+    "settings_notes",
 ]
 
 
@@ -85,6 +87,36 @@ class EdtStatus:
     workspace_present: bool | None
     installed: bool
     cli_busy: bool = False
+
+
+@dataclass(frozen=True)
+class EdtNotes:
+    jvm: str
+    vscode: str
+    antigravity: str
+
+
+def settings_notes(
+    jvm_dir: str,
+    editors: Callable[[EditorKind], EditorResolution],
+    jdk_version: Callable[[Path], str | None],
+) -> EdtNotes:
+    """Подписи под полями группы «EDT» в Настройках (спека §7)."""
+    if not jvm_dir:
+        jvm = (
+            "Не задан — JDK подбирается из products.json, 1cedt.ini или соседних JDK"  # noqa: RUF001
+        )
+    else:
+        version = jdk_version(Path(jvm_dir).parent)
+        jvm = f"Java {version}" if version else "Файл release не найден: версия неизвестна"
+
+    def note(kind: EditorKind) -> str:
+        resolution = editors(kind)
+        return f"Найден: {resolution.path}" if resolution.path is not None else resolution.note
+
+    return EdtNotes(
+        jvm=jvm, vscode=note(EditorKind.VSCODE), antigravity=note(EditorKind.ANTIGRAVITY)
+    )
 
 
 def scan_edt(
