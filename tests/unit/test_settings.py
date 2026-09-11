@@ -385,7 +385,9 @@ def test_edt_fields_round_trip(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     ("value", "expected"),
-    [(4096, 4096), (True, 8192), ("8192", 8192), (0, 8192), (-5, 8192), (256, 256), (255, 8192)],
+    # "4096", не "8192": строка обязана отвергаться, а не приводиться к числу —  # noqa: RUF003
+    # с "8192" тест не отличал бы отказ от `int("8192")` (минор ревью v3).  # noqa: RUF003
+    [(4096, 4096), (True, 8192), ("4096", 8192), (0, 8192), (-5, 8192), (256, 256), (255, 8192)],
 )
 def test_edt_heap_tolerance(tmp_path: Path, value: object, expected: int) -> None:
     path = tmp_path / "settings.json"
