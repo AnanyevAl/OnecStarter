@@ -129,6 +129,7 @@ QToolTip {{
     border: 1px solid {palette.border};
 }}
 #ConnectionPanel {{ background: {palette.surface}; border-top: 1px solid {palette.border}; }}
+#EdtPanel {{ background: {palette.surface}; border-top: 1px solid {palette.border}; }}
 #ConnectionPath {{
     font-family: Consolas, "Cascadia Mono", monospace;
     border: none; background: transparent; padding: 0;
@@ -139,7 +140,12 @@ QToolTip {{
     border: 1px solid {palette.border}; background: {palette.surface_raised};
     border-radius: 4px; padding: 2px 9px;
 }}
+#EdtPanel QPushButton {{
+    border: 1px solid {palette.border}; background: {palette.surface_raised};
+    border-radius: 4px; padding: 2px 9px;
+}}
 #ConnectionPanel QPushButton:disabled {{ color: {palette.text_dim}; }}
+#EdtPanel QPushButton:disabled {{ color: {palette.text_dim}; }}
 #SettingsSub, #SettingsNote {{ color: {palette.text_dim}; font-size: 8pt; }}
 /* Ни font-size, ни font-weight, ни letter-spacing здесь нет НАМЕРЕННО:
    свойства шрифта заголовка группы ставит код — `ui/settings_group.py`,

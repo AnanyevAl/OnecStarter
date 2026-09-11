@@ -1,5 +1,6 @@
 """EdtView: дерево, фильтр, запуск по Enter/двойному клику, статус, F5 (спека §7)."""
 
+from collections.abc import Callable
 from itertools import count
 from pathlib import Path
 
@@ -79,7 +80,7 @@ class Harness:
     def _discover(self) -> None:
         self.discovers_requested += 1
 
-    def view(self) -> EdtView:
+    def view(self, open_directory: Callable[[str], bool] = lambda p: True) -> EdtView:
         return EdtView(
             self.workspace,
             palette=DARK,
@@ -87,6 +88,7 @@ class Harness:
             request_discover=self._discover,
             show_error=self.errors.append,
             show_info=self.infos.append,
+            open_directory=open_directory,
         )
 
 
@@ -213,6 +215,38 @@ def test_current_returns_kind_and_id(harness: Harness, qtbot) -> None:  # type: 
     assert view.current() is None
     _select(view, p.id)
     assert view.current() == ("project", p.id)
+
+
+def test_panel_follows_selection(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    _g = harness.workspace.add_group("2025", None)
+    p = _add(harness, "a", project_dir=r"D:\edt\a\proj")
+    view = harness.view()
+    qtbot.addWidget(view)
+    assert view.panel().title_text() == "Выберите проект"
+    _select(view, p.id)
+    assert view.panel().workspace_field().text() == p.workspace
+    assert view.panel().project_dir_field().text() == r"D:\edt\a\proj"
+    view.tree().setCurrentIndex(view.model().index(0, 0))  # группа стоит первой
+    assert view.panel().title_text() == "2025"
+    assert view.panel().workspace_field().isHidden() is True
+
+
+def test_panel_survives_rebuild(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    p = _add(harness, "a")
+    view = harness.view()
+    qtbot.addWidget(view)
+    _select(view, p.id)
+    view.rebuild()
+    assert view.panel().workspace_field().text() == p.workspace
+
+
+def test_panel_open_failure_goes_to_show_error(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    p = _add(harness, "a")
+    view = harness.view(open_directory=lambda path: False)
+    qtbot.addWidget(view)
+    _select(view, p.id)
+    view.panel().workspace_open_button().click()
+    assert harness.errors == [f"Каталог не найден: {p.workspace}"]
 
 
 def test_expansion_survives_rebuild(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]

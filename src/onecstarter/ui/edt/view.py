@@ -38,11 +38,13 @@ from onecstarter.domain.edt import EdtInstallation, EdtProject
 from onecstarter.platform_1c.editors import EDITOR_LABELS, EditorKind
 from onecstarter.services.edt import EdtScan, EdtWorkspace
 from onecstarter.services.errors import ServicesError
+from onecstarter.ui.bases.panel import open_in_explorer
 from onecstarter.ui.dialogs.buttons import ask_confirmation
 from onecstarter.ui.dialogs.infobase import dropped_directory
 from onecstarter.ui.edt.dialog import DialogDefaults, EdtProjectDialog, browse_for_directory
 from onecstarter.ui.edt.group_dialog import EdtGroupDialog
 from onecstarter.ui.edt.import_dialog import EdtImportDialog
+from onecstarter.ui.edt.panel import EdtPanel
 from onecstarter.ui.edt.tree_model import (
     COLUMNS,
     ID_ROLE,
@@ -175,6 +177,7 @@ class EdtView(QWidget):
         dialog_defaults: Callable[[], tuple[int, str]] = lambda: (8192, ""),
         confirm: Callable[[QWidget, str, str], bool] = ask_confirmation,
         choose_directory: Callable[[], str] = browse_for_directory,
+        open_directory: Callable[[str], bool] = open_in_explorer,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -212,10 +215,14 @@ class EdtView(QWidget):
         self._tree.setRootIsDecorated(True)
         self._tree.doubleClicked.connect(self._launch_index)
 
+        self._panel = EdtPanel(open_directory=open_directory)
+        self._panel.open_failed.connect(self._show_error)
+
         layout = QVBoxLayout(self)
         layout.addWidget(self._search)
         layout.addWidget(self._banner)
         layout.addWidget(self._tree, 1)
+        layout.addWidget(self._panel)
         self.rebuild()
 
     # --- доступ -----------------------------------------------------------
@@ -228,6 +235,9 @@ class EdtView(QWidget):
 
     def tree(self) -> QTreeView:
         return self._tree
+
+    def panel(self) -> EdtPanel:
+        return self._panel
 
     def search(self) -> QLineEdit:
         return self._search
@@ -252,6 +262,24 @@ class EdtView(QWidget):
             return kind, item_id
         return None
 
+    def _on_current_changed(self, *_args: object) -> None:
+        """Общий слот текущей строки: панель путей сегодня, консоль — план 2."""
+        self._sync_panel()
+
+    def _sync_panel(self) -> None:
+        current = self.current()
+        if current is None:
+            self._panel.show_nothing()
+            return
+        kind, item_id = current
+        if kind == KIND_PROJECT:
+            self._panel.show_project(self._workspace.project(item_id), self._palette)
+        elif kind == KIND_GROUP:
+            group = next(g for g in self._workspace.groups() if g.id == item_id)
+            self._panel.show_group(group.name)
+        else:
+            self._panel.show_nothing()
+
     # --- перестройка ------------------------------------------------------
 
     def rebuild(self) -> None:
@@ -275,6 +303,14 @@ class EdtView(QWidget):
                 self._tree.setColumnWidth(column, width)
         self._restore_expansion(expanded, expand_all=not self._built)
         self._restore_current(current)
+        # Модель пересобрана целиком — прежняя selectionModel умерла вместе
+        # с ней, подписку нельзя ставить один раз в __init__ (там модели ещё  # noqa: RUF003
+        # нет вовсе): переподключаемся здесь и сразу синхронизируем панель
+        # (тот же приём, что `BasesView.rebuild`).
+        selection = self._tree.selectionModel()
+        if selection is not None:
+            selection.currentChanged.connect(self._on_current_changed)
+        self._on_current_changed()
         self._built = True
         self._banner.setVisible(
             not self._workspace.projects() and self._workspace.edtstart_available()
