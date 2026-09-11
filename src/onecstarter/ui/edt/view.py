@@ -40,6 +40,7 @@ from onecstarter.ui.dialogs.buttons import ask_confirmation
 from onecstarter.ui.dialogs.infobase import dropped_directory
 from onecstarter.ui.edt.dialog import DialogDefaults, EdtProjectDialog, browse_for_directory
 from onecstarter.ui.edt.group_dialog import EdtGroupDialog
+from onecstarter.ui.edt.import_dialog import EdtImportDialog
 from onecstarter.ui.edt.tree_model import (
     ID_ROLE,
     KIND_GROUP,
@@ -145,6 +146,7 @@ class EdtView(QWidget):
         request_scan: Callable[[], None] = lambda: None,
         request_discover: Callable[[], None] = lambda: None,
         show_error: Callable[[str], None] | None = None,
+        show_info: Callable[[str], None] | None = None,
         dialog_defaults: Callable[[], tuple[int, str]] = lambda: (8192, ""),
         confirm: Callable[[QWidget, str, str], bool] = ask_confirmation,
         choose_directory: Callable[[], str] = browse_for_directory,
@@ -156,6 +158,7 @@ class EdtView(QWidget):
         self._request_scan = request_scan
         self._request_discover = request_discover
         self._show_error = show_error or self._default_show_error
+        self._show_info = show_info or self._default_show_info
         self._dialog_defaults = dialog_defaults
         self._confirm = confirm
         self._choose_directory = choose_directory
@@ -254,8 +257,25 @@ class EdtView(QWidget):
         self._request_scan()
 
     def import_from_edtstart(self) -> None:
-        """Заглушка — диалог импорта заполняет Task 17."""
-        return None
+        candidates = self._workspace.import_candidates()
+        if candidates is None:
+            self._show_error(
+                "EDT Start не найден: реестр %LOCALAPPDATA%\\1C\\1cedtstart не читается"
+            )
+            return
+        if not candidates:
+            self._show_info("Новых проектов в EDT Start нет")
+            return
+        dialog = EdtImportDialog(candidates, parent=self)
+        if not self._run_dialog(dialog):
+            return
+        added = self._workspace.import_projects(dialog.selected())
+        self.rebuild()
+        message = f"Импортировано записей: {added}"
+        skipped = self._workspace.edtstart_skipped()
+        if skipped:
+            message += f"\nПропущено записей EDT Start без пути или продукта: {skipped}"  # noqa: RUF001
+        self._show_info(message)
 
     # --- запуск -----------------------------------------------------------
 
@@ -318,6 +338,13 @@ class EdtView(QWidget):
     def _default_show_error(self, message: str) -> None:
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("OneCStarter")
+        box.setText(message)
+        box.exec()
+
+    def _default_show_info(self, message: str) -> None:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Information)
         box.setWindowTitle("OneCStarter")
         box.setText(message)
         box.exec()

@@ -7,9 +7,16 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QMenu
 
-from onecstarter.domain.edt import EditorResolution, EdtInstallation, EdtProject
+from onecstarter.domain.edt import (
+    EditorResolution,
+    EdtInstallation,
+    EdtProject,
+    EdtStartProduct,
+    EdtStartProject,
+)
 from onecstarter.domain.launch import LaunchCommand
 from onecstarter.platform_1c.editors import EditorKind
+from onecstarter.platform_1c.edtstart_registry import EdtStartRegistry
 from onecstarter.services.edt import EdtScan, EdtWorkspace
 from onecstarter.ui.edt.tree_model import ID_ROLE, RUNNING_GLYPH
 from onecstarter.ui.edt.view import (
@@ -30,6 +37,8 @@ from onecstarter.ui.theme import DARK
 INSTALLED = [
     EdtInstallation("2025.2.6+4", Path(r"C:\e\1cedt.exe"), Path(r"C:\j\bin"), "", 17, "auto")
 ]
+PRODUCT = EdtStartProduct("prod", "2025.2.6+4", Path(r"C:\e\1cedt.exe"), Path(r"C:\j\bin"), ())
+ES = EdtStartProject("es", "(2025) А", Path(r"D:\edt\a"), "prod", ("-Xmx8192m",), None)  # noqa: RUF001
 
 
 class Harness:
@@ -39,13 +48,15 @@ class Harness:
         self.activated: list[int] = []
         self.opened: list[str] = []
         self.errors: list[str] = []
+        self.infos: list[str] = []
+        self.registry: EdtStartRegistry | None = None
         self.scans_requested = 0
         self.discovers_requested = 0
         self.editor = EditorResolution(None, "", "Не найден — укажите путь в Настройках")  # noqa: RUF001
         self.workspace = EdtWorkspace(
             tmp_path / "edt.json",
             discover=lambda: list(INSTALLED),
-            edtstart=lambda: None,
+            edtstart=lambda: self.registry,
             editors=lambda kind: self.editor,
             spawn=self._spawn,
             activate=self._activate,
@@ -75,6 +86,7 @@ class Harness:
             request_scan=self._scan,
             request_discover=self._discover,
             show_error=self.errors.append,
+            show_info=self.infos.append,
         )
 
 
@@ -395,3 +407,44 @@ def test_delete_key_removes_current_with_confirm(harness: Harness, qtbot, monkey
     monkeypatch.setattr(view, "_confirm", lambda parent, title, text: True)
     qtbot.keyClick(view.tree(), Qt.Key.Key_Delete)
     assert harness.workspace.projects() == []
+
+
+def test_banner_only_when_empty_and_registry_present(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    view = harness.view()
+    qtbot.addWidget(view)
+    assert view.banner().isHidden() is True
+    harness.registry = EdtStartRegistry((PRODUCT,), (ES,), 0)
+    view.rebuild()
+    assert view.banner().isHidden() is False
+    _add(harness, "a")
+    view.rebuild()
+    assert view.banner().isHidden() is True
+
+
+def test_import_adds_selected(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    harness.registry = EdtStartRegistry((PRODUCT,), (ES,), 0)
+    view = harness.view()
+    qtbot.addWidget(view)
+    monkeypatch.setattr(view, "_run_dialog", lambda dialog: True)
+    view.import_from_edtstart()
+    [project] = harness.workspace.projects()
+    assert project.workspace == r"D:\edt\a"
+    assert project.edt_version == "2025.2.6+4"
+    assert harness.infos == ["Импортировано записей: 1"]
+
+
+def test_import_without_registry_shows_error(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    view = harness.view()
+    qtbot.addWidget(view)
+    view.import_from_edtstart()
+    expected = "EDT Start не найден: реестр %LOCALAPPDATA%\\1C\\1cedtstart не читается"
+    assert harness.errors == [expected]
+
+
+def test_import_nothing_new_shows_info(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    harness.registry = EdtStartRegistry((PRODUCT,), (ES,), 0)
+    _add(harness, "a", workspace=r"D:\edt\a")
+    view = harness.view()
+    qtbot.addWidget(view)
+    view.import_from_edtstart()
+    assert harness.infos == ["Новых проектов в EDT Start нет"]
