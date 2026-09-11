@@ -59,8 +59,13 @@ def test_light_palette_differs_in_every_role() -> None:
     заливка, не текст, порог 4,5:1 к ней не применяется.
     """  # noqa: RUF002
     for field in ("background", "surface", "surface_raised", "border",
-                  "text", "text_dim", "accent", "problem", "selection"):
+                  "text", "text_dim", "accent", "problem", "selection", "running"):
         assert getattr(theme.LIGHT, field) != getattr(theme.DARK, field), field
+
+
+def test_running_role_is_green_in_both_themes() -> None:
+    assert theme.DARK.running == "#66bb6a"
+    assert theme.LIGHT.running == "#2c6e2f"
 
 
 def test_stylesheet_uses_given_palette() -> None:
@@ -246,7 +251,7 @@ def test_contrast_formula_reproduces_the_numbers_from_the_spec() -> None:
 
 
 @pytest.mark.parametrize("ground", ["background", "surface", "surface_raised", "selection"])
-@pytest.mark.parametrize("role", ["text", "text_dim", "accent", "problem"])
+@pytest.mark.parametrize("role", ["text", "text_dim", "accent", "problem", "running"])
 @pytest.mark.parametrize(
     "palette", [theme.DARK, theme.LIGHT], ids=["dark", "light"]
 )

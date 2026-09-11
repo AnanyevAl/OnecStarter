@@ -10,7 +10,7 @@ from collections.abc import Callable, Sequence
 from enum import Enum
 from pathlib import Path
 
-from PySide6.QtCore import QModelIndex, QPoint, Qt
+from PySide6.QtCore import QModelIndex, QPersistentModelIndex, QPoint, Qt
 from PySide6.QtGui import (
     QAction,
     QDragEnterEvent,
@@ -27,6 +27,8 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTreeView,
     QVBoxLayout,
     QWidget,
@@ -69,6 +71,16 @@ class DropTarget(Enum):
     AFTER = "after"
 
 
+class _RightDecorationDelegate(QStyledItemDelegate):
+    """Значок состояния — справа от имени, а не слева, как у Qt по умолчанию."""  # noqa: RUF002
+
+    def initStyleOption(  # noqa: N802
+        self, option: QStyleOptionViewItem, index: QModelIndex | QPersistentModelIndex
+    ) -> None:
+        super().initStyleOption(option, index)
+        option.decorationPosition = QStyleOptionViewItem.Position.Right
+
+
 class _EdtTree(QTreeView):
     def __init__(self, view: "EdtView", parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -79,6 +91,7 @@ class _EdtTree(QTreeView):
         self.setDragDropMode(QTreeView.DragDropMode.InternalMove)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._view._show_menu)
+        self.setItemDelegateForColumn(0, _RightDecorationDelegate(self))
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):

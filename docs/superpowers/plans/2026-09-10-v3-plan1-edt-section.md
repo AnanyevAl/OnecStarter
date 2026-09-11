@@ -6660,7 +6660,7 @@ def running_icon(palette: Palette) -> QIcon:
 В `tests/ui/test_edt_tree_model.py`: удалить импорт `RUNNING_GLYPH`; `test_status_and_missing_dir_after_scan` →
 
 ```python
-def test_running_icon_and_missing_dir_after_scan(tmp_path: Path) -> None:
+def test_running_icon_and_missing_dir_after_scan(tmp_path: Path, qapp: QApplication) -> None:
     ws = _workspace(tmp_path)
     p = ws.add_project(EdtProject("", "Розница", r"D:\a", edt_version="2025.2.6+4"))
     ws.apply_scan(EdtScan(running={p.id: 42}, present={p.id: False}))
@@ -6672,6 +6672,14 @@ def test_running_icon_and_missing_dir_after_scan(tmp_path: Path) -> None:
     assert model.columnCount() == 2
 ```
 
+Параметр `qapp: QApplication` (импорт `from PySide6.QtWidgets import QApplication`)
+обязателен: `build_edt_model` здесь строит строку с `running_pid`, значит вызывает
+`running_icon` → создаёт `QPixmap`/`QPainter` без действующего приложения — без
+`qapp` тест валит процесс (найдено при выполнении Task 21: `QPixmap` без
+`QApplication` даёт не мягкую ошибку, а крэш pytest, «7 точек и тишина»,
+воспроизводится стабильно на изолированном запуске теста). Остальные тесты
+файла `qapp` не требуют — они не создают значков.
+
 `test_no_status_before_scan`: вместо `model.item(0, 2).text() == ""` — `model.item(0, 0).icon().isNull()`.
 
 Реализация в `tree_model.py`: `COLUMNS = ("Проект", "EDT")`; `_fill` добавляет группам
@@ -6679,21 +6687,26 @@ def test_running_icon_and_missing_dir_after_scan(tmp_path: Path) -> None:
 — `name.setIcon(running_icon(palette))` и подсказка `tooltip += f"\nЗапущен (PID {pid})"`;
 `RUNNING_GLYPH` и ветка `cli_busy` со «●» удаляются (`CLI_BUSY_HINT` остаётся константой
 для плана 2). Импорт `from onecstarter.ui.edt.icons import running_icon`.
+Новая f-строка с «Запущен» и докстринг делегата (шаг 4) содержат кириллицу, похожую
+на латиницу, — добавить `# noqa: RUF001`/`RUF002` по месту, как у соседних строк файла.
 
 - [ ] **Step 4: Вьюха — делегат и тесты**
 
 В `tests/ui/test_edt_view.py`: `test_launch_running_activates` — вместо
 `view.model().item(0, 2).text() == RUNNING_GLYPH` → `not view.model().item(0, 0).icon().isNull()`;
-удалить импорт `RUNNING_GLYPH`; новый тест:
+удалить импорт `RUNNING_GLYPH`; та же замена нужна и в `test_unchanged_scan_does_not_rebuild`
+(план это не назвал явно, но там тоже два `item(0, 2)` — один сравнивается с `RUNNING_GLYPH`,
+второй с `""`; без правки тест не компилируется после удаления импорта). Новый тест:
 
 ```python
 def test_name_column_draws_decoration_on_the_right(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
-    from PySide6.QtWidgets import QStyleOptionViewItem
+    from PySide6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem
 
     _add(harness, "a")
     view = harness.view()
     qtbot.addWidget(view)
     delegate = view.tree().itemDelegateForColumn(0)
+    assert isinstance(delegate, QStyledItemDelegate)  # mypy: itemDelegateForColumn -> QAbstractItemDelegate | None
     option = QStyleOptionViewItem()
     delegate.initStyleOption(option, view.model().index(0, 0))
     assert option.decorationPosition == QStyleOptionViewItem.Position.Right
@@ -6703,16 +6716,26 @@ def test_name_column_draws_decoration_on_the_right(harness: Harness, qtbot) -> N
 
 ```python
 class _RightDecorationDelegate(QStyledItemDelegate):
-    """Значок состояния — справа от имени, а не слева, как у Qt по умолчанию."""
+    """Значок состояния — справа от имени, а не слева, как у Qt по умолчанию."""  # noqa: RUF002
 
-    def initStyleOption(self, option: QStyleOptionViewItem, index: QModelIndex) -> None:  # noqa: N802
+    def initStyleOption(  # noqa: N802
+        self, option: QStyleOptionViewItem, index: QModelIndex | QPersistentModelIndex
+    ) -> None:
         super().initStyleOption(option, index)
         option.decorationPosition = QStyleOptionViewItem.Position.Right
 ```
 
+Тип индекса — обязательно `QModelIndex | QPersistentModelIndex` (импорт `QPersistentModelIndex`
+из `PySide6.QtCore`), не просто `QModelIndex`: стаб `QStyledItemDelegate.initStyleOption`
+принимает объединение обоих типов, и mypy (strict вне `ui.*`, но override-проверка
+сигнатур не отключена и для `ui.*`) валит `[override]` на более узкой сигнатуре
+(найдено при выполнении Task 21).
+
 в `_EdtTree.__init__`: `self.setItemDelegateForColumn(0, _RightDecorationDelegate(self))`;
 `rebuild()` — ширины по умолчанию только для двух колонок. Тест `test_current_row_and_widths_survive_rebuild`
-поправить, если он ссылается на третью колонку.
+поправить, если он ссылается на третью колонку — на практике не ссылается (только на
+колонки 0 и 1) и остаётся без изменений; проверено мутацией (временная порча
+восстановления ширины колонки 1 в `rebuild()` роняет именно этот тест).
 
 - [ ] **Step 5: Прогнать и закоммитить**
 

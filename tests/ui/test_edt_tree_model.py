@@ -4,6 +4,7 @@ from itertools import count
 from pathlib import Path
 
 from PySide6.QtGui import QColor, QStandardItemModel
+from PySide6.QtWidgets import QApplication
 
 from onecstarter.domain.edt import EdtInstallation, EdtProject
 from onecstarter.services.edt import EdtScan, EdtWorkspace
@@ -13,7 +14,6 @@ from onecstarter.ui.edt.tree_model import (
     KIND_PROJECT,
     KIND_ROLE,
     MISSING_SUFFIX,
-    RUNNING_GLYPH,
     build_edt_model,
     matches,
 )
@@ -134,15 +134,16 @@ def test_empty_version_shows_dash(tmp_path: Path) -> None:
     assert model.item(0, 1).toolTip() == "Версия EDT не задана"
 
 
-def test_status_and_missing_dir_after_scan(tmp_path: Path) -> None:
+def test_running_icon_and_missing_dir_after_scan(tmp_path: Path, qapp: QApplication) -> None:
     ws = _workspace(tmp_path)
     p = ws.add_project(EdtProject("", "Розница", r"D:\a", edt_version="2025.2.6+4"))
     ws.apply_scan(EdtScan(running={p.id: 42}, present={p.id: False}))
     model = build_edt_model(ws, "", DARK)
-    assert model.item(0, 0).text() == "Розница" + MISSING_SUFFIX
-    assert model.item(0, 2).text() == RUNNING_GLYPH
-    assert model.item(0, 2).toolTip() == "Запущен (PID 42)"
-    assert model.item(0, 2).foreground().color() == QColor(DARK.accent)
+    name = model.item(0, 0)
+    assert name.text() == "Розница" + MISSING_SUFFIX
+    assert not name.icon().isNull()
+    assert "Запущен (PID 42)" in name.toolTip()
+    assert model.columnCount() == 2
 
 
 def test_no_status_before_scan(tmp_path: Path) -> None:
@@ -150,7 +151,7 @@ def test_no_status_before_scan(tmp_path: Path) -> None:
     ws.add_project(EdtProject("", "Розница", r"D:\a"))
     model = build_edt_model(ws, "", DARK)
     assert model.item(0, 0).text() == "Розница"
-    assert model.item(0, 2).text() == ""
+    assert model.item(0, 0).icon().isNull()
     assert model.item(0, 0).toolTip() == r"D:\a"
 
 

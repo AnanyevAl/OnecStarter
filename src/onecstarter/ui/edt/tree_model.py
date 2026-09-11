@@ -10,6 +10,7 @@ from PySide6.QtGui import QBrush, QColor, QStandardItem, QStandardItemModel
 
 from onecstarter.domain.edt import EdtProject
 from onecstarter.services.edt import EdtStatus, EdtWorkspace
+from onecstarter.ui.edt.icons import running_icon
 from onecstarter.ui.theme import Palette
 
 ID_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -17,9 +18,8 @@ KIND_ROLE = Qt.ItemDataRole.UserRole + 2
 KIND_GROUP = "group"
 KIND_PROJECT = "project"
 
-COLUMNS = ("Проект", "EDT", "")
+COLUMNS = ("Проект", "EDT")
 MISSING_SUFFIX = " (нет каталога)"
-RUNNING_GLYPH = "●"
 NOT_INSTALLED_HINT = "EDT {version} не найден"
 NO_VERSION_HINT = "Версия EDT не задана"
 CLI_BUSY_HINT = "Выполняется команда CLI"
@@ -66,7 +66,7 @@ def _fill(
         item.setFont(font)
         has_matches = _fill(item, group.id, workspace, query, palette)
         if has_matches or unfiltered:
-            parent.appendRow([item, _plain(""), _plain("")])
+            parent.appendRow([item, _plain("")])
             visible = True
     for project in projects:
         if not matches(project, query):
@@ -89,6 +89,9 @@ def _project_row(project: EdtProject, status: EdtStatus, palette: Palette) -> li
     tooltip = project.workspace
     if project.project_dir:
         tooltip += f"\nПроект: {project.project_dir}"  # noqa: RUF001
+    if status.running_pid is not None:
+        name.setIcon(running_icon(palette))
+        tooltip += f"\nЗапущен (PID {status.running_pid})"  # noqa: RUF001
     name.setToolTip(tooltip)
 
     version = _plain(project.edt_version or "—")
@@ -99,13 +102,4 @@ def _project_row(project: EdtProject, status: EdtStatus, palette: Palette) -> li
         version.setToolTip(NOT_INSTALLED_HINT.format(version=project.edt_version))
         version.setForeground(QBrush(QColor(palette.problem)))
 
-    state = _plain("")
-    if status.running_pid is not None:
-        state.setText(RUNNING_GLYPH)
-        state.setToolTip(f"Запущен (PID {status.running_pid})")
-        state.setForeground(QBrush(QColor(palette.accent)))
-    elif status.cli_busy:
-        state.setText(RUNNING_GLYPH)
-        state.setToolTip(CLI_BUSY_HINT)
-        state.setForeground(QBrush(QColor(palette.problem)))
-    return [name, version, state]
+    return [name, version]

@@ -29,6 +29,12 @@ class Palette:
     accent_fill: str
     selection: str
     problem: str
+    # Роль «запущен» (задача 21, решение заказчика 11.09.2026): зелёный ▶
+    # справа от имени записи. Контраст к четырём фонам (WCAG 2.1):
+    # тёмная — 7,65:1 (background), 7,05:1 (surface), 6,4:1 (surface_raised),
+    # 6,4:1 (selection); светлая — 5,96:1 (background), 5,5:1 (surface),
+    # 6,22:1 (surface_raised), 5,59:1 (selection). Все выше порога 4,5:1.  # noqa: RUF003
+    running: str
 
 
 DARK = Palette(
@@ -42,6 +48,7 @@ DARK = Palette(
     accent_fill="#f2d54c",
     selection="#262626",
     problem="#e57373",
+    running="#66bb6a",
 )
 
 # Палитра мокапа (docs/superpowers/specs/assets/2026-08-08-v1-plan4b-mockup.html),
@@ -64,6 +71,7 @@ LIGHT = Palette(
     accent_fill="#f2d54c",
     problem="#c62828",
     selection="#fdf3cf",
+    running="#2c6e2f",
 )
 
 

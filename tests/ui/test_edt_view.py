@@ -18,7 +18,7 @@ from onecstarter.domain.launch import LaunchCommand
 from onecstarter.platform_1c.editors import EditorKind
 from onecstarter.platform_1c.edtstart_registry import EdtStartRegistry
 from onecstarter.services.edt import EdtScan, EdtWorkspace
-from onecstarter.ui.edt.tree_model import ID_ROLE, KIND_GROUP, KIND_ROLE, RUNNING_GLYPH
+from onecstarter.ui.edt.tree_model import ID_ROLE, KIND_GROUP, KIND_ROLE
 from onecstarter.ui.edt.view import (
     MENU_ADD,
     MENU_ADD_GROUP,
@@ -150,12 +150,25 @@ def test_double_click_launches(harness: Harness, qtbot) -> None:  # type: ignore
     assert harness.scans_requested == 1  # подтверждающий скан после запуска
 
 
+def test_name_column_draws_decoration_on_the_right(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    from PySide6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem
+
+    _add(harness, "a")
+    view = harness.view()
+    qtbot.addWidget(view)
+    delegate = view.tree().itemDelegateForColumn(0)
+    assert isinstance(delegate, QStyledItemDelegate)
+    option = QStyleOptionViewItem()
+    delegate.initStyleOption(option, view.model().index(0, 0))
+    assert option.decorationPosition == QStyleOptionViewItem.Position.Right
+
+
 def test_launch_running_activates(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
     p = _add(harness, "a")
     view = harness.view()
     qtbot.addWidget(view)
     view.on_scan(EdtScan(running={p.id: 77}, present={p.id: True}))
-    assert view.model().item(0, 2).text() == RUNNING_GLYPH
+    assert not view.model().item(0, 0).icon().isNull()
     view.launch_id(p.id)
     assert harness.activated == [77]
     assert harness.spawned == []
@@ -229,12 +242,12 @@ def test_unchanged_scan_does_not_rebuild(harness: Harness, qtbot) -> None:  # ty
     qtbot.addWidget(view)
     view.on_scan(EdtScan(running={p.id: 5}, present={p.id: True}))
     model_after_first = view.model()
-    assert model_after_first.item(0, 2).text() == RUNNING_GLYPH
+    assert not model_after_first.item(0, 0).icon().isNull()
     view.on_scan(EdtScan(running={p.id: 5}, present={p.id: True}))
     assert view.model() is model_after_first
     view.on_scan(EdtScan(running={}, present={p.id: True}))
     assert view.model() is not model_after_first
-    assert view.model().item(0, 2).text() == ""
+    assert view.model().item(0, 0).icon().isNull()
 
 
 def test_current_row_and_widths_survive_rebuild(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
