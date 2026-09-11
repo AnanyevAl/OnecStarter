@@ -58,6 +58,8 @@ from onecstarter.ui import rail_icons, theme
 from onecstarter.ui.app import _build_main_window, build_runtime, run_launch, run_smoke
 from onecstarter.ui.background import StartupTasks
 from onecstarter.ui.bases.view import BasesView
+from onecstarter.ui.edt.monitor import EdtMonitor
+from onecstarter.ui.edt.view import EdtView
 from onecstarter.ui.hotkey import GlobalHotkey
 from onecstarter.ui.servers.dialog import ConsoleDialog
 from onecstarter.ui.servers.journal_panel import JournalPanel
@@ -203,6 +205,7 @@ def runtime_with(monkeypatch, workspace_factory, tmp_path):
             conventions=[],
             settings=tmp_path / "settings.json",
             servers=tmp_path / "servers.json",
+            edt=tmp_path / "edt.json",
         )
         monkeypatch.setattr(app_module, "build_runtime", lambda env: runtime)
         return workspace, calls, opened
@@ -319,6 +322,7 @@ def test_run_launch_waits_for_pending_workspace(monkeypatch, tmp_path, qapp):
         conventions=[],
         settings=tmp_path / "settings.json",
         servers=tmp_path / "servers.json",
+        edt=tmp_path / "edt.json",
     )
     monkeypatch.setattr(app_module, "build_runtime", lambda env: runtime)
 
@@ -357,6 +361,7 @@ def test_run_launch_cancel_returns_one_without_launch(monkeypatch, tmp_path, qap
         conventions=[],
         settings=tmp_path / "settings.json",
         servers=tmp_path / "servers.json",
+        edt=tmp_path / "edt.json",
     )
     monkeypatch.setattr(app_module, "build_runtime", lambda env: runtime)
 
@@ -643,6 +648,29 @@ class _FakeServerMonitor(QObject):
         pass
 
 
+class _FakeEdtMonitor(QObject):
+    """Двойник `EdtMonitor` — тот же довод, что у `_FakeServerMonitor`."""  # noqa: RUF002
+
+    scan_ready = Signal(object)
+    installations_ready = Signal(object)
+
+    def __init__(
+        self, scanner: Any, projects: Any, discover: Any, *, parent: Any = None, **_kwargs: Any
+    ) -> None:
+        super().__init__(parent)
+        self.started = False
+        self.discover_calls = 0
+
+    def start(self) -> None:
+        self.started = True
+
+    def scan_now(self) -> None:
+        pass
+
+    def discover_now(self) -> None:
+        self.discover_calls += 1
+
+
 class _FakeAvailabilityProbe(QObject):
     """Двойник `AvailabilityProbe` — тот же довод, что у двух двойников выше:
 
@@ -683,6 +711,7 @@ class _Assembly:
     stylesheets_before_controller: list[str]
     tasks: _FakeStartupTasks
     monitor: _FakeServerMonitor
+    edt_monitor: _FakeEdtMonitor
     probe: _FakeAvailabilityProbe
     store: SettingsStore
     shown: list[int]
@@ -717,6 +746,7 @@ def _assemble(
         conventions=[],
         settings=tmp_path / "settings.json",
         servers=tmp_path / "servers.json",
+        edt=tmp_path / "edt.json",
     )
     monkeypatch.setattr(app_module, "build_runtime", lambda env: runtime)
 
@@ -782,6 +812,13 @@ def _assemble(
         captured["monitor"] = monitor
         return monitor
 
+    def fake_edt_monitor(
+        scanner: Any, projects: Any, discover: Any, **kwargs: Any
+    ) -> _FakeEdtMonitor:
+        monitor = _FakeEdtMonitor(scanner, projects, discover, **kwargs)
+        captured["edt_monitor"] = monitor
+        return monitor
+
     def fake_availability_probe(*args: Any, **kwargs: Any) -> _FakeAvailabilityProbe:
         probe = _FakeAvailabilityProbe(*args, **kwargs)
         captured["probe"] = probe
@@ -796,6 +833,7 @@ def _assemble(
     monkeypatch.setattr(app_module, "GlobalHotkey", fake_hotkey)
     monkeypatch.setattr(app_module, "StartupTasks", fake_startup_tasks)
     monkeypatch.setattr(app_module, "ServerMonitor", fake_server_monitor)
+    monkeypatch.setattr(app_module, "EdtMonitor", fake_edt_monitor)
     monkeypatch.setattr(app_module, "AvailabilityProbe", fake_availability_probe)
     # QApplication уже создан фикстурой qtbot; второй экземпляр PySide6
     # создать не даёт — main() получает живой.
@@ -880,6 +918,7 @@ def _assemble(
         stylesheets_before_controller=captured["stylesheets_before_controller"],
         tasks=captured["tasks"],
         monitor=captured["monitor"],
+        edt_monitor=captured["edt_monitor"],
         probe=captured["probe"],
         store=captured["store"],
         shown=captured["shown"],
@@ -1427,7 +1466,7 @@ def test_build_main_window_wires_background_results(
     assert runtime.workspace.installations_pending
     assert runtime.workspace.common_lists_pending
 
-    window, tasks, _monitor, _start_probe = _build_main_window(qapp, runtime, env)
+    window, tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(qapp, runtime, env)
     qtbot.addWidget(window)
     view = window.current_section()
     assert isinstance(view, BasesView)
@@ -1466,7 +1505,7 @@ def test_main_window_wires_the_availability_probe(
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
 
-    window, _tasks, _monitor, start_probe = _build_main_window(qapp, runtime, env)
+    window, _tasks, _monitor, start_probe, _edt_monitor = _build_main_window(qapp, runtime, env)
     qtbot.addWidget(window)
     view = window.current_section()
     assert isinstance(view, BasesView)
@@ -1517,7 +1556,7 @@ def test_common_lists_ready_starts_the_probe_a_second_time(
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
 
-    window, tasks, _monitor, start_probe = _build_main_window(qapp, runtime, env)
+    window, tasks, _monitor, start_probe, _edt_monitor = _build_main_window(qapp, runtime, env)
     qtbot.addWidget(window)
     probe = window.findChildren(_FakeAvailabilityProbe)[0]
 
@@ -1553,7 +1592,7 @@ def test_build_main_window_sets_the_application_icon(
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
 
-    window, _tasks, _monitor, _start_probe = _build_main_window(qapp, runtime, env)
+    window, _tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(qapp, runtime, env)
     qtbot.addWidget(window)
 
     assert qapp.windowIcon().availableSizes()
@@ -1565,16 +1604,20 @@ def test_build_main_window_sets_the_application_icon(
 def test_build_main_window_has_three_sections_in_mockup_order(
     qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
 ) -> None:
-    """[Ф] мокап: «Базы, Серверы, Настройки» — «Серверы» встали между ними."""
+    """[Ф] мокап: «Базы, Серверы, Настройки» — «Серверы» и «EDT» встали между ними.
+
+    Задача 19 (спека v3): раздел «EDT» встаёт между «Серверы» и «Настройки»,
+    поэтому ожидаемый порядок вырос до четырёх подписей.
+    """
     monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
 
-    window, _tasks, _monitor, _start_probe = _build_main_window(qapp, runtime, env)
+    window, _tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(qapp, runtime, env)
     qtbot.addWidget(window)
 
     labels = [button.text() for button in window.section_buttons()]
-    assert labels == ["Базы", "Серверы", "Настройки"]
+    assert labels == ["Базы", "Серверы", "EDT", "Настройки"]
     assert isinstance(window.current_section(), BasesView)  # «Базы» остались первым разделом
     window.show_section(labels.index("Серверы"))
     assert isinstance(window.current_section(), ServersView)
@@ -1588,7 +1631,7 @@ def test_servers_section_has_an_icon(
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
 
-    window, _tasks, _monitor, _start_probe = _build_main_window(qapp, runtime, env)
+    window, _tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(qapp, runtime, env)
     qtbot.addWidget(window)
 
     labels = [button.text() for button in window.section_buttons()]
@@ -1610,7 +1653,7 @@ def test_build_main_window_creates_servers_view_with_journal_panel(
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
 
-    window, _tasks, _monitor, _start_probe = _build_main_window(qapp, runtime, env)
+    window, _tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(qapp, runtime, env)
     qtbot.addWidget(window)
 
     labels = [button.text() for button in window.section_buttons()]
@@ -1686,7 +1729,7 @@ def test_on_installations_populates_server_installed_and_rebuilds_the_view(
     )
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, tasks, _monitor, _start_probe = _build_main_window(qapp, runtime, env)
+    window, tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(qapp, runtime, env)
     qtbot.addWidget(window)
     labels = [button.text() for button in window.section_buttons()]
     window.show_section(labels.index("Серверы"))
@@ -1719,7 +1762,7 @@ def test_monitor_wires_scan_into_servers_workspace_and_view(
     monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, _tasks, monitor, _start_probe = _build_main_window(
+    window, _tasks, monitor, _start_probe, _edt_monitor = _build_main_window(
         qapp, runtime, env, process_scanner=NullScanner()
     )
     qtbot.addWidget(window)
@@ -1780,7 +1823,7 @@ def test_build_main_window_repaints_the_servers_view_on_theme_change(
     monkeypatch.setattr(app_module, "ThemeController", _CapturingController)
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, _tasks, _monitor, _start_probe = _build_main_window(qapp, runtime, env)
+    window, _tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(qapp, runtime, env)
     qtbot.addWidget(window)
     labels = [button.text() for button in window.section_buttons()]
     window.show_section(labels.index("Серверы"))
@@ -1820,10 +1863,11 @@ def test_startup_log_has_no_connect_strings(
         conventions=[],
         settings=tmp_path / "settings.json",
         servers=tmp_path / "servers.json",
+        edt=tmp_path / "edt.json",
     )
 
     with caplog.at_level(logging.INFO):
-        window, _tasks, _monitor, _start_probe = _build_main_window(
+        window, _tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(
             qapp, runtime, {"APPDATA": str(tmp_path)}
         )
         window.show()
@@ -1849,8 +1893,9 @@ def test_default_client_change_reaches_workspace_without_rebuild(
         workspace=workspace, cfg_rules=[], conventions=[],
         settings=tmp_path / "settings.json",
         servers=tmp_path / "servers.json",
+        edt=tmp_path / "edt.json",
     )
-    window, _tasks, _monitor, _start_probe = _build_main_window(
+    window, _tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(
         qapp, runtime, {"APPDATA": str(tmp_path)}
     )
     qtbot.addWidget(window)
@@ -1896,8 +1941,9 @@ def test_web_launch_setting_change_reaches_workspace_without_rebuild(
         workspace=workspace, cfg_rules=[], conventions=[],
         settings=tmp_path / "settings.json",
         servers=tmp_path / "servers.json",
+        edt=tmp_path / "edt.json",
     )
-    window, _tasks, _monitor, _start_probe = _build_main_window(
+    window, _tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(
         qapp, runtime, {"APPDATA": str(tmp_path)}
     )
     qtbot.addWidget(window)
@@ -1940,7 +1986,7 @@ def test_build_main_window_installs_the_hotkey_native_filter(
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
 
-    window, _tasks, _monitor, _start_probe = _build_main_window(qapp, runtime, env)
+    window, _tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(qapp, runtime, env)
     qtbot.addWidget(window)
 
     assert installed == [window.global_hotkey]
@@ -1989,7 +2035,7 @@ def test_build_main_window_disposes_hotkey_and_removes_filter_together_on_quit(
 
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, _tasks, _monitor, _start_probe = _build_main_window(qapp, runtime, env)
+    window, _tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(qapp, runtime, env)
     qtbot.addWidget(window)
 
     dispose_hotkey = next(
@@ -2076,7 +2122,7 @@ def _window_with_settings(
     monkeypatch.setattr("onecstarter.ui.app.GlobalHotkey", make_hotkey)
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, _tasks, _monitor, _start_probe = _build_main_window(qapp, runtime, env)
+    window, _tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(qapp, runtime, env)
     return window
 
 
@@ -2158,9 +2204,9 @@ def test_clearing_a_busy_hotkey_resets_the_tooltip_to_plain(
     assert "занято" in tooltips[-1]
     balloons_after_start = len(messages)
 
-    # Раздел «Настройки» — индекс 2 с задачи 16 (T-08): «Серверы» встали  # noqa: RUF003
-    # между «Базами» и «Настройками» (порядок мокапа).
-    window.show_section(2)
+    # Раздел «Настройки» — индекс 3 с задачи 19 (v3): «Серверы» и «EDT»  # noqa: RUF003
+    # встали между «Базами» и «Настройками» (порядок мокапа).
+    window.show_section(3)
     settings_view = window.current_section()
     settings_view.hotkey_edit().captured.emit("")
 
@@ -2237,9 +2283,11 @@ def test_busy_hotkey_without_tray_opens_the_settings_section(
     )
     section = window.current_section()
     assert isinstance(section, SettingsView)
-    # Три раздела с задачи 16 (T-08) — «Настройки» третьи по счёту («Серверы»  # noqa: RUF003
-    # между «Базами» и «Настройками», порядок мокапа); отмечена последняя.
+    # Четыре раздела с задачи 19 (v3) — «Настройки» последние по счёту  # noqa: RUF003
+    # («Серверы» и «EDT» между «Базами» и «Настройками», порядок мокапа);
+    # отмечена последняя.
     assert [button.isChecked() for button in window.section_buttons()] == [
+        False,
         False,
         False,
         True,
@@ -2349,9 +2397,11 @@ def _capture_window(monkeypatch: Any) -> dict[str, Any]:
     real_build = app_module._build_main_window
 
     def capturing(application: Any, runtime: Any, env: Any, **kwargs: Any) -> Any:
-        window, tasks, monitor, start_probe = real_build(application, runtime, env, **kwargs)
+        window, tasks, monitor, start_probe, edt_monitor = real_build(
+            application, runtime, env, **kwargs
+        )
         captured["window"] = window
-        return window, tasks, monitor, start_probe
+        return window, tasks, monitor, start_probe, edt_monitor
 
     monkeypatch.setattr(app_module, "_build_main_window", capturing)
     return captured
@@ -2496,6 +2546,7 @@ def test_settings_view_reads_the_registry_when_frozen(
         conventions=[],
         settings=tmp_path / "settings.json",
         servers=tmp_path / "servers.json",
+        edt=tmp_path / "edt.json",
     )
     touched: list[str] = []
 
@@ -2507,7 +2558,7 @@ def test_settings_view_reads_the_registry_when_frozen(
 
     application = QApplication.instance()
     assert isinstance(application, QApplication)
-    window, _tasks, _monitor, _start_probe = app_module._build_main_window(
+    window, _tasks, _monitor, _start_probe, _edt_monitor = app_module._build_main_window(
         application, runtime, {"APPDATA": str(tmp_path / "appdata")}
     )
     window.close()
@@ -2973,7 +3024,7 @@ def test_console_flow_survives_unreadable_job(
 
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, _tasks, _monitor, _start_probe = _build_main_window(
+    window, _tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(
         qapp, runtime, env, job_factory=job_factory
     )
     qtbot.addWidget(window)
@@ -3025,7 +3076,7 @@ def test_console_lists_our_just_started_server_before_the_first_scan(
 
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, tasks, _monitor, _start_probe = _build_main_window(
+    window, tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(
         qapp, runtime, env, job_factory=lambda: _FakeJob((4646,))
     )
     qtbot.addWidget(window)
@@ -3155,7 +3206,7 @@ def test_close_without_servers_needs_no_confirmation(
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
 
-    window, _tasks, _monitor, _start_probe = _build_main_window(
+    window, _tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(
         qapp, runtime, env, quit_dialog=_fake_quit_dialog(asked, answer=False)
     )
     qtbot.addWidget(window)
@@ -3180,7 +3231,7 @@ def test_close_with_running_server_and_declined_dialog_keeps_confirm_quit_false(
     asked: list[str] = []
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, _tasks, _monitor, _start_probe = _build_main_window(
+    window, _tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(
         qapp,
         runtime,
         env,
@@ -3220,7 +3271,7 @@ def test_confirm_quit_true_logs_shutdown_event_for_running_profile(
     monkeypatch.setattr(app_module, "spawn_server", lambda command, log, job: 4646)
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, _tasks, _monitor, _start_probe = _build_main_window(
+    window, _tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(
         qapp,
         runtime,
         env,
@@ -3270,7 +3321,7 @@ def test_confirm_quit_survives_unreadable_job(
 
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, _tasks, _monitor, _start_probe = _build_main_window(
+    window, _tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(
         qapp,
         runtime,
         env,
@@ -3318,7 +3369,7 @@ def test_confirm_quit_accepted_survives_unreadable_job_in_log_shutdown(
 
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, _tasks, _monitor, _start_probe = _build_main_window(
+    window, _tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(
         qapp,
         runtime,
         env,
@@ -3370,7 +3421,7 @@ def test_closing_window_without_quit_dialog_never_shows_a_confirmation_dialog(
     monkeypatch.setattr(app_module, "spawn_server", lambda command, log, job: 4646)
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, _tasks, _monitor, _start_probe = _build_main_window(
+    window, _tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(
         qapp, runtime, env, job_factory=lambda: _FakeJob((4646,))
     )
     qtbot.addWidget(window)
@@ -3414,7 +3465,7 @@ def test_request_quit_declined_does_not_quit_the_application(
     monkeypatch.setattr(app_module, "spawn_server", lambda command, log, job: 4646)
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, _tasks, _monitor, _start_probe = _build_main_window(
+    window, _tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(
         qapp,
         runtime,
         env,
@@ -3451,7 +3502,7 @@ def test_request_quit_without_quit_dialog_quits_immediately(
     monkeypatch.setattr(app_module, "create_tray", fake_create_tray)
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
-    window, _tasks, _monitor, _start_probe = _build_main_window(qapp, runtime, env)
+    window, _tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(qapp, runtime, env)
     qtbot.addWidget(window)
 
     captured["on_quit"]()
@@ -3491,3 +3542,27 @@ def test_main_wires_the_quit_confirmation_gate(assembled: _Assembly) -> None:
     исключительно факт проводки, не поведение диалога (оно покрыто выше).
     """
     assert assembled.window.confirm_quit is not None
+
+
+def test_main_starts_the_edt_monitor(assembled: _Assembly) -> None:
+    """main() обязан звать edt_monitor.start() рядом с monitor.start() (спека v3, §4)."""  # noqa: RUF002
+    assert assembled.edt_monitor.started is True
+
+
+def test_build_main_window_has_edt_section(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """Раздел «EDT» стоит на рейле между «Серверы» и «Настройки» (спека v3, задача 19)."""
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    env = {"APPDATA": str(tmp_path), "LOCALAPPDATA": str(tmp_path), "ProgramFiles": str(tmp_path)}
+    runtime = build_runtime(env)
+    assert runtime.edt == tmp_path / "OneCStarter" / "edt.json"
+    window, _tasks, _monitor, _start_probe, edt_monitor = _build_main_window(
+        qapp, runtime, env, process_scanner=NullScanner()
+    )
+    qtbot.addWidget(window)
+    labels = [button.toolTip() or button.text() for button in window.section_buttons()]
+    assert "EDT" in labels
+    window.show_section(labels.index("EDT"))
+    assert isinstance(window.current_section(), EdtView)
+    assert isinstance(edt_monitor, EdtMonitor)
