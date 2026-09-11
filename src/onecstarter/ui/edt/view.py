@@ -72,7 +72,12 @@ class DropTarget(Enum):
 
 
 class _RightDecorationDelegate(QStyledItemDelegate):
-    """Значок состояния — справа от имени, а не слева, как у Qt по умолчанию."""  # noqa: RUF002
+    """Значок состояния — справа от имени, а не слева, как у Qt по умолчанию.
+
+    Ставится только на колонку 0 (имя) — `_EdtTree.__init__`,
+    `setItemDelegateForColumn(0, ...)`; колонка версии использует делегат Qt
+    по умолчанию.
+    """  # noqa: RUF002
 
     def initStyleOption(  # noqa: N802
         self, option: QStyleOptionViewItem, index: QModelIndex | QPersistentModelIndex
@@ -92,6 +97,12 @@ class _EdtTree(QTreeView):
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._view._show_menu)
         self.setItemDelegateForColumn(0, _RightDecorationDelegate(self))
+        # Ревью Task 21: с удалением третьей колонки «EDT» стала последней и по  # noqa: RUF003
+        # умолчанию наследует растяжение Qt (`stretchLastSection`) — версия
+        # раздувалась бы на всю оставшуюся ширину показанного окна, а ручная  # noqa: RUF003
+        # ширина колонки терялась молча. Ни одна из колонок здесь декоративная,
+        # обеим нужна управляемая ширина.
+        self.header().setStretchLastSection(False)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):

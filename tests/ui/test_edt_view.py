@@ -265,6 +265,27 @@ def test_current_row_and_widths_survive_rebuild(harness: Harness, qtbot) -> None
     assert (view.tree().columnWidth(0), view.tree().columnWidth(1)) == (200, 90)
 
 
+def test_version_column_keeps_width_in_shown_window(harness: Harness, qtbot, qapp) -> None:  # type: ignore[no-untyped-def]
+    """Ревью Task 21: с двумя колонками «EDT» стала последней и наследует
+
+    штатное растяжение Qt (`stretchLastSection=True`) — в показанном окне
+    версия раздувается на всю оставшуюся ширину, а ручная `setColumnWidth`
+    молча игнорируется. `qtbot.addWidget()` без `show()`/`resize()` раскладку
+    не делает и это не ловит — нужна настоящая геометрия.
+    """  # noqa: RUF002
+    _add(harness, "a")
+    view = harness.view()
+    qtbot.addWidget(view)
+    view.show()
+    view.resize(1000, 600)
+    qapp.processEvents()
+    assert view.tree().columnWidth(1) == 110
+    view.tree().setColumnWidth(1, 90)
+    view.rebuild()
+    qapp.processEvents()
+    assert view.tree().columnWidth(1) == 90
+
+
 def test_collapse_survives_empty_filter_round_trip(  # type: ignore[no-untyped-def]
     harness: Harness, qtbot
 ) -> None:
