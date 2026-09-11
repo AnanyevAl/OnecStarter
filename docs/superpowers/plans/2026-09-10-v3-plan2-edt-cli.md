@@ -329,7 +329,7 @@ def cli_import_args(form: ImportForm) -> str:
     project_dir = form.project_dir.strip()
     project_name = form.project_name.strip()
     if bool(project_dir) == bool(project_name):
-        raise ValueError("Для файлов XML укажите либо каталог, либо имя нового проекта")
+        raise ValueError("Для файлов XML укажите каталог или имя нового проекта — одно из двух")
     parts = ["import", "--configuration-files", quote_cli_arg(xml)]
     if project_dir:
         parts += ["--project", quote_cli_arg(project_dir)]
@@ -1811,7 +1811,7 @@ git commit -m "feat(ui): диалоги CLI EDT — import с двумя вар�
 - Modify: `tests/ui/test_app.py`
 
 **Interfaces:**
-- Consumes: `EdtCli`, `CliRun`, `CliResult`, `workspace_entries` (Task 3); `CliWatcher`, `EdtConsole`, состояния (Task 4); диалоги (Task 5); `cli_build_args`, `cli_project_args`, `cli_import_args`, `cli_validate_args`, `workspace_projects` (Task 1); `spawn_logged` (Task 2); `ServerJob`; `_confirm_quit_with_servers` (`app.py`).
+- Consumes: `EdtCli`, `CliRun`, `CliResult`, `workspace_entries` (Task 3); `CliWatcher`, `EdtConsole`, состояния (Task 4); диалоги (Task 5); `cli_build_args`, `cli_project_args`, `cli_import_args`, `cli_validate_args`, `workspace_projects` (Task 1); `spawn_logged` (Task 2); `ServerJob`; `_confirm_quit_with_servers` (`app.py`); `ui/edt/icons.py::running_icon` (план 1, Task 21) — по его образцу `cli_busy_icon(palette)`: закрашенный круг цветом `palette.accent`, 16 px; `tree_model._project_row` ставит его в ячейку имени при `status.cli_busy` (и не ставит ▶), подсказка дополняется `CLI_BUSY_HINT`; `ui/edt/view.py::_on_current_changed` (план 1, Task 22) — общий слот смены выделения, куда добавляется `_sync_console()`.
 - Produces: `EdtWorkspace.open_path(path: str)`; `EdtView(cli: EdtCli | None = None, watcher: CliWatcher | None = None, documents_dir: str = str(Path.home() / "Documents"))`; методы `cli_build(project_id)`, `cli_import(project_id)`, `cli_validate(project_id)`, `cli_project(project_id)`, `on_cli_finished(project_id, code)`, `interrupt_current_cli()`, `console() -> EdtConsole`; константы `MENU_CLI = "CLI"`, `CLI_BUILD = "Пересобрать проекты"`, `CLI_IMPORT = "Импортировать проект…"`, `CLI_VALIDATE = "Проверить проекты…"`, `CLI_PROJECT = "Информация по проектам"`, `CLI_BUSY_HINT = "Выполняется команда CLI"`; в `app.py` — `_confirm_quit_with_cli(running_count, ask) -> bool`.
 
 - [ ] **Step 1: Падающие тесты вьюхи**
@@ -1893,7 +1893,8 @@ def test_cli_build_confirms_starts_and_expands_console(harness: Harness, qtbot, 
     assert view.console().state_label().text() == STATE_RUNNING
     assert view.console().title_label().text() == "a · Пересобрать проекты"
     assert view.console().interrupt_button().isHidden() is False
-    assert view.model().item(0, 2).toolTip() == CLI_BUSY_HINT
+    assert not view.model().item(0, 0).icon().isNull()  # значок «выполняется команда CLI»
+    assert CLI_BUSY_HINT in view.model().item(0, 0).toolTip()
     open_edt = next(a for a in view.build_menu("project", p.id).actions() if a.text() == MENU_OPEN_EDT)
     assert open_edt.isEnabled() is False and open_edt.toolTip() == CLI_BUSY_HINT
     assert len(harness.pending) == 1
@@ -1909,7 +1910,7 @@ def test_cli_finish_updates_console_and_menu(harness: Harness, qtbot, monkeypatc
     harness.pending[0]()  # поток-демон «дождался»
     assert view.console().state_label().text() == "завершено, код 3"
     assert view.console().interrupt_button().isHidden() is True
-    assert view.model().item(0, 2).text() == ""
+    assert view.model().item(0, 0).icon().isNull()
     assert _actions(_cli_menu(view, p.id))[CLI_PROJECT] is True
 
 
@@ -2056,11 +2057,31 @@ CLI_BUSY_HINT = "Выполняется команда CLI"
         layout.addWidget(self._console)
 ```
 
-В `rebuild()` после `self._tree.setModel(...)`:
+В `_on_current_changed` (Task 22 плана 1 — общий слот, уже подключён к
+`selectionModel().currentChanged` после каждого `setModel`) добавить вызов
+`self._sync_console()` после `self._sync_panel()`.
+
+В `ui/edt/tree_model.py::_project_row` — ветка `status.cli_busy`: `name.setIcon(cli_busy_icon(palette))`
+и `tooltip += f"\n{CLI_BUSY_HINT}"` (ветка `running_pid` остаётся первой: запущенный EDT
+важнее). В `ui/edt/icons.py`:
 
 ```python
-        self._tree.selectionModel().currentChanged.connect(lambda _c, _p: self._sync_console())
+def cli_busy_icon(palette: Palette) -> QIcon:
+    """Закрашенный круг цветом акцента — выполняется команда CLI (спека §14.6)."""
+    pixmap = QPixmap(_SIZE, _SIZE)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(palette.accent))
+    painter.drawEllipse(3, 3, 10, 10)
+    painter.end()
+    return QIcon(pixmap)
 ```
+
+с тестом в `tests/ui/test_edt_icons.py` (пиксель (8, 8) — цвет акцента, угол прозрачен)
+и тестом модели `test_cli_busy_icon_after_mark` в `tests/ui/test_edt_tree_model.py`
+(`ws.mark_cli_busy(p.id)` → значок не пуст, `CLI_BUSY_HINT` в подсказке).
 
 В `_fill_project_menu` — после «Открыть в Проводнике»; и «Открыть в EDT» неактивен при `cli_busy`:
 
