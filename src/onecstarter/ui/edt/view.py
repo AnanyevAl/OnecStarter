@@ -42,6 +42,7 @@ from onecstarter.ui.edt.dialog import DialogDefaults, EdtProjectDialog, browse_f
 from onecstarter.ui.edt.group_dialog import EdtGroupDialog
 from onecstarter.ui.edt.import_dialog import EdtImportDialog
 from onecstarter.ui.edt.tree_model import (
+    COLUMNS,
     ID_ROLE,
     KIND_GROUP,
     KIND_PROJECT,
@@ -164,6 +165,7 @@ class EdtView(QWidget):
         self._choose_directory = choose_directory
         self._model = QStandardItemModel()
         self._built = False  # первая сборка раскрывает всё; дальше — по запомненным id
+        self._last_scan: EdtScan | None = None  # последний применённый снимок монитора
 
         self._search = QLineEdit()
         self._search.setPlaceholderText("Поиск: начните вводить имя проекта")
@@ -229,12 +231,26 @@ class EdtView(QWidget):
     # --- перестройка ------------------------------------------------------
 
     def rebuild(self) -> None:
+        """Собрать модель заново, сохранив раскрытие, текущую строку и ширины колонок.
+
+        `setModel` сбрасывает всё это — ширины по умолчанию ставятся только
+        при первой сборке, дальше возвращаются снятые перед подменой (I2
+        финального ревью ветки). Последняя колонка растянута заголовком,
+        её ширина не запоминается.
+        """
         expanded = self._expanded_ids()
+        current = self.current()
+        widths = [self._tree.columnWidth(column) for column in range(len(COLUMNS) - 1)]
         self._model = build_edt_model(self._workspace, self._search.text(), self._palette)
         self._tree.setModel(self._model)
-        self._tree.setColumnWidth(0, 320)
-        self._tree.setColumnWidth(1, 110)
+        if not self._built:
+            self._tree.setColumnWidth(0, 320)
+            self._tree.setColumnWidth(1, 110)
+        else:
+            for column, width in enumerate(widths):
+                self._tree.setColumnWidth(column, width)
         self._restore_expansion(expanded, expand_all=not self._built)
+        self._restore_current(current)
         self._built = True
         self._banner.setVisible(
             not self._workspace.projects() and self._workspace.edtstart_available()
@@ -245,7 +261,15 @@ class EdtView(QWidget):
         self.rebuild()
 
     def on_scan(self, scan: EdtScan) -> None:
+        """Снимок монитора: применить всегда, перестраивать — только если он изменился.
+
+        Тик каждые пять секунд с тем же содержимым иначе сбрасывал бы текущую
+        строку и рвал начатое перетаскивание (I2 финального ревью ветки).
+        """  # noqa: RUF002
         self._workspace.apply_scan(scan)
+        if scan == self._last_scan:
+            return
+        self._last_scan = scan
         self.rebuild()
 
     def on_installations(self, installations: Sequence[EdtInstallation]) -> None:
@@ -324,6 +348,25 @@ class EdtView(QWidget):
 
         walk(QModelIndex())
         return ids
+
+    def _restore_current(self, current: tuple[str, str] | None) -> None:
+        if current is None:
+            return
+        kind, item_id = current
+
+        def find(parent: QModelIndex) -> QModelIndex | None:
+            for row in range(self._model.rowCount(parent)):
+                index = self._model.index(row, 0, parent)
+                if index.data(KIND_ROLE) == kind and index.data(ID_ROLE) == item_id:
+                    return index
+                found = find(index)
+                if found is not None:
+                    return found
+            return None
+
+        index = find(QModelIndex())
+        if index is not None:
+            self._tree.setCurrentIndex(index)
 
     def _restore_expansion(self, ids: set[str], *, expand_all: bool) -> None:
         def walk(parent: QModelIndex) -> None:

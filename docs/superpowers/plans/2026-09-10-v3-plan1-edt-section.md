@@ -4481,12 +4481,26 @@ class EdtView(QWidget):
     # --- перестройка ------------------------------------------------------
 
     def rebuild(self) -> None:
+        """Собрать модель заново, сохранив раскрытие, текущую строку и ширины колонок.
+
+        `setModel` сбрасывает всё это — ширины по умолчанию ставятся только
+        при первой сборке, дальше возвращаются снятые перед подменой (I2
+        финального ревью ветки). Последняя колонка растянута заголовком,
+        её ширина не запоминается.
+        """
         expanded = self._expanded_ids()
+        current = self.current()
+        widths = [self._tree.columnWidth(column) for column in range(len(COLUMNS) - 1)]
         self._model = build_edt_model(self._workspace, self._search.text(), self._palette)
         self._tree.setModel(self._model)
-        self._tree.setColumnWidth(0, 320)
-        self._tree.setColumnWidth(1, 110)
+        if not self._built:
+            self._tree.setColumnWidth(0, 320)
+            self._tree.setColumnWidth(1, 110)
+        else:
+            for column, width in enumerate(widths):
+                self._tree.setColumnWidth(column, width)
         self._restore_expansion(expanded, expand_all=not self._built)
+        self._restore_current(current)
         self._built = True
         self._banner.setVisible(
             not self._workspace.projects() and self._workspace.edtstart_available()
@@ -4497,7 +4511,15 @@ class EdtView(QWidget):
         self.rebuild()
 
     def on_scan(self, scan: EdtScan) -> None:
+        """Снимок монитора: применить всегда, перестраивать — только если он изменился.
+
+        Тик каждые пять секунд с тем же содержимым иначе сбрасывал бы текущую
+        строку и рвал начатое перетаскивание (I2 финального ревью ветки).
+        """
         self._workspace.apply_scan(scan)
+        if scan == self._last_scan:
+            return
+        self._last_scan = scan
         self.rebuild()
 
     def on_installations(self, installations: Sequence[EdtInstallation]) -> None:
@@ -4589,6 +4611,24 @@ Expected: зелёное.
 git add src/onecstarter/ui/rail_icons.py src/onecstarter/ui/edt src/onecstarter/services/edt.py tests/ui/test_edt_tree_model.py tests/ui/test_edt_monitor.py tests/ui/test_edt_view.py tests/ui/test_rail_icons.py
 git commit -m "feat(ui): раздел EDT — значок, модель дерева, монитор, каркас вьюхи с запуском и F5"
 ```
+
+
+**Правки по итогам финального ревью (11.09.2026).**
+
+- **C1** — `_fill` добавлял группу только при наличии видимых записей даже без фильтра:
+  «Создать группу» писала в `edt.json` группу, которую нечем показать, использовать
+  и удалить. Без фильтра (`not query.strip()`) группа видна всегда; под непустым
+  фильтром — только группы с совпадениями. Тесты `test_empty_group_visible_without_filter`,
+  `test_empty_group_hidden_under_filter` (`tests/ui/test_edt_tree_model.py`) и проверка
+  строки группы после `view.add_group(None)` в `test_group_lifecycle_via_view`.
+- **I2** — `rebuild()` на каждом тике монитора (раз в 5 с) подменял модель целиком:
+  сбрасывал текущую строку и ширины колонок, рвал начатое перетаскивание.
+  `on_scan` хранит `self._last_scan: EdtScan | None` и пропускает `rebuild()`, когда
+  снимок равен предыдущему (`apply_scan` применяется всегда); `rebuild()` снимает
+  `current()` и ширины первых двух колонок до `setModel` и возвращает их после
+  (`_restore_current`), ширины по умолчанию — только при первой сборке (`_built`).
+  Тесты `test_unchanged_scan_does_not_rebuild` (тождество `model()`),
+  `test_current_row_and_widths_survive_rebuild` (`tests/ui/test_edt_view.py`).
 
 ---
 

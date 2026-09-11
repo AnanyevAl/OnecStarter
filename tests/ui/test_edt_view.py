@@ -215,6 +215,43 @@ def test_expansion_survives_rebuild(harness: Harness, qtbot) -> None:  # type: i
     assert view.tree().isExpanded(view.model().index(0, 0)) is True
 
 
+def test_unchanged_scan_does_not_rebuild(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    """I2 финального ревью: тик монитора с тем же снимком не перестраивает модель.
+
+    `rebuild()` подменяет модель целиком — сбрасывает текущую строку, ширины
+    колонок и рвёт начатое перетаскивание; делать это каждые 5 секунд без
+    изменений нельзя. Равный снимок (новый экземпляр с тем же содержимым)
+    применяется к координатору, но модель остаётся прежней; изменившийся —
+    перестраивает.
+    """  # noqa: RUF002
+    p = _add(harness, "a")
+    view = harness.view()
+    qtbot.addWidget(view)
+    view.on_scan(EdtScan(running={p.id: 5}, present={p.id: True}))
+    model_after_first = view.model()
+    assert model_after_first.item(0, 2).text() == RUNNING_GLYPH
+    view.on_scan(EdtScan(running={p.id: 5}, present={p.id: True}))
+    assert view.model() is model_after_first
+    view.on_scan(EdtScan(running={}, present={p.id: True}))
+    assert view.model() is not model_after_first
+    assert view.model().item(0, 2).text() == ""
+
+
+def test_current_row_and_widths_survive_rebuild(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    """I2 финального ревью: перестройка возвращает текущую строку и ширины колонок."""
+    _add(harness, "a")
+    b = _add(harness, "b")
+    view = harness.view()
+    qtbot.addWidget(view)
+    assert (view.tree().columnWidth(0), view.tree().columnWidth(1)) == (320, 110)  # умолчания
+    _select(view, b.id)
+    view.tree().setColumnWidth(0, 200)
+    view.tree().setColumnWidth(1, 90)
+    view.rebuild()
+    assert view.current() == ("project", b.id)
+    assert (view.tree().columnWidth(0), view.tree().columnWidth(1)) == (200, 90)
+
+
 def test_collapse_survives_empty_filter_round_trip(  # type: ignore[no-untyped-def]
     harness: Harness, qtbot
 ) -> None:
