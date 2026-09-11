@@ -6200,6 +6200,18 @@ git add src/onecstarter/services/edt.py src/onecstarter/ui/settings_view.py test
 git commit -m "feat(ui): группа EDT в Настройках — JDK, память и язык по умолчанию, пути редакторов"
 ```
 
+
+**Правка по итогам финального ревью (11.09.2026, I3).** `notes = self._edt_notes()`
+считался один раз в конструкторе: сменил пользователь JDK или путь редактора — подпись
+«Найден: …»/«Java 17…» оставалась старой до перезапуска. `_path_control` получил параметр
+`after_save: Callable[[], None] | None`, вызываемый после `self._store.update(...)` в `save()`
+(и, через него, в `pick()`); три строки группы «EDT» передают `after_save=self._refresh_edt_notes`,
+который пересчитывает `self._edt_notes()` и ставит текст в
+`self._row_notes[EDT_JVM_ROW/EDT_VSCODE_ROW/EDT_ANTIGRAVITY_ROW]`. Память и язык на подписи
+не влияют, их обработчики пересчёт не зовут. Тест `test_edt_notes_refresh_after_edit`
+(`tests/ui/test_settings_view.py`): пробник нумерует вызовы, номер растёт после ввода
+и обзора и не растёт после смены памяти/языка.
+
 ---
 
 ### Task 19: Сборка раздела в приложении и smoke

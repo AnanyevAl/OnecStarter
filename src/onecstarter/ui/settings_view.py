@@ -278,7 +278,7 @@ class SettingsView(QWidget):
         self._add_group("EDT")
         notes = self._edt_notes()
         self._edt_jvm, self._edt_jvm_browse, jvm_row = self._path_control(
-            store.settings.edt_jvm_dir, "edt_jvm_dir"
+            store.settings.edt_jvm_dir, "edt_jvm_dir", after_save=self._refresh_edt_notes
         )
         self._add_row(EDT_JVM_ROW, notes.jvm, jvm_row, wide_control=True)
         self._edt_heap = QSpinBox()
@@ -305,7 +305,10 @@ class SettingsView(QWidget):
             self._edt_language,
         )
         self._editor_vscode, self._editor_vscode_browse, vscode_row = self._path_control(
-            store.settings.editor_vscode, "editor_vscode", pick_file=True
+            store.settings.editor_vscode,
+            "editor_vscode",
+            pick_file=True,
+            after_save=self._refresh_edt_notes,
         )
         self._add_row(EDT_VSCODE_ROW, notes.vscode, vscode_row, wide_control=True)
         (
@@ -313,7 +316,10 @@ class SettingsView(QWidget):
             self._editor_antigravity_browse,
             ag_row,
         ) = self._path_control(
-            store.settings.editor_antigravity, "editor_antigravity", pick_file=True
+            store.settings.editor_antigravity,
+            "editor_antigravity",
+            pick_file=True,
+            after_save=self._refresh_edt_notes,
         )
         self._add_row(EDT_ANTIGRAVITY_ROW, notes.antigravity, ag_row, wide_control=True)
 
@@ -560,14 +566,34 @@ class SettingsView(QWidget):
         row_layout.addWidget(self._servers_root_browse)
         return row
 
+    def _refresh_edt_notes(self) -> None:
+        """Пересчитать подписи группы «EDT» после правки пути (I3 финального ревью).
+
+        Подписи — живой результат автопоиска над текущими настройками
+        (`services/edt.py::settings_notes`); посчитанные один раз в конструкторе
+        они врали бы до перезапуска: сменил пользователь JDK — а под полем
+        по-прежнему старая версия. Память и язык на подписи не влияют,
+        их обработчики сюда не ходят.
+        """  # noqa: RUF002
+        notes = self._edt_notes()
+        self._row_notes[EDT_JVM_ROW].setText(notes.jvm)
+        self._row_notes[EDT_VSCODE_ROW].setText(notes.vscode)
+        self._row_notes[EDT_ANTIGRAVITY_ROW].setText(notes.antigravity)
+
     def _path_control(
-        self, current: str, field: str, pick_file: bool = False
+        self,
+        current: str,
+        field: str,
+        pick_file: bool = False,
+        after_save: Callable[[], None] | None = None,
     ) -> tuple[QLineEdit, QPushButton, QWidget]:
         """Поле пути с «Обзор…», сохраняющее `field` в store (как у корня серверов).
 
         `pick_file` — строки внешних редакторов выбирают файл лаунчера
         (`self._choose_file`), а не каталог (`self._choose_directory`):
         JDK — каталог `bin`, VS Code/Antigravity — исполняемый `.cmd`/`.exe`.
+        `after_save` — что сделать после записи в store (подписи группы «EDT»
+        пересчитываются вслед за каждым сохранением, I3 финального ревью).
         """  # noqa: RUF002
         row = QWidget()
         row_layout = QHBoxLayout(row)
@@ -577,6 +603,8 @@ class SettingsView(QWidget):
 
         def save() -> None:
             self._store.update(**{field: edit.text()})
+            if after_save is not None:
+                after_save()
 
         def pick() -> None:
             chosen = self._choose_file() if pick_file else self._choose_directory()

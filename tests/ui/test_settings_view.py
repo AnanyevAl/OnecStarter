@@ -903,6 +903,44 @@ def test_edt_notes_come_from_injected_probe(application: QApplication, tmp_path:
     assert view.row_note(EDT_ANTIGRAVITY_ROW).text() == "ag-note"
 
 
+def test_edt_notes_refresh_after_edit(application: QApplication, tmp_path: Path) -> None:
+    """I3 финального ревью: подписи группы «EDT» пересчитываются после правки путей.
+
+    `edt_notes` считался один раз в конструкторе — сменил пользователь JDK или
+    путь редактора, а подпись «Найден: …»/«Java 17…» оставалась старой до
+    перезапуска. Пробник здесь нумерует вызовы: после ввода/обзора номер
+    обязан вырасти на всех трёх подписях, после смены памяти и языка — нет
+    (они на подписи не влияют).
+    """  # noqa: RUF002
+    calls = iter(range(100))
+
+    def notes() -> EdtNotes:
+        n = next(calls)
+        return EdtNotes(f"jvm-{n}", f"code-{n}", f"ag-{n}")
+
+    view, _ = _view(
+        application,
+        tmp_path,
+        edt_notes=notes,
+        choose_directory=lambda: r"D:\picked\bin",
+        choose_file=lambda: r"D:\code\code.cmd",
+    )
+    assert view.row_note(EDT_JVM_ROW).text() == "jvm-0"
+    view.edt_jvm_edit().setText(r"D:\j\bin")
+    view.edt_jvm_edit().editingFinished.emit()
+    assert view.row_note(EDT_JVM_ROW).text() == "jvm-1"
+    assert view.row_note(EDT_VSCODE_ROW).text() == "code-1"
+    assert view.row_note(EDT_ANTIGRAVITY_ROW).text() == "ag-1"
+    view.editor_vscode_browse_button().click()  # обзор — тоже сохранение
+    assert view.row_note(EDT_VSCODE_ROW).text() == "code-2"
+    view.editor_antigravity_edit().setText(r"D:\a.cmd")
+    view.editor_antigravity_edit().editingFinished.emit()
+    assert view.row_note(EDT_ANTIGRAVITY_ROW).text() == "ag-3"
+    view.edt_heap_spin().setValue(12288)
+    view.edt_language_combo().setCurrentIndex(2)
+    assert view.row_note(EDT_JVM_ROW).text() == "jvm-3", "память и язык подписи не меняют"
+
+
 def test_edt_fields_show_saved_values(application: QApplication, tmp_path: Path) -> None:
     save_settings(
         tmp_path / "settings.json",
