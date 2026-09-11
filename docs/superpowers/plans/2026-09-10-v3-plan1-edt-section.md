@@ -3879,8 +3879,15 @@ def _fill(
     query: str,
     palette: Palette,
 ) -> bool:
-    """Заполнить детей `group_id`; вернуть, есть ли среди них видимые записи."""
+    """Заполнить детей `group_id`; вернуть, есть ли среди них видимые строки.
+
+    Без фильтра группа видна всегда, даже пустая: иначе «Создать группу»
+    записывала бы в `edt.json` группу, которую нечем показать, использовать
+    и удалить (C1 финального ревью ветки). Под непустым фильтром показываются
+    только группы, в которых есть совпадения (спека §7).
+    """
     groups, projects = workspace.children(group_id)
+    unfiltered = not query.strip()
     visible = False
     for group in groups:
         item = QStandardItem(group.name)
@@ -3890,7 +3897,8 @@ def _fill(
         font = item.font()
         font.setBold(True)
         item.setFont(font)
-        if _fill(item, group.id, workspace, query, palette):
+        has_matches = _fill(item, group.id, workspace, query, palette)
+        if has_matches or unfiltered:
             parent.appendRow([item, _plain(""), _plain("")])
             visible = True
     for project in projects:

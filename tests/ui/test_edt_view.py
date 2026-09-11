@@ -18,7 +18,7 @@ from onecstarter.domain.launch import LaunchCommand
 from onecstarter.platform_1c.editors import EditorKind
 from onecstarter.platform_1c.edtstart_registry import EdtStartRegistry
 from onecstarter.services.edt import EdtScan, EdtWorkspace
-from onecstarter.ui.edt.tree_model import ID_ROLE, RUNNING_GLYPH
+from onecstarter.ui.edt.tree_model import ID_ROLE, KIND_GROUP, KIND_ROLE, RUNNING_GLYPH
 from onecstarter.ui.edt.view import (
     MENU_ADD,
     MENU_ADD_GROUP,
@@ -347,6 +347,10 @@ def test_group_lifecycle_via_view(harness: Harness, qtbot, monkeypatch) -> None:
     view.add_group(None)
     [g] = harness.workspace.groups()
     assert g.name == "2025"
+    # C1 финального ревью: пустая группа обязана быть видна сразу после создания.
+    assert view.model().rowCount() == 1
+    assert view.model().item(0, 0).data(KIND_ROLE) == KIND_GROUP
+    assert view.model().item(0, 0).data(ID_ROLE) == g.id
     view.rename_group(g.id)
     assert harness.workspace.groups()[0].name == "Опт"
     monkeypatch.setattr(view, "_confirm", lambda parent, title, text: True)

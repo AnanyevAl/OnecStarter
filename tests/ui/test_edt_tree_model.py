@@ -79,6 +79,33 @@ def test_filter_keeps_group_with_matching_descendant(tmp_path: Path) -> None:
     assert _names(model) == [(KIND_GROUP, "2025", 0), (KIND_PROJECT, "Розница", 1)]
 
 
+def test_empty_group_visible_without_filter(tmp_path: Path) -> None:
+    """C1 финального ревью: «Создать группу» без записей обязана дать видимую строку."""
+    ws = _workspace(tmp_path)
+    g = ws.add_group("Пустая", None)
+    nested = ws.add_group("Вложенная пустая", g.id)
+    model = build_edt_model(ws, "", DARK)
+    assert _names(model) == [
+        (KIND_GROUP, "Пустая", 0),
+        (KIND_GROUP, "Вложенная пустая", 1),
+    ]
+    assert model.item(0, 0).data(ID_ROLE) == g.id
+    assert model.item(0, 0).child(0, 0).data(ID_ROLE) == nested.id
+
+
+def test_empty_group_hidden_under_filter(tmp_path: Path) -> None:
+    """Под непустым фильтром показываются только группы с совпадениями."""  # noqa: RUF002
+    ws = _workspace(tmp_path)
+    ws.add_group("Пустая", None)
+    ws.add_project(EdtProject("", "Розница", r"D:\a"))
+    model = build_edt_model(ws, "роз", DARK)
+    assert _names(model) == [(KIND_PROJECT, "Розница", 0)]
+    assert _names(build_edt_model(ws, "   ", DARK)) == [
+        (KIND_GROUP, "Пустая", 0),
+        (KIND_PROJECT, "Розница", 0),
+    ]
+
+
 def test_filter_matches_workspace_path_too(tmp_path: Path) -> None:
     project = EdtProject("", "Опт", r"D:\edt\wholesale")
     assert matches(project, "WHOLE") is True
