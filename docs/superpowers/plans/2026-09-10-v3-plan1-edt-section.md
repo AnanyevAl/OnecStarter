@@ -6732,6 +6732,10 @@ class _RightDecorationDelegate(QStyledItemDelegate):
 (найдено при выполнении Task 21).
 
 в `_EdtTree.__init__`: `self.setItemDelegateForColumn(0, _RightDecorationDelegate(self))`;
+там же `self.header().setStretchLastSection(False)` — с двумя колонками последней стала
+«EDT», и штатное растяжение Qt раздувало бы её на всю ширину (находка ревью Task 21);
+тест с настоящей геометрией: `view.show(); view.resize(1000, 600); qapp.processEvents()`
+→ `columnWidth(1) == 110` (`test_version_column_keeps_width_in_shown_window`);
 `rebuild()` — ширины по умолчанию только для двух колонок. Тест `test_current_row_and_widths_survive_rebuild`
 поправить, если он ссылается на третью колонку — на практике не ссылается (только на
 колонки 0 и 1) и остаётся без изменений; проверено мутацией (временная порча
