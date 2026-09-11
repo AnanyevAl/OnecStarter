@@ -330,13 +330,18 @@ def running_workspaces(
     processes: Iterable[tuple[int, tuple[str, ...] | None]],
     projects: Iterable[EdtProject],
 ) -> dict[str, int]:
-    """`-data <путь>` в argv `1cedt.exe` → запись с тем же ключом workspace (спека §4).
+    """`-data <путь>` в argv `1cedt.exe` → записи с тем же ключом workspace (спека §4).
 
     `argv is None` — нет доступа к процессу, пропускается. Первый найденный
-    pid остаётся: второго EDT на том же workspace не бывает (блокировка Eclipse),
-    а если снимок застал два — активировать первый не хуже второго.
+    pid остаётся: второго EDT на том же workspace не бывает (блокировка
+    Eclipse — [?] спека §0), а если снимок застал два — активировать первый
+    не хуже второго. Записей на один workspace может быть несколько (спека §1:
+    «один workspace с несколькими проектами для редактора — несколько
+    записей») — pid получает каждая, не последняя (I1 финального ревью).
     """  # noqa: RUF002
-    by_key = {workspace_key(project.workspace): project.id for project in projects}
+    by_key: dict[str, list[str]] = {}
+    for project in projects:
+        by_key.setdefault(workspace_key(project.workspace), []).append(project.id)
     result: dict[str, int] = {}
     for pid, argv in processes:
         if not argv:
@@ -344,9 +349,8 @@ def running_workspaces(
         for index, token in enumerate(argv[:-1]):
             if token != "-data":
                 continue
-            project_id = by_key.get(workspace_key(argv[index + 1].strip('"')))
-            if project_id is not None and project_id not in result:
-                result[project_id] = pid
+            for project_id in by_key.get(workspace_key(argv[index + 1].strip('"')), ()):
+                result.setdefault(project_id, pid)
             break
     return result
 

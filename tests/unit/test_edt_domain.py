@@ -380,6 +380,20 @@ class TestRunningWorkspaces:
         result = running_workspaces([(1, _argv(r"D:\edt\a")), (2, _argv(r"D:\edt\a"))], projects)
         assert result == {"p1": 1}
 
+    def test_two_records_on_one_workspace_both_running(self) -> None:
+        """I1 финального ревью: спека §1 допускает несколько записей на один workspace.
+
+        Ключи отличаются только регистром и разделителями — обе записи
+        обязаны получить pid, а не «последняя победила».
+        """  # noqa: RUF002
+        projects = [
+            EdtProject(id="p1", name="a", workspace=r"D:\edt\a"),
+            EdtProject(id="p2", name="b", workspace=r"d:/EDT/A/"),
+            EdtProject(id="p3", name="c", workspace=r"D:\edt\other"),
+        ]
+        result = running_workspaces([(7, _argv(r"D:\edt\a"))], projects)
+        assert result == {"p1": 7, "p2": 7}
+
 
 CODE = Path(r"C:\Users\u\AppData\Local\Programs\Microsoft VS Code\bin\code.cmd")
 
