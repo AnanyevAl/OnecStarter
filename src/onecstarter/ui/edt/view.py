@@ -564,7 +564,9 @@ class EdtView(QWidget):
         menu.addAction(MENU_OPEN_EXPLORER, lambda: self.open_folder(project.id))
         if self._cli is not None:
             cli_menu = menu.addMenu(MENU_CLI)
-            cli_menu.setToolTipsVisible(True)
+            # Подсказка живёт на menuAction() подменю и показывается родительским
+            # меню, где setToolTipsVisible уже включён в build_menu; пункты
+            # самого подменю подсказок не имеют — включать их там незачем (M10).
             reason = self._cli.unavailable_reason(project.id)
             cli_action = cli_menu.menuAction()
             if reason:
