@@ -9,7 +9,7 @@ import pytest
 from onecstarter.domain.edt import EditorResolution, EdtInstallation, EdtProject
 from onecstarter.domain.edt_cli import WorkspaceEntry
 from onecstarter.domain.launch import LaunchCommand
-from onecstarter.platform_1c.job import Job
+from onecstarter.platform_1c.job import Job, JobError
 from onecstarter.platform_1c.server_spawn import LoggedProcess
 from onecstarter.services.edt import EdtScan, EdtWorkspace
 from onecstarter.services.edt_cli import CliResult, EdtCli, workspace_entries
@@ -24,9 +24,13 @@ NOW = datetime(2026, 9, 10, 12, 0, 0)
 
 
 class FakeJob:
+    """`close_error` — `JobError`, который `close()` поднимает вместо закрытия
+    (как `FakeJob` в `tests/unit/test_servers.py`)."""
+
     def __init__(self) -> None:
         self.assigned: list[int] = []
         self.closed = False
+        self.close_error: JobError | None = None
 
     def assign(self, process_handle: int) -> None:
         self.assigned.append(process_handle)
@@ -35,6 +39,8 @@ class FakeJob:
         return () if self.closed else (4242,)
 
     def close(self) -> None:
+        if self.close_error is not None:
+            raise self.close_error
         self.closed = True
 
 
@@ -215,6 +221,27 @@ class TestFinishAndInterrupt:
         run = h.cli.start(p.id, "Пересобрать проекты", "build --yes")
         h.cli.interrupt(p.id)
         h.cli.finish(run, 1)
+        assert h.cli.last_result(p.id) == CliResult("Пересобрать проекты", None, True, "")
+
+    def test_interrupt_close_failure_keeps_run_and_raises(self, tmp_path: Path) -> None:
+        """`JobError` из `close()` (M7 ревью): процесс жив — run остаётся, «прервано»
+        не пишется, занятость не снимается, наружу — `EdtError` с меткой команды.
+        Мутация: вернуть `_close_job` (глотает `JobError`) — тест падает `DID NOT RAISE`.
+        """  # noqa: RUF002
+        h = Harness(tmp_path)
+        p = h.project()
+        run = h.cli.start(p.id, "Пересобрать проекты", "build --yes")
+        h.jobs[0].close_error = JobError("CloseHandle отказал")
+        with pytest.raises(EdtError, match="Не удалось прервать «Пересобрать проекты»"):  # noqa: RUF001
+            h.cli.interrupt(p.id)
+        assert h.cli.run(p.id) is run
+        assert h.workspace.status(p.id).cli_busy is True
+        assert h.cli.last_result(p.id) is None
+        assert h.jobs[0].closed is False
+        assert "прервано" not in h.cli.journal_path(p.id).read_text(encoding="utf-8")
+        h.jobs[0].close_error = None  # повтор после устранения причины — штатно
+        h.cli.interrupt(p.id)
+        assert h.cli.run(p.id) is None
         assert h.cli.last_result(p.id) == CliResult("Пересобрать проекты", None, True, "")
 
     def test_finish_of_stale_run_keeps_new_run(self, tmp_path: Path) -> None:

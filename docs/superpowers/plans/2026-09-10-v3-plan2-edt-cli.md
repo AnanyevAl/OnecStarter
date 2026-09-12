@@ -592,7 +592,7 @@ class EdtCli:
     def busy(self, project_id: str) -> bool
     def running_count(self) -> int
     def finish(self, run: CliRun, code: int | None) -> None       # сам run: чужой/прерванный — no-op (M5 ревью)
-    def interrupt(self, project_id: str) -> None
+    def interrupt(self, project_id: str) -> None                  # JobError из close() → EdtError, run остаётся (M7 ревью)
     def journal_path(self, project_id: str) -> Path
     def last_result(self, project_id: str) -> CliResult | None
     def log_shutdown(self) -> int
@@ -692,7 +692,7 @@ import pytest
 from onecstarter.domain.edt import EdtInstallation, EdtProject, EditorResolution
 from onecstarter.domain.edt_cli import WorkspaceEntry
 from onecstarter.domain.launch import LaunchCommand
-from onecstarter.platform_1c.job import Job
+from onecstarter.platform_1c.job import Job, JobError
 from onecstarter.platform_1c.server_spawn import LoggedProcess
 from onecstarter.services.edt import EdtScan, EdtWorkspace
 from onecstarter.services.edt_cli import CliResult, EdtCli, workspace_entries
@@ -705,9 +705,12 @@ NOW = datetime(2026, 9, 10, 12, 0, 0)
 
 
 class FakeJob:
+    """`close_error` — `JobError`, который `close()` поднимает вместо закрытия (M7 ревью)."""
+
     def __init__(self) -> None:
         self.assigned: list[int] = []
         self.closed = False
+        self.close_error: JobError | None = None
 
     def assign(self, process_handle: int) -> None:
         self.assigned.append(process_handle)
@@ -716,6 +719,8 @@ class FakeJob:
         return () if self.closed else (4242,)
 
     def close(self) -> None:
+        if self.close_error is not None:
+            raise self.close_error
         self.closed = True
 
 
@@ -880,6 +885,23 @@ class TestFinishAndInterrupt:
         h.cli.interrupt(p.id)
         h.cli.finish(run, 1)
         assert h.cli.last_result(p.id) == CliResult("Пересобрать проекты", None, True, "")
+
+    def test_interrupt_close_failure_keeps_run_and_raises(self, tmp_path: Path) -> None:
+        """`JobError` из `close()` (правка M7 ревью): run остаётся, «прервано» не пишется,
+        занятость не снимается, наружу — `EdtError` с меткой команды."""
+        h = Harness(tmp_path)
+        p = h.project()
+        run = h.cli.start(p.id, "Пересобрать проекты", "build --yes")
+        h.jobs[0].close_error = JobError("CloseHandle отказал")
+        with pytest.raises(EdtError, match="Не удалось прервать «Пересобрать проекты»"):
+            h.cli.interrupt(p.id)
+        assert h.cli.run(p.id) is run
+        assert h.workspace.status(p.id).cli_busy is True
+        assert h.cli.last_result(p.id) is None
+        assert "прервано" not in h.cli.journal_path(p.id).read_text(encoding="utf-8")
+        h.jobs[0].close_error = None  # повтор после устранения причины — штатно
+        h.cli.interrupt(p.id)
+        assert h.cli.run(p.id) is None
 
     def test_finish_of_stale_run_keeps_new_run(self, tmp_path: Path) -> None:
         """Прервать → запустить снова → запоздавший код старого run (правка M5 ревью).
@@ -1172,10 +1194,20 @@ class EdtCli:
         self._close_job(run.job)
 
     def interrupt(self, project_id: str) -> None:
-        run = self._runs.pop(project_id, None)
+        """Прервать команду: `job.close()` — kill-on-close гасит дерево процесса.
+
+        Отказ `close()` (`JobError`) — `EdtError`, а run ОСТАЁТСЯ в учёте с занятостью
+        и без «прервано» в журнале (правка M7 финального ревью плана 2): процесс жив,
+        считать его прерванным было бы враньём — принцип `services/servers.py::stop`.
+        """
+        run = self._runs.get(project_id)
         if run is None:
             return
-        self._close_job(run.job)  # kill-on-close гасит дерево процесса
+        try:
+            run.job.close()
+        except JobError as error:
+            raise EdtError(f"Не удалось прервать «{run.label}»: {error}") from error
+        del self._runs[project_id]
         self._log_event(project_id, "■ прервано пользователем")
         self._results[project_id] = CliResult(run.label, None, True, "")
         self._workspace.clear_cli_busy(project_id)

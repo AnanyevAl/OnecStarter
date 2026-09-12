@@ -201,10 +201,22 @@ class EdtCli:
         self._close_job(run.job)
 
     def interrupt(self, project_id: str) -> None:
-        run = self._runs.pop(project_id, None)
+        """Прервать команду: `job.close()` — kill-on-close гасит дерево процесса.
+
+        Отказ `close()` (`JobError`: `CloseHandle` вернул ошибку) — `EdtError`,
+        а run ОСТАЁТСЯ в учёте с занятостью и без «прервано» в журнале (правка M7
+        финального ревью плана 2): `ServerJob.close()` на неудаче хендл не теряет,
+        процесс жив, и считать его прерванным было бы враньём — тот же принцип,
+        что у `services/servers.py::stop`.
+        """  # noqa: RUF002
+        run = self._runs.get(project_id)
         if run is None:
             return
-        self._close_job(run.job)  # kill-on-close гасит дерево процесса
+        try:
+            run.job.close()
+        except JobError as error:
+            raise EdtError(f"Не удалось прервать «{run.label}»: {error}") from error  # noqa: RUF001
+        del self._runs[project_id]
         self._log_event(project_id, "■ прервано пользователем")
         self._results[project_id] = CliResult(run.label, None, True, "")
         self._workspace.clear_cli_busy(project_id)
