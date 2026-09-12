@@ -18,7 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from onecstarter.domain.edt_cli import CliQuoteError, cli_validate_args
+from onecstarter.domain.edt_cli import cli_validate_args
 from onecstarter.ui.dialogs.buttons import ButtonKind, russian_button_box
 
 EXISTS_ERROR = "Файл уже существует — CLI откажет; выберите другое имя"
@@ -99,8 +99,8 @@ class CliValidateDialog(QDialog):
         else:
             try:
                 cli_validate_args(self.selected_paths(), file)
-            except CliQuoteError as quote_error:
-                error = str(quote_error)
+            except ValueError as validation_error:  # CliQuoteError — подкласс; как в import-диалоге
+                error = str(validation_error)
         self._error.setText(error)
         self.ok_button().setEnabled(not error)
 

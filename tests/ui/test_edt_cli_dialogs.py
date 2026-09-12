@@ -104,3 +104,12 @@ class TestValidateDialog:
         )
         qtbot.addWidget(dialog)
         assert dialog.ok_button().isEnabled() is False
+
+    def test_single_quote_in_path_reports_error(self, qtbot) -> None:  # type: ignore[no-untyped-def]
+        dialog = CliValidateDialog(
+            [r"D:\O'Reilly\conf"], r"C:\d", "r.tsv",
+            choose_save=lambda i: "", exists=lambda p: False,
+        )
+        qtbot.addWidget(dialog)
+        assert dialog.ok_button().isEnabled() is False
+        assert "Одинарная кавычка" in dialog.error_text()
