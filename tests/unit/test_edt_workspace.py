@@ -459,3 +459,25 @@ class TestSettingsNotes:
         notes = settings_notes("", editors, lambda p: None)
         assert notes.vscode == r"Найден: C:\code\code.cmd"
         assert notes.antigravity == "Не найден — укажите путь в Настройках"  # noqa: RUF001
+
+
+class TestCliBusy:
+    def test_status_reflects_busy(self, tmp_path: Path) -> None:
+        h = _harness(tmp_path, installed=INSTALLED)
+        h.workspace.refresh_installations()
+        p = h.workspace.add_project(_project("a", edt_version="2025.2.6+4"))
+        assert h.workspace.status(p.id).cli_busy is False
+        h.workspace.mark_cli_busy(p.id)
+        assert h.workspace.status(p.id).cli_busy is True
+        assert h.workspace.cli_busy(p.id) is True
+        h.workspace.clear_cli_busy(p.id)
+        assert h.workspace.status(p.id).cli_busy is False
+
+    def test_launch_refused_while_busy(self, tmp_path: Path) -> None:
+        h = _harness(tmp_path, installed=INSTALLED)
+        h.workspace.refresh_installations()
+        p = h.workspace.add_project(_project("a", edt_version="2025.2.6+4"))
+        h.workspace.mark_cli_busy(p.id)
+        with pytest.raises(EdtLaunchError, match="занят командой CLI"):
+            h.workspace.launch(p.id)
+        assert h.spawned == []

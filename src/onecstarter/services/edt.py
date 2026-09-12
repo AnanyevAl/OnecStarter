@@ -160,6 +160,7 @@ class EdtWorkspace:
         self._installations_ready = False
         self._running: dict[str, int] = {}
         self._present: dict[str, bool] = {}
+        self._cli_busy: set[str] = set()
 
     # --- записи -----------------------------------------------------------
 
@@ -297,11 +298,25 @@ class EdtWorkspace:
             running_pid=self._running.get(project_id),
             workspace_present=self._present.get(project_id),
             installed=self.installation_for(project) is not None,
+            cli_busy=project_id in self._cli_busy,
         )
+
+    def mark_cli_busy(self, project_id: str) -> None:
+        self._cli_busy.add(project_id)
+
+    def clear_cli_busy(self, project_id: str) -> None:
+        self._cli_busy.discard(project_id)
+
+    def cli_busy(self, project_id: str) -> bool:
+        return project_id in self._cli_busy
 
     # --- запуск -----------------------------------------------------------
 
     def launch(self, project_id: str) -> LaunchOutcome:
+        if project_id in self._cli_busy:
+            raise EdtLaunchError(
+                "Workspace занят командой CLI — дождитесь завершения или прервите её"
+            )
         project = self.project(project_id)
         pid = self._running.get(project_id)
         if pid is not None:
