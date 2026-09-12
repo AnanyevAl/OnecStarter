@@ -172,8 +172,13 @@ class TestStart:
             is_file=lambda p: True,
             now=lambda: NOW,
         )
-        with pytest.raises(EdtError):
+        with pytest.raises(EdtError) as excinfo:
             h.cli.start(p.id, "Информация по проектам", "project")
+        # Спека §8: «ошибка с командной строкой» — приём servers.py::start.  # noqa: RUF003
+        message = str(excinfo.value)
+        assert message.startswith("Не удалось запустить 1cedtcli.exe: нет файла.")  # noqa: RUF001
+        assert "\nКоманда: " in message  # noqa: RUF001
+        assert f'"{EXE_DIR / "1cedtcli.exe"}" -data "D:\\edt\\a" -command "project"' in message
         assert h.workspace.status(p.id).cli_busy is False
         assert h.cli.running_count() == 0
         journal = h.cli.journal_path(p.id).read_text(encoding="utf-8")

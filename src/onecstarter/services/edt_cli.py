@@ -163,7 +163,11 @@ class EdtCli:
             # и отказ порождения; оба — отказ запуска с причиной от системы.  # noqa: RUF003
             self._close_job(job)
             self._log_event(project_id, f"■ не запущен: {type(error).__name__}")
-            raise EdtError(f"Не удалось запустить {CLI_EXE}: {error}") from error  # noqa: RUF001
+            # Спека §8: «ошибка с командной строкой» — приём ServerError  # noqa: RUF003
+            # в servers.py::start; секретов в команде CLI нет, показывать можно целиком.
+            raise EdtError(
+                f"Не удалось запустить {CLI_EXE}: {error}.\nКоманда: {launch.command_line}"  # noqa: RUF001
+            ) from error
         run = CliRun(project_id, label, command, spawned.pid, spawned.process, job, result_file)
         self._runs[project_id] = run
         self._workspace.mark_cli_busy(project_id)

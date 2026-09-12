@@ -799,8 +799,12 @@ class TestStart:
             raise OSError("нет файла")
 
         h.cli = EdtCli(h.workspace, tmp_path / "logs", job_factory=FakeJob, spawn=broken, is_file=lambda p: True, now=lambda: NOW)
-        with pytest.raises(EdtError):
+        with pytest.raises(EdtError) as excinfo:
             h.cli.start(p.id, "Информация по проектам", "project")
+        message = str(excinfo.value)  # спека §8: ошибка с командной строкой (правка I2)
+        assert message.startswith("Не удалось запустить 1cedtcli.exe: нет файла.")
+        assert "\nКоманда: " in message
+        assert f'"{EXE_DIR / "1cedtcli.exe"}" -data "D:\\edt\\a" -command "project"' in message
         assert h.workspace.status(p.id).cli_busy is False
         assert h.cli.running_count() == 0
         journal = h.cli.journal_path(p.id).read_text(encoding="utf-8")
@@ -1075,7 +1079,11 @@ class EdtCli:
             # и отказ порождения; оба — отказ запуска с причиной от системы.
             self._close_job(job)
             self._log_event(project_id, f"■ не запущен: {type(error).__name__}")
-            raise EdtError(f"Не удалось запустить {CLI_EXE}: {error}") from error
+            # Спека §8: «ошибка с командной строкой» — как ServerError в servers.py::start
+            # (правка I2 финального ревью плана 2); секретов в команде CLI нет.
+            raise EdtError(
+                f"Не удалось запустить {CLI_EXE}: {error}.\nКоманда: {launch.command_line}"
+            ) from error
         run = CliRun(project_id, label, command, spawned.pid, spawned.process, job, result_file)
         self._runs[project_id] = run
         self._workspace.mark_cli_busy(project_id)
