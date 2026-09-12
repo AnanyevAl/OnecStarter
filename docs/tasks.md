@@ -3806,3 +3806,27 @@ issues found in 202 source files`.
 мутационной стадией (12.09.2026): `uv run pytest -q` — `2391 passed in 317.70s (0:05:17)`,
 без `failed`/`error`; `uv run ruff check .` — `All checks passed!`; `uv run mypy` — `Success:
 no issues found in 217 source files`.
+
+### Финальное ревью плана 2 (12.09.2026)
+
+Ревью всей ветки плана 2 после Task 7 (HEAD `3c5a5b2`): 2 Important + 8 миноров приняты
+и исправлены, каждая находка своим коммитом по TDD (RED → GREEN), четыре мутации
+(I1, M5, M6, M7) и одна на покрытие (M9) проверены; подробности — раздел «Правки по итогам
+финального ревью» в [плане 2](superpowers/plans/2026-09-10-v3-plan2-edt-cli.md).
+
+| # | Находка | Коммит |
+| --- | --- | --- |
+| I1 | `OSError` журнала уходил из `EdtCli` голым и мог оставить запись занятой — ротация в своём `try`, события старта → `EdtError`, `_log_event` глотает `OSError` | `cfbccd6` |
+| I2 | Ошибка запуска CLI без командной строки (спека §8) | `f2926fb` |
+| M3 | `quote_cli_arg` не отказывал двойной кавычке — она рвёт `-command "…"` | `8aa5c6a` |
+| M4 | Каталог TSV по умолчанию — `QStandardPaths`, диалог `validate` проверяет каталог результата | `a6f9167` |
+| M5 | `EdtCli.finish(run, code)` сверяет идентичность run — запоздавший код старого run не закрывает новый | `a9bf82f` |
+| M6 | Запись с живой командой CLI не удаляется | `579f5f8` |
+| M7 | `interrupt` не глотает `JobError` из `close()` — run остаётся, наружу `EdtError` | `f296441` |
+| M8 | Докстринг `cli_watch.py`: прерывание закрывает Job, `wait()` штатно отдаёт код; `OSError` — страховка | `ee2cf7b` |
+| M9 | Ветка «JDK не найден» `unavailable_reason` покрыта тестом (отложенный T3) | `fc45808` |
+| M10 | Холостой `cli_menu.setToolTipsVisible(True)` удалён | `1cbf228` |
+
+Полный прогон после волны: `uv run pytest -q` — `2403 passed in 306.44s (0:05:06)`, без
+`failed`/`error`; `uv run ruff check .` — `All checks passed!`; `uv run mypy` — `Success: no
+issues found in 217 source files`. Спека вслед: §8, §13, §14.4.

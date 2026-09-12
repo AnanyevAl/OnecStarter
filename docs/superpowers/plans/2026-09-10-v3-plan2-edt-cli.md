@@ -2682,6 +2682,36 @@ git commit -m "docs: T-17.2 — план 2 (CLI EDT) закрыт, мутаци�
 
 ---
 
+## Правки по итогам финального ревью (12.09.2026)
+
+Ревью всей ветки плана 2 после Task 7 (HEAD `3c5a5b2`). Два Important и восемь миноров
+приняты в правку; каждая — своим коммитом, TDD (RED → GREEN), правки кода блоков плана —
+в Tasks 1, 3, 4, 5, 6 выше («правка <номер> финального ревью»). Полный прогон после волны:
+`uv run pytest -q` — `2403 passed in 306.44s (0:05:06)`, без `failed`/`error`;
+`uv run ruff check .` — `All checks passed!`; `uv run mypy` — `Success: no issues found
+in 217 source files`.
+
+| # | Находка | Где | Правка | Тесты | Коммит |
+| --- | --- | --- | --- | --- | --- |
+| I1 | `OSError` журнала уходил из `EdtCli` голым: `rotate_journal`/`append_event` в `start` вне `try`; в `finish`/`interrupt`/`log_shutdown` отказ записи после `_runs.pop` пропускал `_results`, `clear_cli_busy`, `_close_job` — запись зависала занятой | `services/edt_cli.py` (Task 3) | Ротация — в своём `try` (отказ — событие «ротация журнала не удалась», запуск продолжается); события старта и spawn — в общем `try`, `OSError`/`JobError` → `EdtError`; `_log_event` глотает `OSError` (в `_log` — только тип, инвариант 5), переходы состояния от журнала не зависят | `TestJournalOsError` (5 тестов: каталог журналов под файлом, отказ ротации, каталог на месте журнала в `finish`/`interrupt`/`log_shutdown`); мутация «события старта вне `try`» — `FileExistsError` непойманным | `cfbccd6` |
+| I2 | Текст ошибки запуска без командной строки (спека §8) | `services/edt_cli.py::start` (Task 3) | `EdtError(f"Не удалось запустить {CLI_EXE}: {error}.\nКоманда: {launch.command_line}")` — приём `servers.py::start` | `test_spawn_oserror_becomes_edt_error_and_not_busy` проверяет обе части | `f2926fb` |
+| M3 | `quote_cli_arg` отказывал `'`, но не `"` — вся команда идёт как `-command "…"`, `"` в имени проекта рвёт внешние кавычки | `domain/edt_cli.py` (Task 1) | Отказ обеим кавычкам, текст «Кавычка в значении недопустима: …», класс `CliQuoteError` сохранён; спека §14.2/§9 | табличный `test_quote_inside_rejected` (3 значения); тексты в UI-тестах диалогов | `8aa5c6a` |
+| M4 | `Path.home() / "Documents"` может не существовать (OneDrive KFM); CLI каталог для TSV не создаёт | `ui/app.py`, `ui/edt/cli_validate_dialog.py` (Tasks 5, 6) | `documents_dir=QStandardPaths.writableLocation(DocumentsLocation)` (как ярлыки в `ui/bases/view.py`); `_refresh` проверяет родителя файла тем же `exists` — «Каталог результата не существует»; `EdtView.tsv_dir()` | `test_missing_result_dir_rejected`, фейк `_dirs_only`; `tsv_dir()` в `test_build_main_window_gives_edt_view_the_cli_and_watcher` | `a6f9167` |
+| M5 | Сверка идентичности run только в слоте вьюхи; `test_finish_after_interrupt_is_noop` не был тестом на устаревший run | `services/edt_cli.py::finish`, `ui/edt/view.py` (Tasks 3, 6) | `finish(run, code)`: `_runs.get(id) is not run` → no-op в координаторе; слот вьюхи сверку сохраняет ради консоли | `test_finish_of_stale_run_keeps_new_run` (прервать → запустить снова → `finish(old, 1)`); мутация «убрать `is not run`» — новый run стал `None` | `a9bf82f` |
+| M6 | Удаление записи с живой командой: запись — ключ `_runs` и журнала | `services/edt.py::remove_project` (Task 3) | `InvalidRequestError("Команда CLI выполняется — дождитесь завершения или прервите её")` при `cli_busy`; `update_project` разрешён — докстринг | `TestCliBusy::test_remove_refused_while_busy`; мутация «убрать проверку» — `DID NOT RAISE` | `579f5f8` |
+| M7 | `interrupt` глотал `JobError` из `close()` и писал «прервано» при живом процессе | `services/edt_cli.py::interrupt` (Task 3) | `JobError` → `EdtError("Не удалось прервать «<команда>»: …")`, run остаётся в `_runs` с занятостью, журнал не тронут (принцип `servers.py::stop`) | `test_interrupt_close_failure_keeps_run_and_raises` (`FakeJob.close_error`); мутация «вернуть `_close_job`» — `DID NOT RAISE` | `f296441` |
+| M8 | Докстринг `cli_watch.py` выдавал ветку `OSError` за ожидаемый путь прерывания | `ui/edt/cli_watch.py` (Task 4) | «Прервать» закрывает хендл Job, `wait()` штатно отдаёт код убитого процесса; `except OSError` — страховка | — (докстринг) | `ee2cf7b` |
+| M9 | Отложенный T3: ветка «JDK не найден» `unavailable_reason` без теста | `tests/unit/test_edt_cli.py` (Task 3) | `test_missing_jdk_refused_unless_project_overrides`: `jvm_dir=None` → отказ с «JDK» до spawn; `jvm_dir` записи снимает отказ; мутация «убрать ветку» — reason пуст | сам тест | `fc45808` |
+| M10 | Холостой `cli_menu.setToolTipsVisible(True)`: подсказка живёт на `menuAction()` и показывается родительским меню | `ui/edt/view.py::_fill_project_menu` (Task 6) | Строка удалена, комментарий объясняет | — (`tests/ui/test_edt_view.py` зелёный) | `1cbf228` |
+
+Документы вслед: спека §8 (`WORKSPACE_IN_USE` — имя кода после эксперимента 7; две новые
+строки M6/M7), §13 (строка `ui/edt/cli_watch.py`; механизм — `spawn_logged`, а не
+«`spawn_server` дополняется возвратом хендла»), §14.4 (порождение через `spawn_logged`;
+код завершения — поток-демон в `ui/edt/cli_watch.py`, сигнал несёт сам run; прерывание —
+закрытие хендла Job); `docs/tasks.md` T-17 — раздел «Финальное ревью плана 2».
+
+---
+
 ## Чего в плане нет — сознательно
 
 - Таблица числовых кодов возврата → имён (`WORKSPACE_IN_USE` и др.) — после эксперимента 7
