@@ -9,6 +9,10 @@
 Workspace, открытый в EDT, для CLI занят ([Д] спека §0-Д, `WORKSPACE_IN_USE`),
 и наоборот — отсюда `unavailable_reason` до запуска и `mark_cli_busy`
 в координаторе раздела, который отказывает «Открыть в EDT» на время команды.
+
+`finish()`/`interrupt()` вызываются из основного потока: код завершения доставляет
+наблюдатель (`ui/edt/cli_watch.py`) через сигнал Qt, поэтому `_runs`/`_results`
+не нуждаются в блокировке.
 """  # noqa: RUF002
 
 import os
@@ -109,7 +113,7 @@ class EdtCli:
     def start(self, project_id: str, label: str, command: str, result_file: str = "") -> CliRun:
         reason = self.unavailable_reason(project_id)
         if reason:
-            raise EdtError(reason if reason != BUSY_REASON else "Команда уже выполняется")
+            raise EdtError(reason)
         project = self._workspace.project(project_id)
         installation = self._workspace.installation_for(project)
         assert installation is not None  # unavailable_reason проверил
@@ -125,6 +129,13 @@ class EdtCli:
         )
         rotate_journal(self._logs_dir, project_id)
         path = self.journal_path(project_id)
+        # События — ДО spawn (спека §14.4; тот же приём, что «запуск:» перед
+        # spawn_server в services/servers.py::start): ребёнок получает хендл
+        # FILE_APPEND_DATA и может успеть написать в журнал раньше, чем
+        # выполнится этот Python-код, — порядок в файле обязан быть
+        # предсказуем независимо от гонки с дочерним процессом.  # noqa: RUF003
+        append_event(path, f"▶ {label}: {command}", self._now())
+        append_event(path, launch.command_line, self._now())
         job = self._job_factory()
         try:
             spawned = self._spawn(launch, path, job)
@@ -132,12 +143,6 @@ class EdtCli:
             append_event(path, f"■ не запущен: {type(error).__name__}", self._now())
             self._close_job(job)
             raise EdtError(f"Не удалось запустить {CLI_EXE}: {error}") from error  # noqa: RUF001
-        # Событие пишется ПОСЛЕ спауна (а не до): реальный `spawn_logged`  # noqa: RUF003
-        # файл не усекает (`OPEN_ALWAYS`), но фейковый spawn в тестах пишет
-        # через `write_text`, стирая всё, что уже в файле — порядок здесь
-        # безопасен для обоих.
-        append_event(path, f"▶ {label}: {command}", self._now())
-        append_event(path, launch.command_line, self._now())
         run = CliRun(project_id, label, command, spawned.pid, spawned.process, job, result_file)
         self._runs[project_id] = run
         self._workspace.mark_cli_busy(project_id)
