@@ -561,7 +561,7 @@ git commit -m "refactor(platform): spawn_logged — общее ядро с spawn
 
 **Interfaces:**
 - Consumes: `EdtWorkspace`, `EdtStatus`, `EdtLaunchError`, `EdtError` (план 1); `build_cli_command`, `WorkspaceEntry` (Task 1); `spawn_logged`, `LoggedProcess` (Task 2); `Job`, `JobError`; `server_journal.journal_path`, `rotate_journal`, `append_event`; `CLI_EXE`, `effective_jvm`.
-- Produces в `services/edt.py`: `EdtWorkspace.mark_cli_busy(project_id)`, `clear_cli_busy(project_id)`, `cli_busy(project_id) -> bool`; `status().cli_busy`; `launch()` → `EdtLaunchError("Workspace занят командой CLI — дождитесь завершения или прервите её")` при занятости.
+- Produces в `services/edt.py`: `EdtWorkspace.mark_cli_busy(project_id)`, `clear_cli_busy(project_id)`, `cli_busy(project_id) -> bool`; `status().cli_busy`; `launch()` → `EdtLaunchError("Workspace занят командой CLI — дождитесь завершения или прервите её")` при занятости; `remove_project()` → `InvalidRequestError("Команда CLI выполняется — дождитесь завершения или прервите её")` при занятости (правка M6 финального ревью: запись — ключ `_runs` и журнала); `update_project()` при занятости разрешён — командная строка уже собрана.
 - Produces в `services/edt_cli.py`:
 
 ```python
@@ -623,6 +623,21 @@ class TestCliBusy:
         with pytest.raises(EdtLaunchError, match="занят командой CLI"):
             h.workspace.launch(p.id)
         assert h.spawned == []
+
+    def test_remove_refused_while_busy(self, tmp_path: Path) -> None:
+        """Правка M6 финального ревью: запись с живой командой не удаляется (она — ключ
+        `EdtCli._runs` и журнала); правка через `update_project` разрешена."""
+        h = _harness(tmp_path, installed=INSTALLED)
+        h.workspace.refresh_installations()
+        p = h.workspace.add_project(_project("a", edt_version="2025.2.6+4"))
+        h.workspace.mark_cli_busy(p.id)
+        with pytest.raises(InvalidRequestError, match="Команда CLI выполняется"):
+            h.workspace.remove_project(p.id)
+        assert [x.id for x in h.workspace.projects()] == [p.id]
+        h.workspace.update_project(replace(p, name="b"))  # правка — можно
+        h.workspace.clear_cli_busy(p.id)
+        h.workspace.remove_project(p.id)
+        assert h.workspace.projects() == []
 ```
 
 Реализация в `services/edt.py`: поле `self._cli_busy: set[str] = set()` в `__init__`;
@@ -644,6 +659,16 @@ class TestCliBusy:
         if project_id in self._cli_busy:
             raise EdtLaunchError(
                 "Workspace занят командой CLI — дождитесь завершения или прервите её"
+            )
+```
+
+в `remove_project()` первой проверкой (правка M6 финального ревью; `update_project`
+не трогается — докстринг объясняет, что у живой команды командная строка уже собрана):
+
+```python
+        if project_id in self._cli_busy:
+            raise InvalidRequestError(
+                "Команда CLI выполняется — дождитесь завершения или прервите её"
             )
 ```
 

@@ -1,6 +1,6 @@
 """Координатор раздела EDT: записи, группы, порядок (спека §2), сохранение после каждой правки."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from itertools import count
 from pathlib import Path
 
@@ -493,3 +493,23 @@ class TestCliBusy:
         with pytest.raises(EdtLaunchError, match="занят командой CLI"):
             h.workspace.launch(p.id)
         assert h.spawned == []
+
+    def test_remove_refused_while_busy(self, tmp_path: Path) -> None:
+        """Удаление записи с живой командой (M6 ревью): запись — ключ `EdtCli._runs`
+        и журнала, без неё некому принять код завершения. Правка разрешена
+        (`update_project`) — командная строка уже собрана. Мутация: убрать проверку
+        `_cli_busy` в `remove_project` — тест падает `DID NOT RAISE`.
+        """  # noqa: RUF002
+        h = _harness(tmp_path, installed=INSTALLED)
+        h.workspace.refresh_installations()
+        p = h.workspace.add_project(_project("a", edt_version="2025.2.6+4"))
+        h.workspace.mark_cli_busy(p.id)
+        with pytest.raises(InvalidRequestError, match="Команда CLI выполняется"):
+            h.workspace.remove_project(p.id)
+        assert [x.id for x in h.workspace.projects()] == [p.id]
+        assert [x.id for x in load_registry(tmp_path / "edt.json").projects] == [p.id]
+        h.workspace.update_project(replace(p, name="b"))  # правка — можно
+        assert h.workspace.project(p.id).name == "b"
+        h.workspace.clear_cli_busy(p.id)
+        h.workspace.remove_project(p.id)
+        assert h.workspace.projects() == []

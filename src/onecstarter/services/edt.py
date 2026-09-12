@@ -183,6 +183,10 @@ class EdtWorkspace:
         return stored
 
     def update_project(self, project: EdtProject) -> None:
+        """Правка записи разрешена и во время команды CLI: её командная строка
+        собрана при запуске (`EdtCli.start`), новые workspace/JVM/`vm_args`
+        подействуют на следующую команду (M6 финального ревью плана 2).
+        """
         self._validate_project(project)
         if project.group_id is not None:
             self._group(project.group_id)
@@ -191,6 +195,13 @@ class EdtWorkspace:
         self._save()
 
     def remove_project(self, project_id: str) -> None:
+        """Запись с живой командой CLI не удаляется (M6 финального ревью плана 2):
+        она — ключ `EdtCli._runs` и журнала, без неё некому принять код завершения.
+        """  # noqa: RUF002
+        if project_id in self._cli_busy:
+            raise InvalidRequestError(
+                "Команда CLI выполняется — дождитесь завершения или прервите её"
+            )
         del self._projects[self._project_index(project_id)]
         self._save()
 
