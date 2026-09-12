@@ -13,8 +13,16 @@ Workspace, открытый в EDT, для CLI занят ([Д] спека §0-�
 `finish()`/`interrupt()` вызываются из основного потока: код завершения доставляет
 наблюдатель (`ui/edt/cli_watch.py`) через сигнал Qt, поэтому `_runs`/`_results`
 не нуждаются в блокировке.
+
+`OSError` журнала никогда не уходит наружу голым (правка I1 финального ревью
+плана 2; тот же принцип, что у `services/servers.py::start`/`log_event`): в `start`
+отказ ротации — best-effort событие и запуск продолжается, отказ записи событий
+старта — `EdtError`; в `finish`/`interrupt`/`log_shutdown` события пишутся через
+`_log_event`, который глотает `OSError`, — переход состояния (снятие занятости,
+закрытие Job, результат) от журнала не зависит.
 """  # noqa: RUF002
 
+import logging
 import os
 import subprocess
 from collections.abc import Callable
@@ -32,6 +40,8 @@ from onecstarter.services.errors import EdtError
 from onecstarter.services.server_journal import append_event, journal_path, rotate_journal
 
 __all__ = ["CliResult", "CliRun", "EdtCli", "workspace_entries"]
+
+_log = logging.getLogger("onecstarter.edt_cli")
 
 RUNNING_REASON = "Закройте EDT: workspace занят"
 BUSY_REASON = "Команда CLI уже выполняется для этой записи"
@@ -127,21 +137,32 @@ class EdtCli:
             installation.vm_args,
             project.vm_args,
         )
-        rotate_journal(self._logs_dir, project_id)
         path = self.journal_path(project_id)
-        # События — ДО spawn (спека §14.4; тот же приём, что «запуск:» перед
-        # spawn_server в services/servers.py::start): ребёнок получает хендл
-        # FILE_APPEND_DATA и может успеть написать в журнал раньше, чем
-        # выполнится этот Python-код, — порядок в файле обязан быть
-        # предсказуем независимо от гонки с дочерним процессом.  # noqa: RUF003
-        append_event(path, f"▶ {label}: {command}", self._now())
-        append_event(path, launch.command_line, self._now())
+        try:
+            rotate_journal(self._logs_dir, project_id)
+        except OSError as error:
+            # Ротация — best-effort в своём try (как servers.py::start): прошлый
+            # журнал может держать переживший процесс, и это не отказ запуска —
+            # записи продолжаются в тот же файл. Текст — фактический str(error).
+            self._log_event(
+                project_id,
+                f"ротация журнала не удалась ({error}), записи продолжаются в тот же файл",
+            )
         job = self._job_factory()
         try:
+            # События — ДО spawn (спека §14.4; тот же приём, что «запуск:» перед
+            # spawn_server в services/servers.py::start): ребёнок получает хендл
+            # FILE_APPEND_DATA и может успеть написать в журнал раньше, чем
+            # выполнится этот Python-код, — порядок в файле обязан быть
+            # предсказуем независимо от гонки с дочерним процессом.  # noqa: RUF003
+            append_event(path, f"▶ {label}: {command}", self._now())
+            append_event(path, launch.command_line, self._now())
             spawned = self._spawn(launch, path, job)
         except (OSError, JobError) as error:
-            append_event(path, f"■ не запущен: {type(error).__name__}", self._now())
+            # OSError здесь — и отказ записи событий (каталог журналов недоступен),
+            # и отказ порождения; оба — отказ запуска с причиной от системы.  # noqa: RUF003
             self._close_job(job)
+            self._log_event(project_id, f"■ не запущен: {type(error).__name__}")
             raise EdtError(f"Не удалось запустить {CLI_EXE}: {error}") from error  # noqa: RUF001
         run = CliRun(project_id, label, command, spawned.pid, spawned.process, job, result_file)
         self._runs[project_id] = run
@@ -162,7 +183,7 @@ class EdtCli:
         if run is None:
             return  # прервано раньше — результат уже записан
         text = f"■ завершено, код {code}" if code is not None else "■ завершено, код неизвестен"
-        append_event(self.journal_path(project_id), text, self._now())
+        self._log_event(project_id, text)
         self._results[project_id] = CliResult(run.label, code, False, run.result_file)
         self._workspace.clear_cli_busy(project_id)
         self._close_job(run.job)
@@ -172,7 +193,7 @@ class EdtCli:
         if run is None:
             return
         self._close_job(run.job)  # kill-on-close гасит дерево процесса
-        append_event(self.journal_path(project_id), "■ прервано пользователем", self._now())
+        self._log_event(project_id, "■ прервано пользователем")
         self._results[project_id] = CliResult(run.label, None, True, "")
         self._workspace.clear_cli_busy(project_id)
 
@@ -185,10 +206,19 @@ class EdtCli:
     def log_shutdown(self) -> int:
         """Отметить живые команды в журналах при выходе; сами процессы гасит Job."""
         for project_id in list(self._runs):
-            append_event(
-                self.journal_path(project_id), "■ прервано выходом из программы", self._now()
-            )
+            self._log_event(project_id, "■ прервано выходом из программы")
         return len(self._runs)
+
+    def _log_event(self, project_id: str, text: str) -> None:
+        """Событие в журнал записи; `OSError` глотается — журнал не условие операции.
+
+        В `_log` — только тип ошибки, без пути (инвариант 5: секретов в пути нет,
+        но и пользовательских путей в логе программы быть не должно).
+        """  # noqa: RUF002
+        try:
+            append_event(self.journal_path(project_id), text, self._now())
+        except OSError as error:
+            _log.warning("журнал CLI EDT недоступен: %s", type(error).__name__)
 
     @staticmethod
     def _close_job(job: Job) -> None:

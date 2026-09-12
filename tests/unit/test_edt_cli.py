@@ -50,7 +50,9 @@ class FakeProcess:
 
 
 class Harness:
-    def __init__(self, tmp_path: Path, *, cli_exists: bool = True) -> None:
+    def __init__(
+        self, tmp_path: Path, *, cli_exists: bool = True, logs_dir: Path | None = None
+    ) -> None:
         ids = count(1)
         self.spawned: list[tuple[LaunchCommand, Path]] = []
         self.jobs: list[FakeJob] = []
@@ -83,7 +85,7 @@ class Harness:
 
         self.cli = EdtCli(
             self.workspace,
-            tmp_path / "logs" / "edt",
+            logs_dir if logs_dir is not None else tmp_path / "logs" / "edt",
             job_factory=job_factory,
             spawn=spawn,
             is_file=lambda p: cli_exists and p.name == "1cedtcli.exe",
@@ -217,6 +219,87 @@ class TestFinishAndInterrupt:
         assert h.cli.log_shutdown() == 1
         journal = h.cli.journal_path(p.id).read_text(encoding="utf-8")
         assert "■ прервано выходом из программы" in journal
+
+
+class TestJournalOsError:
+    """`OSError` журнала не уходит наружу голым и не держит запись занятой.
+
+    Тот же принцип, что у `services/servers.py::start`/`log_event`: журнал —
+    вспомогательный канал наблюдения, а не условие перехода состояния.
+    """  # noqa: RUF002
+
+    def test_unwritable_logs_dir_becomes_edt_error_and_nothing_busy(self, tmp_path: Path) -> None:
+        """Каталог журналов под обычным файлом — `mkdir` падает `OSError` (правка I1
+        финального ревью плана 2). Мутация: убрать `try/except` вокруг событий старта —
+        тест обязан упасть непойманным `OSError`.
+        """
+        blocker = tmp_path / "blocker"
+        blocker.write_text("", encoding="utf-8")
+        h = Harness(tmp_path, logs_dir=blocker / "edt")
+        p = h.project()
+        with pytest.raises(EdtError, match="Не удалось запустить"):  # noqa: RUF001
+            h.cli.start(p.id, "Информация по проектам", "project")
+        assert h.spawned == []
+        assert h.workspace.status(p.id).cli_busy is False
+        assert h.cli.run(p.id) is None
+        assert h.cli.running_count() == 0
+        assert h.jobs[-1].closed is True
+
+    def test_rotation_failure_is_logged_and_launch_continues(self, tmp_path: Path) -> None:
+        """Ротация — в своём `try`: каталог на месте `<id>.1.log` роняет `Path.replace`,
+        но запуск идёт, событие о неудаче — в тот же (текущий) журнал.
+        Мутация: ротацию внутрь общего `try` со spawn — тест упадёт `EdtError`.
+        """  # noqa: RUF002
+        h = Harness(tmp_path)
+        p = h.project()
+        current = h.cli.journal_path(p.id)
+        current.parent.mkdir(parents=True)
+        current.write_text("прошлый\n", encoding="utf-8")
+        (current.parent / f"{p.id}.1.log").mkdir()
+        run = h.cli.start(p.id, "Информация по проектам", "project")
+        assert run.pid == 4242
+        assert len(h.spawned) == 1
+        text = current.read_text(encoding="utf-8")
+        assert text.startswith("прошлый\n")
+        assert "ротация журнала не удалась" in text
+        assert text.index("ротация журнала не удалась") < text.index("▶ Информация по проектам")
+        assert h.workspace.status(p.id).cli_busy is True
+
+    def test_finish_completes_when_journal_unwritable(self, tmp_path: Path) -> None:
+        """Каталог на месте файла журнала — `open("a")` падает `PermissionError`."""
+        h = Harness(tmp_path)
+        p = h.project()
+        h.cli.start(p.id, "Проверить проекты", "validate …", result_file=r"D:\r.tsv")
+        journal = h.cli.journal_path(p.id)
+        journal.unlink()
+        journal.mkdir()
+        h.cli.finish(p.id, 0)
+        assert h.cli.run(p.id) is None
+        assert h.workspace.status(p.id).cli_busy is False
+        assert h.jobs[0].closed is True
+        assert h.cli.last_result(p.id) == CliResult("Проверить проекты", 0, False, r"D:\r.tsv")
+
+    def test_interrupt_completes_when_journal_unwritable(self, tmp_path: Path) -> None:
+        h = Harness(tmp_path)
+        p = h.project()
+        h.cli.start(p.id, "Пересобрать проекты", "build --yes")
+        journal = h.cli.journal_path(p.id)
+        journal.unlink()
+        journal.mkdir()
+        h.cli.interrupt(p.id)
+        assert h.cli.run(p.id) is None
+        assert h.workspace.status(p.id).cli_busy is False
+        assert h.jobs[0].closed is True
+        assert h.cli.last_result(p.id) == CliResult("Пересобрать проекты", None, True, "")
+
+    def test_log_shutdown_survives_unwritable_journal(self, tmp_path: Path) -> None:
+        h = Harness(tmp_path)
+        p = h.project()
+        h.cli.start(p.id, "Пересобрать проекты", "build --yes")
+        journal = h.cli.journal_path(p.id)
+        journal.unlink()
+        journal.mkdir()
+        assert h.cli.log_shutdown() == 1
 
 
 def test_workspace_entries_marks_dot_project(tmp_path: Path) -> None:

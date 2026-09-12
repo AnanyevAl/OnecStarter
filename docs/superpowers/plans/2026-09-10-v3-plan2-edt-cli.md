@@ -846,6 +846,52 @@ class TestFinishAndInterrupt:
         assert "■ прервано выходом из программы" in h.cli.journal_path(p.id).read_text(encoding="utf-8")
 
 
+class TestJournalOsError:
+    """Правка I1 финального ревью плана 2: `OSError` журнала не уходит наружу голым
+    и не держит запись занятой. `Harness(tmp_path, logs_dir=...)` подменяет каталог журналов."""
+
+    def test_unwritable_logs_dir_becomes_edt_error_and_nothing_busy(self, tmp_path: Path) -> None:
+        blocker = tmp_path / "blocker"
+        blocker.write_text("", encoding="utf-8")
+        h = Harness(tmp_path, logs_dir=blocker / "edt")  # каталог под обычным файлом
+        p = h.project()
+        with pytest.raises(EdtError, match="Не удалось запустить"):
+            h.cli.start(p.id, "Информация по проектам", "project")
+        assert h.spawned == []
+        assert h.workspace.status(p.id).cli_busy is False
+        assert h.cli.run(p.id) is None
+        assert h.jobs[-1].closed is True
+
+    def test_rotation_failure_is_logged_and_launch_continues(self, tmp_path: Path) -> None:
+        h = Harness(tmp_path)
+        p = h.project()
+        current = h.cli.journal_path(p.id)
+        current.parent.mkdir(parents=True)
+        current.write_text("прошлый\n", encoding="utf-8")
+        (current.parent / f"{p.id}.1.log").mkdir()  # Path.replace на каталог падает
+        run = h.cli.start(p.id, "Информация по проектам", "project")
+        assert run.pid == 4242 and len(h.spawned) == 1
+        text = current.read_text(encoding="utf-8")
+        assert "ротация журнала не удалась" in text
+        assert text.index("ротация журнала не удалась") < text.index("▶ Информация по проектам")
+
+    def test_finish_completes_when_journal_unwritable(self, tmp_path: Path) -> None:
+        h = Harness(tmp_path)
+        p = h.project()
+        h.cli.start(p.id, "Проверить проекты", "validate …", result_file=r"D:\r.tsv")
+        journal = h.cli.journal_path(p.id)
+        journal.unlink()
+        journal.mkdir()  # каталог на месте файла — open("a") падает PermissionError
+        h.cli.finish(p.id, 0)
+        assert h.cli.run(p.id) is None
+        assert h.workspace.status(p.id).cli_busy is False
+        assert h.jobs[0].closed is True
+        assert h.cli.last_result(p.id) == CliResult("Проверить проекты", 0, False, r"D:\r.tsv")
+
+    # test_interrupt_completes_when_journal_unwritable и
+    # test_log_shutdown_survives_unwritable_journal — по тому же образцу.
+
+
 def test_workspace_entries_marks_dot_project(tmp_path: Path) -> None:
     (tmp_path / "conf").mkdir()
     (tmp_path / "conf" / ".project").write_text("", encoding="utf-8")
@@ -881,8 +927,16 @@ Expected: `ModuleNotFoundError`.
 Workspace, открытый в EDT, для CLI занят ([Д] спека §0-Д, `WORKSPACE_IN_USE`),
 и наоборот — отсюда `unavailable_reason` до запуска и `mark_cli_busy`
 в координаторе раздела, который отказывает «Открыть в EDT» на время команды.
+
+`OSError` журнала никогда не уходит наружу голым (правка I1 финального ревью
+плана 2; тот же принцип, что у `services/servers.py::start`/`log_event`): в `start`
+отказ ротации — best-effort событие и запуск продолжается, отказ записи событий
+старта — `EdtError`; в `finish`/`interrupt`/`log_shutdown` события пишутся через
+`_log_event`, который глотает `OSError`, — переход состояния (снятие занятости,
+закрытие Job, результат) от журнала не зависит.
 """  # noqa: RUF002
 
+import logging
 import os
 import subprocess
 from collections.abc import Callable
@@ -900,6 +954,8 @@ from onecstarter.services.errors import EdtError
 from onecstarter.services.server_journal import append_event, journal_path, rotate_journal
 
 __all__ = ["CliResult", "CliRun", "EdtCli", "workspace_entries"]
+
+_log = logging.getLogger("onecstarter.edt_cli")
 
 RUNNING_REASON = "Закройте EDT: workspace занят"
 BUSY_REASON = "Команда CLI уже выполняется для этой записи"
@@ -995,16 +1051,30 @@ class EdtCli:
             installation.vm_args,
             project.vm_args,
         )
-        rotate_journal(self._logs_dir, project_id)
         path = self.journal_path(project_id)
-        append_event(path, f"▶ {label}: {command}", self._now())
-        append_event(path, launch.command_line, self._now())
+        try:
+            rotate_journal(self._logs_dir, project_id)
+        except OSError as error:
+            # Ротация — best-effort в своём try (как servers.py::start): прошлый
+            # журнал может держать переживший процесс, и это не отказ запуска —
+            # записи продолжаются в тот же файл. Текст — фактический str(error).
+            self._log_event(
+                project_id,
+                f"ротация журнала не удалась ({error}), записи продолжаются в тот же файл",
+            )
         job = self._job_factory()
         try:
+            # События — ДО spawn (спека §14.4): ребёнок получает хендл FILE_APPEND_DATA
+            # и может написать в журнал раньше этого кода — порядок в файле обязан
+            # быть предсказуем независимо от гонки с дочерним процессом.
+            append_event(path, f"▶ {label}: {command}", self._now())
+            append_event(path, launch.command_line, self._now())
             spawned = self._spawn(launch, path, job)
         except (OSError, JobError) as error:
-            append_event(path, f"■ не запущен: {type(error).__name__}", self._now())
+            # OSError здесь — и отказ записи событий (каталог журналов недоступен),
+            # и отказ порождения; оба — отказ запуска с причиной от системы.
             self._close_job(job)
+            self._log_event(project_id, f"■ не запущен: {type(error).__name__}")
             raise EdtError(f"Не удалось запустить {CLI_EXE}: {error}") from error
         run = CliRun(project_id, label, command, spawned.pid, spawned.process, job, result_file)
         self._runs[project_id] = run
@@ -1025,7 +1095,7 @@ class EdtCli:
         if run is None:
             return  # прервано раньше — результат уже записан
         text = f"■ завершено, код {code}" if code is not None else "■ завершено, код неизвестен"
-        append_event(self.journal_path(project_id), text, self._now())
+        self._log_event(project_id, text)
         self._results[project_id] = CliResult(run.label, code, False, run.result_file)
         self._workspace.clear_cli_busy(project_id)
         self._close_job(run.job)
@@ -1035,7 +1105,7 @@ class EdtCli:
         if run is None:
             return
         self._close_job(run.job)  # kill-on-close гасит дерево процесса
-        append_event(self.journal_path(project_id), "■ прервано пользователем", self._now())
+        self._log_event(project_id, "■ прервано пользователем")
         self._results[project_id] = CliResult(run.label, None, True, "")
         self._workspace.clear_cli_busy(project_id)
 
@@ -1048,8 +1118,18 @@ class EdtCli:
     def log_shutdown(self) -> int:
         """Отметить живые команды в журналах при выходе; сами процессы гасит Job."""
         for project_id in list(self._runs):
-            append_event(self.journal_path(project_id), "■ прервано выходом из программы", self._now())
+            self._log_event(project_id, "■ прервано выходом из программы")
         return len(self._runs)
+
+    def _log_event(self, project_id: str, text: str) -> None:
+        """Событие в журнал записи; `OSError` глотается — журнал не условие операции.
+
+        В `_log` — только тип ошибки, без пути (инвариант 5).
+        """
+        try:
+            append_event(self.journal_path(project_id), text, self._now())
+        except OSError as error:
+            _log.warning("журнал CLI EDT недоступен: %s", type(error).__name__)
 
     @staticmethod
     def _close_job(job: Job) -> None:
@@ -1072,7 +1152,9 @@ Expected: зелёное.
 Мутации (спека §9): 1) в `unavailable_reason` убрать проверку `running_pid` → падает
 `test_running_edt_refused_before_spawn` на `spawned == []`; 2) в `start` убрать проверку
 `project_id in self._runs` (через `unavailable_reason`) → падает
-`test_second_start_on_same_project_refused` на `len(h.spawned) == 1`. Откатить, записать.
+`test_second_start_on_same_project_refused` на `len(h.spawned) == 1`; 3) (правка I1) события
+старта вынести из `try` — падает `test_unwritable_logs_dir_becomes_edt_error_and_nothing_busy`
+непойманным `OSError` (`FileExistsError`). Откатить, записать.
 
 ```bash
 git add src/onecstarter/services/edt.py src/onecstarter/services/edt_cli.py tests/unit/test_edt_cli.py tests/unit/test_edt_workspace.py tests/unit/test_no_qt_in_core.py
