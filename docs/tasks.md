@@ -3704,7 +3704,7 @@ len([1, 1, 1, 1, 1, 1, ...])` — и прошёл после отката мут
 | # | Задача | Статус |
 | --- | --- | --- |
 | T-17.1 | План 1: раздел «EDT» — домен, обнаружение, реестр EDT Start, хранилище, координатор, UI, настройки, сборка (20 задач) | DONE |
-| T-17.2 | План 2: CLI EDT и консоль (спека §14) | — |
+| T-17.2 | План 2: CLI EDT и консоль (спека §14) | DONE |
 | T-17.3 | План 3: эксперименты 1–7 (спека §10), скил `edt-launch`, документы, выпуск 3.0.0 | — |
 
 ### Ход плана 1
@@ -3772,3 +3772,37 @@ issues found in 202 source files`.
 | 22 | Панель путей под деревом: workspace и каталог проекта, «Копировать» / «Открыть каталог», без версии | `7bc86cf` | Чисто |
 
 Полный прогон после Task 22: `2304 passed in 308.60s (0:05:08)`; ruff и mypy чистые.
+
+### Ход плана 2
+
+7 задач; четыре прошли раунд правок по находкам ревью — Tasks 3, 4, 5, 6: порядок событий
+журнала до spawn — фейк spawn дописывает журнал, событие обязано появиться раньше вывода
+ребёнка (Task 3, `969de6f`); тесты консоли — глиф заголовка, `expand()`, заголовок без
+пустых частей (Task 4, `e3d0239`); `ValueError` в validate-диалоге на одинарной кавычке
+в пути не перехватывался (Task 5, `9a71f50`); гонка запоздавшего сигнала наблюдателя —
+`CliWatcher.finished` несёт сам объект `run`, а не id записи, иначе сигнал старого run
+после «Прервать» закрывает новый (Task 6, `eb168be`). Три правки плана вслед за находками
+(`f79580a`, `5904c67`, `c369561`) и одна правка спеки — §14.4, каталог `logs\edt` (`c57300f`,
+записана вместе с находкой Task 6).
+
+### Мутационные проверки плана 2 (12.09.2026)
+
+Протокол — тот же, что в плане 1 (CLAUDE.md, «Мутационная проверка тестов»): мутация правкой
+файла → прогон только названного теста → дословный `FAILED`/сообщение ассерта → откат правкой
+файла (не `git checkout`) → тот же тест зелёным повторно. Мутации по брифу Task 7 — шесть
+штук, ставил не автор тестов, отдельный исполнитель.
+
+| # | Задача | Мутация | Ф / Т | Результат |
+| --- | --- | --- | --- | --- |
+| 1 | 3 | `unavailable_reason` без проверки `running_pid` | `services/edt_cli.py` / `test_running_edt_refused_before_spawn` | УПАЛ — `AssertionError: assert '' == 'Закройте EDT: workspace занят'` (`tests/unit/test_edt_cli.py:140`) |
+| 2 | 3 | `unavailable_reason` без отказа при `project_id in self._runs` | `services/edt_cli.py` / `test_second_start_on_same_project_refused` | УПАЛ — `Failed: DID NOT RAISE EdtError` (`tests/unit/test_edt_cli.py:132`) |
+| 3 | 3 | `launch` без проверки `_cli_busy` | `services/edt.py` / `test_launch_refused_while_busy` | УПАЛ — `Failed: DID NOT RAISE EdtLaunchError` (`tests/unit/test_edt_workspace.py:493`) |
+| 4 | 1 | `cli_build_args` → `"build"` (без `--yes`) | `domain/edt_cli.py` / `test_fixed_commands` | УПАЛ — `AssertionError: assert 'build' == 'build --yes'` (`tests/unit/test_edt_cli_domain.py:43`) |
+| 5 | 1 | `build_cli_command`: `-command` перемещён после `-vmargs` | `domain/edt_cli.py` / `test_order_command_before_vmargs_with_encoding` | УПАЛ — `AssertionError`: `-command "build --yes"` сместился в хвост строки после `-vmargs` вместо места перед `-vm` (`tests/unit/test_edt_cli_domain.py:143`) |
+| 6 | 6 | `_start_cli` без `self._console.expand()` | `ui/edt/view.py` / `test_cli_build_confirms_starts_and_expands_console` | УПАЛ — `AssertionError: assert False is True` (`tests/ui/test_edt_view.py:702`) |
+
+Все шесть мутаций откачены обратной правкой того же файла; после каждой — повторный зелёный
+прогон того же теста; `git status` после отката всех шести пуст. Полный прогон перед
+мутационной стадией (12.09.2026): `uv run pytest -q` — `2391 passed in 317.70s (0:05:17)`,
+без `failed`/`error`; `uv run ruff check .` — `All checks passed!`; `uv run mypy` — `Success:
+no issues found in 217 source files`.
