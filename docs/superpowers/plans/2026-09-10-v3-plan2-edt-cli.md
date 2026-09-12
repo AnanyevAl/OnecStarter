@@ -591,7 +591,7 @@ class EdtCli:
     def run(self, project_id: str) -> CliRun | None
     def busy(self, project_id: str) -> bool
     def running_count(self) -> int
-    def finish(self, project_id: str, code: int | None) -> None
+    def finish(self, run: CliRun, code: int | None) -> None       # сам run: чужой/прерванный — no-op (M5 ревью)
     def interrupt(self, project_id: str) -> None
     def journal_path(self, project_id: str) -> Path
     def last_result(self, project_id: str) -> CliResult | None
@@ -830,8 +830,8 @@ class TestFinishAndInterrupt:
     def test_finish_writes_code_clears_busy_keeps_result(self, tmp_path: Path) -> None:
         h = Harness(tmp_path)
         p = h.project()
-        h.cli.start(p.id, "Проверить проекты", "validate …", result_file=r"D:\r.tsv")
-        h.cli.finish(p.id, 0)
+        run = h.cli.start(p.id, "Проверить проекты", "validate …", result_file=r"D:\r.tsv")
+        h.cli.finish(run, 0)
         assert h.workspace.status(p.id).cli_busy is False
         assert h.cli.run(p.id) is None
         assert h.cli.last_result(p.id) == CliResult("Проверить проекты", 0, False, r"D:\r.tsv")
@@ -851,10 +851,26 @@ class TestFinishAndInterrupt:
     def test_finish_after_interrupt_is_noop(self, tmp_path: Path) -> None:
         h = Harness(tmp_path)
         p = h.project()
-        h.cli.start(p.id, "Пересобрать проекты", "build --yes")
+        run = h.cli.start(p.id, "Пересобрать проекты", "build --yes")
         h.cli.interrupt(p.id)
-        h.cli.finish(p.id, 1)
+        h.cli.finish(run, 1)
         assert h.cli.last_result(p.id) == CliResult("Пересобрать проекты", None, True, "")
+
+    def test_finish_of_stale_run_keeps_new_run(self, tmp_path: Path) -> None:
+        """Прервать → запустить снова → запоздавший код старого run (правка M5 ревью).
+        Мутация: убрать `is not run` — новый run закроется чужим кодом."""
+        h = Harness(tmp_path)
+        p = h.project()
+        old = h.cli.start(p.id, "Пересобрать проекты", "build --yes")
+        h.cli.interrupt(p.id)
+        new = h.cli.start(p.id, "Информация по проектам", "project")
+        h.cli.finish(old, 1)
+        assert h.cli.run(p.id) is new
+        assert h.workspace.status(p.id).cli_busy is True
+        assert h.jobs[1].closed is False
+        assert h.cli.last_result(p.id) == CliResult("Пересобрать проекты", None, True, "")
+        h.cli.finish(new, 0)  # свой же код закрывает новый run штатно
+        assert h.cli.run(p.id) is None
 
     def test_log_shutdown_marks_live_runs(self, tmp_path: Path) -> None:
         h = Harness(tmp_path)
@@ -896,11 +912,11 @@ class TestJournalOsError:
     def test_finish_completes_when_journal_unwritable(self, tmp_path: Path) -> None:
         h = Harness(tmp_path)
         p = h.project()
-        h.cli.start(p.id, "Проверить проекты", "validate …", result_file=r"D:\r.tsv")
+        run = h.cli.start(p.id, "Проверить проекты", "validate …", result_file=r"D:\r.tsv")
         journal = h.cli.journal_path(p.id)
         journal.unlink()
         journal.mkdir()  # каталог на месте файла — open("a") падает PermissionError
-        h.cli.finish(p.id, 0)
+        h.cli.finish(run, 0)
         assert h.cli.run(p.id) is None
         assert h.workspace.status(p.id).cli_busy is False
         assert h.jobs[0].closed is True
@@ -1112,10 +1128,18 @@ class EdtCli:
     def running_count(self) -> int:
         return len(self._runs)
 
-    def finish(self, project_id: str, code: int | None) -> None:
-        run = self._runs.pop(project_id, None)
-        if run is None:
-            return  # прервано раньше — результат уже записан
+    def finish(self, run: CliRun, code: int | None) -> None:
+        """Код завершения ИМЕННО этого run; чужой или прерванный — молча ничего.
+
+        Сам объект, а не id записи (правка M5 финального ревью плана 2): после
+        «Прервать» и повторного запуска на той же записи запоздавший код старого
+        run не должен закрыть новый — сверка идентичности живёт здесь, а слот
+        вьюхи (`EdtView.on_cli_finished`) лишь дублирует её.
+        """
+        project_id = run.project_id
+        if self._runs.get(project_id) is not run:
+            return  # прервано раньше или уже идёт другой run — результат не наш
+        del self._runs[project_id]
         text = f"■ завершено, код {code}" if code is not None else "■ завершено, код неизвестен"
         self._log_event(project_id, text)
         self._results[project_id] = CliResult(run.label, code, False, run.result_file)
@@ -1978,7 +2002,7 @@ git commit -m "feat(ui): диалоги CLI EDT — import с двумя вар�
 
 **Interfaces:**
 - Consumes: `EdtCli`, `CliRun`, `CliResult`, `workspace_entries` (Task 3); `CliWatcher`, `EdtConsole`, состояния (Task 4); диалоги (Task 5); `cli_build_args`, `cli_project_args`, `cli_import_args`, `cli_validate_args`, `workspace_projects` (Task 1); `spawn_logged` (Task 2); `ServerJob`; `_confirm_quit_with_servers` (`app.py`); `ui/edt/icons.py::running_icon` (план 1, Task 21) — по его образцу `cli_busy_icon(palette)`: закрашенный круг цветом `palette.accent`, 16 px; `tree_model._project_row` ставит его в ячейку имени при `status.cli_busy` (и не ставит ▶), подсказка дополняется `CLI_BUSY_HINT`; `ui/edt/view.py::_on_current_changed` (план 1, Task 22) — общий слот смены выделения, куда добавляется `_sync_console()`.
-- Produces: `EdtWorkspace.open_path(path: str)`; `EdtView(cli: EdtCli | None = None, watcher: CliWatcher | None = None, documents_dir: str = str(Path.home() / "Documents"))`; методы `cli_build(project_id)`, `cli_import(project_id)`, `cli_validate(project_id)`, `cli_project(project_id)`, `on_cli_finished(project_id, code)`, `interrupt_current_cli()`, `console() -> EdtConsole`, `tsv_dir() -> str` (каталог следующего диалога `validate`; правка M4); константы `MENU_CLI = "CLI"`, `CLI_BUILD = "Пересобрать проекты"`, `CLI_IMPORT = "Импортировать проект…"`, `CLI_VALIDATE = "Проверить проекты…"`, `CLI_PROJECT = "Информация по проектам"`, `CLI_BUSY_HINT = "Выполняется команда CLI"`; в `app.py` — `_confirm_quit_with_cli(running_count, ask) -> bool`.
+- Produces: `EdtWorkspace.open_path(path: str)`; `EdtView(cli: EdtCli | None = None, watcher: CliWatcher | None = None, documents_dir: str = str(Path.home() / "Documents"))`; методы `cli_build(project_id)`, `cli_import(project_id)`, `cli_validate(project_id)`, `cli_project(project_id)`, `on_cli_finished(run, code)` (сам `CliRun` от наблюдателя), `interrupt_current_cli()`, `console() -> EdtConsole`, `tsv_dir() -> str` (каталог следующего диалога `validate`; правка M4); константы `MENU_CLI = "CLI"`, `CLI_BUILD = "Пересобрать проекты"`, `CLI_IMPORT = "Импортировать проект…"`, `CLI_VALIDATE = "Проверить проекты…"`, `CLI_PROJECT = "Информация по проектам"`, `CLI_BUSY_HINT = "Выполняется команда CLI"`; в `app.py` — `_confirm_quit_with_cli(running_count, ask) -> bool`.
 
 - [ ] **Step 1: Падающие тесты вьюхи**
 
@@ -2355,9 +2379,9 @@ def cli_busy_icon(palette: Palette) -> QIcon:
         if self._cli is None or not isinstance(run, CliRun):
             return
         if self._cli.run(run.project_id) is not run:
-            return
+            return  # ту же сверку делает и EdtCli.finish (M5 ревью) — здесь ради консоли
         project_id = run.project_id
-        self._cli.finish(project_id, code if isinstance(code, int) else None)
+        self._cli.finish(run, code if isinstance(code, int) else None)
         if self._console_project == project_id:
             self._refresh_console_state(project_id)
         self.rebuild()

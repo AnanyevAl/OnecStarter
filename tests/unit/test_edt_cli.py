@@ -190,8 +190,8 @@ class TestFinishAndInterrupt:
     def test_finish_writes_code_clears_busy_keeps_result(self, tmp_path: Path) -> None:
         h = Harness(tmp_path)
         p = h.project()
-        h.cli.start(p.id, "Проверить проекты", "validate …", result_file=r"D:\r.tsv")
-        h.cli.finish(p.id, 0)
+        run = h.cli.start(p.id, "Проверить проекты", "validate …", result_file=r"D:\r.tsv")
+        h.cli.finish(run, 0)
         assert h.workspace.status(p.id).cli_busy is False
         assert h.cli.run(p.id) is None
         assert h.cli.last_result(p.id) == CliResult("Проверить проекты", 0, False, r"D:\r.tsv")
@@ -212,10 +212,30 @@ class TestFinishAndInterrupt:
     def test_finish_after_interrupt_is_noop(self, tmp_path: Path) -> None:
         h = Harness(tmp_path)
         p = h.project()
-        h.cli.start(p.id, "Пересобрать проекты", "build --yes")
+        run = h.cli.start(p.id, "Пересобрать проекты", "build --yes")
         h.cli.interrupt(p.id)
-        h.cli.finish(p.id, 1)
+        h.cli.finish(run, 1)
         assert h.cli.last_result(p.id) == CliResult("Пересобрать проекты", None, True, "")
+
+    def test_finish_of_stale_run_keeps_new_run(self, tmp_path: Path) -> None:
+        """Прервать → запустить снова → запоздавший код старого run (правка M5 ревью:
+        сверка идентичности в координаторе, не только в слоте вьюхи).
+        Мутация: убрать `is not run` — новый run закроется чужим кодом.
+        """
+        h = Harness(tmp_path)
+        p = h.project()
+        old = h.cli.start(p.id, "Пересобрать проекты", "build --yes")
+        h.cli.interrupt(p.id)
+        new = h.cli.start(p.id, "Информация по проектам", "project")
+        h.cli.finish(old, 1)
+        assert h.cli.run(p.id) is new
+        assert h.workspace.status(p.id).cli_busy is True
+        assert h.jobs[1].closed is False
+        assert h.cli.last_result(p.id) == CliResult("Пересобрать проекты", None, True, "")
+        assert "завершено" not in h.cli.journal_path(p.id).read_text(encoding="utf-8")
+        h.cli.finish(new, 0)  # свой же код закрывает новый run штатно
+        assert h.cli.run(p.id) is None
+        assert h.cli.last_result(p.id) == CliResult("Информация по проектам", 0, False, "")
 
     def test_log_shutdown_marks_live_runs(self, tmp_path: Path) -> None:
         h = Harness(tmp_path)
@@ -274,11 +294,11 @@ class TestJournalOsError:
         """Каталог на месте файла журнала — `open("a")` падает `PermissionError`."""
         h = Harness(tmp_path)
         p = h.project()
-        h.cli.start(p.id, "Проверить проекты", "validate …", result_file=r"D:\r.tsv")
+        run = h.cli.start(p.id, "Проверить проекты", "validate …", result_file=r"D:\r.tsv")
         journal = h.cli.journal_path(p.id)
         journal.unlink()
         journal.mkdir()
-        h.cli.finish(p.id, 0)
+        h.cli.finish(run, 0)
         assert h.cli.run(p.id) is None
         assert h.workspace.status(p.id).cli_busy is False
         assert h.jobs[0].closed is True

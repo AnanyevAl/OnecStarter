@@ -715,9 +715,9 @@ class EdtView(QWidget):
         if self._cli is None or not isinstance(run, CliRun):
             return
         if self._cli.run(run.project_id) is not run:
-            return
+            return  # ту же сверку делает и EdtCli.finish (M5 ревью) — здесь ради консоли
         project_id = run.project_id
-        self._cli.finish(project_id, code if isinstance(code, int) else None)
+        self._cli.finish(run, code if isinstance(code, int) else None)
         if self._console_project == project_id:
             self._refresh_console_state(project_id)
         self.rebuild()

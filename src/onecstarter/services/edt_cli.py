@@ -182,10 +182,18 @@ class EdtCli:
     def running_count(self) -> int:
         return len(self._runs)
 
-    def finish(self, project_id: str, code: int | None) -> None:
-        run = self._runs.pop(project_id, None)
-        if run is None:
-            return  # прервано раньше — результат уже записан
+    def finish(self, run: CliRun, code: int | None) -> None:
+        """Код завершения ИМЕННО этого run; чужой или прерванный — молча ничего.
+
+        Сам объект, а не id записи (правка M5 финального ревью плана 2): после
+        «Прервать» и повторного запуска на той же записи запоздавший код старого
+        run не должен закрыть новый — сверка идентичности живёт здесь, а слот
+        вьюхи (`EdtView.on_cli_finished`) лишь дублирует её.
+        """  # noqa: RUF002
+        project_id = run.project_id
+        if self._runs.get(project_id) is not run:
+            return  # прервано раньше или уже идёт другой run — результат не наш
+        del self._runs[project_id]
         text = f"■ завершено, код {code}" if code is not None else "■ завершено, код неизвестен"
         self._log_event(project_id, text)
         self._results[project_id] = CliResult(run.label, code, False, run.result_file)
