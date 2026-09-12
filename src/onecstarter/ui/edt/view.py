@@ -4,9 +4,15 @@
 модель собирается заново из координатора (`rebuild`), раскрытие групп
 переживает перестройку по id группы, Enter в поиске запускает первую
 видимую запись — тот же приём, что у `BasesView`.
+
+План 2 (спека §14): подменю «CLI» записи и консоль под деревом. Команду
+запускает `EdtCli`, код завершения приносит `CliWatcher` сигналом в главный
+поток (`on_cli_finished`); консоль показывает журнал выбранной записи, не
+раскрываясь сама (§14.5), и раскрывается только при запуске команды.
 """  # noqa: RUF002
 
 from collections.abc import Callable, Sequence
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
@@ -35,16 +41,35 @@ from PySide6.QtWidgets import (
 )
 
 from onecstarter.domain.edt import EdtInstallation, EdtProject
+from onecstarter.domain.edt_cli import (
+    cli_build_args,
+    cli_import_args,
+    cli_project_args,
+    cli_validate_args,
+    workspace_projects,
+)
 from onecstarter.platform_1c.editors import EDITOR_LABELS, EditorKind
 from onecstarter.services.edt import EdtScan, EdtWorkspace
+from onecstarter.services.edt_cli import EdtCli, workspace_entries
 from onecstarter.services.errors import ServicesError
 from onecstarter.ui.bases.panel import open_in_explorer
 from onecstarter.ui.dialogs.buttons import ask_confirmation
 from onecstarter.ui.dialogs.infobase import dropped_directory
+from onecstarter.ui.edt.cli_import_dialog import CliImportDialog
+from onecstarter.ui.edt.cli_validate_dialog import CliValidateDialog
+from onecstarter.ui.edt.cli_watch import CliWatcher
+from onecstarter.ui.edt.console_panel import (
+    STATE_INTERRUPTED,
+    STATE_NOT_STARTED,
+    STATE_RUNNING,
+    EdtConsole,
+    state_finished,
+)
 from onecstarter.ui.edt.dialog import DialogDefaults, EdtProjectDialog, browse_for_directory
 from onecstarter.ui.edt.group_dialog import EdtGroupDialog
 from onecstarter.ui.edt.import_dialog import EdtImportDialog
 from onecstarter.ui.edt.panel import EdtPanel
+from onecstarter.ui.edt.tree_model import CLI_BUSY_HINT as CLI_BUSY_HINT
 from onecstarter.ui.edt.tree_model import (
     COLUMNS,
     ID_ROLE,
@@ -65,6 +90,14 @@ MENU_RENAME_GROUP = "Переименовать группу"
 MENU_REMOVE_GROUP = "Удалить группу"
 MENU_IMPORT = "Импорт из EDT Start…"
 NOT_INSTALLED_HINT = "EDT {version} не найден"
+MENU_CLI = "CLI"
+CLI_BUILD = "Пересобрать проекты"
+CLI_IMPORT = "Импортировать проект…"
+CLI_VALIDATE = "Проверить проекты…"
+CLI_PROJECT = "Информация по проектам"
+# `CLI_BUSY_HINT` — из `tree_model` (одна строка на значок и меню), реэкспорт выше.
+CLI_PAST_RUN = "прошлый запуск"
+CLI_CODE_UNKNOWN = "завершено, код неизвестен"
 
 
 class DropTarget(Enum):
@@ -178,6 +211,9 @@ class EdtView(QWidget):
         confirm: Callable[[QWidget, str, str], bool] = ask_confirmation,
         choose_directory: Callable[[], str] = browse_for_directory,
         open_directory: Callable[[str], bool] = open_in_explorer,
+        cli: EdtCli | None = None,
+        watcher: CliWatcher | None = None,
+        documents_dir: str = str(Path.home() / "Documents"),
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -193,6 +229,18 @@ class EdtView(QWidget):
         self._model = QStandardItemModel()
         self._built = False  # первая сборка раскрывает всё; дальше — по запомненным id
         self._last_scan: EdtScan | None = None  # последний применённый снимок монитора
+        # CLI EDT (план 2): `cli is None` — подменю не строится, консоль пуста.
+        self._cli = cli
+        self._watcher = watcher
+        self._documents_dir = documents_dir
+        self._last_tsv_dir = documents_dir  # каталог последнего TSV — на сеанс (§14.2)
+        self._console_project: str | None = None  # чья запись сейчас в консоли
+        self._console = EdtConsole(palette=palette)
+        self._console.interrupt_requested.connect(self.interrupt_current_cli)
+        self._console.open_journal_requested.connect(self._open_console_journal)
+        self._console.open_result_requested.connect(self._open_console_result)
+        if watcher is not None:
+            watcher.finished.connect(self.on_cli_finished)
 
         self._search = QLineEdit()
         self._search.setPlaceholderText("Поиск: начните вводить имя проекта")
@@ -223,6 +271,7 @@ class EdtView(QWidget):
         layout.addWidget(self._banner)
         layout.addWidget(self._tree, 1)
         layout.addWidget(self._panel)
+        layout.addWidget(self._console)
         self.rebuild()
 
     # --- доступ -----------------------------------------------------------
@@ -238,6 +287,9 @@ class EdtView(QWidget):
 
     def panel(self) -> EdtPanel:
         return self._panel
+
+    def console(self) -> EdtConsole:
+        return self._console
 
     def search(self) -> QLineEdit:
         return self._search
@@ -263,8 +315,9 @@ class EdtView(QWidget):
         return None
 
     def _on_current_changed(self, *_args: object) -> None:
-        """Общий слот текущей строки: панель путей сегодня, консоль — план 2."""
+        """Общий слот текущей строки: панель путей и консоль CLI (§14.5)."""
         self._sync_panel()
+        self._sync_console()
 
     def _sync_panel(self) -> None:
         current = self.current()
@@ -318,6 +371,7 @@ class EdtView(QWidget):
 
     def apply_palette(self, palette: Palette) -> None:
         self._palette = palette
+        self._console.apply_palette(palette)
         self.rebuild()
 
     def on_scan(self, scan: EdtScan) -> None:
@@ -485,6 +539,10 @@ class EdtView(QWidget):
         if not status.installed and status.running_pid is None:
             open_edt.setEnabled(False)
             open_edt.setToolTip(NOT_INSTALLED_HINT.format(version=project.edt_version or "—"))
+        if status.cli_busy:
+            # Меню — подсказка; сам отказ живёт в `EdtWorkspace.launch` (§14.1).
+            open_edt.setEnabled(False)
+            open_edt.setToolTip(CLI_BUSY_HINT)
         for kind in EditorKind:
             resolution = self._workspace.editor(kind)
             action: QAction = menu.addAction(
@@ -495,6 +553,18 @@ class EdtView(QWidget):
                 action.setEnabled(False)
                 action.setToolTip(resolution.note)
         menu.addAction(MENU_OPEN_EXPLORER, lambda: self.open_folder(project.id))
+        if self._cli is not None:
+            cli_menu = menu.addMenu(MENU_CLI)
+            cli_menu.setToolTipsVisible(True)
+            reason = self._cli.unavailable_reason(project.id)
+            cli_action = cli_menu.menuAction()
+            if reason:
+                cli_action.setEnabled(False)
+                cli_action.setToolTip(CLI_BUSY_HINT if status.cli_busy else reason)
+            cli_menu.addAction(CLI_BUILD, lambda: self.cli_build(project.id))
+            cli_menu.addAction(CLI_IMPORT, lambda: self.cli_import(project.id))
+            cli_menu.addAction(CLI_VALIDATE, lambda: self.cli_validate(project.id))
+            cli_menu.addAction(CLI_PROJECT, lambda: self.cli_project(project.id))
 
     def _show_menu(self, position: QPoint) -> None:
         index = self._tree.indexAt(position)
@@ -572,6 +642,141 @@ class EdtView(QWidget):
 
     def open_folder(self, project_id: str) -> None:
         self._apply(lambda: self._workspace.open_folder(project_id), rebuild=False)
+
+    # --- CLI (спека §14) ------------------------------------------------------
+
+    def cli_build(self, project_id: str) -> None:
+        project = self._workspace.project(project_id)
+        question = f"Пересобрать все проекты workspace «{project.name}»? Это займёт время"
+        if self._confirm(self, "Пересборка", question):
+            self._start_cli(project_id, CLI_BUILD, cli_build_args())
+
+    def cli_project(self, project_id: str) -> None:
+        self._start_cli(project_id, CLI_PROJECT, cli_project_args())
+
+    def cli_import(self, project_id: str) -> None:
+        dialog = CliImportDialog(choose_directory=self._choose_directory, parent=self)
+        if self._run_dialog(dialog):
+            self._start_cli(project_id, CLI_IMPORT.rstrip("…"), cli_import_args(dialog.form()))
+
+    def cli_validate(self, project_id: str) -> None:
+        project = self._workspace.project(project_id)
+        paths = workspace_projects(workspace_entries(project.workspace), project.project_dir)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M")
+        dialog = CliValidateDialog(
+            paths, self._last_tsv_dir, f"validate-{project.name}-{stamp}.tsv", parent=self
+        )
+        if not self._run_dialog(dialog):
+            return
+        tsv = dialog.result_file()
+        self._last_tsv_dir = str(Path(tsv).parent)
+        self._start_cli(
+            project_id,
+            CLI_VALIDATE.rstrip("…"),
+            cli_validate_args(dialog.selected_paths(), tsv),
+            result_file=tsv,
+        )
+
+    def _start_cli(self, project_id: str, label: str, command: str, result_file: str = "") -> None:
+        if self._cli is None:
+            return
+        try:
+            run = self._cli.start(project_id, label, command, result_file)
+        except ServicesError as error:
+            self._show_error(str(error))
+            return
+        project = self._workspace.project(project_id)
+        self._console_project = project_id
+        self._console.show_run(
+            project.name, label, STATE_RUNNING, self._cli.journal_path(project_id)
+        )
+        self._console.set_buttons(interrupt=True, journal=True, result=False)
+        self._console.expand()  # единственное место, где консоль раскрывается сама (§14.5)
+        if self._watcher is not None:
+            self._watcher.watch(run)
+        self.rebuild()
+
+    def on_cli_finished(self, project_id: str, code: object) -> None:
+        """Слот `CliWatcher.finished`: код завершения пришёл в главный поток."""
+        if self._cli is None:
+            return
+        self._cli.finish(project_id, code if isinstance(code, int) else None)
+        if self._console_project == project_id:
+            self._refresh_console_state(project_id)
+        self.rebuild()
+
+    def interrupt_current_cli(self) -> None:
+        if self._cli is None or self._console_project is None:
+            return
+        run = self._cli.run(self._console_project)
+        if run is None:
+            return
+        question = (
+            f"Прервать «{run.label}»? Сборка останется незавершённой, "
+            "EDT пересоберёт при следующем открытии"
+        )
+        if not self._confirm(self, "Прерывание", question):
+            return
+        self._cli.interrupt(self._console_project)
+        self._refresh_console_state(self._console_project)
+        self.rebuild()
+
+    def _refresh_console_state(self, project_id: str) -> None:
+        assert self._cli is not None
+        result = self._cli.last_result(project_id)
+        if result is None:
+            self._console.set_state(STATE_NOT_STARTED)
+            self._console.set_buttons(interrupt=False, journal=True, result=False)
+            return
+        if result.interrupted:
+            self._console.set_state(STATE_INTERRUPTED)
+        elif result.code is None:
+            self._console.set_state(CLI_CODE_UNKNOWN)
+        else:
+            self._console.set_state(state_finished(result.code))
+        has_result = (
+            bool(result.result_file) and result.code == 0 and Path(result.result_file).exists()
+        )
+        self._console.set_buttons(interrupt=False, journal=True, result=has_result)
+
+    def _sync_console(self) -> None:
+        """Выбор записи переключает журнал консоли, не раскрывая её (спека §14.5)."""
+        if self._cli is None:
+            return
+        current = self.current()
+        if current is None or current[0] != KIND_PROJECT:
+            return
+        project_id = current[1]
+        run = self._cli.run(project_id)
+        result = self._cli.last_result(project_id)
+        path = self._cli.journal_path(project_id)
+        project = self._workspace.project(project_id)
+        self._console_project = project_id
+        if run is not None:
+            self._console.show_run(project.name, run.label, STATE_RUNNING, path)
+            self._console.set_buttons(interrupt=True, journal=True, result=False)
+        elif result is not None:
+            self._console.show_run(project.name, result.label, "", path)
+            self._refresh_console_state(project_id)
+        elif path.exists():
+            self._console.show_run(project.name, CLI_PAST_RUN, STATE_NOT_STARTED, path)
+            self._console.set_buttons(interrupt=False, journal=True, result=False)
+        else:
+            self._console.show_run("", "", STATE_NOT_STARTED, None)
+            self._console.set_buttons(interrupt=False, journal=False, result=False)
+
+    def _open_console_journal(self) -> None:
+        if self._cli is None or self._console_project is None:
+            return
+        path = str(self._cli.journal_path(self._console_project))
+        self._apply(lambda: self._workspace.open_path(path), rebuild=False)
+
+    def _open_console_result(self) -> None:
+        if self._cli is None or self._console_project is None:
+            return
+        result = self._cli.last_result(self._console_project)
+        if result is not None and result.result_file:
+            self._apply(lambda: self._workspace.open_path(result.result_file), rebuild=False)
 
     def handle_drop(
         self,

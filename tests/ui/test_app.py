@@ -37,6 +37,7 @@ from onecstarter.platform_1c.server_discovery import ServerInstallation
 from onecstarter.security.credentials import MemoryStore
 from onecstarter.services.availability import Availability, path_key
 from onecstarter.services.catalog import EMPTY_COMMON_DATA, CommonListData
+from onecstarter.services.edt_cli import EdtCli
 from onecstarter.services.errors import (
     ConsoleRegistrationDeclinedError,
     ConsoleRegistrationError,
@@ -56,9 +57,16 @@ from onecstarter.services.settings import (
 from onecstarter.services.workspace import Workspace, WorkspacePaths
 from onecstarter.ui import app as app_module
 from onecstarter.ui import rail_icons, theme
-from onecstarter.ui.app import _build_main_window, build_runtime, run_launch, run_smoke
+from onecstarter.ui.app import (
+    _build_main_window,
+    _confirm_quit_with_cli,
+    build_runtime,
+    run_launch,
+    run_smoke,
+)
 from onecstarter.ui.background import StartupTasks
 from onecstarter.ui.bases.view import BasesView
+from onecstarter.ui.edt.cli_watch import CliWatcher
 from onecstarter.ui.edt.monitor import EdtMonitor
 from onecstarter.ui.edt.view import EdtView
 from onecstarter.ui.hotkey import GlobalHotkey
@@ -3190,6 +3198,126 @@ def test_confirm_quit_with_servers_asks_when_state_is_unreadable() -> None:
     assert "Всё равно выйти?" in asked[0]
     assert "Job не читается" in asked[0]
     assert app_module._confirm_quit_with_servers(running_count, lambda _message: True) is True
+
+
+# -- v3, план 2 (Task 6): гейт выхода при живых командах CLI EDT (спека §14.4) --
+
+
+def _ask(log: list[str], *, answer: bool) -> Callable[[str], bool]:
+    def ask(text: str) -> bool:
+        log.append(text)
+        return answer
+
+    return ask
+
+
+def test_confirm_quit_with_cli_silent_when_none() -> None:
+    asked: list[str] = []
+    assert _confirm_quit_with_cli(lambda: 0, _ask(asked, answer=False)) is True
+    assert asked == []
+
+
+def test_confirm_quit_with_cli_asks_with_count() -> None:
+    asked: list[str] = []
+    assert _confirm_quit_with_cli(lambda: 2, _ask(asked, answer=True)) is True
+    assert asked == ["Выполняются команды CLI EDT: 2. Прервать их и выйти?"]
+
+
+def test_confirm_quit_with_cli_declined() -> None:
+    assert _confirm_quit_with_cli(lambda: 1, lambda text: False) is False
+
+
+class _FakeEdtCli(EdtCli):
+    """`EdtCli` с управляемым числом живых команд — для проводки гейта выхода."""  # noqa: RUF002
+
+    running: ClassVar[int] = 0
+    shutdowns: ClassVar[list[int]] = []
+
+    def running_count(self) -> int:
+        return type(self).running
+
+    def log_shutdown(self) -> int:
+        type(self).shutdowns.append(type(self).running)
+        return type(self).running
+
+
+@pytest.fixture
+def fake_edt_cli(monkeypatch: Any) -> type[_FakeEdtCli]:
+    monkeypatch.setattr(app_module, "EdtCli", _FakeEdtCli)
+    monkeypatch.setattr(_FakeEdtCli, "running", 0)
+    monkeypatch.setattr(_FakeEdtCli, "shutdowns", [])
+    return _FakeEdtCli
+
+
+def test_confirm_quit_asks_about_cli_after_servers_and_logs_shutdown(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any, fake_edt_cli: type[_FakeEdtCli]
+) -> None:
+    """Проводка `_build_confirm_quit`: второй вопрос — о командах CLI, согласие
+    отмечает выход в их журналах (`EdtCli.log_shutdown`), отказ — не отмечает.
+
+    Мутация: убрать `_confirm_quit_with_cli` из `_build_confirm_quit` — тест
+    упадёт на `asked`; убрать `edt_cli.log_shutdown()` — на `shutdowns`.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    asked: list[str] = []
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+    window, _tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(
+        qapp, runtime, env, quit_dialog=_fake_quit_dialog(asked, answer=True)
+    )
+    qtbot.addWidget(window)
+    assert window.confirm_quit is not None
+
+    assert window.confirm_quit() is True
+    assert asked == []  # ни серверов, ни команд — тихо
+
+    fake_edt_cli.running = 2
+    assert window.confirm_quit() is True
+    assert asked == ["Выполняются команды CLI EDT: 2. Прервать их и выйти?"]
+    # `log_shutdown` зовётся на каждое согласие; при нуле команд настоящий —
+    # пустой цикл, фейк лишь фиксирует сам вызов.
+    assert fake_edt_cli.shutdowns == [0, 2]
+
+
+def test_confirm_quit_declined_on_cli_keeps_running_and_skips_shutdown_log(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any, fake_edt_cli: type[_FakeEdtCli]
+) -> None:
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    asked: list[str] = []
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+    window, _tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(
+        qapp, runtime, env, quit_dialog=_fake_quit_dialog(asked, answer=False)
+    )
+    qtbot.addWidget(window)
+    fake_edt_cli.running = 1
+
+    assert window.confirm_quit is not None
+    assert window.confirm_quit() is False
+    assert asked == ["Выполняются команды CLI EDT: 1. Прервать их и выйти?"]
+    assert fake_edt_cli.shutdowns == []
+
+
+def test_build_main_window_gives_edt_view_the_cli_and_watcher(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """Сборка: вьюха EDT получает `EdtCli` (журналы в `logs/edt`) и наблюдателя с
+    родителем-окном — иначе подменю «CLI» не строится вовсе."""  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+    window, _tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(
+        qapp, runtime, env
+    )
+    qtbot.addWidget(window)
+    labels = [button.text() for button in window.section_buttons()]
+    window.show_section(labels.index("EDT"))
+    edt_view = window.current_section()
+    assert isinstance(edt_view, EdtView)
+    assert isinstance(edt_view._cli, EdtCli)
+    assert edt_view._cli.journal_path("x") == runtime.servers.parent / "logs" / "edt" / "x.log"
+    assert isinstance(edt_view._watcher, CliWatcher)
+    assert edt_view._watcher.parent() is window
 
 
 @pytest.mark.parametrize(

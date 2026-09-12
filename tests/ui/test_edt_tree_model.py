@@ -9,6 +9,7 @@ from PySide6.QtWidgets import QApplication
 from onecstarter.domain.edt import EdtInstallation, EdtProject
 from onecstarter.services.edt import EdtScan, EdtWorkspace
 from onecstarter.ui.edt.tree_model import (
+    CLI_BUSY_HINT,
     ID_ROLE,
     KIND_GROUP,
     KIND_PROJECT,
@@ -160,3 +161,17 @@ def test_tooltip_lists_project_dir(tmp_path: Path) -> None:
     ws.add_project(EdtProject("", "Р", r"D:\a", project_dir=r"D:\a\proj"))  # noqa: RUF001
     model = build_edt_model(ws, "", DARK)
     assert model.item(0, 0).toolTip() == "D:\\a\nПроект: D:\\a\\proj"  # noqa: RUF001
+
+
+def test_cli_busy_icon_after_mark(tmp_path: Path, qapp: QApplication) -> None:
+    ws = _workspace(tmp_path)
+    p = ws.add_project(EdtProject("", "Розница", r"D:\a", edt_version="2025.2.6+4"))
+    ws.mark_cli_busy(p.id)
+    busy = build_edt_model(ws, "", DARK)
+    name = busy.item(0, 0)
+    assert not name.icon().isNull()
+    assert CLI_BUSY_HINT in name.toolTip()
+    ws.clear_cli_busy(p.id)
+    idle = build_edt_model(ws, "", DARK)
+    assert idle.item(0, 0).icon().isNull()
+    assert CLI_BUSY_HINT not in idle.item(0, 0).toolTip()

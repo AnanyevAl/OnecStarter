@@ -380,6 +380,18 @@ class TestEditorsAndExplorer:
         h.workspace.open_folder(p.id)
         assert h.opened == [r"D:\edt\a\proj"]
 
+    def test_open_path_uses_startfile_and_wraps_oserror(self, tmp_path: Path) -> None:
+        h = _harness(tmp_path)
+        h.workspace.open_path(r"D:\out\validate.tsv")
+        assert h.opened == [r"D:\out\validate.tsv"]
+
+        def refuse(path: str) -> None:
+            raise OSError("нет ассоциации")
+
+        h.workspace._open_file = refuse
+        with pytest.raises(EdtError, match="Не удалось открыть: нет ассоциации"):  # noqa: RUF001
+            h.workspace.open_path(r"D:\out\validate.tsv")
+
 
 PRODUCT = EdtStartProduct("prod", "2025.2.6+4", EXE_2025, JDK, ("-Xmx8192m",))
 ES_PROJECT = EdtStartProject(

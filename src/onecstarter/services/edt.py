@@ -358,6 +358,13 @@ class EdtWorkspace:
         except OSError as error:
             raise EdtError(f"Не удалось открыть каталог: {error}") from error  # noqa: RUF001
 
+    def open_path(self, path: str) -> None:
+        """Открыть файл ассоциированной программой: журнал CLI, TSV результата (§14.5)."""
+        try:
+            self._open_file(path)
+        except OSError as error:
+            raise EdtError(f"Не удалось открыть: {error}") from error  # noqa: RUF001
+
     # --- импорт -----------------------------------------------------------
 
     def edtstart_available(self) -> bool:

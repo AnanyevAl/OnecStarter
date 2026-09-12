@@ -10,7 +10,7 @@ from PySide6.QtGui import QBrush, QColor, QStandardItem, QStandardItemModel
 
 from onecstarter.domain.edt import EdtProject
 from onecstarter.services.edt import EdtStatus, EdtWorkspace
-from onecstarter.ui.edt.icons import running_icon
+from onecstarter.ui.edt.icons import cli_busy_icon, running_icon
 from onecstarter.ui.theme import Palette
 
 ID_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -90,8 +90,13 @@ def _project_row(project: EdtProject, status: EdtStatus, palette: Palette) -> li
     if project.project_dir:
         tooltip += f"\nПроект: {project.project_dir}"  # noqa: RUF001
     if status.running_pid is not None:
+        # Запущенный EDT важнее команды CLI: координатор их взаимно исключает,
+        # ветка `cli_busy` ниже — на случай гонки снимка монитора с `mark_cli_busy`.  # noqa: RUF003
         name.setIcon(running_icon(palette))
         tooltip += f"\nЗапущен (PID {status.running_pid})"  # noqa: RUF001
+    elif status.cli_busy:
+        name.setIcon(cli_busy_icon(palette))
+        tooltip += f"\n{CLI_BUSY_HINT}"
     name.setToolTip(tooltip)
 
     version = _plain(project.edt_version or "—")

@@ -45,12 +45,13 @@ from onecstarter.platform_1c.job import Job, NullJob, ServerJob
 from onecstarter.platform_1c.process_scan import NullScanner, ProcessScanner, PsutilScanner
 from onecstarter.platform_1c.registry import load_conventions, load_server_conventions
 from onecstarter.platform_1c.server_discovery import ServerInstallation, server_installations
-from onecstarter.platform_1c.server_spawn import spawn_server
+from onecstarter.platform_1c.server_spawn import spawn_logged, spawn_server
 from onecstarter.security.credentials import KeyringStore
 from onecstarter.services import autostart
 from onecstarter.services.availability import probe_targets
 from onecstarter.services.catalog import CommonListData, read_common_lists
 from onecstarter.services.edt import EdtWorkspace, settings_notes
+from onecstarter.services.edt_cli import EdtCli
 from onecstarter.services.errors import (
     ConsoleRegistrationDeclinedError,
     EdtUnavailableError,
@@ -67,6 +68,7 @@ from onecstarter.ui import app_icon, rail_icons, theme
 from onecstarter.ui.background import AvailabilityProbe, StartupTasks
 from onecstarter.ui.bases.view import BasesView
 from onecstarter.ui.dialogs.buttons import ask_confirmation
+from onecstarter.ui.edt.cli_watch import CliWatcher
 from onecstarter.ui.edt.monitor import EdtMonitor
 from onecstarter.ui.edt.view import EdtView
 from onecstarter.ui.hotkey import GlobalHotkey
@@ -665,6 +667,21 @@ def _confirm_quit_with_servers(
     return ask(f"Остановить {n} {_servers_word(n)} и выйти?")
 
 
+def _confirm_quit_with_cli(running_count: Callable[[], int], ask: Callable[[str], bool]) -> bool:
+    """Живые команды CLI EDT при выходе (спека v3, §14.4): вопрос, не молчаливое убийство.
+
+    Второй гейт после серверного: сами процессы гасит закрытие хендлов Job
+    при выходе (kill-on-close, `platform_1c/job.py`) — как у серверов, ни
+    строки остановки здесь нет. `running_count` — `EdtCli.running_count`,
+    число записей в `_runs`, без обращения к ОС, поэтому страховки от
+    `ServicesError`, как у `_confirm_quit_with_servers`, не нужно.
+    """  # noqa: RUF002
+    count = running_count()
+    if count == 0:
+        return True
+    return ask(f"Выполняются команды CLI EDT: {count}. Прервать их и выйти?")
+
+
 def _ask_quit_confirmation(parent: QWidget, message: str) -> bool:
     """Обёртка `ask_confirmation` для гейта выхода — дефолт «Нет» (спека §12.3).
 
@@ -964,7 +981,21 @@ def _build_main_window(
 
     edt_view: EdtView | None = None
     edt_section_widget: QWidget
+    # CLI EDT (план 2, спека §14): координатор команд и наблюдатель кода
+    # завершения живут только вместе с разделом — без `edt.json` их не с чем  # noqa: RUF003
+    # связать. Та же фабрика Job и тот же `spawn_logged`, что у серверов:  # noqa: RUF003
+    # процесс CLI умирает вместе с лаунчером (kill-on-close), а `run_smoke`  # noqa: RUF003
+    # с `job_factory=NullJob` kernel-объектов не создаёт.  # noqa: RUF003
+    edt_cli: EdtCli | None = None
+    cli_watcher: CliWatcher | None = None
     if edt_workspace is not None:
+        edt_cli = EdtCli(
+            edt_workspace,
+            runtime.servers.parent / "logs" / "edt",
+            job_factory=job_factory if job_factory is not None else ServerJob,
+            spawn=spawn_logged,
+        )
+        cli_watcher = CliWatcher()
         edt_view = EdtView(
             edt_workspace,
             palette=controller.palette,
@@ -974,6 +1005,8 @@ def _build_main_window(
                 store.settings.edt_default_max_heap_mb,
                 store.settings.edt_default_language,
             ),
+            cli=edt_cli,
+            watcher=cli_watcher,
         )
         edt_section_widget = edt_view
     else:
@@ -997,6 +1030,8 @@ def _build_main_window(
     window.set_section_icon(servers_section, rail_icons.servers_icon)
     window.set_section_icon(edt_section, rail_icons.edt_icon)
     window.set_section_icon(settings_section, rail_icons.settings_icon)
+    if cli_watcher is not None:
+        cli_watcher.setParent(window)  # время жизни — окно, как у мониторов  # noqa: RUF003
 
     monitor = ServerMonitor(
         process_scanner if process_scanner is not None else PsutilScanner(), parent=window
@@ -1063,6 +1098,19 @@ def _build_main_window(
             confirmed = _confirm_quit_with_servers(
                 servers_workspace.running_count, lambda message: dialog(window, message)
             )
+            if confirmed and edt_cli is not None:
+                # Второй вопрос — о живых командах CLI EDT (спека §14.4);  # noqa: RUF003
+                # без раздела EDT (`edt_cli is None`) спрашивать не о чем.  # noqa: RUF003
+                confirmed = _confirm_quit_with_cli(
+                    edt_cli.running_count, lambda message: dialog(window, message)
+                )
+            if confirmed and edt_cli is not None:
+                # Отметка выхода в журналах CLI — тем же приёмом, что у серверов  # noqa: RUF003
+                # ниже: согласие получено, отказ записи уходит в лог, не в отмену.
+                try:
+                    edt_cli.log_shutdown()
+                except OSError as error:
+                    _log.warning("не удалось отметить выход в журналах CLI EDT: %s", error)
             if confirmed:
                 # НАХОДКА 4 ручного чек-листа T-10 (Minor): дерево гасит
                 # сама ОС (Job kill-on-close) без единой строки кода  # noqa: RUF003
