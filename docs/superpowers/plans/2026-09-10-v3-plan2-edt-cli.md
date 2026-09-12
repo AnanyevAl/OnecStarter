@@ -1091,7 +1091,7 @@ git commit -m "feat(services): EdtCli — одна команда на запи�
 
 **Interfaces:**
 - Consumes: `CliRun` (Task 3); `JournalPanel` (`ui/servers/journal_panel.py`: `show_journal(title, path)`, `refresh()`); `Palette`.
-- Produces: `CliWatcher(QObject)` с сигналом `finished(str, object)` (id записи, код `int | None`) и методом `watch(run: CliRun)`; конструктор `CliWatcher(*, spawn: Callable[[Callable[[], None]], None] = _spawn_daemon, parent=None)`; `EdtConsole(QWidget)` с сигналами `interrupt_requested()`, `open_journal_requested()`, `open_result_requested()`, методами `show_run(project_name: str, label: str, state: str, path: Path | None)`, `set_state(state: str)`, `set_buttons(*, interrupt: bool, journal: bool, result: bool)`, `expand()`, `collapse()`, `is_expanded() -> bool`, `apply_palette(palette)`, аксессорами `header_button()`, `title_label()`, `state_label()`, `interrupt_button()`, `journal_button()`, `result_button()`, `journal_panel()`; константы `CONSOLE_TITLE = "Консоль"`, `STATE_RUNNING = "выполняется"`, `STATE_INTERRUPTED = "прервано"`, `STATE_NOT_STARTED = "не запущен"`, функция `state_finished(code: int) -> str` → `"завершено, код N"`.
+- Produces: `CliWatcher(QObject)` с сигналом `finished(object, object)` (сам `CliRun`, код `int | None`) и методом `watch(run: CliRun)` — сигнал несёт **объект run**, а не id записи: запоздавший сигнал после «Прервать» и повторного запуска не должен закрыть новый run той же записи (находка ревью Task 6); конструктор `CliWatcher(*, spawn: Callable[[Callable[[], None]], None] = _spawn_daemon, parent=None)`; `EdtConsole(QWidget)` с сигналами `interrupt_requested()`, `open_journal_requested()`, `open_result_requested()`, методами `show_run(project_name: str, label: str, state: str, path: Path | None)`, `set_state(state: str)`, `set_buttons(*, interrupt: bool, journal: bool, result: bool)`, `expand()`, `collapse()`, `is_expanded() -> bool`, `apply_palette(palette)`, аксессорами `header_button()`, `title_label()`, `state_label()`, `interrupt_button()`, `journal_button()`, `result_button()`, `journal_panel()`; константы `CONSOLE_TITLE = "Консоль"`, `STATE_RUNNING = "выполняется"`, `STATE_INTERRUPTED = "прервано"`, `STATE_NOT_STARTED = "не запущен"`, функция `state_finished(code: int) -> str` → `"завершено, код N"`.
 
 - [ ] **Step 1: Watcher — тест и реализация**
 
@@ -1126,10 +1126,11 @@ def _run(code: int) -> CliRun:
 
 def test_watch_emits_exit_code(qapp) -> None:  # type: ignore[no-untyped-def]
     watcher = CliWatcher(spawn=lambda task: task())
-    got: list[tuple[str, object]] = []
-    watcher.finished.connect(lambda pid, code: got.append((pid, code)))
-    watcher.watch(_run(3))
-    assert got == [("p1", 3)]
+    got: list[tuple[object, object]] = []
+    watcher.finished.connect(lambda run, code: got.append((run, code)))
+    run = _run(3)
+    watcher.watch(run)
+    assert got == [(run, 3)]  # сам объект run, не id — см. интерфейс
 
 
 def test_wait_failure_emits_none(qapp) -> None:  # type: ignore[no-untyped-def]
@@ -1140,7 +1141,7 @@ def test_wait_failure_emits_none(qapp) -> None:  # type: ignore[no-untyped-def]
     run = CliRun("p1", "x", "project", 1, Broken(0), FakeJob(), "")  # type: ignore[arg-type]
     watcher = CliWatcher(spawn=lambda task: task())
     got: list[object] = []
-    watcher.finished.connect(lambda pid, code: got.append(code))
+    watcher.finished.connect(lambda finished_run, code: got.append(code))
     watcher.watch(run)
     assert got == [None]
 ```
@@ -1168,7 +1169,7 @@ def _spawn_daemon(task: Callable[[], None]) -> None:
 
 
 class CliWatcher(QObject):
-    finished = Signal(str, object)  # id записи, int | None
+    finished = Signal(object, object)  # CliRun, int | None
 
     def __init__(
         self,
@@ -1185,7 +1186,7 @@ class CliWatcher(QObject):
                 code: int | None = run.process.wait()
             except OSError:
                 code = None
-            self.finished.emit(run.project_id, code)
+            self.finished.emit(run, code)
 
         self._spawn(wait)
 ```
@@ -1978,7 +1979,11 @@ def test_cli_validate_builds_paths_and_result_button(harness: Harness, qtbot, mo
     view = harness.view()
     qtbot.addWidget(view)
 
+    initial_name = ""
+
     def run_dialog(dialog):  # type: ignore[no-untyped-def]
+        nonlocal initial_name
+        initial_name = Path(dialog.file_edit().text()).name
         dialog.file_edit().setText(str(tmp_path / "out.tsv"))
         return True
 
@@ -1986,6 +1991,7 @@ def test_cli_validate_builds_paths_and_result_button(harness: Harness, qtbot, mo
     view.cli_validate(p.id)
     args = harness.cli_spawned[0].arguments
     assert f"validate --project-list '{ws / 'conf'}' --file '{tmp_path / 'out.tsv'}'" in args
+    assert re.fullmatch(r"validate-a-\d{8}-\d{4}\.tsv", initial_name)  # штамп yyyyMMdd-HHmm
     (tmp_path / "out.tsv").write_text("", encoding="utf-8")
     harness.pending[0]()
     assert view.console().result_button().isHidden() is False
@@ -2005,6 +2011,22 @@ def test_cli_import_runs_dialog_form(harness: Harness, qtbot, monkeypatch) -> No
     monkeypatch.setattr(view, "_run_dialog", run_dialog)
     view.cli_import(p.id)
     assert "-command \"import --project 'D:\\src\\proj'\"" in harness.cli_spawned[0].arguments
+
+
+def test_stale_watcher_signal_does_not_finish_new_run(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Прервать → запустить снова → приходит сигнал старого run: новый run жив."""
+    p = _add(harness, "a")
+    view = harness.view()
+    qtbot.addWidget(view)
+    monkeypatch.setattr(view, "_confirm", lambda parent, title, text: True)
+    view.cli_build(p.id)
+    stale = harness.pending[0]
+    view.console().interrupt_button().click()
+    view.cli_project(p.id)
+    stale()  # поток-демон старого run «дождался» уже после нового запуска
+    assert harness.cli.run(p.id) is not None
+    assert harness.jobs[-1].closed is False
+    assert view.console().state_label().text() == STATE_RUNNING
 
 
 def test_cli_error_is_shown(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
@@ -2052,7 +2074,7 @@ from datetime import datetime
 from onecstarter.domain.edt_cli import (
     cli_build_args, cli_import_args, cli_project_args, cli_validate_args, workspace_projects,
 )
-from onecstarter.services.edt_cli import EdtCli, workspace_entries
+from onecstarter.services.edt_cli import CliRun, EdtCli, workspace_entries
 from onecstarter.ui.edt.cli_import_dialog import CliImportDialog
 from onecstarter.ui.edt.cli_validate_dialog import CliValidateDialog
 from onecstarter.ui.edt.cli_watch import CliWatcher
@@ -2193,9 +2215,18 @@ def cli_busy_icon(palette: Palette) -> QIcon:
             self._watcher.watch(run)
         self.rebuild()
 
-    def on_cli_finished(self, project_id: str, code: object) -> None:
-        if self._cli is None:
+    def on_cli_finished(self, run: object, code: object) -> None:
+        """Код завершения от наблюдателя. Запоздавший сигнал чужого run игнорируется.
+
+        После «Прервать» `Popen.wait()` в потоке-демоне возвращается не сразу;
+        если пользователь успел запустить на той же записи новую команду,
+        сигнал старого run не должен закрыть новый (находка ревью Task 6).
+        """
+        if self._cli is None or not isinstance(run, CliRun):
             return
+        if self._cli.run(run.project_id) is not run:
+            return
+        project_id = run.project_id
         self._cli.finish(project_id, code if isinstance(code, int) else None)
         if self._console_project == project_id:
             self._refresh_console_state(project_id)
