@@ -22,7 +22,8 @@
   в `build_cli_command` и табличном тесте.
 - **`build` всегда с `--yes`** ([Д] спека §0-Д): без него команда ждёт подтверждения.
 - **Аргументы внутри `-command`** — в одинарных кавычках ([Д] справка CLI); значение
-  с одинарной кавычкой внутри диалог не принимает.
+  с кавычкой внутри — одинарной или двойной (вся команда идёт как `-command "…"`,
+  правка M3 финального ревью) — диалог не принимает.
 - Точные строки UI: подменю `CLI`; пункты `Пересобрать проекты`, `Импортировать проект…`,
   `Проверить проекты…`, `Информация по проектам`; подсказки `Закройте EDT: workspace занят`,
   `Выполняется команда CLI`, `В установке <версия> нет 1cedtcli.exe`; заголовок консоли
@@ -63,7 +64,7 @@
 CLI_ENCODING_ARGS = "-Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8 -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8"
 
 class CliQuoteError(ValueError): ...
-def quote_cli_arg(value: str) -> str                      # 'значение'; одинарная кавычка внутри → CliQuoteError
+def quote_cli_arg(value: str) -> str                      # 'значение'; кавычка внутри (' или ") → CliQuoteError
 def cli_build_args() -> str                               # "build --yes"
 def cli_project_args() -> str                             # "project"
 
@@ -131,9 +132,19 @@ class TestQuote:
     def test_single_quotes(self, value: str, expected: str) -> None:
         assert quote_cli_arg(value) == expected
 
-    def test_single_quote_inside_rejected(self) -> None:
-        with pytest.raises(CliQuoteError):
-            quote_cli_arg("O'Reilly")
+    @pytest.mark.parametrize(
+        ("value", "quote"),
+        [
+            ("O'Reilly", "'"),  # одинарная — экранирование Gogo не проверялось
+            ('conf "v2"', '"'),  # двойная разорвёт внешние кавычки -command "…" (M3 ревью)
+            ('D:\\ws\\"a', '"'),
+        ],
+    )
+    def test_quote_inside_rejected(self, value: str, quote: str) -> None:
+        with pytest.raises(CliQuoteError, match="Кавычка в значении недопустима") as excinfo:
+            quote_cli_arg(value)
+        assert value in str(excinfo.value)
+        assert quote in value
 
 
 def test_fixed_commands() -> None:
@@ -288,13 +299,16 @@ _PLATFORM_VERSION = re.compile(r"^\d+(\.\d+){1,3}$")
 
 
 class CliQuoteError(ValueError):
-    """Значение содержит одинарную кавычку — экранирование Gogo не проверялось (спека §14.2)."""
+    """Значение содержит кавычку (спека §14.2): одинарную — экранирование Gogo
+    не проверялось; двойную — вся команда идёт как `-command "…"` (§14.3), и `"`
+    внутри разорвёт внешние кавычки (правка M3 финального ревью плана 2).
+    """
 
 
 def quote_cli_arg(value: str) -> str:
     """Одинарные кавычки — [Д] справка CLI («use single quotes … interpreter rules»)."""
-    if "'" in value:
-        raise CliQuoteError(f"Одинарная кавычка в значении недопустима: {value}")
+    if "'" in value or '"' in value:
+        raise CliQuoteError(f"Кавычка в значении недопустима: {value}")
     return f"'{value}'"
 
 
@@ -1578,7 +1592,7 @@ class TestImportDialog:
         qtbot.addWidget(dialog)
         dialog.existing_dir_edit().setText(r"D:\O'Reilly")
         assert dialog.ok_button().isEnabled() is False
-        assert "Одинарная кавычка" in dialog.error_text()
+        assert "Кавычка в значении недопустима" in dialog.error_text()
 
     def test_browse_fills_active_field(self, qtbot) -> None:  # type: ignore[no-untyped-def]
         dialog = CliImportDialog(choose_directory=lambda: r"D:\picked")
@@ -1630,7 +1644,7 @@ class TestValidateDialog:
         dialog = CliValidateDialog([r"D:\O'Reilly\conf"], r"C:\d", "r.tsv", choose_save=lambda i: "", exists=lambda p: False)
         qtbot.addWidget(dialog)
         assert dialog.ok_button().isEnabled() is False
-        assert "Одинарная кавычка" in dialog.error_text()
+        assert "Кавычка в значении недопустима" in dialog.error_text()
 ```
 
 - [ ] **Step 2: Реализовать `cli_import_dialog.py`**

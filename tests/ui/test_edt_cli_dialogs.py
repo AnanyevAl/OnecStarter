@@ -49,7 +49,7 @@ class TestImportDialog:
         qtbot.addWidget(dialog)
         dialog.existing_dir_edit().setText(r"D:\O'Reilly")
         assert dialog.ok_button().isEnabled() is False
-        assert "Одинарная кавычка" in dialog.error_text()
+        assert "Кавычка в значении недопустима" in dialog.error_text()
 
     def test_browse_fills_active_field(self, qtbot) -> None:  # type: ignore[no-untyped-def]
         dialog = CliImportDialog(choose_directory=lambda: r"D:\picked")
@@ -112,4 +112,4 @@ class TestValidateDialog:
         )
         qtbot.addWidget(dialog)
         assert dialog.ok_button().isEnabled() is False
-        assert "Одинарная кавычка" in dialog.error_text()
+        assert "Кавычка в значении недопустима" in dialog.error_text()

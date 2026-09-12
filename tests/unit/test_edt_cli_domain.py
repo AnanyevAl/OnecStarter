@@ -34,9 +34,19 @@ class TestQuote:
     def test_single_quotes(self, value: str, expected: str) -> None:
         assert quote_cli_arg(value) == expected
 
-    def test_single_quote_inside_rejected(self) -> None:
-        with pytest.raises(CliQuoteError):
-            quote_cli_arg("O'Reilly")
+    @pytest.mark.parametrize(
+        ("value", "quote"),
+        [
+            ("O'Reilly", "'"),  # одинарная — экранирование Gogo не проверялось
+            ('conf "v2"', '"'),  # двойная разорвёт внешние кавычки -command "…" (M3 ревью)
+            ('D:\\ws\\"a', '"'),
+        ],
+    )
+    def test_quote_inside_rejected(self, value: str, quote: str) -> None:
+        with pytest.raises(CliQuoteError, match="Кавычка в значении недопустима") as excinfo:
+            quote_cli_arg(value)
+        assert value in str(excinfo.value)
+        assert quote in value
 
 
 def test_fixed_commands() -> None:

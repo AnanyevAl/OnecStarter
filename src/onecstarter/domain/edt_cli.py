@@ -23,13 +23,16 @@ _PLATFORM_VERSION = re.compile(r"^\d+(\.\d+){1,3}$")
 
 
 class CliQuoteError(ValueError):
-    """Значение содержит одинарную кавычку — экранирование Gogo не проверялось (спека §14.2)."""
+    """Значение содержит кавычку (спека §14.2): одинарную — экранирование Gogo
+    не проверялось; двойную — вся команда идёт как `-command "…"` (§14.3), и `"`
+    внутри разорвёт внешние кавычки (правка M3 финального ревью плана 2).
+    """
 
 
 def quote_cli_arg(value: str) -> str:
     """Одинарные кавычки — [Д] справка CLI («use single quotes … interpreter rules»)."""
-    if "'" in value:
-        msg = f"Одинарная кавычка в значении недопустима: {value}"
+    if "'" in value or '"' in value:
+        msg = f"Кавычка в значении недопустима: {value}"
         raise CliQuoteError(msg)
     return f"'{value}'"
 
