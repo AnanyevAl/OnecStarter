@@ -63,11 +63,9 @@ class EdtConsole(QWidget):
     # --- состояние -------------------------------------------------------
 
     def show_run(self, project_name: str, label: str, state: str, path: Path | None) -> None:
-        # Заголовок собирается из непустых частей (задача 6: `project_name`/
-        # `label` не всегда оба заданы) — пустая часть не оставляет висячий  # noqa: RUF003
-        # разделитель " · ".
-        title = " · ".join(part for part in (project_name, label) if part)
-        self._title.setText(title)
+        # Пустые части опускаются: «прошлый запуск» без метки и пустое состояние
+        # консоли не должны давать « · » (используется `_sync_console`, Task 6).
+        self._title.setText(" · ".join(part for part in (project_name, label) if part))
         self._state.setText(state)
         self._panel.show_journal(project_name, path)
 

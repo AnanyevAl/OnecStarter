@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import pytest
+
 from onecstarter.ui.edt.console_panel import (
     CONSOLE_TITLE,
     STATE_INTERRUPTED,
@@ -15,12 +17,16 @@ def test_collapsed_by_default_and_toggles(qtbot) -> None:  # type: ignore[no-unt
     qtbot.addWidget(console)
     assert console.is_expanded() is False
     assert console.journal_panel().isHidden() is True
-    assert console.header_button().text().startswith(CONSOLE_TITLE)
+    assert console.header_button().text() == f"{CONSOLE_TITLE} ▸"
     console.header_button().click()
     assert console.is_expanded() is True
     assert console.journal_panel().isHidden() is False
+    assert console.header_button().text() == f"{CONSOLE_TITLE} ▾"
     console.collapse()
     assert console.is_expanded() is False
+    console.expand()
+    assert console.is_expanded() is True
+    assert console.journal_panel().isHidden() is False
 
 
 def test_show_run_sets_title_state_and_journal(  # type: ignore[no-untyped-def]
@@ -59,3 +65,16 @@ def test_buttons_emit_signals_and_hide(qtbot) -> None:  # type: ignore[no-untype
 def test_state_constants() -> None:
     assert STATE_INTERRUPTED == "прервано"
     assert state_finished(7) == "завершено, код 7"
+
+
+@pytest.mark.parametrize(
+    ("name", "label", "expected"),
+    [("Розница", "Сборка", "Розница · Сборка"), ("Розница", "", "Розница"), ("", "", "")],
+)
+def test_title_drops_empty_parts(  # type: ignore[no-untyped-def]
+    qtbot, name: str, label: str, expected: str
+) -> None:
+    console = EdtConsole(palette=DARK)
+    qtbot.addWidget(console)
+    console.show_run(name, label, STATE_RUNNING, None)
+    assert console.title_label().text() == expected
