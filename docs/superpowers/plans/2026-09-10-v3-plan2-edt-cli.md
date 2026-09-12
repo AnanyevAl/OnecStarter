@@ -683,6 +683,7 @@ Run: `uv run pytest tests/unit/test_edt_workspace.py -q` — зелёное.
 
 import subprocess
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime
 from itertools import count
 from pathlib import Path
@@ -834,6 +835,22 @@ class TestStart:
         h = Harness(tmp_path)
         p = h.project(edt_version="2024.2.6+7")
         assert h.cli.unavailable_reason(p.id) == "EDT 2024.2.6+7 не найден среди установок"
+
+    def test_missing_jdk_refused_unless_project_overrides(self, tmp_path: Path) -> None:
+        """Установка без JDK (`jvm_dir=None`) — отказ до spawn с упоминанием JDK; `jvm_dir`
+        записи закрывает дыру (отложенный T3, добавлен правкой M9 финального ревью)."""
+        h = Harness(tmp_path)
+        h.workspace.set_installations([EdtInstallation("2025.2.6+4", EXE_DIR / "1cedt.exe", None, "", 17, "")])
+        p = h.project()
+        reason = h.cli.unavailable_reason(p.id)
+        assert "JDK" in reason and "2025.2.6+4" in reason
+        with pytest.raises(EdtError, match="JDK"):
+            h.cli.start(p.id, "Информация по проектам", "project")
+        assert h.spawned == []
+        h.workspace.update_project(replace(p, jvm_dir=str(JDK)))
+        assert h.cli.unavailable_reason(p.id) == ""
+        h.cli.start(p.id, "Информация по проектам", "project")
+        assert f'-vm "{JDK}"' in h.spawned[0][0].arguments
 
     def test_spawn_oserror_becomes_edt_error_and_not_busy(self, tmp_path: Path) -> None:
         h = Harness(tmp_path)
