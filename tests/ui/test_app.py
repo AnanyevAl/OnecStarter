@@ -3259,11 +3259,16 @@ def test_confirm_quit_asks_about_cli_after_servers_and_logs_shutdown(
     упадёт на `asked`; убрать `edt_cli.log_shutdown()` — на `shutdowns`.
     """  # noqa: RUF002
     monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    monkeypatch.setattr(app_module, "spawn_server", lambda command, log, job: 4646)
     asked: list[str] = []
     env = {"APPDATA": str(tmp_path)}
     runtime = build_runtime(env)
     window, _tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(
-        qapp, runtime, env, quit_dialog=_fake_quit_dialog(asked, answer=True)
+        qapp,
+        runtime,
+        env,
+        quit_dialog=_fake_quit_dialog(asked, answer=True),
+        job_factory=lambda: _FakeJob((4646,)),
     )
     qtbot.addWidget(window)
     assert window.confirm_quit is not None
@@ -3271,9 +3276,17 @@ def test_confirm_quit_asks_about_cli_after_servers_and_logs_shutdown(
     assert window.confirm_quit() is True
     assert asked == []  # ни серверов, ни команд — тихо
 
+    labels = [button.text() for button in window.section_buttons()]
+    window.show_section(labels.index("Серверы"))
+    servers_view = window.current_section()
+    assert isinstance(servers_view, ServersView)
+    _start_fake_server(servers_view, tmp_path)
     fake_edt_cli.running = 2
     assert window.confirm_quit() is True
-    assert asked == ["Выполняются команды CLI EDT: 2. Прервать их и выйти?"]
+    assert asked == [
+        "Остановить 1 сервер и выйти?",  # серверный гейт первым
+        "Выполняются команды CLI EDT: 2. Прервать их и выйти?",
+    ]
     # `log_shutdown` зовётся на каждое согласие; при нуле команд настоящий —
     # пустой цикл, фейк лишь фиксирует сам вызов.
     assert fake_edt_cli.shutdowns == [0, 2]
@@ -3314,10 +3327,12 @@ def test_build_main_window_gives_edt_view_the_cli_and_watcher(
     window.show_section(labels.index("EDT"))
     edt_view = window.current_section()
     assert isinstance(edt_view, EdtView)
-    assert isinstance(edt_view._cli, EdtCli)
-    assert edt_view._cli.journal_path("x") == runtime.servers.parent / "logs" / "edt" / "x.log"
-    assert isinstance(edt_view._watcher, CliWatcher)
-    assert edt_view._watcher.parent() is window
+    cli = edt_view.cli()
+    assert isinstance(cli, EdtCli)
+    assert cli.journal_path("x") == runtime.servers.parent / "logs" / "edt" / "x.log"
+    watcher = edt_view.watcher()
+    assert isinstance(watcher, CliWatcher)
+    assert watcher.parent() is window
 
 
 @pytest.mark.parametrize(

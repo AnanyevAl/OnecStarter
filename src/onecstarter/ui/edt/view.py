@@ -50,7 +50,7 @@ from onecstarter.domain.edt_cli import (
 )
 from onecstarter.platform_1c.editors import EDITOR_LABELS, EditorKind
 from onecstarter.services.edt import EdtScan, EdtWorkspace
-from onecstarter.services.edt_cli import EdtCli, workspace_entries
+from onecstarter.services.edt_cli import CliRun, EdtCli, workspace_entries
 from onecstarter.services.errors import ServicesError
 from onecstarter.ui.bases.panel import open_in_explorer
 from onecstarter.ui.dialogs.buttons import ask_confirmation
@@ -232,7 +232,6 @@ class EdtView(QWidget):
         # CLI EDT (план 2): `cli is None` — подменю не строится, консоль пуста.
         self._cli = cli
         self._watcher = watcher
-        self._documents_dir = documents_dir
         self._last_tsv_dir = documents_dir  # каталог последнего TSV — на сеанс (§14.2)
         self._console_project: str | None = None  # чья запись сейчас в консоли
         self._console = EdtConsole(palette=palette)
@@ -290,6 +289,12 @@ class EdtView(QWidget):
 
     def console(self) -> EdtConsole:
         return self._console
+
+    def cli(self) -> EdtCli | None:
+        return self._cli
+
+    def watcher(self) -> CliWatcher | None:
+        return self._watcher
 
     def search(self) -> QLineEdit:
         return self._search
@@ -696,10 +701,18 @@ class EdtView(QWidget):
             self._watcher.watch(run)
         self.rebuild()
 
-    def on_cli_finished(self, project_id: str, code: object) -> None:
-        """Слот `CliWatcher.finished`: код завершения пришёл в главный поток."""
-        if self._cli is None:
+    def on_cli_finished(self, run: object, code: object) -> None:
+        """Код завершения от наблюдателя. Запоздавший сигнал чужого run игнорируется.
+
+        После «Прервать» `Popen.wait()` в потоке-демоне возвращается не сразу;
+        если пользователь успел запустить на той же записи новую команду,
+        сигнал старого run не должен закрыть новый (находка ревью Task 6).
+        """
+        if self._cli is None or not isinstance(run, CliRun):
             return
+        if self._cli.run(run.project_id) is not run:
+            return
+        project_id = run.project_id
         self._cli.finish(project_id, code if isinstance(code, int) else None)
         if self._console_project == project_id:
             self._refresh_console_state(project_id)

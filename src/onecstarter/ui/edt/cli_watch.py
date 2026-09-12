@@ -18,7 +18,10 @@ def _spawn_daemon(task: Callable[[], None]) -> None:
 
 
 class CliWatcher(QObject):
-    finished = Signal(str, object)  # id записи, int | None
+    # Сам `CliRun`, не id записи: после «Прервать» и повторного запуска на той же
+    # записи запоздавший сигнал старого run не должен закрыть новый — слот
+    # сверяет объект с живым run (находка ревью Task 6).  # noqa: RUF003
+    finished = Signal(object, object)  # CliRun, int | None
 
     def __init__(
         self,
@@ -35,6 +38,6 @@ class CliWatcher(QObject):
                 code: int | None = run.process.wait()
             except OSError:
                 code = None
-            self.finished.emit(run.project_id, code)
+            self.finished.emit(run, code)
 
         self._spawn(wait)

@@ -1,5 +1,6 @@
 """EdtView: дерево, фильтр, запуск по Enter/двойному клику, статус, F5 (спека §7)."""
 
+import re
 from collections.abc import Callable
 from itertools import count
 from pathlib import Path
@@ -778,6 +779,30 @@ def test_cli_interrupt_confirms_and_marks(harness: Harness, qtbot, monkeypatch) 
     assert view.console().state_label().text() == STATE_INTERRUPTED
 
 
+def test_stale_watcher_signal_does_not_finish_new_run(  # type: ignore[no-untyped-def]
+    harness: Harness, qtbot, monkeypatch
+) -> None:
+    """Прервать → запустить снова → приходит сигнал старого run: новый run жив."""
+    p = _add(harness, "a")
+    view = harness.view()
+    qtbot.addWidget(view)
+    monkeypatch.setattr(view, "_confirm", lambda parent, title, text: True)
+    view.cli_build(p.id)
+    stale = harness.pending[0]
+    view.console().interrupt_button().click()
+    view.cli_project(p.id)
+    stale()  # поток-демон старого run «дождался» уже после нового запуска
+    assert harness.cli.run(p.id) is not None
+    assert harness.jobs[-1].closed is False
+    assert view.console().state_label().text() == STATE_RUNNING
+    assert harness.workspace.status(p.id).cli_busy is True
+    journal = harness.cli.journal_path(p.id).read_text(encoding="utf-8")
+    assert "завершено" not in journal  # чужой код не попал в журнал нового run
+    harness.pending[1]()  # свой же сигнал новый run закрывает штатно
+    assert harness.cli.run(p.id) is None
+    assert view.console().state_label().text() == "завершено, код 0"
+
+
 def test_cli_interrupt_declined_keeps_running(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     p = _add(harness, "a")
     view = harness.view()
@@ -802,17 +827,21 @@ def test_cli_validate_builds_paths_and_result_button(  # type: ignore[no-untyped
     view = harness.view()
     qtbot.addWidget(view)
     seen: dict[str, object] = {}
+    initial_name = ""
 
     def run_dialog(dialog):
+        nonlocal initial_name
         seen["paths"] = dialog.selected_paths()
-        seen["initial"] = dialog.file_edit().text()
+        seen["initial_dir"] = str(Path(dialog.file_edit().text()).parent)
+        initial_name = Path(dialog.file_edit().text()).name
         dialog.file_edit().setText(str(tmp_path / "out.tsv"))
         return True
 
     monkeypatch.setattr(view, "_run_dialog", run_dialog)
     view.cli_validate(p.id)
     assert seen["paths"] == [str(ws / "conf")]
-    assert str(seen["initial"]).startswith(str(tmp_path / "Documents" / "validate-a-"))
+    assert seen["initial_dir"] == str(tmp_path / "Documents")
+    assert re.fullmatch(r"validate-a-\d{8}-\d{4}\.tsv", initial_name)  # штамп yyyyMMdd-HHmm
     args = harness.cli_spawned[0].arguments
     assert f"validate --project-list '{ws / 'conf'}' --file '{tmp_path / 'out.tsv'}'" in args
     assert view.console().result_button().isHidden() is True

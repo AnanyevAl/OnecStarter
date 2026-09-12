@@ -30,12 +30,15 @@ def _run(code: int) -> CliRun:
     )
 
 
-def test_watch_emits_exit_code(qapp) -> None:  # type: ignore[no-untyped-def]
+def test_watch_emits_run_and_exit_code(qapp) -> None:  # type: ignore[no-untyped-def]
     watcher = CliWatcher(spawn=lambda task: task())
-    got: list[tuple[str, object]] = []
-    watcher.finished.connect(lambda pid, code: got.append((pid, code)))
-    watcher.watch(_run(3))
-    assert got == [("p1", 3)]
+    got: list[tuple[object, object]] = []
+    watcher.finished.connect(lambda run, code: got.append((run, code)))
+    run = _run(3)
+    watcher.watch(run)
+    assert len(got) == 1
+    assert got[0][0] is run  # сам объект run, не id — см. интерфейс
+    assert got[0][1] == 3
 
 
 def test_wait_failure_emits_none(qapp) -> None:  # type: ignore[no-untyped-def]
@@ -46,6 +49,6 @@ def test_wait_failure_emits_none(qapp) -> None:  # type: ignore[no-untyped-def]
     run = CliRun("p1", "x", "project", 1, Broken(0), FakeJob(), "")  # type: ignore[arg-type]
     watcher = CliWatcher(spawn=lambda task: task())
     got: list[object] = []
-    watcher.finished.connect(lambda pid, code: got.append(code))
+    watcher.finished.connect(lambda finished_run, code: got.append(code))
     watcher.watch(run)
     assert got == [None]
