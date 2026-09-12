@@ -1534,6 +1534,12 @@ class TestValidateDialog:
         dialog = CliValidateDialog([], r"C:\d", "r.tsv", choose_save=lambda i: "", exists=lambda p: False)
         qtbot.addWidget(dialog)
         assert dialog.ok_button().isEnabled() is False
+
+    def test_single_quote_in_path_reports_error(self, qtbot) -> None:  # type: ignore[no-untyped-def]
+        dialog = CliValidateDialog([r"D:\O'Reilly\conf"], r"C:\d", "r.tsv", choose_save=lambda i: "", exists=lambda p: False)
+        qtbot.addWidget(dialog)
+        assert dialog.ok_button().isEnabled() is False
+        assert "Одинарная кавычка" in dialog.error_text()
 ```
 
 - [ ] **Step 2: Реализовать `cli_import_dialog.py`**
@@ -1710,7 +1716,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
 )
 
-from onecstarter.domain.edt_cli import CliQuoteError, cli_validate_args
+from onecstarter.domain.edt_cli import cli_validate_args
 from onecstarter.ui.dialogs.buttons import ButtonKind, russian_button_box
 
 EXISTS_ERROR = "Файл уже существует — CLI откажет; выберите другое имя"
@@ -1791,8 +1797,8 @@ class CliValidateDialog(QDialog):
         else:
             try:
                 cli_validate_args(self.selected_paths(), file)
-            except CliQuoteError as quote_error:
-                error = str(quote_error)
+            except ValueError as validation_error:  # CliQuoteError — подкласс; как в import-диалоге
+                error = str(validation_error)
         self._error.setText(error)
         self.ok_button().setEnabled(not error)
 
