@@ -1199,6 +1199,8 @@ Run: `uv run pytest tests/ui/test_edt_cli_watch.py -q` — зелёное.
 ```python
 from pathlib import Path
 
+import pytest
+
 from onecstarter.ui.edt.console_panel import (
     CONSOLE_TITLE,
     STATE_INTERRUPTED,
@@ -1214,12 +1216,16 @@ def test_collapsed_by_default_and_toggles(qtbot) -> None:  # type: ignore[no-unt
     qtbot.addWidget(console)
     assert console.is_expanded() is False
     assert console.journal_panel().isHidden() is True
-    assert console.header_button().text().startswith(CONSOLE_TITLE)
+    assert console.header_button().text() == f"{CONSOLE_TITLE} ▸"
     console.header_button().click()
     assert console.is_expanded() is True
     assert console.journal_panel().isHidden() is False
+    assert console.header_button().text() == f"{CONSOLE_TITLE} ▾"
     console.collapse()
     assert console.is_expanded() is False
+    console.expand()
+    assert console.is_expanded() is True
+    assert console.journal_panel().isHidden() is False
 
 
 def test_show_run_sets_title_state_and_journal(qtbot, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
@@ -1256,6 +1262,17 @@ def test_buttons_emit_signals_and_hide(qtbot) -> None:  # type: ignore[no-untype
 def test_state_constants() -> None:
     assert STATE_INTERRUPTED == "прервано"
     assert state_finished(7) == "завершено, код 7"
+
+
+@pytest.mark.parametrize(
+    ("name", "label", "expected"),
+    [("Розница", "Сборка", "Розница · Сборка"), ("Розница", "", "Розница"), ("", "", "")],
+)
+def test_title_drops_empty_parts(qtbot, name: str, label: str, expected: str) -> None:  # type: ignore[no-untyped-def]
+    console = EdtConsole(palette=DARK)
+    qtbot.addWidget(console)
+    console.show_run(name, label, STATE_RUNNING, None)
+    assert console.title_label().text() == expected
 ```
 
 - [ ] **Step 3: Консоль — реализация**
@@ -1328,7 +1345,9 @@ class EdtConsole(QWidget):
     # --- состояние -------------------------------------------------------
 
     def show_run(self, project_name: str, label: str, state: str, path: Path | None) -> None:
-        self._title.setText(f"{project_name} · {label}")
+        # Пустые части опускаются: «прошлый запуск» без метки и пустое состояние
+        # консоли не должны давать « · » (используется `_sync_console`, Task 6).
+        self._title.setText(" · ".join(part for part in (project_name, label) if part))
         self._state.setText(state)
         self._panel.show_journal(project_name, path)
 
@@ -2249,10 +2268,8 @@ def cli_busy_icon(palette: Palette) -> QIcon:
         return self._console
 ```
 
-`show_run("", "", …)` с пустым именем даёт заголовок `" · "` — в `EdtConsole.show_run`
-пустые `project_name` и `label` дают пустой заголовок: `" · ".join(part for part in (project_name, label) if part)`.
-Поправить `EdtConsole.show_run` соответственно (тест Task 4 с двумя непустыми частями
-остаётся верным). `apply_palette` вьюхи — добавить `self._console.apply_palette(palette)`.
+`EdtConsole.show_run` уже опускает пустые части заголовка (Task 4).
+`apply_palette` вьюхи — добавить `self._console.apply_palette(palette)`.
 
 Тест `test_selecting_project_shows_its_journal_without_expanding` ожидает у записи `b`
 пустой заголовок — журнала у `b` нет, ветка `else`.
