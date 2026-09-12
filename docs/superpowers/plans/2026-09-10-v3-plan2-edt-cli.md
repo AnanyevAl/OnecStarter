@@ -709,9 +709,13 @@ class Harness:
         self.workspace.refresh_installations()
 
         def spawn(command: LaunchCommand, log_path: Path, job: Job) -> LoggedProcess:
+            # Дописываем, а не перезаписываем: настоящий spawn_logged отдаёт ребёнку
+            # хендл FILE_APPEND_DATA и никогда не обрезает журнал (находка ревью Task 3:
+            # фейк с write_text стирал события, записанные до spawn).
             self.spawned.append((command, log_path))
             log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_path.write_text("вывод cli\n", encoding="utf-8")
+            with log_path.open("a", encoding="utf-8") as journal:
+                journal.write("вывод cli\n")
             return LoggedProcess(pid=4242, process=FakeProcess(4242))  # type: ignore[arg-type]
 
         def job_factory() -> Job:
@@ -752,6 +756,9 @@ class TestStart:
         text = log_path.read_text(encoding="utf-8")
         assert "[12:00:00] ▶ Пересобрать проекты: build --yes" in text
         assert str(command.executable) in text
+        # Порядок в журнале: событие старта и командная строка — ДО вывода ребёнка
+        # (спека §14.4; servers.py пишет «запуск:» до spawn_server тем же приёмом).
+        assert text.index("▶ Пересобрать проекты") < text.index("вывод cli")
         assert h.workspace.status(p.id).cli_busy is True
         assert h.cli.running_count() == 1
 
@@ -796,6 +803,9 @@ class TestStart:
             h.cli.start(p.id, "Информация по проектам", "project")
         assert h.workspace.status(p.id).cli_busy is False
         assert h.cli.running_count() == 0
+        journal = h.cli.journal_path(p.id).read_text(encoding="utf-8")
+        assert "▶ Информация по проектам: project" in journal  # что пытались запустить
+        assert "■ не запущен: OSError" in journal
 
 
 class TestFinishAndInterrupt:
