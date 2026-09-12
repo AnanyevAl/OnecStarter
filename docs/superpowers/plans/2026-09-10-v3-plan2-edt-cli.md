@@ -1604,11 +1604,17 @@ class TestImportDialog:
 PATHS = [r"D:\ws\conf", r"D:\ws\conf.ext"]
 
 
+def _dirs_only(path: str) -> bool:
+    """Фейк `os.path.exists`: каталоги есть, файла результата нет (правка M4 финального
+    ревью: диалог проверяет и каталог результата — `exists=lambda p: False` его отверг бы)."""
+    return not path.lower().endswith(".tsv")
+
+
 class TestValidateDialog:
     def test_all_checked_and_default_file(self, qtbot) -> None:  # type: ignore[no-untyped-def]
         dialog = CliValidateDialog(
             PATHS, r"C:\Users\u\Documents", "validate-a-20260910-1200.tsv",
-            choose_save=lambda initial: "", exists=lambda p: False,
+            choose_save=lambda initial: "", exists=_dirs_only,
         )
         qtbot.addWidget(dialog)
         assert dialog.selected_paths() == PATHS
@@ -1616,7 +1622,7 @@ class TestValidateDialog:
         assert dialog.ok_button().isEnabled() is True
 
     def test_nothing_checked_disables_ok(self, qtbot) -> None:  # type: ignore[no-untyped-def]
-        dialog = CliValidateDialog(PATHS, r"C:\d", "r.tsv", choose_save=lambda i: "", exists=lambda p: False)
+        dialog = CliValidateDialog(PATHS, r"C:\d", "r.tsv", choose_save=lambda i: "", exists=_dirs_only)
         qtbot.addWidget(dialog)
         for row in range(2):
             dialog.list_widget().item(row).setCheckState(Qt.CheckState.Unchecked)
@@ -1630,21 +1636,36 @@ class TestValidateDialog:
         assert dialog.error_text() == "Файл уже существует — CLI откажет; выберите другое имя"
 
     def test_browse_replaces_file(self, qtbot) -> None:  # type: ignore[no-untyped-def]
-        dialog = CliValidateDialog(PATHS, r"C:\d", "r.tsv", choose_save=lambda i: r"E:\out\x.tsv", exists=lambda p: False)
+        dialog = CliValidateDialog(PATHS, r"C:\d", "r.tsv", choose_save=lambda i: r"E:\out\x.tsv", exists=_dirs_only)
         qtbot.addWidget(dialog)
         dialog.browse_button().click()
         assert dialog.result_file() == r"E:\out\x.tsv"
 
     def test_empty_paths_list(self, qtbot) -> None:  # type: ignore[no-untyped-def]
-        dialog = CliValidateDialog([], r"C:\d", "r.tsv", choose_save=lambda i: "", exists=lambda p: False)
+        dialog = CliValidateDialog([], r"C:\d", "r.tsv", choose_save=lambda i: "", exists=_dirs_only)
         qtbot.addWidget(dialog)
         assert dialog.ok_button().isEnabled() is False
 
     def test_single_quote_in_path_reports_error(self, qtbot) -> None:  # type: ignore[no-untyped-def]
-        dialog = CliValidateDialog([r"D:\O'Reilly\conf"], r"C:\d", "r.tsv", choose_save=lambda i: "", exists=lambda p: False)
+        dialog = CliValidateDialog([r"D:\O'Reilly\conf"], r"C:\d", "r.tsv", choose_save=lambda i: "", exists=_dirs_only)
         qtbot.addWidget(dialog)
         assert dialog.ok_button().isEnabled() is False
         assert "Кавычка в значении недопустима" in dialog.error_text()
+
+    def test_missing_result_dir_rejected(self, qtbot) -> None:  # type: ignore[no-untyped-def]
+        """Правка M4 финального ревью: `Documents` может не существовать (OneDrive KFM),
+        CLI каталог для TSV не создаёт — проверка каталога тем же `exists`, что и файла."""
+        seen: list[str] = []
+
+        def exists(path: str) -> bool:
+            seen.append(path)
+            return False
+
+        dialog = CliValidateDialog(PATHS, r"C:\nope\Documents", "r.tsv", choose_save=lambda i: "", exists=exists)
+        qtbot.addWidget(dialog)
+        assert dialog.ok_button().isEnabled() is False
+        assert dialog.error_text() == "Каталог результата не существует"
+        assert r"C:\nope\Documents" in seen  # проверялся именно родитель файла
 ```
 
 - [ ] **Step 2: Реализовать `cli_import_dialog.py`**
@@ -1825,6 +1846,7 @@ from onecstarter.domain.edt_cli import cli_validate_args
 from onecstarter.ui.dialogs.buttons import ButtonKind, russian_button_box
 
 EXISTS_ERROR = "Файл уже существует — CLI откажет; выберите другое имя"
+NO_DIR_ERROR = "Каталог результата не существует"  # правка M4 финального ревью
 
 
 def browse_for_tsv(initial: str) -> str:
@@ -1899,6 +1921,10 @@ class CliValidateDialog(QDialog):
             error = "Укажите файл результата"
         elif self._exists(file):
             error = EXISTS_ERROR
+        elif not self._exists(str(Path(file).parent)):
+            # M4 ревью: каталог по умолчанию может не существовать (OneDrive KFM),
+            # CLI каталог для TSV не создаёт — отказ здесь, не кодом после запуска.
+            error = NO_DIR_ERROR
         else:
             try:
                 cli_validate_args(self.selected_paths(), file)
@@ -1952,7 +1978,7 @@ git commit -m "feat(ui): диалоги CLI EDT — import с двумя вар�
 
 **Interfaces:**
 - Consumes: `EdtCli`, `CliRun`, `CliResult`, `workspace_entries` (Task 3); `CliWatcher`, `EdtConsole`, состояния (Task 4); диалоги (Task 5); `cli_build_args`, `cli_project_args`, `cli_import_args`, `cli_validate_args`, `workspace_projects` (Task 1); `spawn_logged` (Task 2); `ServerJob`; `_confirm_quit_with_servers` (`app.py`); `ui/edt/icons.py::running_icon` (план 1, Task 21) — по его образцу `cli_busy_icon(palette)`: закрашенный круг цветом `palette.accent`, 16 px; `tree_model._project_row` ставит его в ячейку имени при `status.cli_busy` (и не ставит ▶), подсказка дополняется `CLI_BUSY_HINT`; `ui/edt/view.py::_on_current_changed` (план 1, Task 22) — общий слот смены выделения, куда добавляется `_sync_console()`.
-- Produces: `EdtWorkspace.open_path(path: str)`; `EdtView(cli: EdtCli | None = None, watcher: CliWatcher | None = None, documents_dir: str = str(Path.home() / "Documents"))`; методы `cli_build(project_id)`, `cli_import(project_id)`, `cli_validate(project_id)`, `cli_project(project_id)`, `on_cli_finished(project_id, code)`, `interrupt_current_cli()`, `console() -> EdtConsole`; константы `MENU_CLI = "CLI"`, `CLI_BUILD = "Пересобрать проекты"`, `CLI_IMPORT = "Импортировать проект…"`, `CLI_VALIDATE = "Проверить проекты…"`, `CLI_PROJECT = "Информация по проектам"`, `CLI_BUSY_HINT = "Выполняется команда CLI"`; в `app.py` — `_confirm_quit_with_cli(running_count, ask) -> bool`.
+- Produces: `EdtWorkspace.open_path(path: str)`; `EdtView(cli: EdtCli | None = None, watcher: CliWatcher | None = None, documents_dir: str = str(Path.home() / "Documents"))`; методы `cli_build(project_id)`, `cli_import(project_id)`, `cli_validate(project_id)`, `cli_project(project_id)`, `on_cli_finished(project_id, code)`, `interrupt_current_cli()`, `console() -> EdtConsole`, `tsv_dir() -> str` (каталог следующего диалога `validate`; правка M4); константы `MENU_CLI = "CLI"`, `CLI_BUILD = "Пересобрать проекты"`, `CLI_IMPORT = "Импортировать проект…"`, `CLI_VALIDATE = "Проверить проекты…"`, `CLI_PROJECT = "Информация по проектам"`, `CLI_BUSY_HINT = "Выполняется команда CLI"`; в `app.py` — `_confirm_quit_with_cli(running_count, ask) -> bool`.
 
 - [ ] **Step 1: Падающие тесты вьюхи**
 
@@ -2456,7 +2482,11 @@ def test_confirm_quit_with_cli_declined() -> None:
     cli_watcher = CliWatcher()
 ```
 
-`EdtView(..., cli=edt_cli, watcher=cli_watcher)`; после создания `window` —
+`EdtView(..., cli=edt_cli, watcher=cli_watcher, documents_dir=QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation))`
+— правка M4 финального ревью: не `Path.home() / "Documents"` (при OneDrive KFM «Документы»
+живут в другом месте и `~/Documents` может не существовать), а тот же источник, что у ярлыков
+в `ui/bases/view.py`; тест `test_build_main_window_gives_edt_view_the_cli_and_watcher`
+сверяет `edt_view.tsv_dir()` с этим значением. После создания `window` —
 `cli_watcher.setParent(window)`.
 
 Гейт выхода — рядом с `_confirm_quit_with_servers`:

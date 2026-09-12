@@ -22,6 +22,7 @@ from onecstarter.domain.edt_cli import cli_validate_args
 from onecstarter.ui.dialogs.buttons import ButtonKind, russian_button_box
 
 EXISTS_ERROR = "Файл уже существует — CLI откажет; выберите другое имя"
+NO_DIR_ERROR = "Каталог результата не существует"
 
 
 def browse_for_tsv(initial: str) -> str:
@@ -96,6 +97,10 @@ class CliValidateDialog(QDialog):
             error = "Укажите файл результата"
         elif self._exists(file):
             error = EXISTS_ERROR
+        elif not self._exists(str(Path(file).parent)):
+            # M4 ревью: каталог по умолчанию может не существовать (OneDrive KFM),
+            # CLI каталог для TSV не создаёт — отказ здесь, не кодом после запуска.
+            error = NO_DIR_ERROR
         else:
             try:
                 cli_validate_args(self.selected_paths(), file)

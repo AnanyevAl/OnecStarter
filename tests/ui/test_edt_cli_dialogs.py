@@ -61,11 +61,18 @@ class TestImportDialog:
 PATHS = [r"D:\ws\conf", r"D:\ws\conf.ext"]
 
 
+def _dirs_only(path: str) -> bool:
+    """Фейк `os.path.exists`: каталоги есть, файла результата нет (M4 ревью:
+    диалог проверяет и каталог результата, `exists=lambda p: False` его отвергал бы).
+    """  # noqa: RUF002
+    return not path.lower().endswith(".tsv")
+
+
 class TestValidateDialog:
     def test_all_checked_and_default_file(self, qtbot) -> None:  # type: ignore[no-untyped-def]
         dialog = CliValidateDialog(
             PATHS, r"C:\Users\u\Documents", "validate-a-20260910-1200.tsv",
-            choose_save=lambda initial: "", exists=lambda p: False,
+            choose_save=lambda initial: "", exists=_dirs_only,
         )
         qtbot.addWidget(dialog)
         assert dialog.selected_paths() == PATHS
@@ -74,7 +81,7 @@ class TestValidateDialog:
 
     def test_nothing_checked_disables_ok(self, qtbot) -> None:  # type: ignore[no-untyped-def]
         dialog = CliValidateDialog(
-            PATHS, r"C:\d", "r.tsv", choose_save=lambda i: "", exists=lambda p: False
+            PATHS, r"C:\d", "r.tsv", choose_save=lambda i: "", exists=_dirs_only
         )
         qtbot.addWidget(dialog)
         for row in range(2):
@@ -92,7 +99,7 @@ class TestValidateDialog:
 
     def test_browse_replaces_file(self, qtbot) -> None:  # type: ignore[no-untyped-def]
         dialog = CliValidateDialog(
-            PATHS, r"C:\d", "r.tsv", choose_save=lambda i: r"E:\out\x.tsv", exists=lambda p: False
+            PATHS, r"C:\d", "r.tsv", choose_save=lambda i: r"E:\out\x.tsv", exists=_dirs_only
         )
         qtbot.addWidget(dialog)
         dialog.browse_button().click()
@@ -100,7 +107,7 @@ class TestValidateDialog:
 
     def test_empty_paths_list(self, qtbot) -> None:  # type: ignore[no-untyped-def]
         dialog = CliValidateDialog(
-            [], r"C:\d", "r.tsv", choose_save=lambda i: "", exists=lambda p: False
+            [], r"C:\d", "r.tsv", choose_save=lambda i: "", exists=_dirs_only
         )
         qtbot.addWidget(dialog)
         assert dialog.ok_button().isEnabled() is False
@@ -108,8 +115,25 @@ class TestValidateDialog:
     def test_single_quote_in_path_reports_error(self, qtbot) -> None:  # type: ignore[no-untyped-def]
         dialog = CliValidateDialog(
             [r"D:\O'Reilly\conf"], r"C:\d", "r.tsv",
-            choose_save=lambda i: "", exists=lambda p: False,
+            choose_save=lambda i: "", exists=_dirs_only,
         )
         qtbot.addWidget(dialog)
         assert dialog.ok_button().isEnabled() is False
         assert "Кавычка в значении недопустима" in dialog.error_text()
+
+    def test_missing_result_dir_rejected(self, qtbot) -> None:  # type: ignore[no-untyped-def]
+        """M4 ревью: `Documents` может не существовать (OneDrive KFM) — CLI не создаст
+        каталог для TSV; проверка каталога — тем же `exists`, что и файла."""
+        seen: list[str] = []
+
+        def exists(path: str) -> bool:
+            seen.append(path)
+            return False
+
+        dialog = CliValidateDialog(
+            PATHS, r"C:\nope\Documents", "r.tsv", choose_save=lambda i: "", exists=exists
+        )
+        qtbot.addWidget(dialog)
+        assert dialog.ok_button().isEnabled() is False
+        assert dialog.error_text() == "Каталог результата не существует"
+        assert r"C:\nope\Documents" in seen  # проверялся именно родитель файла

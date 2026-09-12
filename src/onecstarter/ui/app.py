@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol, cast
 
-from PySide6.QtCore import QEventLoop, Qt, QTimer
+from PySide6.QtCore import QEventLoop, QStandardPaths, Qt, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
@@ -1007,6 +1007,11 @@ def _build_main_window(
             ),
             cli=edt_cli,
             watcher=cli_watcher,
+            # M4 ревью: не `~/Documents` — при OneDrive KFM «Документы» живут
+            # в другом месте; тот же источник, что у ярлыков в ui/bases/view.py.  # noqa: RUF003
+            documents_dir=QStandardPaths.writableLocation(
+                QStandardPaths.StandardLocation.DocumentsLocation
+            ),
         )
         edt_section_widget = edt_view
     else:

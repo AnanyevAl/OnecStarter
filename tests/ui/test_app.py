@@ -14,6 +14,7 @@ from PySide6.QtCore import (
     QCoreApplication,
     QEvent,
     QObject,
+    QStandardPaths,
     QTimer,
     Signal,
     SignalInstance,
@@ -3333,6 +3334,11 @@ def test_build_main_window_gives_edt_view_the_cli_and_watcher(
     watcher = edt_view.watcher()
     assert isinstance(watcher, CliWatcher)
     assert watcher.parent() is window
+    # M4 ревью: каталог TSV по умолчанию — из QStandardPaths, не `~/Documents`
+    # (при OneDrive KFM «Документы» живут в другом месте, `~/Documents` может не быть).
+    documents = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation)
+    assert documents  # на этой машине расположение известно, иначе проверка пуста
+    assert edt_view.tsv_dir() == documents
 
 
 @pytest.mark.parametrize(

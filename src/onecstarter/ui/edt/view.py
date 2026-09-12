@@ -296,6 +296,10 @@ class EdtView(QWidget):
     def watcher(self) -> CliWatcher | None:
         return self._watcher
 
+    def tsv_dir(self) -> str:
+        """Каталог, который получит следующий диалог `validate` (последний TSV сеанса)."""
+        return self._last_tsv_dir
+
     def search(self) -> QLineEdit:
         return self._search
 
