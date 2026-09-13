@@ -39,6 +39,10 @@ PROJECTS_REGISTRY = Path(".metadata") / ".plugins" / "org.eclipse.core.resources
 _BEGIN_CHUNK = bytes.fromhex("40B18B8123BC00141A2596E7A393BE1E")
 _END_CHUNK = bytes.fromhex("C058FBF323BC00141A51F38C7BBB77C6")
 _URI_PREFIX = "URI//"  # `LocalMetaArea.URI_PREFIX` ([Д])
+# Символы, которые cmd.exe толкует вне двойных кавычек ([Ф] замер ревью 13.09.2026:
+# внутри "…" целы; `!` гасит /v:off; `%` раскрывается и в кавычках — проверяется отдельно).
+_CMD_SPECIALS = frozenset("&|<>^")
+_CMD_MAX_LINE = 8191  # предел длины строки cmd.exe ([Ф] «Слишком длинная входная строка», код 1)
 
 
 class CliQuoteError(ValueError):
@@ -132,7 +136,7 @@ class WorkspaceEntry:
 
 
 def workspace_projects(entries: Sequence[WorkspaceEntry], project_dir: str) -> list[str]:
-    """Пути проектов для `validate`: подкаталоги с `.project` + `project_dir`, если вне."""  # noqa: RUF002
+    """Пути проектов для `validate`: записи реестра workspace с `.project` + `project_dir`, если его там нет."""  # noqa: RUF002, E501
     result = [entry.path for entry in entries if entry.is_project]
     if project_dir:
         keys = {workspace_key(path) for path in result}
@@ -178,18 +182,52 @@ def wrap_console_utf8(command: LaunchCommand, comspec: Path) -> LaunchCommand:
     if "%" in line:
         msg = f"Символ % в командной строке недопустим (команда идёт через cmd.exe): {line}"
         raise CliQuoteError(msg)
-    return LaunchCommand(executable=comspec, arguments=f'/d /v:off /c "chcp 65001 >nul & {line}"')
+    specials = _unquoted_cmd_specials(line)
+    if specials:
+        msg = (
+            f"Символы {specials!r} вне кавычек недопустимы (команда идёт через cmd.exe; "
+            f"обычно это vm_args): {line}"
+        )
+        raise CliQuoteError(msg)
+    arguments = f'/d /v:off /c "chcp 65001 >nul & {line}"'
+    wrapped = LaunchCommand(executable=comspec, arguments=arguments)
+    if len(wrapped.command_line) > _CMD_MAX_LINE:
+        msg = (
+            f"Командная строка длиннее предела cmd.exe ({_CMD_MAX_LINE} символов) — "
+            "уменьшите перечень проектов"
+        )
+        raise CliQuoteError(msg)
+    return wrapped
+
+
+def _unquoted_cmd_specials(line: str) -> str:
+    """`& | < > ^` вне двойных кавычек — их cmd истолкует: `D:\\R&D` режет строку и запускает
+    `D`, `a|b` уводит вывод в трубу ([Ф] замер ревью 13.09.2026). `-data`, `-command`, `-vm`
+    всегда в кавычках; без кавычек идут только `vm_args` установки и записи."""
+    in_quotes = False
+    found: list[str] = []
+    for char in line:
+        if char == '"':
+            in_quotes = not in_quotes
+        elif not in_quotes and char in _CMD_SPECIALS:
+            found.append(char)
+    return "".join(found)
 
 
 def _file_uri_to_path(uri: str) -> str:
-    """`file:/E:/a%20b/п` → путь Windows; `file://server/share` → UNC; иные схемы — как есть."""
+    """`file:/E:/a%20b/п` → путь Windows; UNC — `file:////srv/share` ([Д] `URIUtil.toURI`
+    Eclipse добавляет лишнюю пару слэшей, чтобы отличить UNC от authority) и `file://srv/share`
+    (authority-форма: Eclipse читает, не пишет); 1 или 3 слэша — локальный путь; иные схемы —
+    как есть.
+    """
     if not uri.startswith("file:"):
         return uri
     rest = unquote(uri[len("file:") :])
-    if rest.startswith("//") and not rest.startswith("///"):
-        return "\\\\" + rest[2:].replace("/", "\\")  # UNC
-    rest = rest.lstrip("/")
-    return rest.replace("/", "\\")
+    slashes = len(rest) - len(rest.lstrip("/"))
+    body = rest.lstrip("/").replace("/", "\\")
+    if slashes == 2 or slashes >= 4:
+        return "\\\\" + body
+    return body
 
 
 def parse_project_location(raw: bytes) -> str | None:
@@ -198,8 +236,11 @@ def parse_project_location(raw: bytes) -> str | None:
     Формат ([Д] `LocalMetaArea.writePrivateDescription`, [Ф] байты Э6): чанк
     `BEGIN_CHUNK` + `DataOutputStream.writeUTF` строки `URI//<uri>` (пустая —
     расположение по умолчанию) + число динамических ссылок + их имена + `END_CHUNK`.
-    При перезаписи чанки дописываются — действителен последний. Modified UTF-8
-    Java для BMP совпадает с UTF-8; повреждённый файл даёт `None`.
+    Перед записью Eclipse очищает файл (`Workspace.clear`) — в норме ровно один чанк;
+    `rfind(BEGIN_CHUNK)` — устойчивость к оборванной записи (BEGIN без END, затем полный
+    чанк): `SafeChunkyInputStream.refineChunk` в этом случае тоже берёт последний BEGIN
+    ([Д] исходники Eclipse, уточнение ревью 13.09.2026). Modified UTF-8 Java для BMP
+    совпадает с UTF-8; повреждённый файл даёт `None`.
     """  # noqa: RUF002
     start = raw.rfind(_BEGIN_CHUNK)
     if start < 0:

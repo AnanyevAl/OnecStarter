@@ -132,8 +132,12 @@ workspace: `E:\edt\тест_2026\` содержит только `.metadata`, п
 (`40 B1 8B 81 23 BC 00 14 1A 25 96 E7 A3 93 BE 1E`), затем `DataOutputStream.writeUTF`
 (2 байта длины big-endian + modified UTF-8) строки `URI//<uri>` (пустая строка — проект
 в `<workspace>\<имя>`), затем `int` числа динамических ссылок и их имена, затем
-`END_CHUNK`; при перезаписи чанки дописываются — действителен последний. Снятые байты
-совпадают с форматом [Ф]. Скрытые записи (`.org.eclipse.egit.core.cmp`) начинаются с точки.
+`END_CHUNK`. Снятые байты совпадают с форматом [Ф]. Уточнение финального ревью плана 3
+по исходникам Eclipse [Д]: перед записью файл очищается (`Workspace.clear`) — в здоровом
+файле один чанк; `rfind(BEGIN_CHUNK)` — устойчивость к оборванной записи (BEGIN без END,
+затем полный чанк), как `SafeChunkyInputStream.refineChunk`. UNC Eclipse пишет как
+`file:////srv/share` (`URIUtil.toURI`, лишняя пара слэшей), authority-форму `file://srv/share`
+читает, не пишет [Д]. Скрытые записи (`.org.eclipse.egit.core.cmp`) начинаются с точки.
 Решение — в Task 3 плана 3: перечень проектов брать из `.projects\*` с разбором
 `.location`, а не из подкаталогов workspace.
 

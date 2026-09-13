@@ -136,7 +136,7 @@ class TestValidateArgs:
 
 class TestWorkspaceProjects:
     ENTRIES = (
-        WorkspaceEntry(".metadata", r"D:\ws\.metadata", False),
+        WorkspaceEntry("gone", r"D:\nowhere\gone", False),  # в реестре есть, каталога нет
         WorkspaceEntry("conf", r"D:\ws\conf", True),
         WorkspaceEntry("conf.ext", r"D:\ws\conf.ext", True),
         WorkspaceEntry("Серверы", r"D:\ws\Серверы", True),
@@ -202,6 +202,40 @@ class TestWrapConsoleUtf8:
         with pytest.raises(CliQuoteError, match="%"):
             wrap_console_utf8(inner, self.COMSPEC)
 
+    @pytest.mark.parametrize(
+        "arguments",
+        [
+            '-data "D:\\ws" -command "project" -vmargs -Dx=D:\\R&D',  # cmd запустит `D`
+            '-data "D:\\ws" -command "project" -vmargs -Dy=a|b',  # вывод уйдёт в трубу
+            '-data "D:\\ws" -command "project" -vmargs -Dz=a^b',
+            '-data "D:\\ws" -command "project" -vmargs -Dz=1 >out',
+        ],
+    )
+    def test_cmd_specials_outside_quotes_rejected(self, arguments: str) -> None:
+        # [Ф] замер ревью 13.09.2026: вне "…" cmd толкует & | < > ^; vm_args идут без кавычек
+        with pytest.raises(CliQuoteError, match="вне кавычек"):
+            wrap_console_utf8(LaunchCommand(CLI, arguments), self.COMSPEC)
+
+    @pytest.mark.parametrize(
+        "arguments",
+        [
+            '-data "D:\\R&D\\ws (2)" -command "project"',  # внутри кавычек — цел
+            '-data "D:\\ws" -command "validate --project-list [\'E:/a&b\' \'E:/c^d\']"',
+            '-data "D:\\ws" -command "validate --file \'E:/x|y<z>.tsv\'"',
+            '-data "D:\\ws" -command "project" -vmargs -Dfoo="a b" -Dx=!TEMP!',  # /v:off гасит !
+        ],
+    )
+    def test_specials_inside_quotes_accepted(self, arguments: str) -> None:
+        wrapped = wrap_console_utf8(LaunchCommand(CLI, arguments), self.COMSPEC)
+        assert arguments in wrapped.arguments
+
+    def test_line_longer_than_cmd_limit_rejected(self) -> None:
+        # [Ф] замер ревью 13.09.2026: 9009 символов → «Слишком длинная входная строка», код 1
+        paths = " ".join(f"'E:/projects/very/long/path/number_{i:04d}/cfe'" for i in range(200))
+        inner = LaunchCommand(CLI, f'-data "D:\\ws" -command "validate --project-list [{paths}]"')
+        with pytest.raises(CliQuoteError, match="8191"):
+            wrap_console_utf8(inner, self.COMSPEC)
+
 
 # Байты `.location` тестового workspace, снятые 13.09.2026 (Э6): dev_tools,
 # привязанный на месте — проект лежит вне каталога workspace.
@@ -223,7 +257,8 @@ class TestParseProjectLocation:
             ("file:/E:/edt/тест_2026/src/cf", r"E:\edt\тест_2026\src\cf"),  # кириллица без %XX
             ("file:/E:/edt/edt%20test/%D0%BF", r"E:\edt\edt test\п"),  # %20 и %XX — снимаются
             ("file:///E:/edt/x", r"E:\edt\x"),
-            ("file://server/share/x", r"\\server\share\x"),
+            ("file:////server/share/x", r"\\server\share\x"),  # [Д] URIUtil.toURI: так пишет Eclipse  # noqa: E501
+            ("file://server/share/x", r"\\server\share\x"),  # authority-форма: читает, не пишет
             ("file:/e:/EDT/x", r"e:\EDT\x"),  # регистр не трогаем — сравнение через workspace_key
         ],
     )
@@ -234,9 +269,11 @@ class TestParseProjectLocation:
         # Пустая строка вместо URI//… — проект в <workspace>\<имя>
         assert parse_project_location(location_blob(None)) is None
 
-    def test_last_chunk_wins(self) -> None:
-        # SafeChunkyOutputStream дописывает чанки при перезаписи — действителен последний
-        raw = location_blob("file:/D:/old") + location_blob("file:/D:/new")
+    def test_aborted_chunk_then_full_takes_last(self) -> None:
+        # Оборванная запись (BEGIN без END), за ней полный чанк: как и
+        # SafeChunkyInputStream.refineChunk, берём последний BEGIN ([Д] исходники Eclipse).
+        # В здоровом файле чанк один — Eclipse очищает файл перед записью (Workspace.clear).  # noqa: RUF003, E501
+        raw = location_blob("file:/D:/old")[:24] + location_blob("file:/D:/new")
         assert parse_project_location(raw) == r"D:\new"
 
     @pytest.mark.parametrize(

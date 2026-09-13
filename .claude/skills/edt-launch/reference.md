@@ -149,8 +149,10 @@ UTF-8 без BOM, CRLF, без строки заголовка, 8 колонок
 C0 58 FB F3 23 BC 00 14 1A 51 F3 8C 7B BB 77 C6   END_CHUNK
 ```
 
-Пустая строка вместо `URI//…` — расположение по умолчанию. Перезапись дописывает новый
-чанк — действителен последний. Кириллица — сырой UTF-8, пробел — `%20`. Снятые примеры:
+Пустая строка вместо `URI//…` — расположение по умолчанию. Перед записью файл очищается
+(`Workspace.clear`), чанк один; читатель Eclipse при оборванной записи берёт последний
+`BEGIN_CHUNK` (`SafeChunkyInputStream.refineChunk`) **[Д]**. Кириллица — сырой UTF-8,
+пробел — `%20`; UNC — `file:////srv/share/x` (`URIUtil.toURI`) **[Д]**. Снятые примеры:
 `URI//file:/E:/tmp/edt-test/dev_tools`, `URI//file:/E:/edt/тест_2026/.metadata/.plugins/org.eclipse.egit.core/.org.eclipse.egit.core.cmp`,
 `file:/E:/work-spaces/projects/conv3_extension/src/КонсольКода`.
 

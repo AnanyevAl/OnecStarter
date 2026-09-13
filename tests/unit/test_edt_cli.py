@@ -419,12 +419,26 @@ def test_workspace_entries_from_metadata_registry(tmp_path: Path) -> None:
     ]
 
 
-def test_workspace_entries_unreadable_location_falls_back_to_default(tmp_path: Path) -> None:
+def test_workspace_entries_garbage_location_falls_back_to_default(tmp_path: Path) -> None:
     ws = tmp_path / "ws"
     _register(ws, "broken", None)
     entry = ws / ".metadata" / ".plugins" / "org.eclipse.core.resources" / ".projects" / "broken"
     (entry / ".location").write_bytes(b"garbage")
     assert workspace_entries(str(ws)) == [WorkspaceEntry("broken", str(ws / "broken"), False)]
+
+
+def test_workspace_entries_unreadable_location_falls_back_to_default(tmp_path: Path) -> None:
+    """`.location` без права чтения (антивирус, монопольный доступ EDT) — не исключение
+    из слота Qt, а запись с расположением по умолчанию (I3 финального ревью плана 3)."""  # noqa: RUF002
+    ws = tmp_path / "ws"
+    _register(ws, "locked", "file:/D:/elsewhere/locked")
+
+    def denied(path: str) -> bytes:
+        raise PermissionError(13, "Отказано в доступе", path)
+
+    assert workspace_entries(str(ws), read_bytes=denied) == [
+        WorkspaceEntry("locked", str(ws / "locked"), False)
+    ]
 
 
 @pytest.mark.parametrize("sub", ["nope", "ws-without-metadata"])
