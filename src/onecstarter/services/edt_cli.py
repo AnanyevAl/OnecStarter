@@ -52,6 +52,8 @@ _log = logging.getLogger("onecstarter.edt_cli")
 
 RUNNING_REASON = "Закройте EDT: workspace занят"
 BUSY_REASON = "Команда CLI уже выполняется для этой записи"
+
+
 def default_comspec() -> Path:
     """`%SystemRoot%\\System32\\cmd.exe` для `wrap_console_utf8` (Э6), не `%ComSpec%`:
     обёртка рассчитана на разбор именно cmd.exe (`/d`, `/v:off`, снятие первой и последней

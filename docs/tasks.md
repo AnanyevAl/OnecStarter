@@ -3878,3 +3878,24 @@ issues found in 217 source files`. Спека вслед: §8, §13, §14.4.
 
 Полный прогон после правок: `uv run pytest -q` — `2427 passed in 459.81s`; `uv run ruff check .`
 — `All checks passed!`; `uv run mypy` — `Success: no issues found in 217 source files`.
+
+### Финальное ревью плана 3 (13.09.2026)
+
+Ревью кода плана 3 (диапазон `03e9977..dc11199`, opus): 3 Important + 4 Minor, все приняты
+и исправлены одной волной (коммит `a9f5da8`), повторное ревью волны — APPROVED.
+Ревьюер снимал факты о cmd.exe замером на живом `cmd.exe` и об Eclipse — по исходникам
+`eclipse-platform` (`URIUtil`, `SafeChunkyInputStream`, `LocalMetaArea`).
+
+| # | Находка | Правка |
+| --- | --- | --- |
+| I1 | UNC в `.location` Eclipse пишет как `file:////srv/share` (четыре слэша) — форма терялась | `_file_uri_to_path` считает ведущие слэши: 2 или ≥ 4 — UNC |
+| I2 | `& \| < > ^` вне кавычек (только `vm_args` идут без кавычек) cmd толкует: `D:\R&D` режет строку, `a\|b` уводит вывод в трубу | `wrap_console_utf8` сканирует строку с учётом кавычек — отказ `CliQuoteError` |
+| I3 | Ветка `except OSError` в `workspace_entries` без теста | тест с `read_bytes`, бросающим `PermissionError`; мутация «убрать try/except» — падает `PermissionError` (проверено дважды: автором и ревьюером) |
+| M1 | «При перезаписи чанки дописываются — действителен последний» — неверно: Eclipse очищает файл перед записью; `rfind` — страховка от оборванной записи | формулировка в коде, тесте, спеке, протоколе и обоих файлах скила |
+| M2 | Предел строки cmd 8191, код 1 читался как «нет 1cedt.ini» | отказ по длине + текст кода 1 |
+| M3 | `%ComSpec%` может быть не cmd.exe | `%SystemRoot%\System32\cmd.exe` |
+| M4 | Устаревший докстринг `workspace_projects`, фикстура с `.metadata` | обновлены |
+
+Правка скила `edt-launch` (M1, I1, I2) перепроверена субагентом по Iron Law. Полный прогон
+после волны: `2441 passed in 455.00s`; ruff и mypy чисты. Сборка 3.0.0 после волны —
+повторная (артефакты до правок отброшены).
