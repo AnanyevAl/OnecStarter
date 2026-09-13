@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from onecstarter.domain.edt import EditorResolution, EdtInstallation, EdtProject
-from onecstarter.domain.edt_cli import WorkspaceEntry
+from onecstarter.domain.edt_cli import WorkspaceEntry, location_blob
 from onecstarter.domain.launch import LaunchCommand
 from onecstarter.platform_1c.job import Job, JobError
 from onecstarter.platform_1c.server_spawn import LoggedProcess
@@ -22,6 +22,7 @@ INSTALLED = [
     EdtInstallation("2025.2.6+4", EXE_DIR / "1cedt.exe", JDK, "-Xmx8192m", 17, "products.json")
 ]
 NOW = datetime(2026, 9, 10, 12, 0, 0)
+COMSPEC = Path(r"C:\Windows\System32\cmd.exe")
 
 
 class FakeJob:
@@ -97,6 +98,7 @@ class Harness:
             spawn=spawn,
             is_file=lambda p: cli_exists and p.name == "1cedtcli.exe",
             now=lambda: NOW,
+            comspec=COMSPEC,
         )
 
     def project(self, **overrides: object) -> EdtProject:
@@ -111,6 +113,15 @@ class Harness:
 
 
 class TestStart:
+    def test_percent_in_workspace_refused_before_spawn(self, tmp_path: Path) -> None:
+        # Команда идёт через cmd.exe (Э6), `%ИМЯ%` он раскрыл бы молча — отказ до запуска
+        h = Harness(tmp_path)
+        p = h.project(workspace=r"D:\edt\%TEMP%")
+        with pytest.raises(EdtError, match="%"):
+            h.cli.start(p.id, "Информация по проектам", "project")
+        assert h.spawned == [] and h.jobs == []
+        assert h.workspace.status(p.id).cli_busy is False
+
     def test_start_builds_command_rotates_journal_and_marks_busy(self, tmp_path: Path) -> None:
         h = Harness(tmp_path)
         p = h.project(vm_args="-Xmx4g")
@@ -120,7 +131,10 @@ class TestStart:
         run = h.cli.start(p.id, "Пересобрать проекты", "build --yes")
         assert run.pid == 4242 and run.label == "Пересобрать проекты"
         [(command, log_path)] = h.spawned
-        assert command.executable == EXE_DIR / "1cedtcli.exe"
+        # Через cmd.exe: chcp 65001 в скрытой консоли до 1cedtcli.exe (Э6, кодировка)
+        assert command.executable == COMSPEC
+        assert command.arguments.startswith('/d /v:off /c "chcp 65001 >nul & ')
+        assert f'"{EXE_DIR / "1cedtcli.exe"}" -data' in command.arguments
         assert '-command "build --yes"' in command.arguments
         assert "-Xmx8192m -Djava.library.path= -Xmx4g" in command.arguments
         assert log_path == h.cli.journal_path(p.id)
@@ -375,17 +389,45 @@ class TestJournalOsError:
         assert h.cli.log_shutdown() == 1
 
 
-def test_workspace_entries_marks_dot_project(tmp_path: Path) -> None:
-    (tmp_path / "conf").mkdir()
-    (tmp_path / "conf" / ".project").write_text("", encoding="utf-8")
-    (tmp_path / ".metadata").mkdir()
-    (tmp_path / "file.txt").write_text("", encoding="utf-8")
-    entries = workspace_entries(str(tmp_path))
-    assert entries == [
-        WorkspaceEntry(".metadata", str(tmp_path / ".metadata"), False),
-        WorkspaceEntry("conf", str(tmp_path / "conf"), True),
+def _register(ws: Path, name: str, uri: str | None) -> None:
+    entry = ws / ".metadata" / ".plugins" / "org.eclipse.core.resources" / ".projects" / name
+    entry.mkdir(parents=True)
+    if uri is not None or name.startswith("."):
+        (entry / ".location").write_bytes(location_blob(uri))
+
+
+def test_workspace_entries_from_metadata_registry(tmp_path: Path) -> None:
+    """Проекты — из `.metadata\\…\\.projects`, путь — из `.location` (Э6, 13.09.2026):
+    в рабочих workspace заказчика конфигурации лежат снаружи, подкаталогов
+    с `.project` внутри workspace может не быть вовсе."""  # noqa: RUF002
+    ws = tmp_path / "ws"
+    outside = tmp_path / "src" / "cf"
+    outside.mkdir(parents=True)
+    (outside / ".project").write_text("", encoding="utf-8")
+    _register(ws, "cf", outside.as_uri())  # привязан на месте, вне workspace
+    _register(ws, "Серверы", None)  # без .location — в <workspace>\<имя>
+    (ws / "Серверы").mkdir()
+    (ws / "Серверы" / ".project").write_text("", encoding="utf-8")
+    _register(ws, "gone", "file:/D:/nowhere/gone")  # зарегистрирован, каталога нет
+    _register(ws, ".org.eclipse.egit.core.cmp", "file:/D:/x")  # скрытая запись Eclipse
+    (ws / "orphan").mkdir()  # с .project, но не в реестре — не проект workspace  # noqa: RUF003
+    (ws / "orphan" / ".project").write_text("", encoding="utf-8")
+    assert workspace_entries(str(ws)) == [
+        WorkspaceEntry("cf", str(outside), True),
+        WorkspaceEntry("gone", r"D:\nowhere\gone", False),
+        WorkspaceEntry("Серверы", str(ws / "Серверы"), True),
     ]
 
 
-def test_workspace_entries_missing_dir_is_empty(tmp_path: Path) -> None:
-    assert workspace_entries(str(tmp_path / "nope")) == []
+def test_workspace_entries_unreadable_location_falls_back_to_default(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    _register(ws, "broken", None)
+    entry = ws / ".metadata" / ".plugins" / "org.eclipse.core.resources" / ".projects" / "broken"
+    (entry / ".location").write_bytes(b"garbage")
+    assert workspace_entries(str(ws)) == [WorkspaceEntry("broken", str(ws / "broken"), False)]
+
+
+@pytest.mark.parametrize("sub", ["nope", "ws-without-metadata"])
+def test_workspace_entries_missing_registry_is_empty(tmp_path: Path, sub: str) -> None:
+    (tmp_path / "ws-without-metadata").mkdir()
+    assert workspace_entries(str(tmp_path / sub)) == []

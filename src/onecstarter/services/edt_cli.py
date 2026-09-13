@@ -31,7 +31,14 @@ from datetime import datetime
 from pathlib import Path
 
 from onecstarter.domain.edt import CLI_EXE, effective_jvm
-from onecstarter.domain.edt_cli import WorkspaceEntry, build_cli_command
+from onecstarter.domain.edt_cli import (
+    PROJECTS_REGISTRY,
+    CliQuoteError,
+    WorkspaceEntry,
+    build_cli_command,
+    parse_project_location,
+    wrap_console_utf8,
+)
 from onecstarter.domain.launch import LaunchCommand
 from onecstarter.platform_1c.job import Job, JobError
 from onecstarter.platform_1c.server_spawn import LoggedProcess, spawn_logged
@@ -45,6 +52,12 @@ _log = logging.getLogger("onecstarter.edt_cli")
 
 RUNNING_REASON = "Закройте EDT: workspace занят"
 BUSY_REASON = "Команда CLI уже выполняется для этой записи"
+_DEFAULT_COMSPEC = Path(r"C:\Windows\System32\cmd.exe")
+
+
+def default_comspec() -> Path:
+    """`%ComSpec%` — cmd.exe для `wrap_console_utf8` (Э6); без переменной — системный путь."""
+    return Path(os.environ.get("ComSpec") or _DEFAULT_COMSPEC)
 
 
 @dataclass(frozen=True)
@@ -66,22 +79,43 @@ class CliResult:
     result_file: str
 
 
+def _read_bytes(path: str) -> bytes:
+    return Path(path).read_bytes()
+
+
 def workspace_entries(
     workspace: str,
     listdir: Callable[[str], list[str]] = os.listdir,
     is_file: Callable[[str], bool] = os.path.isfile,
+    read_bytes: Callable[[str], bytes] = _read_bytes,
 ) -> list[WorkspaceEntry]:
-    """Подкаталоги workspace одного уровня с признаком `.project` (спека §14.2)."""  # noqa: RUF002
+    """Проекты из реестра workspace `.metadata/…/.projects/<имя>` (спека §14.2, [Ф] Э6).
+
+    Путь — из `.location` (проект привязан на месте, обычно вне каталога
+    workspace), без него — `<workspace>/<имя>`; признак — `.project` по этому пути.
+    Скрытые записи Eclipse (`.org.eclipse.egit.core.cmp`) начинаются с точки.
+    Подкаталог workspace без записи в реестре — не проект workspace: `validate`
+    импортировал бы его как побочный эффект.
+    """  # noqa: RUF002
+    registry = Path(workspace) / PROJECTS_REGISTRY
     try:
-        names = sorted(listdir(workspace))
+        names = sorted(listdir(str(registry)))
     except OSError:
         return []
     entries: list[WorkspaceEntry] = []
     for name in names:
-        path = Path(workspace) / name
-        if is_file(str(path)):
+        if name.startswith(".") or is_file(str(registry / name)):
             continue
-        entries.append(WorkspaceEntry(name, str(path), is_file(str(path / ".project"))))
+        location = registry / name / ".location"
+        path: str | None = None
+        if is_file(str(location)):
+            try:
+                path = parse_project_location(read_bytes(str(location)))
+            except OSError:
+                path = None
+        if path is None:
+            path = str(Path(workspace) / name)
+        entries.append(WorkspaceEntry(name, path, is_file(str(Path(path) / ".project"))))
     return entries
 
 
@@ -95,6 +129,7 @@ class EdtCli:
         spawn: Callable[[LaunchCommand, Path, Job], LoggedProcess] = spawn_logged,
         is_file: Callable[[Path], bool] = Path.is_file,
         now: Callable[[], datetime] = datetime.now,
+        comspec: Path | None = None,
     ) -> None:
         self._workspace = workspace
         self._logs_dir = logs_dir
@@ -102,6 +137,7 @@ class EdtCli:
         self._spawn = spawn
         self._is_file = is_file
         self._now = now
+        self._comspec = comspec if comspec is not None else default_comspec()
         self._runs: dict[str, CliRun] = {}
         self._results: dict[str, CliResult] = {}
 
@@ -129,7 +165,7 @@ class EdtCli:
         assert installation is not None  # unavailable_reason проверил
         jvm = effective_jvm(project, installation)
         assert jvm is not None
-        launch = build_cli_command(
+        cli = build_cli_command(
             installation.exe.parent / CLI_EXE,
             project.workspace,
             command,
@@ -137,6 +173,11 @@ class EdtCli:
             installation.vm_args,
             project.vm_args,
         )
+        try:
+            # Кодировка вывода — кодовая страница скрытой консоли, не флаги JVM (Э6)
+            launch = wrap_console_utf8(cli, self._comspec)
+        except CliQuoteError as error:
+            raise EdtError(str(error)) from error
         path = self.journal_path(project_id)
         try:
             rotate_journal(self._logs_dir, project_id)

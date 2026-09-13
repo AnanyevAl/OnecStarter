@@ -64,7 +64,22 @@ def test_buttons_emit_signals_and_hide(qtbot) -> None:  # type: ignore[no-untype
 
 def test_state_constants() -> None:
     assert STATE_INTERRUPTED == "прервано"
-    assert state_finished(7) == "завершено, код 7"
+    assert state_finished(7) == "завершено, код 7"  # неизвестный код — только число
+
+
+@pytest.mark.parametrize(
+    ("code", "text"),
+    [
+        (0, "завершено, код 0"),
+        (1, "завершено, код 1 (CLI не запустился: нет 1cedt.ini или прав на временные файлы)"),
+        (200, "завершено, код 200 (общая ошибка, см. журналы workspace)"),
+        (202, "завершено, код 202 (workspace занят другим приложением)"),
+        (204, "завершено, код 204 (команда прервана исключением, см. журналы workspace)"),
+    ],
+)
+def test_state_finished_names_known_codes(code: int, text: str) -> None:
+    # Таблица `help --status-codes` 1cedtcli.exe 2026.1.2+2 (Э7, 13.09.2026)
+    assert state_finished(code) == text
 
 
 @pytest.mark.parametrize(

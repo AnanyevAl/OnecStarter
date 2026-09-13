@@ -816,13 +816,21 @@ def test_cli_interrupt_declined_keeps_running(harness: Harness, qtbot, monkeypat
     assert harness.workspace.status(p.id).cli_busy is True
 
 
+def _register_project(ws: Path, name: str) -> None:
+    """Проект в каталоге workspace и его запись в реестре `.metadata/…/.projects`
+    (Э6, 13.09.2026): без записи каталог с `.project` — не проект workspace."""  # noqa: RUF002
+    (ws / name).mkdir(parents=True)
+    (ws / name / ".project").write_text("", encoding="utf-8")
+    (ws / ".metadata" / ".plugins" / "org.eclipse.core.resources" / ".projects" / name).mkdir(
+        parents=True
+    )
+
+
 def test_cli_validate_builds_paths_and_result_button(  # type: ignore[no-untyped-def]
     harness: Harness, qtbot, monkeypatch, tmp_path: Path
 ) -> None:
     ws = tmp_path / "ws"
-    (ws / "conf").mkdir(parents=True)
-    (ws / "conf" / ".project").write_text("", encoding="utf-8")
-    (ws / ".metadata").mkdir()  # без .project — не проект
+    _register_project(ws, "conf")
     p = _add(harness, "a", workspace=str(ws))
     view = harness.view()
     qtbot.addWidget(view)
@@ -843,7 +851,7 @@ def test_cli_validate_builds_paths_and_result_button(  # type: ignore[no-untyped
     assert seen["initial_dir"] == str(tmp_path / "Documents")
     assert re.fullmatch(r"validate-a-\d{8}-\d{4}\.tsv", initial_name)  # штамп yyyyMMdd-HHmm
     args = harness.cli_spawned[0].arguments
-    assert f"validate --project-list '{ws / 'conf'}' --file '{tmp_path / 'out.tsv'}'" in args
+    assert f"validate --project-list ['{ws / 'conf'}'] --file '{tmp_path / 'out.tsv'}'" in args
     assert view.console().result_button().isHidden() is True
     (tmp_path / "out.tsv").write_text("", encoding="utf-8")
     harness.pending[0]()
@@ -856,8 +864,7 @@ def test_cli_validate_remembers_last_tsv_dir(  # type: ignore[no-untyped-def]
     harness: Harness, qtbot, monkeypatch, tmp_path: Path
 ) -> None:
     ws = tmp_path / "ws"
-    (ws / "conf").mkdir(parents=True)
-    (ws / "conf" / ".project").write_text("", encoding="utf-8")
+    _register_project(ws, "conf")
     p = _add(harness, "a", workspace=str(ws))
     view = harness.view()
     qtbot.addWidget(view)
@@ -880,8 +887,7 @@ def test_cli_validate_result_missing_after_success_hides_button(  # type: ignore
     harness: Harness, qtbot, monkeypatch, tmp_path: Path
 ) -> None:
     ws = tmp_path / "ws"
-    (ws / "conf").mkdir(parents=True)
-    (ws / "conf" / ".project").write_text("", encoding="utf-8")
+    _register_project(ws, "conf")
     p = _add(harness, "a", workspace=str(ws))
     view = harness.view()
     qtbot.addWidget(view)

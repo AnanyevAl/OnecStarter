@@ -18,9 +18,23 @@ STATE_RUNNING = "выполняется"
 STATE_INTERRUPTED = "прервано"
 STATE_NOT_STARTED = "не запущен"
 
+# Таблица `1cedtcli.exe -command "help --status-codes"` EDT 2026.1.2+2 ([Ф] Э7,
+# 13.09.2026, docs/research/t17-edt-experiments.md). Код 0 — без пояснения;
+# прочие коды (результат команды, 128 + сигнал, код JVM) — только число.
+CLI_STATUS_TEXTS: dict[int, str] = {
+    1: "CLI не запустился: нет 1cedt.ini или прав на временные файлы",
+    200: "общая ошибка, см. журналы workspace",
+    201: "файл скрипта не найден",
+    202: "workspace занят другим приложением",
+    203: "команда прервана, скорее всего по таймауту",
+    204: "команда прервана исключением, см. журналы workspace",
+    205: "таймаут, процесс убит",
+}
+
 
 def state_finished(code: int) -> str:
-    return f"завершено, код {code}"
+    text = CLI_STATUS_TEXTS.get(code)
+    return f"завершено, код {code}" + (f" ({text})" if text else "")
 
 
 class EdtConsole(QWidget):
