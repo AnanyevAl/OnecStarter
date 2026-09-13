@@ -851,7 +851,9 @@ def test_cli_validate_builds_paths_and_result_button(  # type: ignore[no-untyped
     assert seen["initial_dir"] == str(tmp_path / "Documents")
     assert re.fullmatch(r"validate-a-\d{8}-\d{4}\.tsv", initial_name)  # штамп yyyyMMdd-HHmm
     args = harness.cli_spawned[0].arguments
-    assert f"validate --project-list ['{ws / 'conf'}'] --file '{tmp_path / 'out.tsv'}'" in args
+    conf, out = (ws / "conf").as_posix(), (tmp_path / "out.tsv").as_posix()
+    # Прямые слэши ([Ф] Э6)
+    assert f"validate --project-list ['{conf}'] --file '{out}'" in args
     assert view.console().result_button().isHidden() is True
     (tmp_path / "out.tsv").write_text("", encoding="utf-8")
     harness.pending[0]()
@@ -914,7 +916,8 @@ def test_cli_import_runs_dialog_form(harness: Harness, qtbot, monkeypatch) -> No
 
     monkeypatch.setattr(view, "_run_dialog", run_dialog)
     view.cli_import(p.id)
-    assert "-command \"import --project 'D:\\src\\proj'\"" in harness.cli_spawned[0].arguments
+    # Прямые слэши в -command ([Ф] Э6: с обратными Gogo не снимает кавычки, код 204)  # noqa: RUF003
+    assert "-command \"import --project 'D:/src/proj'\"" in harness.cli_spawned[0].arguments
     assert view.console().title_label().text() == "a · Импортировать проект"
 
 

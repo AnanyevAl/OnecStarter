@@ -29,8 +29,10 @@ class TestQuote:
     @pytest.mark.parametrize(
         ("value", "expected"),
         [
-            (r"D:\edt\a", "'D:\\edt\\a'"),
-            (r"D:\edt\a b\проект", "'D:\\edt\\a b\\проект'"),
+            (r"D:\edt\a", "'D:/edt/a'"),  # обратные слэши → прямые ([Ф] Э6: иначе код 204)
+            (r"D:\edt\a b\проект", "'D:/edt/a b/проект'"),
+            ("D:/edt/a", "'D:/edt/a'"),
+            (r"\\server\share\ws", "'//server/share/ws'"),
             ("name", "'name'"),
         ],
     )
@@ -66,13 +68,13 @@ def test_fixed_commands() -> None:
 class TestImportArgs:
     def test_existing_project(self) -> None:
         assert cli_import_args(ImportForm(existing_project_dir=r"D:\src\proj")) == (
-            "import --project 'D:\\src\\proj'"
+            "import --project 'D:/src/proj'"
         )
 
     def test_xml_into_project_dir_minimal(self) -> None:
         form = ImportForm(configuration_files=r"D:\xml", project_dir=r"D:\edt\ws\new")
         assert cli_import_args(form) == (
-            "import --configuration-files 'D:\\xml' --project 'D:\\edt\\ws\\new'"
+            "import --configuration-files 'D:/xml' --project 'D:/edt/ws/new'"
         )
 
     def test_xml_into_named_project_full(self) -> None:
@@ -84,7 +86,7 @@ class TestImportArgs:
             build_after=True,
         )
         assert cli_import_args(form) == (
-            "import --configuration-files 'D:\\xml' --project-name 'ext_a' "
+            "import --configuration-files 'D:/xml' --project-name 'ext_a' "
             "--base-project-name 'base' --version 8.3.24 --build"
         )
 
@@ -117,14 +119,14 @@ class TestValidateArgs:
     def test_single_path(self) -> None:
         # Скобки и для одного пути: `['p']` принят с кодом 0 (Э6, 13.09.2026)  # noqa: RUF003
         assert cli_validate_args([r"D:\ws\p"], r"D:\out\r.tsv") == (
-            "validate --project-list ['D:\\ws\\p'] --file 'D:\\out\\r.tsv'"
+            "validate --project-list ['D:/ws/p'] --file 'D:/out/r.tsv'"
         )
 
     def test_several_paths_gogo_list(self) -> None:
         # [Ф] Э6: несколько путей — список Gogo в квадратных скобках; через пробел
         # без скобок CLI отвечает кодом 204 «Не найден вариант вызова команды»  # noqa: RUF003
         assert cli_validate_args([r"D:\ws\a", r"D:\ws\b c"], r"D:\r.tsv") == (
-            "validate --project-list ['D:\\ws\\a' 'D:\\ws\\b c'] --file 'D:\\r.tsv'"
+            "validate --project-list ['D:/ws/a' 'D:/ws/b c'] --file 'D:/r.tsv'"
         )
 
     def test_empty_paths_rejected(self) -> None:
@@ -175,8 +177,8 @@ class TestBuildCliCommand:
         )
 
     def test_command_with_single_quotes_survives_double_quoting(self) -> None:
-        command = build_cli_command(CLI, r"D:\ws", "import --project 'D:\\a b'", JDK, "", "")
-        assert '-command "import --project \'D:\\a b\'"' in command.arguments
+        command = build_cli_command(CLI, r"D:\ws", "import --project 'D:/a b'", JDK, "", "")
+        assert '-command "import --project \'D:/a b\'"' in command.arguments
 
 
 class TestWrapConsoleUtf8:
