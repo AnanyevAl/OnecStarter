@@ -12,7 +12,7 @@ import pytest
 from onecstarter.domain.launch import LaunchCommand
 from onecstarter.platform_1c import server_spawn
 from onecstarter.platform_1c.job import JobError, NullJob, ServerJob
-from onecstarter.platform_1c.server_spawn import spawn_server
+from onecstarter.platform_1c.server_spawn import LoggedProcess, spawn_logged, spawn_server
 
 
 def _printing_command() -> LaunchCommand:
@@ -311,3 +311,58 @@ def test_open_append_shared_closes_handle_when_open_osfhandle_fails(
 
     after = process.num_handles()
     assert after <= before, f"хендл журнала утёк: было {before}, стало {after}"
+
+
+def test_spawn_logged_returns_process_whose_exit_code_is_readable(tmp_path: Path) -> None:
+    """CLI EDT (спека §14.4): Popen остаётся вызывающему — wait() даёт код завершения."""
+    command = LaunchCommand(
+        executable=Path(sys.executable),
+        arguments='-c "print(\'cli out\', flush=True); raise SystemExit(7)"',
+    )
+    log_path = tmp_path / "cli.log"
+    result = spawn_logged(command, log_path, NullJob())
+    try:
+        assert isinstance(result, LoggedProcess)
+        assert result.pid == result.process.pid
+        assert result.process.wait(timeout=10) == 7
+        assert "cli out" in log_path.read_text(encoding="ascii", errors="replace")
+    finally:
+        _kill_if_alive(result.pid)
+
+
+def test_spawn_logged_kills_process_when_job_assign_fails(tmp_path: Path) -> None:
+    """ЗАЩИТНЫЙ ТЕСТ: отказ job.assign() не оставляет CLI-процесс жить вне Job.
+
+    Тот же контракт, что у `test_spawn_server_kills_process_when_job_assign_fails`:
+    общее ядро `_spawn_into_job` — единственное место, где `job.assign()`
+    вызывается и обрабатывается, поэтому обе обёртки обязаны делить эту
+    гарантию.
+    """  # noqa: RUF002
+    log_path = tmp_path / "cli.log"
+    # Уникальный токен — чтобы найти в дереве процессов именно этот вызов,
+    # а не случайный python.exe системы (тот же приём, что в тестах spawn_server).  # noqa: RUF003
+    token = f"onecstarter-marker-{uuid.uuid4().hex}"
+    command = LaunchCommand(
+        executable=Path(sys.executable),
+        arguments=f'-c "import time; time.sleep(30)  # {token}"',
+    )
+
+    with pytest.raises(JobError):
+        spawn_logged(command, log_path, _FailingJob())
+
+    deadline = time.monotonic() + 5
+    spawned = [
+        proc
+        for proc in psutil.process_iter(["cmdline"])
+        if proc.info["cmdline"] and any(token in part for part in proc.info["cmdline"])
+    ]
+    while time.monotonic() < deadline and spawned:
+        time.sleep(0.05)
+        spawned = [
+            proc
+            for proc in psutil.process_iter(["cmdline"])
+            if proc.info["cmdline"] and any(token in part for part in proc.info["cmdline"])
+        ]
+    for proc in spawned:
+        proc.kill()
+    assert not spawned, "процесс без Job пережил отказ assign()"

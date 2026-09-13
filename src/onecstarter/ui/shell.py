@@ -52,6 +52,11 @@ class MainWindow(QMainWindow):
         # только как владельцу времени жизни, поведение их не читает.
         self.settings_store: object | None = None
         self.global_hotkey: object | None = None
+        # `edt_workspace` — то же место хранения, но не только для владения
+        # временем жизни: `run_smoke` (ui/app.py, задача 19) реально читает
+        # его через `window.edt_workspace` для настоящего (только диск)  # noqa: RUF003
+        # обнаружения установок EDT в строке `smoke: edt=…`.
+        self.edt_workspace: object | None = None
         # Доступность трея САМА ПО СЕБЕ, в отличие от close_to_tray (которое  # noqa: RUF003
         # уже смешивает настройку И доступность трея через AND, спека §2).
         # Показ окна на тихом старте (ui/app.py::main) обязан зависеть от

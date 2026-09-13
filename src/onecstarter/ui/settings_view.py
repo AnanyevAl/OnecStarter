@@ -46,6 +46,7 @@ from PySide6.QtGui import QShowEvent
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
+    QComboBox,
     QFileDialog,
     QGridLayout,
     QHBoxLayout,
@@ -57,8 +58,11 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from onecstarter.domain.edt import LANGUAGES
 from onecstarter.services import autostart
+from onecstarter.services.edt import EdtNotes
 from onecstarter.services.settings import (
+    EDT_HEAP_MIN,
     RECENT_MAX,
     RECENT_MIN,
     DefaultClient,
@@ -113,6 +117,12 @@ AUTOSTART_ROW_NOTE = (
 
 SERVERS_ROOT_ROW_NOTE = "Новые профили серверов предлагают каталог <корень>\\srv_<версия>"
 
+EDT_JVM_ROW = "JDK по умолчанию"
+EDT_HEAP_ROW = "Память для новых записей, МБ"
+EDT_LANGUAGE_ROW = "Язык для новых записей"
+EDT_VSCODE_ROW = "VS Code"
+EDT_ANTIGRAVITY_ROW = "Antigravity"
+
 # Ширина колонки заголовка у строк с широким органом управления (спека §2).  # noqa: RUF003
 # Значение — из утверждённого мокапа. Строки с обычным (не растянутым) органом  # noqa: RUF003
 # делят ширину иначе — их заголовок сам решает, сколько ему нужно места.
@@ -137,6 +147,13 @@ def browse_for_servers_root() -> str:
     return QFileDialog.getExistingDirectory()
 
 
+def browse_for_editor_file() -> str:
+    """Системный диалог файла лаунчера редактора; пустая строка — отмена."""
+    return QFileDialog.getOpenFileName(
+        None, "Лаунчер редактора", "", "Командные файлы (*.cmd *.exe)"
+    )[0]
+
+
 class SettingsView(QWidget):
     def __init__(
         self,
@@ -148,6 +165,8 @@ class SettingsView(QWidget):
         executable: str = "",
         on_hotkey: Callable[[str], str | None] | None = None,
         choose_directory: Callable[[], str] = browse_for_servers_root,
+        edt_notes: Callable[[], EdtNotes] = lambda: EdtNotes("", "", ""),
+        choose_file: Callable[[], str] = browse_for_editor_file,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -158,6 +177,8 @@ class SettingsView(QWidget):
         self._executable = executable
         self._on_hotkey = on_hotkey
         self._choose_directory = choose_directory
+        self._edt_notes = edt_notes
+        self._choose_file = choose_file
         self._buttons: list[QPushButton] = []
         self._client_buttons: list[QPushButton] = []
         # Без ведущего подчёркивания: тесты обращаются к списку напрямую
@@ -253,6 +274,54 @@ class SettingsView(QWidget):
             self._build_servers_root_control(store.settings.servers_root),
             wide_control=True,
         )
+
+        self._add_group("EDT")
+        notes = self._edt_notes()
+        self._edt_jvm, self._edt_jvm_browse, jvm_row = self._path_control(
+            store.settings.edt_jvm_dir, "edt_jvm_dir", after_save=self._refresh_edt_notes
+        )
+        self._add_row(EDT_JVM_ROW, notes.jvm, jvm_row, wide_control=True)
+        self._edt_heap = QSpinBox()
+        self._edt_heap.setRange(EDT_HEAP_MIN, 262144)
+        self._edt_heap.setSingleStep(1024)
+        self._edt_heap.setValue(store.settings.edt_default_max_heap_mb)
+        self._edt_heap.valueChanged.connect(
+            lambda value: self._store.update(edt_default_max_heap_mb=int(value))
+        )
+        self._add_row(EDT_HEAP_ROW, "Подставляется в -Xmx новой записи", self._edt_heap)
+        self._edt_language = QComboBox()
+        for code, label in LANGUAGES:
+            self._edt_language.addItem(label, code)
+        index = self._edt_language.findData(store.settings.edt_default_language)
+        self._edt_language.setCurrentIndex(index if index >= 0 else 0)
+        self._edt_language.currentIndexChanged.connect(
+            lambda _i: self._store.update(
+                edt_default_language=str(self._edt_language.currentData())
+            )
+        )
+        self._add_row(
+            EDT_LANGUAGE_ROW,
+            "Подставляется в -Duser.language новой записи",
+            self._edt_language,
+        )
+        self._editor_vscode, self._editor_vscode_browse, vscode_row = self._path_control(
+            store.settings.editor_vscode,
+            "editor_vscode",
+            pick_file=True,
+            after_save=self._refresh_edt_notes,
+        )
+        self._add_row(EDT_VSCODE_ROW, notes.vscode, vscode_row, wide_control=True)
+        (
+            self._editor_antigravity,
+            self._editor_antigravity_browse,
+            ag_row,
+        ) = self._path_control(
+            store.settings.editor_antigravity,
+            "editor_antigravity",
+            pick_file=True,
+            after_save=self._refresh_edt_notes,
+        )
+        self._add_row(EDT_ANTIGRAVITY_ROW, notes.antigravity, ag_row, wide_control=True)
 
         self._add_group("ГОРЯЧИЕ КЛАВИШИ")
         self._hotkey = HotkeyEdit()
@@ -497,6 +566,58 @@ class SettingsView(QWidget):
         row_layout.addWidget(self._servers_root_browse)
         return row
 
+    def _refresh_edt_notes(self) -> None:
+        """Пересчитать подписи группы «EDT» после правки пути (I3 финального ревью).
+
+        Подписи — живой результат автопоиска над текущими настройками
+        (`services/edt.py::settings_notes`); посчитанные один раз в конструкторе
+        они врали бы до перезапуска: сменил пользователь JDK — а под полем
+        по-прежнему старая версия. Память и язык на подписи не влияют,
+        их обработчики сюда не ходят.
+        """  # noqa: RUF002
+        notes = self._edt_notes()
+        self._row_notes[EDT_JVM_ROW].setText(notes.jvm)
+        self._row_notes[EDT_VSCODE_ROW].setText(notes.vscode)
+        self._row_notes[EDT_ANTIGRAVITY_ROW].setText(notes.antigravity)
+
+    def _path_control(
+        self,
+        current: str,
+        field: str,
+        pick_file: bool = False,
+        after_save: Callable[[], None] | None = None,
+    ) -> tuple[QLineEdit, QPushButton, QWidget]:
+        """Поле пути с «Обзор…», сохраняющее `field` в store (как у корня серверов).
+
+        `pick_file` — строки внешних редакторов выбирают файл лаунчера
+        (`self._choose_file`), а не каталог (`self._choose_directory`):
+        JDK — каталог `bin`, VS Code/Antigravity — исполняемый `.cmd`/`.exe`.
+        `after_save` — что сделать после записи в store (подписи группы «EDT»
+        пересчитываются вслед за каждым сохранением, I3 финального ревью).
+        """  # noqa: RUF002
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        edit = QLineEdit(current)
+        browse = QPushButton("Обзор…")
+
+        def save() -> None:
+            self._store.update(**{field: edit.text()})
+            if after_save is not None:
+                after_save()
+
+        def pick() -> None:
+            chosen = self._choose_file() if pick_file else self._choose_directory()
+            if chosen:
+                edit.setText(chosen)
+                save()
+
+        edit.editingFinished.connect(save)
+        browse.clicked.connect(pick)
+        row_layout.addWidget(edit)
+        row_layout.addWidget(browse)
+        return edit, browse, row
+
     # --- доступ для тестов ------------------------------------------------
 
     def group_labels(self) -> list[str]:
@@ -545,6 +666,30 @@ class SettingsView(QWidget):
 
     def servers_root_browse_button(self) -> QPushButton:
         return self._servers_root_browse
+
+    def edt_jvm_edit(self) -> QLineEdit:
+        return self._edt_jvm
+
+    def edt_jvm_browse_button(self) -> QPushButton:
+        return self._edt_jvm_browse
+
+    def edt_heap_spin(self) -> QSpinBox:
+        return self._edt_heap
+
+    def edt_language_combo(self) -> QComboBox:
+        return self._edt_language
+
+    def editor_vscode_edit(self) -> QLineEdit:
+        return self._editor_vscode
+
+    def editor_vscode_browse_button(self) -> QPushButton:
+        return self._editor_vscode_browse
+
+    def editor_antigravity_edit(self) -> QLineEdit:
+        return self._editor_antigravity
+
+    def editor_antigravity_browse_button(self) -> QPushButton:
+        return self._editor_antigravity_browse
 
     def status_text(self) -> str:
         return self._status.text()

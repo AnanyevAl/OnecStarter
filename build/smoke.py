@@ -7,11 +7,14 @@ offscreen и обе фоновые задачи; (2) ярлык, созданн�
 спека §3.3); (4) exe принимает --autostart и завершается штатно; (5) `keyring`
 прошёл round-trip внутри самой сборки (спека v2.2, §9) — без `hiddenimports`
 он находит бэкенды через entry points, которых PyInstaller анализом импортов
-не видит, и молча уходит в пустой бэкенд. APPDATA подменяется — живые данные
-машины не трогаются.
+не видит, и молча уходит в пустой бэкенд; (6) раздел «EDT» поднялся и обнаружение
+установок EDT отработало — строка `smoke: edt=<число>` (спека v3 §12; `edt=unavailable`
+означает заглушку вместо раздела и в сборке считается отказом). APPDATA подменяется —
+живые данные машины не трогаются.
 """  # noqa: RUF002
 
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -72,6 +75,12 @@ def main() -> int:
             print(
                 "smoke: хранилище паролей не работает в сборке — "
                 "см. строку smoke: keyring= в логе"
+            )
+            return 1
+        if not re.search(r"^.*smoke: edt=\d+\s*$", log_text, re.MULTILINE):
+            print(
+                "smoke: раздел EDT не поднялся или обнаружение установок не отработало — "
+                "см. строку smoke: edt= в логе"
             )
             return 1
         lnk = out / "smoke.lnk"

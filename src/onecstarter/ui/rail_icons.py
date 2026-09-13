@@ -88,6 +88,18 @@ def _draw_servers(painter: QPainter) -> None:
     painter.drawEllipse(QPointF(4.6, 11.4), 0.6, 0.6)
 
 
+def _draw_edt(painter: QPainter) -> None:
+    """Угловые скобки кода `< >` со слэшем — «исходники», без чужих знаков."""  # noqa: RUF002
+    pen = painter.pen()
+    pen.setWidthF(1.6)
+    painter.setPen(pen)
+    painter.drawLine(5, 4, 1, 8)
+    painter.drawLine(1, 8, 5, 12)
+    painter.drawLine(11, 4, 15, 8)
+    painter.drawLine(15, 8, 11, 12)
+    painter.drawLine(9, 3, 7, 13)
+
+
 def bases_icon(palette: Palette) -> QIcon:
     return _icon(palette, _draw_bases)
 
@@ -98,3 +110,7 @@ def settings_icon(palette: Palette) -> QIcon:
 
 def servers_icon(palette: Palette) -> QIcon:
     return _icon(palette, _draw_servers)
+
+
+def edt_icon(palette: Palette) -> QIcon:
+    return _icon(palette, _draw_edt)

@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any
 
 from onecstarter.config.atomic import atomic_write
+from onecstarter.domain.edt import LANGUAGES
 from onecstarter.services.hotkeys import format_hotkey, parse_hotkey
 
 SCHEMA_VERSION = 1
@@ -35,10 +36,14 @@ DEFAULT_HOTKEY = "Ctrl+Alt+B"
 DEFAULT_RECENT_LIMIT = 10
 RECENT_MIN = 0
 RECENT_MAX = 50
+DEFAULT_EDT_HEAP_MB = 8192  # умолчание EDT Start (скриншот заказчика, спека §2)
+EDT_HEAP_MIN = 256
 
 __all__ = [
+    "DEFAULT_EDT_HEAP_MB",
     "DEFAULT_HOTKEY",
     "DEFAULT_RECENT_LIMIT",
+    "EDT_HEAP_MIN",
     "RECENT_MAX",
     "RECENT_MIN",
     "SCHEMA_VERSION",
@@ -144,6 +149,14 @@ class Settings:
     # а не прежних установок: до вехи веб-базы всегда открывались браузером,  # noqa: RUF003
     # и это изменение видимое — потому и вынесено в настройку.
     web_launch: WebLaunch = WebLaunch.THIN
+    # Спека v3, §2 — уровень «программа» настроек запуска EDT: умолчания для
+    # НОВЫХ записей и JDK на случай, когда автоподбор промахнулся. Пути не
+    # валидируются здесь — несуществующий каталог не порча файла настроек.
+    edt_jvm_dir: str = ""
+    edt_default_max_heap_mb: int = DEFAULT_EDT_HEAP_MB
+    edt_default_language: str = ""
+    editor_vscode: str = ""
+    editor_antigravity: str = ""
 
 
 def load_settings(path: Path) -> Settings:
@@ -173,6 +186,11 @@ def load_settings(path: Path) -> Settings:
         hide_on_launch=_bool_of(payload.get("hide_on_launch"), default=False),
         list_order=_order_of(payload.get("list_order")),
         web_launch=_web_launch_of(payload.get("web_launch")),
+        edt_jvm_dir=_text_of(payload.get("edt_jvm_dir")),
+        edt_default_max_heap_mb=_heap_of(payload.get("edt_default_max_heap_mb")),
+        edt_default_language=_language_of(payload.get("edt_default_language")),
+        editor_vscode=_text_of(payload.get("editor_vscode")),
+        editor_antigravity=_text_of(payload.get("editor_antigravity")),
     )
 
 
@@ -190,6 +208,11 @@ def save_settings(path: Path, settings: Settings) -> None:
         "hide_on_launch": settings.hide_on_launch,
         "list_order": settings.list_order.value,
         "web_launch": settings.web_launch.value,
+        "edt_jvm_dir": settings.edt_jvm_dir,
+        "edt_default_max_heap_mb": settings.edt_default_max_heap_mb,
+        "edt_default_language": settings.edt_default_language,
+        "editor_vscode": settings.editor_vscode,
+        "editor_antigravity": settings.editor_antigravity,
     }
     text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
     atomic_write(path, text.encode("utf-8"))
@@ -235,6 +258,24 @@ def _servers_root_of(value: Any) -> str:
     не этого модуля, и уж точно не повод унести settings.json в `.bad`.
     """  # noqa: RUF002
     return value if isinstance(value, str) else ""
+
+
+def _text_of(value: Any) -> str:
+    """Не-строка — не порча файла: пустая строка, «не задано»."""  # noqa: RUF002
+    return value if isinstance(value, str) else ""
+
+
+def _heap_of(value: Any) -> int:
+    """`bool` отсекается первым (подкласс `int`); меньше минимума — дефолт."""
+    if isinstance(value, bool) or not isinstance(value, int):
+        return DEFAULT_EDT_HEAP_MB
+    return value if value >= EDT_HEAP_MIN else DEFAULT_EDT_HEAP_MB
+
+
+def _language_of(value: Any) -> str:
+    """Незнакомый код — «по умолчанию», не порча."""
+    codes = {code for code, _label in LANGUAGES}
+    return value if isinstance(value, str) and value in codes else ""
 
 
 def _bool_of(value: Any, *, default: bool = True) -> bool:

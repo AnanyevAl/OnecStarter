@@ -42,3 +42,10 @@ def test_all_sections_have_different_icons(qapp: QApplication) -> None:
     images = [factory(theme.DARK).pixmap(16, 16).toImage() for factory in _FACTORIES]
     blobs = [image.constBits().tobytes() for image in images]  # type: ignore[union-attr]
     assert len(set(blobs)) == len(blobs)
+
+
+def test_edt_icon_is_not_empty(qapp: QApplication) -> None:
+    icon = rail_icons.edt_icon(theme.DARK)
+    assert not icon.isNull()
+    # Слэш глифа проходит через центр — пиксель (8, 8) непрозрачен.
+    assert icon.pixmap(16, 16).toImage().pixelColor(8, 8).alpha() > 0

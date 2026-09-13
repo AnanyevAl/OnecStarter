@@ -5,9 +5,10 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from PySide6.QtWidgets import QApplication, QLineEdit, QPushButton
+from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit, QPushButton, QSpinBox
 
 from onecstarter.services.autostart import VALUE_NAME, autostart_command
+from onecstarter.services.edt import EdtNotes
 from onecstarter.services.settings import (
     DefaultClient,
     ListOrder,
@@ -21,6 +22,11 @@ from onecstarter.ui.hotkey_edit import HotkeyEdit
 from onecstarter.ui.settings_store import SettingsStore
 from onecstarter.ui.settings_view import (
     AUTOSTART_ROW_NOTE,
+    EDT_ANTIGRAVITY_ROW,
+    EDT_HEAP_ROW,
+    EDT_JVM_ROW,
+    EDT_LANGUAGE_ROW,
+    EDT_VSCODE_ROW,
     SettingsView,
     browse_for_servers_root,
 )
@@ -69,6 +75,8 @@ def _view(
     frozen: bool = True,
     on_hotkey: Callable[[str], str | None] | None = None,
     choose_directory: Callable[[], str] = browse_for_servers_root,
+    edt_notes: Callable[[], EdtNotes] | None = None,
+    choose_file: Callable[[], str] | None = None,
 ) -> tuple[SettingsView, SettingsStore]:
     store = SettingsStore(tmp_path / "settings.json")
     controller = ThemeController(application, store, system_mode=lambda: ThemeMode.DARK)
@@ -80,6 +88,8 @@ def _view(
         executable=EXE,
         on_hotkey=on_hotkey,
         choose_directory=choose_directory,
+        edt_notes=edt_notes or (lambda: EdtNotes("jvm-note", "code-note", "ag-note")),
+        choose_file=choose_file or (lambda: ""),
     )
     return view, store
 
@@ -136,19 +146,21 @@ def test_save_failure_is_visible(application: QApplication, tmp_path: Path) -> N
 
 
 def test_groups_are_in_section_order(application: QApplication, tmp_path: Path) -> None:
-    """Порядок пяти групп раздела: четыре группы мокапа v1 плюс СЕРВЕРЫ (v2).
+    """Порядок шести групп раздела: четыре группы мокапа v1 плюс СЕРВЕРЫ (v2) и EDT (v3).
 
     СЕРВЕРЫ стоит сразу после «ОКНО И ЗАПУСК» и перед «ГОРЯЧИЕ КЛАВИШИ» —
     требование спеки §3.5 («сосед — существующие настройки запуска»), а не
     порядок утверждённого мокапа v1 (тот заканчивается на «СПИСОК БАЗ» и
     СЕРВЕРЫ не знает вовсе). Круг исправлений 1 ревью задачи 7: группа стояла
-    последней — умолчание брифа разошлось со спекой, спека главнее.
+    последней — умолчание брифа разошлось со спекой, спека главнее. EDT
+    (задача 18) вставлена сразу после СЕРВЕРОВ — бриф задачи 18.
     """  # noqa: RUF002
     view, _ = _view(application, tmp_path)
     assert view.group_labels() == [
         "ВНЕШНИЙ ВИД",
         "ОКНО И ЗАПУСК",  # noqa: RUF001
         "СЕРВЕРЫ",
+        "EDT",
         "ГОРЯЧИЕ КЛАВИШИ",
         "СПИСОК БАЗ",
     ]
@@ -851,3 +863,138 @@ def test_only_the_path_row_gets_a_wide_control(
 
     assert view.row_control("Тема").width() == narrow
     view.close()
+
+
+# -- группа «EDT» (v3, задача 18) --------------------------------------------
+#
+# Пять строк группы: JDK по умолчанию (путь + «Обзор…», подпись — версия Java
+# из `services.edt.settings_notes`), память для новых записей (спинбокс,
+# `EDT_HEAP_MIN`), язык для новых записей (комбобокс по `domain.edt.LANGUAGES`),
+# пути к внешним редакторам VS Code и Antigravity (путь + «Обзор…» файла, а не  # noqa: RUF003
+# каталога). Подписи под полями JDK/VS Code/Antigravity приходят инъекцией
+# `edt_notes` (тот же приём, что и `choose_directory` у СЕРВЕРОВ) — раздел  # noqa: RUF003
+# не знает, как искать JDK и редакторы на диске.
+
+
+def test_edt_group_and_rows_registered(application: QApplication, tmp_path: Path) -> None:
+    view, _ = _view(application, tmp_path)
+    assert "EDT" in view.group_labels()
+    assert view.edt_jvm_edit() in view.row_control(EDT_JVM_ROW).findChildren(QLineEdit)
+    assert view.edt_jvm_browse_button() in view.row_control(EDT_JVM_ROW).findChildren(QPushButton)
+    assert isinstance(view.row_control(EDT_HEAP_ROW), QSpinBox)
+    assert isinstance(view.row_control(EDT_LANGUAGE_ROW), QComboBox)
+    assert view.editor_vscode_edit() in view.row_control(EDT_VSCODE_ROW).findChildren(QLineEdit)
+    assert view.editor_antigravity_edit() in view.row_control(EDT_ANTIGRAVITY_ROW).findChildren(
+        QLineEdit
+    )
+
+
+def test_edt_group_is_right_after_servers(application: QApplication, tmp_path: Path) -> None:
+    """Группа стоит сразу после «СЕРВЕРЫ» (бриф задачи 18), а не последней."""  # noqa: RUF002
+    view, _ = _view(application, tmp_path)
+    labels = view.group_labels()
+    assert labels.index("EDT") == labels.index("СЕРВЕРЫ") + 1
+
+
+def test_edt_notes_come_from_injected_probe(application: QApplication, tmp_path: Path) -> None:
+    view, _ = _view(application, tmp_path)
+    assert view.row_note(EDT_JVM_ROW).text() == "jvm-note"
+    assert view.row_note(EDT_VSCODE_ROW).text() == "code-note"
+    assert view.row_note(EDT_ANTIGRAVITY_ROW).text() == "ag-note"
+
+
+def test_edt_notes_refresh_after_edit(application: QApplication, tmp_path: Path) -> None:
+    """I3 финального ревью: подписи группы «EDT» пересчитываются после правки путей.
+
+    `edt_notes` считался один раз в конструкторе — сменил пользователь JDK или
+    путь редактора, а подпись «Найден: …»/«Java 17…» оставалась старой до
+    перезапуска. Пробник здесь нумерует вызовы: после ввода/обзора номер
+    обязан вырасти на всех трёх подписях, после смены памяти и языка — нет
+    (они на подписи не влияют).
+    """  # noqa: RUF002
+    calls = iter(range(100))
+
+    def notes() -> EdtNotes:
+        n = next(calls)
+        return EdtNotes(f"jvm-{n}", f"code-{n}", f"ag-{n}")
+
+    view, _ = _view(
+        application,
+        tmp_path,
+        edt_notes=notes,
+        choose_directory=lambda: r"D:\picked\bin",
+        choose_file=lambda: r"D:\code\code.cmd",
+    )
+    assert view.row_note(EDT_JVM_ROW).text() == "jvm-0"
+    view.edt_jvm_edit().setText(r"D:\j\bin")
+    view.edt_jvm_edit().editingFinished.emit()
+    assert view.row_note(EDT_JVM_ROW).text() == "jvm-1"
+    assert view.row_note(EDT_VSCODE_ROW).text() == "code-1"
+    assert view.row_note(EDT_ANTIGRAVITY_ROW).text() == "ag-1"
+    view.editor_vscode_browse_button().click()  # обзор — тоже сохранение
+    assert view.row_note(EDT_VSCODE_ROW).text() == "code-2"
+    view.editor_antigravity_edit().setText(r"D:\a.cmd")
+    view.editor_antigravity_edit().editingFinished.emit()
+    assert view.row_note(EDT_ANTIGRAVITY_ROW).text() == "ag-3"
+    view.edt_heap_spin().setValue(12288)
+    view.edt_language_combo().setCurrentIndex(2)
+    assert view.row_note(EDT_JVM_ROW).text() == "jvm-3", "память и язык подписи не меняют"
+
+
+def test_edt_fields_show_saved_values(application: QApplication, tmp_path: Path) -> None:
+    save_settings(
+        tmp_path / "settings.json",
+        Settings(
+            edt_jvm_dir=r"D:\jdk\bin",
+            edt_default_max_heap_mb=4096,
+            edt_default_language="ru",
+            editor_vscode=r"D:\code.cmd",
+            editor_antigravity=r"D:\ag.cmd",
+        ),
+    )
+    view, _ = _view(application, tmp_path)
+    assert view.edt_jvm_edit().text() == r"D:\jdk\bin"
+    assert view.edt_heap_spin().value() == 4096
+    assert view.edt_language_combo().currentData() == "ru"
+    assert view.editor_vscode_edit().text() == r"D:\code.cmd"
+    assert view.editor_antigravity_edit().text() == r"D:\ag.cmd"
+
+
+def test_edt_edits_update_store(application: QApplication, tmp_path: Path) -> None:
+    view, store = _view(application, tmp_path)
+    view.edt_jvm_edit().setText(r"D:\j\bin")
+    view.edt_jvm_edit().editingFinished.emit()
+    view.edt_heap_spin().setValue(12288)
+    view.edt_language_combo().setCurrentIndex(2)  # en
+    view.editor_vscode_edit().setText(r"D:\c.cmd")
+    view.editor_vscode_edit().editingFinished.emit()
+    view.editor_antigravity_edit().setText(r"D:\a.cmd")
+    view.editor_antigravity_edit().editingFinished.emit()
+    assert store.settings.edt_jvm_dir == r"D:\j\bin"
+    assert store.settings.edt_default_max_heap_mb == 12288
+    assert store.settings.edt_default_language == "en"
+    assert store.settings.editor_vscode == r"D:\c.cmd"
+    assert store.settings.editor_antigravity == r"D:\a.cmd"
+
+
+def test_edt_browse_fills_and_saves(application: QApplication, tmp_path: Path) -> None:
+    """Только JDK (каталог) — редакторы используют `choose_file`, не `choose_directory`."""
+    view, store = _view(application, tmp_path, choose_directory=lambda: r"D:\picked\bin")
+    view.edt_jvm_browse_button().click()
+    assert view.edt_jvm_edit().text() == r"D:\picked\bin"
+    assert store.settings.edt_jvm_dir == r"D:\picked\bin"
+
+
+def test_editor_browse_uses_choose_file_not_directory(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Строки редакторов зовут `choose_file` (диалог файла), а не `choose_directory`."""  # noqa: RUF002
+    view, store = _view(
+        application,
+        tmp_path,
+        choose_directory=lambda: r"D:\wrong\dir",
+        choose_file=lambda: r"D:\code\code.cmd",
+    )
+    view.editor_vscode_browse_button().click()
+    assert view.editor_vscode_edit().text() == r"D:\code\code.cmd"
+    assert store.settings.editor_vscode == r"D:\code\code.cmd"

@@ -1,0 +1,35 @@
+{
+  "version" : "1.1",
+  "data" : [ {
+    "id" : "aaaaaaaa-0000-0000-0000-000000000001",
+    "label" : "(2025) Проект А",
+    "location" : "D:\\edt\\2025-2-6\\project_a",
+    "productId" : "11111111-1111-1111-1111-111111111111",
+    "projectTypeId" : "7f5f86e2-6077-4a4e-9582-aed75e5d9cba",
+    "args" : [ "-Xmx8192m" ]
+  }, {
+    "id" : "aaaaaaaa-0000-0000-0000-000000000002",
+    "label" : "Проект Б без args",
+    "location" : "d:\\edt\\2026-1-2\\project_b",
+    "productId" : "22222222-2222-2222-2222-222222222222",
+    "projectTypeId" : "7f5f86e2-6077-4a4e-9582-aed75e5d9cba"
+  }, {
+    "id" : "aaaaaaaa-0000-0000-0000-000000000003",
+    "label" : "(2025) Проект В (с пробелом)",
+    "location" : "D:\\edt\\2025-2-6\\(2025) проект в_ws",
+    "productId" : "11111111-1111-1111-1111-111111111111",
+    "projectTypeId" : "7f5f86e2-6077-4a4e-9582-aed75e5d9cba",
+    "jvmPath" : "file:///D:/jdk/bin/",
+    "args" : [ "-Xmx4096m", "-Duser.language=ru" ]
+  }, {
+    "id" : "aaaaaaaa-0000-0000-0000-000000000004",
+    "label" : "Проект Г — продукт удалён",
+    "location" : "D:\\edt\\2024\\project_g",
+    "productId" : "99999999-9999-9999-9999-999999999999",
+    "projectTypeId" : "7f5f86e2-6077-4a4e-9582-aed75e5d9cba"
+  }, {
+    "id" : "aaaaaaaa-0000-0000-0000-000000000005",
+    "label" : "Битая запись без location",
+    "productId" : "11111111-1111-1111-1111-111111111111"
+  } ]
+}
