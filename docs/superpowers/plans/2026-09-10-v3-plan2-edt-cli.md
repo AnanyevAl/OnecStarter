@@ -22,7 +22,8 @@
   в `build_cli_command` и табличном тесте.
 - **`build` всегда с `--yes`** ([Д] спека §0-Д): без него команда ждёт подтверждения.
 - **Аргументы внутри `-command`** — в одинарных кавычках ([Д] справка CLI); значение
-  с одинарной кавычкой внутри диалог не принимает.
+  с кавычкой внутри — одинарной или двойной (вся команда идёт как `-command "…"`,
+  правка M3 финального ревью) — диалог не принимает.
 - Точные строки UI: подменю `CLI`; пункты `Пересобрать проекты`, `Импортировать проект…`,
   `Проверить проекты…`, `Информация по проектам`; подсказки `Закройте EDT: workspace занят`,
   `Выполняется команда CLI`, `В установке <версия> нет 1cedtcli.exe`; заголовок консоли
@@ -63,7 +64,7 @@
 CLI_ENCODING_ARGS = "-Dsun.stdout.encoding=UTF-8 -Dsun.stderr.encoding=UTF-8 -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8"
 
 class CliQuoteError(ValueError): ...
-def quote_cli_arg(value: str) -> str                      # 'значение'; одинарная кавычка внутри → CliQuoteError
+def quote_cli_arg(value: str) -> str                      # 'значение'; кавычка внутри (' или ") → CliQuoteError
 def cli_build_args() -> str                               # "build --yes"
 def cli_project_args() -> str                             # "project"
 
@@ -131,9 +132,19 @@ class TestQuote:
     def test_single_quotes(self, value: str, expected: str) -> None:
         assert quote_cli_arg(value) == expected
 
-    def test_single_quote_inside_rejected(self) -> None:
-        with pytest.raises(CliQuoteError):
-            quote_cli_arg("O'Reilly")
+    @pytest.mark.parametrize(
+        ("value", "quote"),
+        [
+            ("O'Reilly", "'"),  # одинарная — экранирование Gogo не проверялось
+            ('conf "v2"', '"'),  # двойная разорвёт внешние кавычки -command "…" (M3 ревью)
+            ('D:\\ws\\"a', '"'),
+        ],
+    )
+    def test_quote_inside_rejected(self, value: str, quote: str) -> None:
+        with pytest.raises(CliQuoteError, match="Кавычка в значении недопустима") as excinfo:
+            quote_cli_arg(value)
+        assert value in str(excinfo.value)
+        assert quote in value
 
 
 def test_fixed_commands() -> None:
@@ -288,13 +299,16 @@ _PLATFORM_VERSION = re.compile(r"^\d+(\.\d+){1,3}$")
 
 
 class CliQuoteError(ValueError):
-    """Значение содержит одинарную кавычку — экранирование Gogo не проверялось (спека §14.2)."""
+    """Значение содержит кавычку (спека §14.2): одинарную — экранирование Gogo
+    не проверялось; двойную — вся команда идёт как `-command "…"` (§14.3), и `"`
+    внутри разорвёт внешние кавычки (правка M3 финального ревью плана 2).
+    """
 
 
 def quote_cli_arg(value: str) -> str:
     """Одинарные кавычки — [Д] справка CLI («use single quotes … interpreter rules»)."""
-    if "'" in value:
-        raise CliQuoteError(f"Одинарная кавычка в значении недопустима: {value}")
+    if "'" in value or '"' in value:
+        raise CliQuoteError(f"Кавычка в значении недопустима: {value}")
     return f"'{value}'"
 
 
@@ -329,7 +343,7 @@ def cli_import_args(form: ImportForm) -> str:
     project_dir = form.project_dir.strip()
     project_name = form.project_name.strip()
     if bool(project_dir) == bool(project_name):
-        raise ValueError("Для файлов XML укажите либо каталог, либо имя нового проекта")
+        raise ValueError("Для файлов XML укажите каталог или имя нового проекта — одно из двух")
     parts = ["import", "--configuration-files", quote_cli_arg(xml)]
     if project_dir:
         parts += ["--project", quote_cli_arg(project_dir)]
@@ -547,7 +561,7 @@ git commit -m "refactor(platform): spawn_logged — общее ядро с spawn
 
 **Interfaces:**
 - Consumes: `EdtWorkspace`, `EdtStatus`, `EdtLaunchError`, `EdtError` (план 1); `build_cli_command`, `WorkspaceEntry` (Task 1); `spawn_logged`, `LoggedProcess` (Task 2); `Job`, `JobError`; `server_journal.journal_path`, `rotate_journal`, `append_event`; `CLI_EXE`, `effective_jvm`.
-- Produces в `services/edt.py`: `EdtWorkspace.mark_cli_busy(project_id)`, `clear_cli_busy(project_id)`, `cli_busy(project_id) -> bool`; `status().cli_busy`; `launch()` → `EdtLaunchError("Workspace занят командой CLI — дождитесь завершения или прервите её")` при занятости.
+- Produces в `services/edt.py`: `EdtWorkspace.mark_cli_busy(project_id)`, `clear_cli_busy(project_id)`, `cli_busy(project_id) -> bool`; `status().cli_busy`; `launch()` → `EdtLaunchError("Workspace занят командой CLI — дождитесь завершения или прервите её")` при занятости; `remove_project()` → `InvalidRequestError("Команда CLI выполняется — дождитесь завершения или прервите её")` при занятости (правка M6 финального ревью: запись — ключ `_runs` и журнала); `update_project()` при занятости разрешён — командная строка уже собрана.
 - Produces в `services/edt_cli.py`:
 
 ```python
@@ -577,8 +591,8 @@ class EdtCli:
     def run(self, project_id: str) -> CliRun | None
     def busy(self, project_id: str) -> bool
     def running_count(self) -> int
-    def finish(self, project_id: str, code: int | None) -> None
-    def interrupt(self, project_id: str) -> None
+    def finish(self, run: CliRun, code: int | None) -> None       # сам run: чужой/прерванный — no-op (M5 ревью)
+    def interrupt(self, project_id: str) -> None                  # JobError из close() → EdtError, run остаётся (M7 ревью)
     def journal_path(self, project_id: str) -> Path
     def last_result(self, project_id: str) -> CliResult | None
     def log_shutdown(self) -> int
@@ -609,6 +623,21 @@ class TestCliBusy:
         with pytest.raises(EdtLaunchError, match="занят командой CLI"):
             h.workspace.launch(p.id)
         assert h.spawned == []
+
+    def test_remove_refused_while_busy(self, tmp_path: Path) -> None:
+        """Правка M6 финального ревью: запись с живой командой не удаляется (она — ключ
+        `EdtCli._runs` и журнала); правка через `update_project` разрешена."""
+        h = _harness(tmp_path, installed=INSTALLED)
+        h.workspace.refresh_installations()
+        p = h.workspace.add_project(_project("a", edt_version="2025.2.6+4"))
+        h.workspace.mark_cli_busy(p.id)
+        with pytest.raises(InvalidRequestError, match="Команда CLI выполняется"):
+            h.workspace.remove_project(p.id)
+        assert [x.id for x in h.workspace.projects()] == [p.id]
+        h.workspace.update_project(replace(p, name="b"))  # правка — можно
+        h.workspace.clear_cli_busy(p.id)
+        h.workspace.remove_project(p.id)
+        assert h.workspace.projects() == []
 ```
 
 Реализация в `services/edt.py`: поле `self._cli_busy: set[str] = set()` в `__init__`;
@@ -633,6 +662,16 @@ class TestCliBusy:
             )
 ```
 
+в `remove_project()` первой проверкой (правка M6 финального ревью; `update_project`
+не трогается — докстринг объясняет, что у живой команды командная строка уже собрана):
+
+```python
+        if project_id in self._cli_busy:
+            raise InvalidRequestError(
+                "Команда CLI выполняется — дождитесь завершения или прервите её"
+            )
+```
+
 Run: `uv run pytest tests/unit/test_edt_workspace.py -q` — зелёное.
 
 - [ ] **Step 2: `EdtCli` — падающие тесты**
@@ -644,6 +683,7 @@ Run: `uv run pytest tests/unit/test_edt_workspace.py -q` — зелёное.
 
 import subprocess
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime
 from itertools import count
 from pathlib import Path
@@ -653,7 +693,7 @@ import pytest
 from onecstarter.domain.edt import EdtInstallation, EdtProject, EditorResolution
 from onecstarter.domain.edt_cli import WorkspaceEntry
 from onecstarter.domain.launch import LaunchCommand
-from onecstarter.platform_1c.job import Job
+from onecstarter.platform_1c.job import Job, JobError
 from onecstarter.platform_1c.server_spawn import LoggedProcess
 from onecstarter.services.edt import EdtScan, EdtWorkspace
 from onecstarter.services.edt_cli import CliResult, EdtCli, workspace_entries
@@ -666,9 +706,12 @@ NOW = datetime(2026, 9, 10, 12, 0, 0)
 
 
 class FakeJob:
+    """`close_error` — `JobError`, который `close()` поднимает вместо закрытия (M7 ревью)."""
+
     def __init__(self) -> None:
         self.assigned: list[int] = []
         self.closed = False
+        self.close_error: JobError | None = None
 
     def assign(self, process_handle: int) -> None:
         self.assigned.append(process_handle)
@@ -677,6 +720,8 @@ class FakeJob:
         return () if self.closed else (4242,)
 
     def close(self) -> None:
+        if self.close_error is not None:
+            raise self.close_error
         self.closed = True
 
 
@@ -709,9 +754,13 @@ class Harness:
         self.workspace.refresh_installations()
 
         def spawn(command: LaunchCommand, log_path: Path, job: Job) -> LoggedProcess:
+            # Дописываем, а не перезаписываем: настоящий spawn_logged отдаёт ребёнку
+            # хендл FILE_APPEND_DATA и никогда не обрезает журнал (находка ревью Task 3:
+            # фейк с write_text стирал события, записанные до spawn).
             self.spawned.append((command, log_path))
             log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_path.write_text("вывод cli\n", encoding="utf-8")
+            with log_path.open("a", encoding="utf-8") as journal:
+                journal.write("вывод cli\n")
             return LoggedProcess(pid=4242, process=FakeProcess(4242))  # type: ignore[arg-type]
 
         def job_factory() -> Job:
@@ -752,6 +801,9 @@ class TestStart:
         text = log_path.read_text(encoding="utf-8")
         assert "[12:00:00] ▶ Пересобрать проекты: build --yes" in text
         assert str(command.executable) in text
+        # Порядок в журнале: событие старта и командная строка — ДО вывода ребёнка
+        # (спека §14.4; servers.py пишет «запуск:» до spawn_server тем же приёмом).
+        assert text.index("▶ Пересобрать проекты") < text.index("вывод cli")
         assert h.workspace.status(p.id).cli_busy is True
         assert h.cli.running_count() == 1
 
@@ -784,6 +836,22 @@ class TestStart:
         p = h.project(edt_version="2024.2.6+7")
         assert h.cli.unavailable_reason(p.id) == "EDT 2024.2.6+7 не найден среди установок"
 
+    def test_missing_jdk_refused_unless_project_overrides(self, tmp_path: Path) -> None:
+        """Установка без JDK (`jvm_dir=None`) — отказ до spawn с упоминанием JDK; `jvm_dir`
+        записи закрывает дыру (отложенный T3, добавлен правкой M9 финального ревью)."""
+        h = Harness(tmp_path)
+        h.workspace.set_installations([EdtInstallation("2025.2.6+4", EXE_DIR / "1cedt.exe", None, "", 17, "")])
+        p = h.project()
+        reason = h.cli.unavailable_reason(p.id)
+        assert "JDK" in reason and "2025.2.6+4" in reason
+        with pytest.raises(EdtError, match="JDK"):
+            h.cli.start(p.id, "Информация по проектам", "project")
+        assert h.spawned == []
+        h.workspace.update_project(replace(p, jvm_dir=str(JDK)))
+        assert h.cli.unavailable_reason(p.id) == ""
+        h.cli.start(p.id, "Информация по проектам", "project")
+        assert f'-vm "{JDK}"' in h.spawned[0][0].arguments
+
     def test_spawn_oserror_becomes_edt_error_and_not_busy(self, tmp_path: Path) -> None:
         h = Harness(tmp_path)
         p = h.project()
@@ -792,18 +860,25 @@ class TestStart:
             raise OSError("нет файла")
 
         h.cli = EdtCli(h.workspace, tmp_path / "logs", job_factory=FakeJob, spawn=broken, is_file=lambda p: True, now=lambda: NOW)
-        with pytest.raises(EdtError):
+        with pytest.raises(EdtError) as excinfo:
             h.cli.start(p.id, "Информация по проектам", "project")
+        message = str(excinfo.value)  # спека §8: ошибка с командной строкой (правка I2)
+        assert message.startswith("Не удалось запустить 1cedtcli.exe: нет файла.")
+        assert "\nКоманда: " in message
+        assert f'"{EXE_DIR / "1cedtcli.exe"}" -data "D:\\edt\\a" -command "project"' in message
         assert h.workspace.status(p.id).cli_busy is False
         assert h.cli.running_count() == 0
+        journal = h.cli.journal_path(p.id).read_text(encoding="utf-8")
+        assert "▶ Информация по проектам: project" in journal  # что пытались запустить
+        assert "■ не запущен: OSError" in journal
 
 
 class TestFinishAndInterrupt:
     def test_finish_writes_code_clears_busy_keeps_result(self, tmp_path: Path) -> None:
         h = Harness(tmp_path)
         p = h.project()
-        h.cli.start(p.id, "Проверить проекты", "validate …", result_file=r"D:\r.tsv")
-        h.cli.finish(p.id, 0)
+        run = h.cli.start(p.id, "Проверить проекты", "validate …", result_file=r"D:\r.tsv")
+        h.cli.finish(run, 0)
         assert h.workspace.status(p.id).cli_busy is False
         assert h.cli.run(p.id) is None
         assert h.cli.last_result(p.id) == CliResult("Проверить проекты", 0, False, r"D:\r.tsv")
@@ -823,10 +898,43 @@ class TestFinishAndInterrupt:
     def test_finish_after_interrupt_is_noop(self, tmp_path: Path) -> None:
         h = Harness(tmp_path)
         p = h.project()
-        h.cli.start(p.id, "Пересобрать проекты", "build --yes")
+        run = h.cli.start(p.id, "Пересобрать проекты", "build --yes")
         h.cli.interrupt(p.id)
-        h.cli.finish(p.id, 1)
+        h.cli.finish(run, 1)
         assert h.cli.last_result(p.id) == CliResult("Пересобрать проекты", None, True, "")
+
+    def test_interrupt_close_failure_keeps_run_and_raises(self, tmp_path: Path) -> None:
+        """`JobError` из `close()` (правка M7 ревью): run остаётся, «прервано» не пишется,
+        занятость не снимается, наружу — `EdtError` с меткой команды."""
+        h = Harness(tmp_path)
+        p = h.project()
+        run = h.cli.start(p.id, "Пересобрать проекты", "build --yes")
+        h.jobs[0].close_error = JobError("CloseHandle отказал")
+        with pytest.raises(EdtError, match="Не удалось прервать «Пересобрать проекты»"):
+            h.cli.interrupt(p.id)
+        assert h.cli.run(p.id) is run
+        assert h.workspace.status(p.id).cli_busy is True
+        assert h.cli.last_result(p.id) is None
+        assert "прервано" not in h.cli.journal_path(p.id).read_text(encoding="utf-8")
+        h.jobs[0].close_error = None  # повтор после устранения причины — штатно
+        h.cli.interrupt(p.id)
+        assert h.cli.run(p.id) is None
+
+    def test_finish_of_stale_run_keeps_new_run(self, tmp_path: Path) -> None:
+        """Прервать → запустить снова → запоздавший код старого run (правка M5 ревью).
+        Мутация: убрать `is not run` — новый run закроется чужим кодом."""
+        h = Harness(tmp_path)
+        p = h.project()
+        old = h.cli.start(p.id, "Пересобрать проекты", "build --yes")
+        h.cli.interrupt(p.id)
+        new = h.cli.start(p.id, "Информация по проектам", "project")
+        h.cli.finish(old, 1)
+        assert h.cli.run(p.id) is new
+        assert h.workspace.status(p.id).cli_busy is True
+        assert h.jobs[1].closed is False
+        assert h.cli.last_result(p.id) == CliResult("Пересобрать проекты", None, True, "")
+        h.cli.finish(new, 0)  # свой же код закрывает новый run штатно
+        assert h.cli.run(p.id) is None
 
     def test_log_shutdown_marks_live_runs(self, tmp_path: Path) -> None:
         h = Harness(tmp_path)
@@ -834,6 +942,52 @@ class TestFinishAndInterrupt:
         h.cli.start(p.id, "Пересобрать проекты", "build --yes")
         assert h.cli.log_shutdown() == 1
         assert "■ прервано выходом из программы" in h.cli.journal_path(p.id).read_text(encoding="utf-8")
+
+
+class TestJournalOsError:
+    """Правка I1 финального ревью плана 2: `OSError` журнала не уходит наружу голым
+    и не держит запись занятой. `Harness(tmp_path, logs_dir=...)` подменяет каталог журналов."""
+
+    def test_unwritable_logs_dir_becomes_edt_error_and_nothing_busy(self, tmp_path: Path) -> None:
+        blocker = tmp_path / "blocker"
+        blocker.write_text("", encoding="utf-8")
+        h = Harness(tmp_path, logs_dir=blocker / "edt")  # каталог под обычным файлом
+        p = h.project()
+        with pytest.raises(EdtError, match="Не удалось запустить"):
+            h.cli.start(p.id, "Информация по проектам", "project")
+        assert h.spawned == []
+        assert h.workspace.status(p.id).cli_busy is False
+        assert h.cli.run(p.id) is None
+        assert h.jobs[-1].closed is True
+
+    def test_rotation_failure_is_logged_and_launch_continues(self, tmp_path: Path) -> None:
+        h = Harness(tmp_path)
+        p = h.project()
+        current = h.cli.journal_path(p.id)
+        current.parent.mkdir(parents=True)
+        current.write_text("прошлый\n", encoding="utf-8")
+        (current.parent / f"{p.id}.1.log").mkdir()  # Path.replace на каталог падает
+        run = h.cli.start(p.id, "Информация по проектам", "project")
+        assert run.pid == 4242 and len(h.spawned) == 1
+        text = current.read_text(encoding="utf-8")
+        assert "ротация журнала не удалась" in text
+        assert text.index("ротация журнала не удалась") < text.index("▶ Информация по проектам")
+
+    def test_finish_completes_when_journal_unwritable(self, tmp_path: Path) -> None:
+        h = Harness(tmp_path)
+        p = h.project()
+        run = h.cli.start(p.id, "Проверить проекты", "validate …", result_file=r"D:\r.tsv")
+        journal = h.cli.journal_path(p.id)
+        journal.unlink()
+        journal.mkdir()  # каталог на месте файла — open("a") падает PermissionError
+        h.cli.finish(run, 0)
+        assert h.cli.run(p.id) is None
+        assert h.workspace.status(p.id).cli_busy is False
+        assert h.jobs[0].closed is True
+        assert h.cli.last_result(p.id) == CliResult("Проверить проекты", 0, False, r"D:\r.tsv")
+
+    # test_interrupt_completes_when_journal_unwritable и
+    # test_log_shutdown_survives_unwritable_journal — по тому же образцу.
 
 
 def test_workspace_entries_marks_dot_project(tmp_path: Path) -> None:
@@ -871,8 +1025,16 @@ Expected: `ModuleNotFoundError`.
 Workspace, открытый в EDT, для CLI занят ([Д] спека §0-Д, `WORKSPACE_IN_USE`),
 и наоборот — отсюда `unavailable_reason` до запуска и `mark_cli_busy`
 в координаторе раздела, который отказывает «Открыть в EDT» на время команды.
+
+`OSError` журнала никогда не уходит наружу голым (правка I1 финального ревью
+плана 2; тот же принцип, что у `services/servers.py::start`/`log_event`): в `start`
+отказ ротации — best-effort событие и запуск продолжается, отказ записи событий
+старта — `EdtError`; в `finish`/`interrupt`/`log_shutdown` события пишутся через
+`_log_event`, который глотает `OSError`, — переход состояния (снятие занятости,
+закрытие Job, результат) от журнала не зависит.
 """  # noqa: RUF002
 
+import logging
 import os
 import subprocess
 from collections.abc import Callable
@@ -890,6 +1052,8 @@ from onecstarter.services.errors import EdtError
 from onecstarter.services.server_journal import append_event, journal_path, rotate_journal
 
 __all__ = ["CliResult", "CliRun", "EdtCli", "workspace_entries"]
+
+_log = logging.getLogger("onecstarter.edt_cli")
 
 RUNNING_REASON = "Закройте EDT: workspace занят"
 BUSY_REASON = "Команда CLI уже выполняется для этой записи"
@@ -985,17 +1149,35 @@ class EdtCli:
             installation.vm_args,
             project.vm_args,
         )
-        rotate_journal(self._logs_dir, project_id)
         path = self.journal_path(project_id)
-        append_event(path, f"▶ {label}: {command}", self._now())
-        append_event(path, launch.command_line, self._now())
+        try:
+            rotate_journal(self._logs_dir, project_id)
+        except OSError as error:
+            # Ротация — best-effort в своём try (как servers.py::start): прошлый
+            # журнал может держать переживший процесс, и это не отказ запуска —
+            # записи продолжаются в тот же файл. Текст — фактический str(error).
+            self._log_event(
+                project_id,
+                f"ротация журнала не удалась ({error}), записи продолжаются в тот же файл",
+            )
         job = self._job_factory()
         try:
+            # События — ДО spawn (спека §14.4): ребёнок получает хендл FILE_APPEND_DATA
+            # и может написать в журнал раньше этого кода — порядок в файле обязан
+            # быть предсказуем независимо от гонки с дочерним процессом.
+            append_event(path, f"▶ {label}: {command}", self._now())
+            append_event(path, launch.command_line, self._now())
             spawned = self._spawn(launch, path, job)
         except (OSError, JobError) as error:
-            append_event(path, f"■ не запущен: {type(error).__name__}", self._now())
+            # OSError здесь — и отказ записи событий (каталог журналов недоступен),
+            # и отказ порождения; оба — отказ запуска с причиной от системы.
             self._close_job(job)
-            raise EdtError(f"Не удалось запустить {CLI_EXE}: {error}") from error
+            self._log_event(project_id, f"■ не запущен: {type(error).__name__}")
+            # Спека §8: «ошибка с командной строкой» — как ServerError в servers.py::start
+            # (правка I2 финального ревью плана 2); секретов в команде CLI нет.
+            raise EdtError(
+                f"Не удалось запустить {CLI_EXE}: {error}.\nКоманда: {launch.command_line}"
+            ) from error
         run = CliRun(project_id, label, command, spawned.pid, spawned.process, job, result_file)
         self._runs[project_id] = run
         self._workspace.mark_cli_busy(project_id)
@@ -1010,22 +1192,40 @@ class EdtCli:
     def running_count(self) -> int:
         return len(self._runs)
 
-    def finish(self, project_id: str, code: int | None) -> None:
-        run = self._runs.pop(project_id, None)
-        if run is None:
-            return  # прервано раньше — результат уже записан
+    def finish(self, run: CliRun, code: int | None) -> None:
+        """Код завершения ИМЕННО этого run; чужой или прерванный — молча ничего.
+
+        Сам объект, а не id записи (правка M5 финального ревью плана 2): после
+        «Прервать» и повторного запуска на той же записи запоздавший код старого
+        run не должен закрыть новый — сверка идентичности живёт здесь, а слот
+        вьюхи (`EdtView.on_cli_finished`) лишь дублирует её.
+        """
+        project_id = run.project_id
+        if self._runs.get(project_id) is not run:
+            return  # прервано раньше или уже идёт другой run — результат не наш
+        del self._runs[project_id]
         text = f"■ завершено, код {code}" if code is not None else "■ завершено, код неизвестен"
-        append_event(self.journal_path(project_id), text, self._now())
+        self._log_event(project_id, text)
         self._results[project_id] = CliResult(run.label, code, False, run.result_file)
         self._workspace.clear_cli_busy(project_id)
         self._close_job(run.job)
 
     def interrupt(self, project_id: str) -> None:
-        run = self._runs.pop(project_id, None)
+        """Прервать команду: `job.close()` — kill-on-close гасит дерево процесса.
+
+        Отказ `close()` (`JobError`) — `EdtError`, а run ОСТАЁТСЯ в учёте с занятостью
+        и без «прервано» в журнале (правка M7 финального ревью плана 2): процесс жив,
+        считать его прерванным было бы враньём — принцип `services/servers.py::stop`.
+        """
+        run = self._runs.get(project_id)
         if run is None:
             return
-        self._close_job(run.job)  # kill-on-close гасит дерево процесса
-        append_event(self.journal_path(project_id), "■ прервано пользователем", self._now())
+        try:
+            run.job.close()
+        except JobError as error:
+            raise EdtError(f"Не удалось прервать «{run.label}»: {error}") from error
+        del self._runs[project_id]
+        self._log_event(project_id, "■ прервано пользователем")
         self._results[project_id] = CliResult(run.label, None, True, "")
         self._workspace.clear_cli_busy(project_id)
 
@@ -1038,8 +1238,18 @@ class EdtCli:
     def log_shutdown(self) -> int:
         """Отметить живые команды в журналах при выходе; сами процессы гасит Job."""
         for project_id in list(self._runs):
-            append_event(self.journal_path(project_id), "■ прервано выходом из программы", self._now())
+            self._log_event(project_id, "■ прервано выходом из программы")
         return len(self._runs)
+
+    def _log_event(self, project_id: str, text: str) -> None:
+        """Событие в журнал записи; `OSError` глотается — журнал не условие операции.
+
+        В `_log` — только тип ошибки, без пути (инвариант 5).
+        """
+        try:
+            append_event(self.journal_path(project_id), text, self._now())
+        except OSError as error:
+            _log.warning("журнал CLI EDT недоступен: %s", type(error).__name__)
 
     @staticmethod
     def _close_job(job: Job) -> None:
@@ -1062,7 +1272,9 @@ Expected: зелёное.
 Мутации (спека §9): 1) в `unavailable_reason` убрать проверку `running_pid` → падает
 `test_running_edt_refused_before_spawn` на `spawned == []`; 2) в `start` убрать проверку
 `project_id in self._runs` (через `unavailable_reason`) → падает
-`test_second_start_on_same_project_refused` на `len(h.spawned) == 1`. Откатить, записать.
+`test_second_start_on_same_project_refused` на `len(h.spawned) == 1`; 3) (правка I1) события
+старта вынести из `try` — падает `test_unwritable_logs_dir_becomes_edt_error_and_nothing_busy`
+непойманным `OSError` (`FileExistsError`). Откатить, записать.
 
 ```bash
 git add src/onecstarter/services/edt.py src/onecstarter/services/edt_cli.py tests/unit/test_edt_cli.py tests/unit/test_edt_workspace.py tests/unit/test_no_qt_in_core.py
@@ -1081,7 +1293,7 @@ git commit -m "feat(services): EdtCli — одна команда на запи�
 
 **Interfaces:**
 - Consumes: `CliRun` (Task 3); `JournalPanel` (`ui/servers/journal_panel.py`: `show_journal(title, path)`, `refresh()`); `Palette`.
-- Produces: `CliWatcher(QObject)` с сигналом `finished(str, object)` (id записи, код `int | None`) и методом `watch(run: CliRun)`; конструктор `CliWatcher(*, spawn: Callable[[Callable[[], None]], None] = _spawn_daemon, parent=None)`; `EdtConsole(QWidget)` с сигналами `interrupt_requested()`, `open_journal_requested()`, `open_result_requested()`, методами `show_run(project_name: str, label: str, state: str, path: Path | None)`, `set_state(state: str)`, `set_buttons(*, interrupt: bool, journal: bool, result: bool)`, `expand()`, `collapse()`, `is_expanded() -> bool`, `apply_palette(palette)`, аксессорами `header_button()`, `title_label()`, `state_label()`, `interrupt_button()`, `journal_button()`, `result_button()`, `journal_panel()`; константы `CONSOLE_TITLE = "Консоль"`, `STATE_RUNNING = "выполняется"`, `STATE_INTERRUPTED = "прервано"`, `STATE_NOT_STARTED = "не запущен"`, функция `state_finished(code: int) -> str` → `"завершено, код N"`.
+- Produces: `CliWatcher(QObject)` с сигналом `finished(object, object)` (сам `CliRun`, код `int | None`) и методом `watch(run: CliRun)` — сигнал несёт **объект run**, а не id записи: запоздавший сигнал после «Прервать» и повторного запуска не должен закрыть новый run той же записи (находка ревью Task 6); конструктор `CliWatcher(*, spawn: Callable[[Callable[[], None]], None] = _spawn_daemon, parent=None)`; `EdtConsole(QWidget)` с сигналами `interrupt_requested()`, `open_journal_requested()`, `open_result_requested()`, методами `show_run(project_name: str, label: str, state: str, path: Path | None)`, `set_state(state: str)`, `set_buttons(*, interrupt: bool, journal: bool, result: bool)`, `expand()`, `collapse()`, `is_expanded() -> bool`, `apply_palette(palette)`, аксессорами `header_button()`, `title_label()`, `state_label()`, `interrupt_button()`, `journal_button()`, `result_button()`, `journal_panel()`; константы `CONSOLE_TITLE = "Консоль"`, `STATE_RUNNING = "выполняется"`, `STATE_INTERRUPTED = "прервано"`, `STATE_NOT_STARTED = "не запущен"`, функция `state_finished(code: int) -> str` → `"завершено, код N"`.
 
 - [ ] **Step 1: Watcher — тест и реализация**
 
@@ -1116,10 +1328,11 @@ def _run(code: int) -> CliRun:
 
 def test_watch_emits_exit_code(qapp) -> None:  # type: ignore[no-untyped-def]
     watcher = CliWatcher(spawn=lambda task: task())
-    got: list[tuple[str, object]] = []
-    watcher.finished.connect(lambda pid, code: got.append((pid, code)))
-    watcher.watch(_run(3))
-    assert got == [("p1", 3)]
+    got: list[tuple[object, object]] = []
+    watcher.finished.connect(lambda run, code: got.append((run, code)))
+    run = _run(3)
+    watcher.watch(run)
+    assert got == [(run, 3)]  # сам объект run, не id — см. интерфейс
 
 
 def test_wait_failure_emits_none(qapp) -> None:  # type: ignore[no-untyped-def]
@@ -1130,7 +1343,7 @@ def test_wait_failure_emits_none(qapp) -> None:  # type: ignore[no-untyped-def]
     run = CliRun("p1", "x", "project", 1, Broken(0), FakeJob(), "")  # type: ignore[arg-type]
     watcher = CliWatcher(spawn=lambda task: task())
     got: list[object] = []
-    watcher.finished.connect(lambda pid, code: got.append(code))
+    watcher.finished.connect(lambda finished_run, code: got.append(code))
     watcher.watch(run)
     assert got == [None]
 ```
@@ -1142,7 +1355,13 @@ def test_wait_failure_emits_none(qapp) -> None:  # type: ignore[no-untyped-def]
 
 Тот же приём, что у фоновых проб (`ui/background.py`): поток ждёт `Popen.wait()`,
 результат уходит сигналом в главный поток, где `EdtView` зовёт `EdtCli.finish`.
-Отказ `wait()` (хендл закрыт прерыванием) — `None`, не исключение из потока.
+
+«Прервать» (`EdtCli.interrupt`) закрывает хендл Job, а не хендл процесса:
+kill-on-close гасит дерево, и `wait()` штатно возвращается с кодом убитого
+процесса — сигнал приходит с числом, а `EdtCli.finish` его отбрасывает, потому
+что run уже не в учёте. Ветка `except OSError` → `None` — страховка на случай
+отказа самого ожидания, а не ожидаемый путь прерывания (уточнение M8
+финального ревью плана 2).
 """  # noqa: RUF002
 
 import threading
@@ -1158,7 +1377,7 @@ def _spawn_daemon(task: Callable[[], None]) -> None:
 
 
 class CliWatcher(QObject):
-    finished = Signal(str, object)  # id записи, int | None
+    finished = Signal(object, object)  # CliRun, int | None
 
     def __init__(
         self,
@@ -1175,7 +1394,7 @@ class CliWatcher(QObject):
                 code: int | None = run.process.wait()
             except OSError:
                 code = None
-            self.finished.emit(run.project_id, code)
+            self.finished.emit(run, code)
 
         self._spawn(wait)
 ```
@@ -1188,6 +1407,8 @@ Run: `uv run pytest tests/ui/test_edt_cli_watch.py -q` — зелёное.
 
 ```python
 from pathlib import Path
+
+import pytest
 
 from onecstarter.ui.edt.console_panel import (
     CONSOLE_TITLE,
@@ -1204,12 +1425,16 @@ def test_collapsed_by_default_and_toggles(qtbot) -> None:  # type: ignore[no-unt
     qtbot.addWidget(console)
     assert console.is_expanded() is False
     assert console.journal_panel().isHidden() is True
-    assert console.header_button().text().startswith(CONSOLE_TITLE)
+    assert console.header_button().text() == f"{CONSOLE_TITLE} ▸"
     console.header_button().click()
     assert console.is_expanded() is True
     assert console.journal_panel().isHidden() is False
+    assert console.header_button().text() == f"{CONSOLE_TITLE} ▾"
     console.collapse()
     assert console.is_expanded() is False
+    console.expand()
+    assert console.is_expanded() is True
+    assert console.journal_panel().isHidden() is False
 
 
 def test_show_run_sets_title_state_and_journal(qtbot, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
@@ -1246,6 +1471,17 @@ def test_buttons_emit_signals_and_hide(qtbot) -> None:  # type: ignore[no-untype
 def test_state_constants() -> None:
     assert STATE_INTERRUPTED == "прервано"
     assert state_finished(7) == "завершено, код 7"
+
+
+@pytest.mark.parametrize(
+    ("name", "label", "expected"),
+    [("Розница", "Сборка", "Розница · Сборка"), ("Розница", "", "Розница"), ("", "", "")],
+)
+def test_title_drops_empty_parts(qtbot, name: str, label: str, expected: str) -> None:  # type: ignore[no-untyped-def]
+    console = EdtConsole(palette=DARK)
+    qtbot.addWidget(console)
+    console.show_run(name, label, STATE_RUNNING, None)
+    assert console.title_label().text() == expected
 ```
 
 - [ ] **Step 3: Консоль — реализация**
@@ -1318,7 +1554,9 @@ class EdtConsole(QWidget):
     # --- состояние -------------------------------------------------------
 
     def show_run(self, project_name: str, label: str, state: str, path: Path | None) -> None:
-        self._title.setText(f"{project_name} · {label}")
+        # Пустые части опускаются: «прошлый запуск» без метки и пустое состояние
+        # консоли не должны давать « · » (используется `_sync_console`, Task 6).
+        self._title.setText(" · ".join(part for part in (project_name, label) if part))
         self._state.setText(state)
         self._panel.show_journal(project_name, path)
 
@@ -1458,7 +1696,7 @@ class TestImportDialog:
         qtbot.addWidget(dialog)
         dialog.existing_dir_edit().setText(r"D:\O'Reilly")
         assert dialog.ok_button().isEnabled() is False
-        assert "Одинарная кавычка" in dialog.error_text()
+        assert "Кавычка в значении недопустима" in dialog.error_text()
 
     def test_browse_fills_active_field(self, qtbot) -> None:  # type: ignore[no-untyped-def]
         dialog = CliImportDialog(choose_directory=lambda: r"D:\picked")
@@ -1470,11 +1708,17 @@ class TestImportDialog:
 PATHS = [r"D:\ws\conf", r"D:\ws\conf.ext"]
 
 
+def _dirs_only(path: str) -> bool:
+    """Фейк `os.path.exists`: каталоги есть, файла результата нет (правка M4 финального
+    ревью: диалог проверяет и каталог результата — `exists=lambda p: False` его отверг бы)."""
+    return not path.lower().endswith(".tsv")
+
+
 class TestValidateDialog:
     def test_all_checked_and_default_file(self, qtbot) -> None:  # type: ignore[no-untyped-def]
         dialog = CliValidateDialog(
             PATHS, r"C:\Users\u\Documents", "validate-a-20260910-1200.tsv",
-            choose_save=lambda initial: "", exists=lambda p: False,
+            choose_save=lambda initial: "", exists=_dirs_only,
         )
         qtbot.addWidget(dialog)
         assert dialog.selected_paths() == PATHS
@@ -1482,7 +1726,7 @@ class TestValidateDialog:
         assert dialog.ok_button().isEnabled() is True
 
     def test_nothing_checked_disables_ok(self, qtbot) -> None:  # type: ignore[no-untyped-def]
-        dialog = CliValidateDialog(PATHS, r"C:\d", "r.tsv", choose_save=lambda i: "", exists=lambda p: False)
+        dialog = CliValidateDialog(PATHS, r"C:\d", "r.tsv", choose_save=lambda i: "", exists=_dirs_only)
         qtbot.addWidget(dialog)
         for row in range(2):
             dialog.list_widget().item(row).setCheckState(Qt.CheckState.Unchecked)
@@ -1496,15 +1740,36 @@ class TestValidateDialog:
         assert dialog.error_text() == "Файл уже существует — CLI откажет; выберите другое имя"
 
     def test_browse_replaces_file(self, qtbot) -> None:  # type: ignore[no-untyped-def]
-        dialog = CliValidateDialog(PATHS, r"C:\d", "r.tsv", choose_save=lambda i: r"E:\out\x.tsv", exists=lambda p: False)
+        dialog = CliValidateDialog(PATHS, r"C:\d", "r.tsv", choose_save=lambda i: r"E:\out\x.tsv", exists=_dirs_only)
         qtbot.addWidget(dialog)
         dialog.browse_button().click()
         assert dialog.result_file() == r"E:\out\x.tsv"
 
     def test_empty_paths_list(self, qtbot) -> None:  # type: ignore[no-untyped-def]
-        dialog = CliValidateDialog([], r"C:\d", "r.tsv", choose_save=lambda i: "", exists=lambda p: False)
+        dialog = CliValidateDialog([], r"C:\d", "r.tsv", choose_save=lambda i: "", exists=_dirs_only)
         qtbot.addWidget(dialog)
         assert dialog.ok_button().isEnabled() is False
+
+    def test_single_quote_in_path_reports_error(self, qtbot) -> None:  # type: ignore[no-untyped-def]
+        dialog = CliValidateDialog([r"D:\O'Reilly\conf"], r"C:\d", "r.tsv", choose_save=lambda i: "", exists=_dirs_only)
+        qtbot.addWidget(dialog)
+        assert dialog.ok_button().isEnabled() is False
+        assert "Кавычка в значении недопустима" in dialog.error_text()
+
+    def test_missing_result_dir_rejected(self, qtbot) -> None:  # type: ignore[no-untyped-def]
+        """Правка M4 финального ревью: `Documents` может не существовать (OneDrive KFM),
+        CLI каталог для TSV не создаёт — проверка каталога тем же `exists`, что и файла."""
+        seen: list[str] = []
+
+        def exists(path: str) -> bool:
+            seen.append(path)
+            return False
+
+        dialog = CliValidateDialog(PATHS, r"C:\nope\Documents", "r.tsv", choose_save=lambda i: "", exists=exists)
+        qtbot.addWidget(dialog)
+        assert dialog.ok_button().isEnabled() is False
+        assert dialog.error_text() == "Каталог результата не существует"
+        assert r"C:\nope\Documents" in seen  # проверялся именно родитель файла
 ```
 
 - [ ] **Step 2: Реализовать `cli_import_dialog.py`**
@@ -1681,10 +1946,11 @@ from PySide6.QtWidgets import (
     QListWidgetItem, QPushButton, QVBoxLayout, QWidget,
 )
 
-from onecstarter.domain.edt_cli import CliQuoteError, cli_validate_args
+from onecstarter.domain.edt_cli import cli_validate_args
 from onecstarter.ui.dialogs.buttons import ButtonKind, russian_button_box
 
 EXISTS_ERROR = "Файл уже существует — CLI откажет; выберите другое имя"
+NO_DIR_ERROR = "Каталог результата не существует"  # правка M4 финального ревью
 
 
 def browse_for_tsv(initial: str) -> str:
@@ -1759,11 +2025,15 @@ class CliValidateDialog(QDialog):
             error = "Укажите файл результата"
         elif self._exists(file):
             error = EXISTS_ERROR
+        elif not self._exists(str(Path(file).parent)):
+            # M4 ревью: каталог по умолчанию может не существовать (OneDrive KFM),
+            # CLI каталог для TSV не создаёт — отказ здесь, не кодом после запуска.
+            error = NO_DIR_ERROR
         else:
             try:
                 cli_validate_args(self.selected_paths(), file)
-            except CliQuoteError as quote_error:
-                error = str(quote_error)
+            except ValueError as validation_error:  # CliQuoteError — подкласс; как в import-диалоге
+                error = str(validation_error)
         self._error.setText(error)
         self.ok_button().setEnabled(not error)
 
@@ -1811,8 +2081,8 @@ git commit -m "feat(ui): диалоги CLI EDT — import с двумя вар�
 - Modify: `tests/ui/test_app.py`
 
 **Interfaces:**
-- Consumes: `EdtCli`, `CliRun`, `CliResult`, `workspace_entries` (Task 3); `CliWatcher`, `EdtConsole`, состояния (Task 4); диалоги (Task 5); `cli_build_args`, `cli_project_args`, `cli_import_args`, `cli_validate_args`, `workspace_projects` (Task 1); `spawn_logged` (Task 2); `ServerJob`; `_confirm_quit_with_servers` (`app.py`).
-- Produces: `EdtWorkspace.open_path(path: str)`; `EdtView(cli: EdtCli | None = None, watcher: CliWatcher | None = None, documents_dir: str = str(Path.home() / "Documents"))`; методы `cli_build(project_id)`, `cli_import(project_id)`, `cli_validate(project_id)`, `cli_project(project_id)`, `on_cli_finished(project_id, code)`, `interrupt_current_cli()`, `console() -> EdtConsole`; константы `MENU_CLI = "CLI"`, `CLI_BUILD = "Пересобрать проекты"`, `CLI_IMPORT = "Импортировать проект…"`, `CLI_VALIDATE = "Проверить проекты…"`, `CLI_PROJECT = "Информация по проектам"`, `CLI_BUSY_HINT = "Выполняется команда CLI"`; в `app.py` — `_confirm_quit_with_cli(running_count, ask) -> bool`.
+- Consumes: `EdtCli`, `CliRun`, `CliResult`, `workspace_entries` (Task 3); `CliWatcher`, `EdtConsole`, состояния (Task 4); диалоги (Task 5); `cli_build_args`, `cli_project_args`, `cli_import_args`, `cli_validate_args`, `workspace_projects` (Task 1); `spawn_logged` (Task 2); `ServerJob`; `_confirm_quit_with_servers` (`app.py`); `ui/edt/icons.py::running_icon` (план 1, Task 21) — по его образцу `cli_busy_icon(palette)`: закрашенный круг цветом `palette.accent`, 16 px; `tree_model._project_row` ставит его в ячейку имени при `status.cli_busy` (и не ставит ▶), подсказка дополняется `CLI_BUSY_HINT`; `ui/edt/view.py::_on_current_changed` (план 1, Task 22) — общий слот смены выделения, куда добавляется `_sync_console()`.
+- Produces: `EdtWorkspace.open_path(path: str)`; `EdtView(cli: EdtCli | None = None, watcher: CliWatcher | None = None, documents_dir: str = str(Path.home() / "Documents"))`; методы `cli_build(project_id)`, `cli_import(project_id)`, `cli_validate(project_id)`, `cli_project(project_id)`, `on_cli_finished(run, code)` (сам `CliRun` от наблюдателя), `interrupt_current_cli()`, `console() -> EdtConsole`, `tsv_dir() -> str` (каталог следующего диалога `validate`; правка M4); константы `MENU_CLI = "CLI"`, `CLI_BUILD = "Пересобрать проекты"`, `CLI_IMPORT = "Импортировать проект…"`, `CLI_VALIDATE = "Проверить проекты…"`, `CLI_PROJECT = "Информация по проектам"`, `CLI_BUSY_HINT = "Выполняется команда CLI"`; в `app.py` — `_confirm_quit_with_cli(running_count, ask) -> bool`.
 
 - [ ] **Step 1: Падающие тесты вьюхи**
 
@@ -1893,7 +2163,8 @@ def test_cli_build_confirms_starts_and_expands_console(harness: Harness, qtbot, 
     assert view.console().state_label().text() == STATE_RUNNING
     assert view.console().title_label().text() == "a · Пересобрать проекты"
     assert view.console().interrupt_button().isHidden() is False
-    assert view.model().item(0, 2).toolTip() == CLI_BUSY_HINT
+    assert not view.model().item(0, 0).icon().isNull()  # значок «выполняется команда CLI»
+    assert CLI_BUSY_HINT in view.model().item(0, 0).toolTip()
     open_edt = next(a for a in view.build_menu("project", p.id).actions() if a.text() == MENU_OPEN_EDT)
     assert open_edt.isEnabled() is False and open_edt.toolTip() == CLI_BUSY_HINT
     assert len(harness.pending) == 1
@@ -1909,7 +2180,7 @@ def test_cli_finish_updates_console_and_menu(harness: Harness, qtbot, monkeypatc
     harness.pending[0]()  # поток-демон «дождался»
     assert view.console().state_label().text() == "завершено, код 3"
     assert view.console().interrupt_button().isHidden() is True
-    assert view.model().item(0, 2).text() == ""
+    assert view.model().item(0, 0).icon().isNull()
     assert _actions(_cli_menu(view, p.id))[CLI_PROJECT] is True
 
 
@@ -1942,7 +2213,11 @@ def test_cli_validate_builds_paths_and_result_button(harness: Harness, qtbot, mo
     view = harness.view()
     qtbot.addWidget(view)
 
+    initial_name = ""
+
     def run_dialog(dialog):  # type: ignore[no-untyped-def]
+        nonlocal initial_name
+        initial_name = Path(dialog.file_edit().text()).name
         dialog.file_edit().setText(str(tmp_path / "out.tsv"))
         return True
 
@@ -1950,6 +2225,7 @@ def test_cli_validate_builds_paths_and_result_button(harness: Harness, qtbot, mo
     view.cli_validate(p.id)
     args = harness.cli_spawned[0].arguments
     assert f"validate --project-list '{ws / 'conf'}' --file '{tmp_path / 'out.tsv'}'" in args
+    assert re.fullmatch(r"validate-a-\d{8}-\d{4}\.tsv", initial_name)  # штамп yyyyMMdd-HHmm
     (tmp_path / "out.tsv").write_text("", encoding="utf-8")
     harness.pending[0]()
     assert view.console().result_button().isHidden() is False
@@ -1969,6 +2245,22 @@ def test_cli_import_runs_dialog_form(harness: Harness, qtbot, monkeypatch) -> No
     monkeypatch.setattr(view, "_run_dialog", run_dialog)
     view.cli_import(p.id)
     assert "-command \"import --project 'D:\\src\\proj'\"" in harness.cli_spawned[0].arguments
+
+
+def test_stale_watcher_signal_does_not_finish_new_run(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Прервать → запустить снова → приходит сигнал старого run: новый run жив."""
+    p = _add(harness, "a")
+    view = harness.view()
+    qtbot.addWidget(view)
+    monkeypatch.setattr(view, "_confirm", lambda parent, title, text: True)
+    view.cli_build(p.id)
+    stale = harness.pending[0]
+    view.console().interrupt_button().click()
+    view.cli_project(p.id)
+    stale()  # поток-демон старого run «дождался» уже после нового запуска
+    assert harness.cli.run(p.id) is not None
+    assert harness.jobs[-1].closed is False
+    assert view.console().state_label().text() == STATE_RUNNING
 
 
 def test_cli_error_is_shown(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
@@ -2016,7 +2308,7 @@ from datetime import datetime
 from onecstarter.domain.edt_cli import (
     cli_build_args, cli_import_args, cli_project_args, cli_validate_args, workspace_projects,
 )
-from onecstarter.services.edt_cli import EdtCli, workspace_entries
+from onecstarter.services.edt_cli import CliRun, EdtCli, workspace_entries
 from onecstarter.ui.edt.cli_import_dialog import CliImportDialog
 from onecstarter.ui.edt.cli_validate_dialog import CliValidateDialog
 from onecstarter.ui.edt.cli_watch import CliWatcher
@@ -2056,11 +2348,31 @@ CLI_BUSY_HINT = "Выполняется команда CLI"
         layout.addWidget(self._console)
 ```
 
-В `rebuild()` после `self._tree.setModel(...)`:
+В `_on_current_changed` (Task 22 плана 1 — общий слот, уже подключён к
+`selectionModel().currentChanged` после каждого `setModel`) добавить вызов
+`self._sync_console()` после `self._sync_panel()`.
+
+В `ui/edt/tree_model.py::_project_row` — ветка `status.cli_busy`: `name.setIcon(cli_busy_icon(palette))`
+и `tooltip += f"\n{CLI_BUSY_HINT}"` (ветка `running_pid` остаётся первой: запущенный EDT
+важнее). В `ui/edt/icons.py`:
 
 ```python
-        self._tree.selectionModel().currentChanged.connect(lambda _c, _p: self._sync_console())
+def cli_busy_icon(palette: Palette) -> QIcon:
+    """Закрашенный круг цветом акцента — выполняется команда CLI (спека §14.6)."""
+    pixmap = QPixmap(_SIZE, _SIZE)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(palette.accent))
+    painter.drawEllipse(3, 3, 10, 10)
+    painter.end()
+    return QIcon(pixmap)
 ```
+
+с тестом в `tests/ui/test_edt_icons.py` (пиксель (8, 8) — цвет акцента, угол прозрачен)
+и тестом модели `test_cli_busy_icon_after_mark` в `tests/ui/test_edt_tree_model.py`
+(`ws.mark_cli_busy(p.id)` → значок не пуст, `CLI_BUSY_HINT` в подсказке).
 
 В `_fill_project_menu` — после «Открыть в Проводнике»; и «Открыть в EDT» неактивен при `cli_busy`:
 
@@ -2071,7 +2383,9 @@ CLI_BUSY_HINT = "Выполняется команда CLI"
         ...
         if self._cli is not None:
             cli_menu = menu.addMenu(MENU_CLI)
-            cli_menu.setToolTipsVisible(True)
+            # Подсказка живёт на menuAction() подменю и показывается родительским
+            # меню, где setToolTipsVisible уже включён в build_menu; пункты
+            # самого подменю подсказок не имеют — включать их там незачем (M10).
             reason = self._cli.unavailable_reason(project.id)
             cli_action = cli_menu.menuAction()
             if reason:
@@ -2137,10 +2451,19 @@ CLI_BUSY_HINT = "Выполняется команда CLI"
             self._watcher.watch(run)
         self.rebuild()
 
-    def on_cli_finished(self, project_id: str, code: object) -> None:
-        if self._cli is None:
+    def on_cli_finished(self, run: object, code: object) -> None:
+        """Код завершения от наблюдателя. Запоздавший сигнал чужого run игнорируется.
+
+        После «Прервать» `Popen.wait()` в потоке-демоне возвращается не сразу;
+        если пользователь успел запустить на той же записи новую команду,
+        сигнал старого run не должен закрыть новый (находка ревью Task 6).
+        """
+        if self._cli is None or not isinstance(run, CliRun):
             return
-        self._cli.finish(project_id, code if isinstance(code, int) else None)
+        if self._cli.run(run.project_id) is not run:
+            return  # ту же сверку делает и EdtCli.finish (M5 ревью) — здесь ради консоли
+        project_id = run.project_id
+        self._cli.finish(run, code if isinstance(code, int) else None)
         if self._console_project == project_id:
             self._refresh_console_state(project_id)
         self.rebuild()
@@ -2218,10 +2541,8 @@ CLI_BUSY_HINT = "Выполняется команда CLI"
         return self._console
 ```
 
-`show_run("", "", …)` с пустым именем даёт заголовок `" · "` — в `EdtConsole.show_run`
-пустые `project_name` и `label` дают пустой заголовок: `" · ".join(part for part in (project_name, label) if part)`.
-Поправить `EdtConsole.show_run` соответственно (тест Task 4 с двумя непустыми частями
-остаётся верным). `apply_palette` вьюхи — добавить `self._console.apply_palette(palette)`.
+`EdtConsole.show_run` уже опускает пустые части заголовка (Task 4).
+`apply_palette` вьюхи — добавить `self._console.apply_palette(palette)`.
 
 Тест `test_selecting_project_shows_its_journal_without_expanding` ожидает у записи `b`
 пустой заголовок — журнала у `b` нет, ветка `else`.
@@ -2267,7 +2588,11 @@ def test_confirm_quit_with_cli_declined() -> None:
     cli_watcher = CliWatcher()
 ```
 
-`EdtView(..., cli=edt_cli, watcher=cli_watcher)`; после создания `window` —
+`EdtView(..., cli=edt_cli, watcher=cli_watcher, documents_dir=QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DocumentsLocation))`
+— правка M4 финального ревью: не `Path.home() / "Documents"` (при OneDrive KFM «Документы»
+живут в другом месте и `~/Documents` может не существовать), а тот же источник, что у ярлыков
+в `ui/bases/view.py`; тест `test_build_main_window_gives_edt_view_the_cli_and_watcher`
+сверяет `edt_view.tsv_dir()` с этим значением. После создания `window` —
 `cli_watcher.setParent(window)`.
 
 Гейт выхода — рядом с `_confirm_quit_with_servers`:
@@ -2354,6 +2679,36 @@ Run: `uv run pytest -q > e:/tmp/v3-plan2-final.log 2>&1; tail -3 e:/tmp/v3-plan2
 git add docs/tasks.md
 git commit -m "docs: T-17.2 — план 2 (CLI EDT) закрыт, мутационная стадия записана"
 ```
+
+---
+
+## Правки по итогам финального ревью (12.09.2026)
+
+Ревью всей ветки плана 2 после Task 7 (HEAD `3c5a5b2`). Два Important и восемь миноров
+приняты в правку; каждая — своим коммитом, TDD (RED → GREEN), правки кода блоков плана —
+в Tasks 1, 3, 4, 5, 6 выше («правка <номер> финального ревью»). Полный прогон после волны:
+`uv run pytest -q` — `2403 passed in 306.44s (0:05:06)`, без `failed`/`error`;
+`uv run ruff check .` — `All checks passed!`; `uv run mypy` — `Success: no issues found
+in 217 source files`.
+
+| # | Находка | Где | Правка | Тесты | Коммит |
+| --- | --- | --- | --- | --- | --- |
+| I1 | `OSError` журнала уходил из `EdtCli` голым: `rotate_journal`/`append_event` в `start` вне `try`; в `finish`/`interrupt`/`log_shutdown` отказ записи после `_runs.pop` пропускал `_results`, `clear_cli_busy`, `_close_job` — запись зависала занятой | `services/edt_cli.py` (Task 3) | Ротация — в своём `try` (отказ — событие «ротация журнала не удалась», запуск продолжается); события старта и spawn — в общем `try`, `OSError`/`JobError` → `EdtError`; `_log_event` глотает `OSError` (в `_log` — только тип, инвариант 5), переходы состояния от журнала не зависят | `TestJournalOsError` (5 тестов: каталог журналов под файлом, отказ ротации, каталог на месте журнала в `finish`/`interrupt`/`log_shutdown`); мутация «события старта вне `try`» — `FileExistsError` непойманным | `cfbccd6` |
+| I2 | Текст ошибки запуска без командной строки (спека §8) | `services/edt_cli.py::start` (Task 3) | `EdtError(f"Не удалось запустить {CLI_EXE}: {error}.\nКоманда: {launch.command_line}")` — приём `servers.py::start` | `test_spawn_oserror_becomes_edt_error_and_not_busy` проверяет обе части | `f2926fb` |
+| M3 | `quote_cli_arg` отказывал `'`, но не `"` — вся команда идёт как `-command "…"`, `"` в имени проекта рвёт внешние кавычки | `domain/edt_cli.py` (Task 1) | Отказ обеим кавычкам, текст «Кавычка в значении недопустима: …», класс `CliQuoteError` сохранён; спека §14.2/§9 | табличный `test_quote_inside_rejected` (3 значения); тексты в UI-тестах диалогов | `8aa5c6a` |
+| M4 | `Path.home() / "Documents"` может не существовать (OneDrive KFM); CLI каталог для TSV не создаёт | `ui/app.py`, `ui/edt/cli_validate_dialog.py` (Tasks 5, 6) | `documents_dir=QStandardPaths.writableLocation(DocumentsLocation)` (как ярлыки в `ui/bases/view.py`); `_refresh` проверяет родителя файла тем же `exists` — «Каталог результата не существует»; `EdtView.tsv_dir()` | `test_missing_result_dir_rejected`, фейк `_dirs_only`; `tsv_dir()` в `test_build_main_window_gives_edt_view_the_cli_and_watcher` | `a6f9167` |
+| M5 | Сверка идентичности run только в слоте вьюхи; `test_finish_after_interrupt_is_noop` не был тестом на устаревший run | `services/edt_cli.py::finish`, `ui/edt/view.py` (Tasks 3, 6) | `finish(run, code)`: `_runs.get(id) is not run` → no-op в координаторе; слот вьюхи сверку сохраняет ради консоли | `test_finish_of_stale_run_keeps_new_run` (прервать → запустить снова → `finish(old, 1)`); мутация «убрать `is not run`» — новый run стал `None` | `a9bf82f` |
+| M6 | Удаление записи с живой командой: запись — ключ `_runs` и журнала | `services/edt.py::remove_project` (Task 3) | `InvalidRequestError("Команда CLI выполняется — дождитесь завершения или прервите её")` при `cli_busy`; `update_project` разрешён — докстринг | `TestCliBusy::test_remove_refused_while_busy`; мутация «убрать проверку» — `DID NOT RAISE` | `579f5f8` |
+| M7 | `interrupt` глотал `JobError` из `close()` и писал «прервано» при живом процессе | `services/edt_cli.py::interrupt` (Task 3) | `JobError` → `EdtError("Не удалось прервать «<команда>»: …")`, run остаётся в `_runs` с занятостью, журнал не тронут (принцип `servers.py::stop`) | `test_interrupt_close_failure_keeps_run_and_raises` (`FakeJob.close_error`); мутация «вернуть `_close_job`» — `DID NOT RAISE` | `f296441` |
+| M8 | Докстринг `cli_watch.py` выдавал ветку `OSError` за ожидаемый путь прерывания | `ui/edt/cli_watch.py` (Task 4) | «Прервать» закрывает хендл Job, `wait()` штатно отдаёт код убитого процесса; `except OSError` — страховка | — (докстринг) | `ee2cf7b` |
+| M9 | Отложенный T3: ветка «JDK не найден» `unavailable_reason` без теста | `tests/unit/test_edt_cli.py` (Task 3) | `test_missing_jdk_refused_unless_project_overrides`: `jvm_dir=None` → отказ с «JDK» до spawn; `jvm_dir` записи снимает отказ; мутация «убрать ветку» — reason пуст | сам тест | `fc45808` |
+| M10 | Холостой `cli_menu.setToolTipsVisible(True)`: подсказка живёт на `menuAction()` и показывается родительским меню | `ui/edt/view.py::_fill_project_menu` (Task 6) | Строка удалена, комментарий объясняет | — (`tests/ui/test_edt_view.py` зелёный) | `1cbf228` |
+
+Документы вслед: спека §8 (`WORKSPACE_IN_USE` — имя кода после эксперимента 7; две новые
+строки M6/M7), §13 (строка `ui/edt/cli_watch.py`; механизм — `spawn_logged`, а не
+«`spawn_server` дополняется возвратом хендла»), §14.4 (порождение через `spawn_logged`;
+код завершения — поток-демон в `ui/edt/cli_watch.py`, сигнал несёт сам run; прерывание —
+закрытие хендла Job); `docs/tasks.md` T-17 — раздел «Финальное ревью плана 2».
 
 ---
 

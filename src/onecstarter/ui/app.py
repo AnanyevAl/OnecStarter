@@ -14,13 +14,14 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 
-from PySide6.QtCore import QEventLoop, QTimer
+from PySide6.QtCore import QEventLoop, QStandardPaths, Qt, QTimer
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
+    QLabel,
     QMessageBox,
     QProgressDialog,
     QSystemTrayIcon,
@@ -31,22 +32,29 @@ from onecstarter.config.atomic import atomic_write
 from onecstarter.config.cestart_cfg import parse_cestart_cfg
 from onecstarter.config.shell_link import build_shell_link, shortcut_command
 from onecstarter.domain.default_version import DefaultVersionRule, default_version_rules
+from onecstarter.domain.edt import EditorResolution, EdtInstallation
 from onecstarter.domain.launch import ClientConvention
 from onecstarter.domain.server import ServerConvention
 from onecstarter.domain.version import Installation, VersionNumber
 from onecstarter.platform_1c import console
 from onecstarter.platform_1c.discovery import cfg_paths, find_installations
+from onecstarter.platform_1c.editors import EditorKind, find_editor
+from onecstarter.platform_1c.edt_discovery import default_roots, discover_edt, read_jdk_version
+from onecstarter.platform_1c.edtstart_registry import default_edtstart_root, read_registry
 from onecstarter.platform_1c.job import Job, NullJob, ServerJob
 from onecstarter.platform_1c.process_scan import NullScanner, ProcessScanner, PsutilScanner
 from onecstarter.platform_1c.registry import load_conventions, load_server_conventions
 from onecstarter.platform_1c.server_discovery import ServerInstallation, server_installations
-from onecstarter.platform_1c.server_spawn import spawn_server
+from onecstarter.platform_1c.server_spawn import spawn_logged, spawn_server
 from onecstarter.security.credentials import KeyringStore
 from onecstarter.services import autostart
 from onecstarter.services.availability import probe_targets
 from onecstarter.services.catalog import CommonListData, read_common_lists
+from onecstarter.services.edt import EdtWorkspace, settings_notes
+from onecstarter.services.edt_cli import EdtCli
 from onecstarter.services.errors import (
     ConsoleRegistrationDeclinedError,
+    EdtUnavailableError,
     ServerError,
     ServicesError,
     UserDataUnavailableError,
@@ -60,6 +68,9 @@ from onecstarter.ui import app_icon, rail_icons, theme
 from onecstarter.ui.background import AvailabilityProbe, StartupTasks
 from onecstarter.ui.bases.view import BasesView
 from onecstarter.ui.dialogs.buttons import ask_confirmation
+from onecstarter.ui.edt.cli_watch import CliWatcher
+from onecstarter.ui.edt.monitor import EdtMonitor
+from onecstarter.ui.edt.view import EdtView
 from onecstarter.ui.hotkey import GlobalHotkey
 from onecstarter.ui.servers.card_state import CardState, card_state
 from onecstarter.ui.servers.dialog import ConsoleDialog
@@ -82,6 +93,7 @@ class Runtime:
     conventions: list[ClientConvention]
     settings: Path
     servers: Path
+    edt: Path
 
 
 def build_runtime(env: Mapping[str, str]) -> Runtime:
@@ -117,7 +129,8 @@ def build_runtime(env: Mapping[str, str]) -> Runtime:
         credentials=KeyringStore(),
     )
     servers_path = appdata / "OneCStarter" / "servers.json"
-    return Runtime(workspace, rules, list(conventions), settings_path, servers_path)
+    edt_path = appdata / "OneCStarter" / "edt.json"
+    return Runtime(workspace, rules, list(conventions), settings_path, servers_path, edt_path)
 
 
 def _complain(message: str) -> int:
@@ -411,7 +424,7 @@ def run_smoke(
         # путям файловых баз, включая сетевые шары. Это принято: тот же класс
         # побочного эффекта read-only, что чтение `CommonInfoBases` с шары  # noqa: RUF003
         # здесь же.
-        window, built_tasks, _monitor, _start_probe = _build_main_window(
+        window, built_tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(
             application,
             runtime,
             env,
@@ -468,6 +481,18 @@ def run_smoke(
         _log.info("smoke: ярлык записан")
         vault = credential_store if credential_store is not None else _KeyringSmokeVault()
         _log.info("smoke: keyring=%s", _keyring_round_trip(vault))
+        # Настоящее (только чтение диска) обнаружение установок EDT — то же
+        # обоснование не трогать процессы машины сборщика, что у NullScanner  # noqa: RUF003
+        # выше, здесь неприменимо: discover_edt не сканирует процессы вовсе,
+        # только каталоги установок и JDK (задача 19, спека v3 §3).
+        # `None` — раздел заменён заглушкой (C2 финального ревью ветки v3):
+        # `edt.json` недоступен для чтения, обнаруживать нечего и незачем.
+        edt_workspace = window.edt_workspace
+        if edt_workspace is None:
+            _log.info("smoke: edt=unavailable")
+        else:
+            installations = cast(EdtWorkspace, edt_workspace).refresh_installations()
+            _log.info("smoke: edt=%d", len(installations))
         return 0
     finally:
         # `run_smoke` не крутит `application.exec()` — `aboutToQuit` не
@@ -642,6 +667,21 @@ def _confirm_quit_with_servers(
     return ask(f"Остановить {n} {_servers_word(n)} и выйти?")
 
 
+def _confirm_quit_with_cli(running_count: Callable[[], int], ask: Callable[[str], bool]) -> bool:
+    """Живые команды CLI EDT при выходе (спека v3, §14.4): вопрос, не молчаливое убийство.
+
+    Второй гейт после серверного: сами процессы гасит закрытие хендлов Job
+    при выходе (kill-on-close, `platform_1c/job.py`) — как у серверов, ни
+    строки остановки здесь нет. `running_count` — `EdtCli.running_count`,
+    число записей в `_runs`, без обращения к ОС, поэтому страховки от
+    `ServicesError`, как у `_confirm_quit_with_servers`, не нужно.
+    """  # noqa: RUF002
+    count = running_count()
+    if count == 0:
+        return True
+    return ask(f"Выполняются команды CLI EDT: {count}. Прервать их и выйти?")
+
+
 def _ask_quit_confirmation(parent: QWidget, message: str) -> bool:
     """Обёртка `ask_confirmation` для гейта выхода — дефолт «Нет» (спека §12.3).
 
@@ -670,6 +710,21 @@ def _ask_quit_confirmation(parent: QWidget, message: str) -> bool:
     return ask_confirmation(parent, "OneCStarter", message)
 
 
+def _edt_unavailable_placeholder(reason: str) -> QLabel:
+    """Заглушка раздела «EDT» вместо `EdtView` (C2 финального ревью ветки v3).
+
+    Решение заказчика (спека §2/§8): недоступный `edt.json` не роняет
+    программу — раздел показывает причину, «Базы», «Серверы» и «Настройки»
+    работают. `objectName` — для тестов и таблицы стилей.
+    """
+    label = QLabel(f"Раздел EDT недоступен: {reason}")
+    label.setObjectName("EdtUnavailable")
+    label.setWordWrap(True)
+    label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+    label.setContentsMargins(16, 16, 16, 16)
+    return label
+
+
 def _build_main_window(
     application: QApplication,
     runtime: Runtime,
@@ -680,7 +735,7 @@ def _build_main_window(
     registered_radmin: Callable[[], Path | None] | None = None,
     quit_dialog: Callable[[QWidget, str], bool] | None = None,
     job_factory: Callable[[], Job] | None = None,
-) -> tuple[MainWindow, StartupTasks, ServerMonitor, Callable[[], None]]:
+) -> tuple[MainWindow, StartupTasks, ServerMonitor, Callable[[], None], EdtMonitor | None]:
     """Собрать окно, трей, хоткей, watcher и фоновые задачи, не запуская их.
 
     Вынесено из `main()` (спека T-04.6, §3.2): окно обязано появиться
@@ -743,6 +798,13 @@ def _build_main_window(
     и от собственного рисунка трея. `application_icon()` — тот же QIcon,
     что теперь собирает и `ui/tray.py::make_icon`, единственный источник
     глифа — `onecstarter.ui.app_icon`.
+
+    Пятый элемент кортежа — `None`, если `edt.json` недоступен для чтения
+    (C2 финального ревью ветки v3, решение заказчика — спека §2/§8): раздел
+    «EDT» заменяется заглушкой с причиной, монитор EDT не собирается,
+    остальные разделы и `main()` работают как обычно. Это не путь
+    `ServerError` → `QMessageBox.critical` → выход: от `edt.json` ничто,
+    кроме самого раздела, не зависит, и ронять программу из-за него незачем.
     """  # noqa: RUF002
     application.setWindowIcon(app_icon.application_icon())
     store = SettingsStore(runtime.settings, parent=application)
@@ -759,6 +821,40 @@ def _build_main_window(
         palette=controller.palette,
         cache_env=env,
     )
+    # Раздел «EDT» (спека v3). Всё, что ходит по диску, — лямбды над
+    # текущими настройками: смена JDK или пути редактора в Настройках
+    # действует со следующего обнаружения/меню, без перезапуска.  # noqa: RUF003
+    def edt_editor(kind: EditorKind) -> EditorResolution:
+        setting = (
+            store.settings.editor_vscode
+            if kind is EditorKind.VSCODE
+            else store.settings.editor_antigravity
+        )
+        return find_editor(kind, setting, env)
+
+    def edt_discover() -> list[EdtInstallation]:
+        registry = read_registry(default_edtstart_root(env))
+        return discover_edt(default_roots(env), registry, store.settings.edt_jvm_dir)
+
+    # C2 финального ревью ветки: `load_registry` внутри конструктора отказывает
+    # `EdtUnavailableError`, когда `edt.json` есть, но не читается (права,
+    # блокировка, каталог на месте файла) или повреждён и не переносится
+    # в `.bad`. Раздел становится заглушкой с причиной, остальное работает  # noqa: RUF003
+    # (докстринг выше). `edt_failure` — текст для заглушки; секретов в нём
+    # нет (путь к нашему файлу), инвариант 5 соблюдён.
+    edt_workspace: EdtWorkspace | None
+    edt_failure = ""
+    try:
+        edt_workspace = EdtWorkspace(
+            runtime.edt,
+            discover=edt_discover,
+            edtstart=lambda: read_registry(default_edtstart_root(env)),
+            editors=edt_editor,
+        )
+    except EdtUnavailableError as error:
+        _log.error("раздел EDT недоступен: %s", error)
+        edt_workspace = None
+        edt_failure = str(error)
     settings_view = SettingsView(
         controller,
         store,
@@ -767,6 +863,7 @@ def _build_main_window(
         ),
         frozen=bool(getattr(sys, "frozen", False)),
         executable=sys.executable,
+        edt_notes=lambda: settings_notes(store.settings.edt_jvm_dir, edt_editor, read_jdk_version),
     )
     # Раздел «Серверы» (T-08, задача 16). `servers_workspace`/`server_installed`
     # (холдер — сеттера у ServersView нет, тот же приём, что `recent_limit=  # noqa: RUF003
@@ -866,17 +963,80 @@ def _build_main_window(
         on_console=on_console,
     )
 
-    sections = [("Базы", view), ("Серверы", servers_view), ("Настройки", settings_view)]
+    # `edt_scan_now`/`edt_discover_now` — та же вперёдссылка на `edt_monitor`,
+    # что у `servers_view` на `monitor` выше: он собирается ниже (ему нужен  # noqa: RUF003
+    # уже построенный `window` как родитель), обе функции читают имя только  # noqa: RUF003
+    # по настоящему клику/F5, много позже возврата из этой функции. Проверка
+    # на `None` — для mypy: монитора нет только вместе с вьюхой (C2), так что  # noqa: RUF003
+    # по факту ветка «монитор не собран» из вьюхи недостижима.
+    edt_monitor: EdtMonitor | None = None
+
+    def edt_scan_now() -> None:
+        if edt_monitor is not None:
+            edt_monitor.scan_now()
+
+    def edt_discover_now() -> None:
+        if edt_monitor is not None:
+            edt_monitor.discover_now()
+
+    edt_view: EdtView | None = None
+    edt_section_widget: QWidget
+    # CLI EDT (план 2, спека §14): координатор команд и наблюдатель кода
+    # завершения живут только вместе с разделом — без `edt.json` их не с чем  # noqa: RUF003
+    # связать. Та же фабрика Job и тот же `spawn_logged`, что у серверов:  # noqa: RUF003
+    # процесс CLI умирает вместе с лаунчером (kill-on-close), а `run_smoke`  # noqa: RUF003
+    # с `job_factory=NullJob` kernel-объектов не создаёт.  # noqa: RUF003
+    edt_cli: EdtCli | None = None
+    cli_watcher: CliWatcher | None = None
+    if edt_workspace is not None:
+        edt_cli = EdtCli(
+            edt_workspace,
+            runtime.servers.parent / "logs" / "edt",
+            job_factory=job_factory if job_factory is not None else ServerJob,
+            spawn=spawn_logged,
+        )
+        cli_watcher = CliWatcher()
+        edt_view = EdtView(
+            edt_workspace,
+            palette=controller.palette,
+            request_scan=edt_scan_now,
+            request_discover=edt_discover_now,
+            dialog_defaults=lambda: (
+                store.settings.edt_default_max_heap_mb,
+                store.settings.edt_default_language,
+            ),
+            cli=edt_cli,
+            watcher=cli_watcher,
+            # M4 ревью: не `~/Documents` — при OneDrive KFM «Документы» живут
+            # в другом месте; тот же источник, что у ярлыков в ui/bases/view.py.  # noqa: RUF003
+            documents_dir=QStandardPaths.writableLocation(
+                QStandardPaths.StandardLocation.DocumentsLocation
+            ),
+        )
+        edt_section_widget = edt_view
+    else:
+        edt_section_widget = _edt_unavailable_placeholder(edt_failure)
+
+    sections = [
+        ("Базы", view),
+        ("Серверы", servers_view),
+        ("EDT", edt_section_widget),
+        ("Настройки", settings_view),
+    ]
     # Ключ — сам объект вьюхи, а не подпись: подпись показывается пользователю  # noqa: RUF003
     # и однажды может быть переименована, и тогда поиск по ней уронил бы старт
     # `StopIteration` ещё до создания окна (находка ревью ветки 22.08.2026).
     bases_section = next(i for i, (_t, w) in enumerate(sections) if w is view)
     servers_section = next(i for i, (_t, w) in enumerate(sections) if w is servers_view)
+    edt_section = next(i for i, (_t, w) in enumerate(sections) if w is edt_section_widget)
     settings_section = next(i for i, (_t, w) in enumerate(sections) if w is settings_view)
     window = MainWindow(sections, palette=controller.palette)
     window.set_section_icon(bases_section, rail_icons.bases_icon)
     window.set_section_icon(servers_section, rail_icons.servers_icon)
+    window.set_section_icon(edt_section, rail_icons.edt_icon)
     window.set_section_icon(settings_section, rail_icons.settings_icon)
+    if cli_watcher is not None:
+        cli_watcher.setParent(window)  # время жизни — окно, как у мониторов  # noqa: RUF003
 
     monitor = ServerMonitor(
         process_scanner if process_scanner is not None else PsutilScanner(), parent=window
@@ -892,6 +1052,20 @@ def _build_main_window(
 
     monitor.snapshot_ready.connect(on_scan)
 
+    # Без воркспейса (C2) монитора нет: сканировать процессы и каталоги
+    # не для кого, а `main()`/`run_smoke` получают `None` пятым элементом.  # noqa: RUF003
+    if edt_workspace is not None and edt_view is not None:
+        edt_monitor = EdtMonitor(
+            process_scanner if process_scanner is not None else PsutilScanner(),
+            edt_workspace.projects,
+            edt_discover,
+            parent=window,
+        )
+        edt_monitor.scan_ready.connect(edt_view.on_scan)
+        edt_monitor.installations_ready.connect(edt_view.on_installations)
+        # Смена JDK по умолчанию в Настройках — повод переобнаружить установки.
+        store.changed.connect(edt_monitor.discover_now)
+
     def on_theme_changed() -> None:
         # settings_view красится общим stylesheet (ThemeController._apply) —
         # у неё нет запечённых цветов и метода apply_palette. BasesView  # noqa: RUF003
@@ -900,6 +1074,8 @@ def _build_main_window(
         # пара пиксмапов из палитры.
         view.apply_palette(controller.palette)
         servers_view.apply_palette(controller.palette)
+        if edt_view is not None:
+            edt_view.apply_palette(controller.palette)
         window.apply_palette(controller.palette)
 
     controller.changed.connect(on_theme_changed)
@@ -927,6 +1103,19 @@ def _build_main_window(
             confirmed = _confirm_quit_with_servers(
                 servers_workspace.running_count, lambda message: dialog(window, message)
             )
+            if confirmed and edt_cli is not None:
+                # Второй вопрос — о живых командах CLI EDT (спека §14.4);  # noqa: RUF003
+                # без раздела EDT (`edt_cli is None`) спрашивать не о чем.  # noqa: RUF003
+                confirmed = _confirm_quit_with_cli(
+                    edt_cli.running_count, lambda message: dialog(window, message)
+                )
+            if confirmed and edt_cli is not None:
+                # Отметка выхода в журналах CLI — тем же приёмом, что у серверов  # noqa: RUF003
+                # ниже: согласие получено, отказ записи уходит в лог, не в отмену.
+                try:
+                    edt_cli.log_shutdown()
+                except OSError as error:
+                    _log.warning("не удалось отметить выход в журналах CLI EDT: %s", error)
             if confirmed:
                 # НАХОДКА 4 ручного чек-листа T-10 (Minor): дерево гасит
                 # сама ОС (Job kill-on-close) без единой строки кода  # noqa: RUF003
@@ -1008,6 +1197,10 @@ def _build_main_window(
     # и хоткей собрал бы сборщик мусора сразу после выхода из функции.
     window.settings_store = store
     window.global_hotkey = hotkey
+    # Тем же образцом — но, в отличие от них, этот `run_smoke` реально
+    # читает: настоящее (только диск) обнаружение установок EDT для строки
+    # `smoke: edt=…` (задача 19). `None` — раздел заменён заглушкой (C2).
+    window.edt_workspace = edt_workspace
 
     def apply_close_to_tray() -> None:
         # Трея нет — настройка ведёт себя как выключенная (спека §2):
@@ -1132,7 +1325,7 @@ def _build_main_window(
     # не знает (спека §3, докстринг `BasesView.probe_requested`).
     view.probe_requested.connect(start_probe)
 
-    return window, tasks, monitor, start_probe
+    return window, tasks, monitor, start_probe, edt_monitor
 
 
 def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
@@ -1168,7 +1361,7 @@ def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
         return 1
 
     try:
-        window, tasks, monitor, start_probe = _build_main_window(
+        window, tasks, monitor, start_probe, edt_monitor = _build_main_window(
             application, runtime, os.environ, quit_dialog=_ask_quit_confirmation
         )
     except ServerError as error:
@@ -1195,4 +1388,8 @@ def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
     # начаться только после того, как окно решило, показываться ему сразу
     # или остаться скрытым в трее.
     monitor.start()
+    # `None` — раздел EDT заменён заглушкой (C2 финального ревью ветки v3):
+    # мониторить нечего, программа работает без него.
+    if edt_monitor is not None:
+        edt_monitor.start()
     return application.exec()

@@ -72,12 +72,13 @@ import os
 import subprocess
 import warnings
 from ctypes import wintypes
+from dataclasses import dataclass
 from pathlib import Path
 
 from onecstarter.domain.launch import LaunchCommand
 from onecstarter.platform_1c.job import Job, JobError
 
-__all__ = ["spawn_server"]
+__all__ = ["LoggedProcess", "spawn_logged", "spawn_server"]
 
 _FILE_APPEND_DATA = 0x0004
 _SYNCHRONIZE = 0x00100000
@@ -176,8 +177,20 @@ def _open_append_shared(path: Path) -> int:
         raise
 
 
-def spawn_server(command: LaunchCommand, log_path: Path, job: Job) -> int:
-    """Запустить серверный процесс тихо, с редиректом stdout в `log_path`, в `job`.
+@dataclass(frozen=True)
+class LoggedProcess:
+    """`Popen` живого процесса вместе с его PID — для CLI EDT (спека v3, §14.4).
+
+    В отличие от `spawn_server`, здесь `Popen` не бросается: команда конечна,
+    и её код завершения нужен вызывающему (`process.wait()`/`returncode`).
+    """  # noqa: RUF002
+
+    pid: int
+    process: subprocess.Popen[bytes]
+
+
+def _spawn_into_job(command: LaunchCommand, log_path: Path, job: Job) -> subprocess.Popen[bytes]:
+    """Общее ядро `spawn_server`/`spawn_logged`: тихий процесс, редирект в `log_path`, `job`.
 
     `OSError` (файл журнала не открылся, `Popen` не смог создать процесс)
     уходит наружу как есть: перевод в `ServerError` — дело вызывающего слоя
@@ -216,6 +229,28 @@ def spawn_server(command: LaunchCommand, log_path: Path, job: Job) -> int:
         # (ловит PermissionError и сверяет код выхода — cpython subprocess).
         process.kill()
         raise
+    return process
+
+
+def spawn_logged(command: LaunchCommand, log_path: Path, job: Job) -> LoggedProcess:
+    """Как `spawn_server`, но `Popen` остаётся у вызывающего — для `wait()` и `returncode`.
+
+    Для CLI EDT (спека v3, §14.4): команда конечна, её код завершения нужен
+    консоли. Сервер же живёт дольше Popen-объекта, потому `spawn_server`
+    объект бросает.
+    """  # noqa: RUF002
+    process = _spawn_into_job(command, log_path, job)
+    return LoggedProcess(pid=process.pid, process=process)
+
+
+def spawn_server(command: LaunchCommand, log_path: Path, job: Job) -> int:
+    """Запустить серверный процесс тихо, с редиректом stdout в `log_path`, в `job`.
+
+    Реализован через общее ядро `_spawn_into_job` (то же, что у
+    `spawn_logged`) — контракты по `OSError`/`JobError` и порядку вызовов
+    там же, в докстринге ядра.
+    """  # noqa: RUF002
+    process = _spawn_into_job(command, log_path, job)
     pid = process.pid
     # Процесс брошен намеренно: жизнь сервера определяет Job, а не время  # noqa: RUF003
     # жизни Popen-объекта. Тот же приём, что в process.py::spawn — точечно

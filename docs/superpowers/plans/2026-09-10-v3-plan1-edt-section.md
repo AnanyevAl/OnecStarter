@@ -528,6 +528,12 @@ def join_vm_args(max_heap_mb: int | None, language: str | None, rest: Sequence[s
     return " ".join(tokens)
 ```
 
+**Правка по итогам реализации (10.09.2026, коммит `a6bdd13`).** `shlex.split(text, posix=False)`
+не держит кавычку внутри токена: `-Dfoo="a b" -Xmx2g` → `['-Dfoo="a', 'b"', '-Xmx2g']`, и тест
+таблицы выше на нём падает. `_tokens` реализован своим проходом по строке: разделитель —
+пробел вне двойных кавычек, кавычки остаются в токене, незакрытая кавычка — вся строка
+одним токеном. Одинарные кавычки — обычные символы (спека §2: «кавычки Windows»).
+
 - [ ] **Step 4: Прогнать**
 
 Run: `uv run pytest tests/unit/test_edt_domain.py -q && uv run ruff check . && uv run mypy`
@@ -550,7 +556,7 @@ git commit -m "feat(domain): фасады памяти и языка над ст
 
 **Interfaces:**
 - Consumes: `EdtInstallation`, `EdtProject` (Task 1).
-- Produces: `pick_jvm(*, product: Path | None, ini: Path | None, settings: Path | None, auto: Sequence[tuple[int, Path]], required_java: int) -> tuple[Path, str] | None`; `build_edt_command(exe: Path, workspace: str, jvm_dir: Path, installation_vm_args: str, project_vm_args: str) -> LaunchCommand`; `effective_jvm(project: EdtProject, installation: EdtInstallation) -> Path | None`.
+- Produces: `pick_jvm(*, product: Path | None, ini: Path | None, settings: Path | None, auto: Sequence[tuple[str, Path]], required_java: int) -> tuple[Path, str] | None` (`auto` — пары «строка `JAVA_VERSION` из `release`, каталог `bin`»; среди подходящих по major побеждает старшая полная версия, сравниваемая числами); `java_version_key(version: str) -> tuple[int, ...]`; `build_edt_command(exe: Path, workspace: str, jvm_dir: Path, installation_vm_args: str, project_vm_args: str) -> LaunchCommand`; `effective_jvm(project: EdtProject, installation: EdtInstallation) -> Path | None`.
 
 - [ ] **Step 1: Написать падающие тесты**
 
@@ -563,6 +569,7 @@ from onecstarter.domain.edt import (
     EdtInstallation,
     build_edt_command,
     effective_jvm,
+    java_version_key,
     pick_jvm,
 )
 
@@ -575,7 +582,7 @@ MINE = Path(r"D:\jdk\bin")
 class TestPickJvm:
     def test_products_json_wins(self) -> None:
         assert pick_jvm(
-            product=JDK17, ini=ZULU, settings=MINE, auto=[(25, JDK25)], required_java=17
+            product=JDK17, ini=ZULU, settings=MINE, auto=[("25.0.2", JDK25)], required_java=17
         ) == (JDK17, "products.json")
 
     def test_ini_when_no_product(self) -> None:
@@ -592,16 +599,34 @@ class TestPickJvm:
 
     def test_auto_picks_newest_fitting(self) -> None:
         assert pick_jvm(
-            product=None, ini=None, settings=None, auto=[(17, JDK17), (25, JDK25)], required_java=17
+            product=None, ini=None, settings=None,
+            auto=[("17.0.16", JDK17), ("25.0.2", JDK25)], required_java=17,
         ) == (JDK25, "auto")
+
+    def test_auto_same_major_picks_newest_full_version_numerically(self) -> None:
+        older = Path(r"C:\jdk\axiom-jdk-full-17.0.9+7-x86_64\bin")
+        assert pick_jvm(
+            product=None, ini=None, settings=None,
+            auto=[("17.0.9", older), ("17.0.16", JDK17)], required_java=17,
+        ) == (JDK17, "auto")  # строкой "17.0.9" > "17.0.16" — потому сравнение числами
 
     def test_auto_skips_too_old(self) -> None:
         assert pick_jvm(
-            product=None, ini=None, settings=None, auto=[(11, MINE), (17, JDK17)], required_java=17
+            product=None, ini=None, settings=None,
+            auto=[("11.0.2", MINE), ("17.0.16", JDK17)], required_java=17,
         ) == (JDK17, "auto")
 
     def test_nothing_fits(self) -> None:
-        assert pick_jvm(product=None, ini=None, settings=None, auto=[(11, MINE)], required_java=17) is None
+        assert pick_jvm(
+            product=None, ini=None, settings=None, auto=[("11.0.2", MINE)], required_java=17
+        ) is None
+
+    @pytest.mark.parametrize(
+        ("version", "expected"),
+        [("17.0.16", (17, 0, 16)), ("25", (25,)), ("1.8.0_392", (1, 8, 0, 392)), ("", ()), ("x", ())],
+    )
+    def test_java_version_key(self, version: str, expected: tuple[int, ...]) -> None:
+        assert java_version_key(version) == expected
 
 
 def _installation(**overrides: object) -> EdtInstallation:
@@ -670,27 +695,38 @@ Expected: `ImportError` на `build_edt_command`.
 Добавить в `src/onecstarter/domain/edt.py` (импорт `from onecstarter.domain.launch import LaunchCommand` — в шапку):
 
 ```python
+def java_version_key(version: str) -> tuple[int, ...]:
+    """`17.0.16` → (17, 0, 16); `1.8.0_392` → (1, 8, 0, 392) — для сравнения числами."""
+    return tuple(int(part) for part in re.findall(r"\d+", version))
+
+
 def pick_jvm(
     *,
     product: Path | None,
     ini: Path | None,
     settings: Path | None,
-    auto: Sequence[tuple[int, Path]],
+    auto: Sequence[tuple[str, Path]],
     required_java: int,
 ) -> tuple[Path, str] | None:
     """Цепочка спеки §3: products.json → 1cedt.ini → настройка → старший подходящий JDK.
 
     Все пути уже проверены на существование вызывающим (иначе `None`);
-    здесь — только порядок предпочтения. Возвращает путь и имя источника
-    для показа в диалоге записи.
+    здесь — только порядок предпочтения. `auto` — пары «`JAVA_VERSION`
+    из `release`, каталог bin»: подходит major ≥ требуемого, побеждает старшая
+    полная версия, сравниваемая числами (строкой `17.0.9` > `17.0.16` —
+    находка ревью Task 3). Возвращает путь и имя источника для диалога записи.
     """
     for path, source in ((product, "products.json"), (ini, "1cedt.ini"), (settings, "settings")):
         if path is not None:
             return path, source
-    fitting = [(major, path) for major, path in auto if major >= required_java]
+    fitting = [
+        (version, path)
+        for version, path in auto
+        if (java_major(version) or 0) >= required_java
+    ]
     if not fitting:
         return None
-    _major, best = max(fitting, key=lambda pair: (pair[0], str(pair[1])))
+    _version, best = max(fitting, key=lambda pair: (java_version_key(pair[0]), str(pair[1])))
     return best, "auto"
 
 
@@ -829,6 +865,13 @@ class TestResolveEditor:
 Run: `uv run pytest tests/unit/test_edt_domain.py -q`
 Expected: `ImportError` на `running_workspaces`.
 
+**Правка по итогам финального ревью (11.09.2026, I1).** Первая редакция строила
+`by_key = {workspace_key: project.id}` — при двух записях на один workspace (спека §1
+это допускает) pid получала только последняя. Теперь `by_key: dict[str, list[str]]`,
+pid получает каждая запись с этим ключом; тест
+`TestRunningWorkspaces::test_two_records_on_one_workspace_both_running`. Упоминание
+блокировки Eclipse в докстринге помечено `[?]` — утверждение из спеки §0 без эксперимента.
+
 - [ ] **Step 3: Реализовать**
 
 Добавить в `src/onecstarter/domain/edt.py` (`Iterable` — в импорт из `collections.abc`):
@@ -841,13 +884,18 @@ def running_workspaces(
     processes: Iterable[tuple[int, tuple[str, ...] | None]],
     projects: Iterable[EdtProject],
 ) -> dict[str, int]:
-    """`-data <путь>` в argv `1cedt.exe` → запись с тем же ключом workspace (спека §4).
+    """`-data <путь>` в argv `1cedt.exe` → записи с тем же ключом workspace (спека §4).
 
     `argv is None` — нет доступа к процессу, пропускается. Первый найденный
-    pid остаётся: второго EDT на том же workspace не бывает (блокировка Eclipse),
-    а если снимок застал два — активировать первый не хуже второго.
+    pid остаётся: второго EDT на том же workspace не бывает (блокировка
+    Eclipse — [?] спека §0), а если снимок застал два — активировать первый
+    не хуже второго. Записей на один workspace может быть несколько (спека §1:
+    «один workspace с несколькими проектами для редактора — несколько
+    записей») — pid получает каждая, не последняя (I1 финального ревью).
     """
-    by_key = {workspace_key(project.workspace): project.id for project in projects}
+    by_key: dict[str, list[str]] = {}
+    for project in projects:
+        by_key.setdefault(workspace_key(project.workspace), []).append(project.id)
     result: dict[str, int] = {}
     for pid, argv in processes:
         if not argv:
@@ -855,9 +903,8 @@ def running_workspaces(
         for index, token in enumerate(argv[:-1]):
             if token != "-data":
                 continue
-            project_id = by_key.get(workspace_key(argv[index + 1].strip('"')))
-            if project_id is not None and project_id not in result:
-                result[project_id] = pid
+            for project_id in by_key.get(workspace_key(argv[index + 1].strip('"')), ()):
+                result.setdefault(project_id, pid)
             break
     return result
 
@@ -1513,7 +1560,7 @@ class TestDiscover:
         assert found[0].jvm_source == "auto"
         assert found[0].required_java == 17
         assert found[0].vm_args == ""
-        assert jdk17.exists()
+        assert found[0].jvm_dir != jdk17 / "bin"  # старший из подходящих, не первый
 
     def test_products_json_enriches_jvm_and_args(self, tmp_path: Path) -> None:
         edt = _edt(tmp_path, "2025.2.6+4")
@@ -1567,7 +1614,9 @@ class TestDiscover:
         assert found.jvm_source == "1cedt.ini"
 
     def test_ini_vm_missing_on_disk_ignored(self, tmp_path: Path) -> None:
-        ini = "-vm\nC:\\Program Files\\Zulu\\zulu-17\\bin\\javaw.exe\n-vmargs\n"
+        # Путь из tmp_path, не реальный Zulu: на машине заказчика Zulu 17 существует
+        # (находка Task 7, спека §0 исправлена).
+        ini = f"-vm\n{tmp_path / 'gone' / 'bin' / 'javaw.exe'}\n-vmargs\n"
         _edt(tmp_path, "2024.2.6+7", ini)
         [found] = discover_edt([tmp_path], None, "")
         assert found.jvm_dir is None
@@ -1586,6 +1635,13 @@ class TestDiscover:
         _jdk(tmp_path, "11.0.2")
         [found] = discover_edt([tmp_path], None, "")
         assert found.jvm_dir is None
+
+    def test_same_major_newest_full_version_wins(self, tmp_path: Path) -> None:
+        _edt(tmp_path, "2025.2.6+4")
+        _jdk(tmp_path, "17.0.9")
+        newest = _jdk(tmp_path, "17.0.16")
+        [found] = discover_edt([tmp_path], None, "")
+        assert found.jvm_dir == newest / "bin"
 
     def test_product_location_outside_roots(self, tmp_path: Path) -> None:
         elsewhere = _edt(tmp_path / "elsewhere", "2025.2.6+4")
@@ -1679,14 +1735,14 @@ def _children(root: Path) -> list[Path]:
         return []
 
 
-def _auto_jdks(roots: Sequence[Path]) -> list[tuple[int, Path]]:
-    found: list[tuple[int, Path]] = []
+def _auto_jdks(roots: Sequence[Path]) -> list[tuple[str, Path]]:
+    """Пары «JAVA_VERSION из release, каталог bin» — выбор делает `pick_jvm`."""
+    found: list[tuple[str, Path]] = []
     for root in roots:
         for child in _children(root):
             version = read_jdk_version(child)
-            major = java_major(version) if version else None
-            if major is not None and (child / "bin").is_dir():
-                found.append((major, child / "bin"))
+            if version and java_major(version) is not None and (child / "bin").is_dir():
+                found.append((version, child / "bin"))
     return found
 
 
@@ -1913,9 +1969,10 @@ _PATH_NAMES: dict[EditorKind, tuple[str, ...]] = {
 def known_locations(kind: EditorKind, env: Mapping[str, str]) -> list[Path]:
     local = Path(env.get("LOCALAPPDATA", ".")) / "Programs"
     if kind is EditorKind.VSCODE:
+        program_files = Path(env.get("ProgramFiles", r"C:\Program Files"))
         return [
             local / "Microsoft VS Code" / "bin" / "code.cmd",
-            Path(env.get("ProgramFiles", r"C:\Program Files")) / "Microsoft VS Code" / "bin" / "code.cmd",
+            program_files / "Microsoft VS Code" / "bin" / "code.cmd",
         ]
     return [local / "Antigravity IDE" / "bin" / "antigravity-ide.cmd"]
 
@@ -2016,7 +2073,14 @@ class TestActivateWindow:
         assert brought == [10]
 
     def test_no_window_is_false_without_bring(self) -> None:
-        assert activate_window(42, windows=lambda: [SPLASH], bring=lambda h: True) is False
+        brought: list[int] = []
+
+        def bring(hwnd: int) -> bool:
+            brought.append(hwnd)
+            return True
+
+        assert activate_window(42, windows=lambda: [SPLASH], bring=bring) is False
+        assert brought == []
 
     def test_bring_failure_is_false(self) -> None:
         assert activate_window(42, windows=lambda: [MAIN], bring=lambda h: False) is False
@@ -2051,6 +2115,31 @@ from dataclasses import dataclass
 __all__ = ["WindowInfo", "activate_window", "bring_to_front", "enumerate_windows", "pick_window"]
 
 _SW_RESTORE = 9
+_GW_OWNER = 4
+
+# Один WinDLL на модуль, argtypes/restype у каждой функции — та же гигиена
+# ctypes, что в `platform_1c/job.py` (долг T-10). Без argtypes целый `hwnd`
+# уходил бы 32-битным `long` (LLP64), без restype HWND возвращался бы `c_int`.
+_WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+_user32 = ctypes.WinDLL("user32", use_last_error=True)
+_user32.EnumWindows.restype = wintypes.BOOL
+_user32.EnumWindows.argtypes = [_WNDENUMPROC, wintypes.LPARAM]
+_user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+_user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.DWORD)]
+_user32.GetWindowTextLengthW.restype = ctypes.c_int
+_user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+_user32.GetWindowTextW.restype = ctypes.c_int
+_user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
+_user32.IsWindowVisible.restype = wintypes.BOOL
+_user32.IsWindowVisible.argtypes = [wintypes.HWND]
+_user32.GetWindow.restype = wintypes.HWND
+_user32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+_user32.IsIconic.restype = wintypes.BOOL
+_user32.IsIconic.argtypes = [wintypes.HWND]
+_user32.ShowWindow.restype = wintypes.BOOL
+_user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
+_user32.SetForegroundWindow.restype = wintypes.BOOL
+_user32.SetForegroundWindow.argtypes = [wintypes.HWND]
 
 
 @dataclass(frozen=True)
@@ -2070,36 +2159,37 @@ def pick_window(windows: Sequence[WindowInfo], pid: int) -> int | None:
 
 
 def enumerate_windows() -> list[WindowInfo]:
-    user32 = ctypes.WinDLL("user32", use_last_error=True)
-    proc_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
     found: list[WindowInfo] = []
 
     def visit(hwnd: int, _lparam: int) -> bool:
         pid = wintypes.DWORD()
-        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        length = user32.GetWindowTextLengthW(hwnd)
+        _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        length = _user32.GetWindowTextLengthW(hwnd)
         buffer = ctypes.create_unicode_buffer(length + 1)
-        user32.GetWindowTextW(hwnd, buffer, length + 1)
+        _user32.GetWindowTextW(hwnd, buffer, length + 1)
+        owner = _user32.GetWindow(hwnd, _GW_OWNER)
         found.append(
             WindowInfo(
                 hwnd=hwnd,
                 pid=pid.value,
-                visible=bool(user32.IsWindowVisible(hwnd)),
+                visible=bool(_user32.IsWindowVisible(hwnd)),
                 title=buffer.value,
-                owner=int(user32.GetWindow(hwnd, 4) or 0),  # GW_OWNER = 4
+                owner=int(owner) if owner else 0,
             )
         )
         return True
 
-    user32.EnumWindows(proc_type(visit), 0)
+    # Ссылка на callback живёт до возврата EnumWindows — локальная переменная,
+    # не временный объект внутри вызова.
+    callback = _WNDENUMPROC(visit)
+    _user32.EnumWindows(callback, 0)
     return found
 
 
 def bring_to_front(hwnd: int) -> bool:
-    user32 = ctypes.WinDLL("user32", use_last_error=True)
-    if user32.IsIconic(hwnd):
-        user32.ShowWindow(hwnd, _SW_RESTORE)
-    return bool(user32.SetForegroundWindow(hwnd))
+    if _user32.IsIconic(hwnd):
+        _user32.ShowWindow(hwnd, _SW_RESTORE)
+    return bool(_user32.SetForegroundWindow(hwnd))
 
 
 def activate_window(
@@ -2259,6 +2349,15 @@ class TestBadFile:
         assert not path.exists()
         assert (tmp_path / "edt.json.bad").read_text(encoding="utf-8") == text
 
+    def test_unreadable_file_raises_not_empty(self, tmp_path: Path) -> None:
+        """ЗАЩИТНЫЙ ТЕСТ: недоступный файл — ошибка, не пустой список и не `.bad`."""
+        directory = tmp_path / "edt.json"
+        directory.mkdir()  # каталог на месте файла: IsADirectoryError=OSError
+        with pytest.raises(EdtUnavailableError):
+            load_registry(directory)
+        assert directory.exists()
+        assert not (tmp_path / "edt.json.bad").exists()
+
     def test_cannot_move_aside_raises(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         path = tmp_path / "edt.json"
         path.write_text("{", encoding="utf-8")
@@ -2332,8 +2431,13 @@ def load_registry(path: Path) -> EdtRegistry:
         raw = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return EdtRegistry((), ())
-    except (OSError, UnicodeDecodeError):
+    except UnicodeDecodeError:
         return _move_aside(path)
+    except OSError as error:
+        # Файл есть, но недоступен: блокировка, права, отвалившийся диск. Это
+        # не порча содержимого — в `.bad` его не уносим и пустым не подменяем:
+        # следующее сохранение затёрло бы записи пользователя (как в server_store).
+        raise EdtUnavailableError(f"{path} недоступен для чтения") from error
     try:
         payload = json.loads(raw)
         if not isinstance(payload, dict) or payload.get("schema") != SCHEMA_VERSION:
@@ -2698,6 +2802,14 @@ class TestProjects:
         with pytest.raises(UnknownItemError):
             _workspace(tmp_path).update_project(_project("a", id="ghost"))
 
+    def test_update_with_unknown_group_raises_and_keeps_record(self, tmp_path: Path) -> None:
+        ws = _workspace(tmp_path)
+        added = ws.add_project(_project("a"))
+        with pytest.raises(UnknownItemError):
+            ws.update_project(EdtProject(id=added.id, name="a", workspace=added.workspace, group_id="ghost"))
+        assert ws.project(added.id).group_id is None
+        assert [p.id for p in ws.children(None)[1]] == [added.id]
+
 
 class TestGroups:
     def test_add_rename_remove_promotes_children(self, tmp_path: Path) -> None:
@@ -2881,6 +2993,8 @@ class EdtWorkspace:
 
     def update_project(self, project: EdtProject) -> None:
         self._validate_project(project)
+        if project.group_id is not None:
+            self._group(project.group_id)  # неизвестная группа — UnknownItemError, как в add
         index = self._project_index(project.id)
         self._projects[index] = project
         self._save()
@@ -2957,7 +3071,7 @@ class EdtWorkspace:
 
     @staticmethod
     def _insert_index(
-        items: list[EdtGroup] | list[EdtProject], parent: str | None, position: int
+        items: Sequence[EdtGroup | EdtProject], parent: str | None, position: int
     ) -> int:
         """Индекс в общем массиве, соответствующий `position` среди соседей."""
         siblings = [
@@ -2985,7 +3099,7 @@ class EdtWorkspace:
             raise InvalidRequestError("Имя записи пусто")
         if not project.workspace.strip():
             raise InvalidRequestError("Путь workspace пуст")
-        if not os.path.isabs(project.workspace):
+        if not Path(project.workspace).is_absolute():  # без обращения к диску (ruff PTH117)
             raise InvalidRequestError("Путь workspace должен быть абсолютным")
 
     def _project_index(self, project_id: str) -> int:
@@ -3007,7 +3121,7 @@ class EdtWorkspace:
         save_registry(self._path, EdtRegistry(tuple(self._groups), tuple(self._projects)))
 ```
 
-`os.path.isabs` — без обращения к диску; проверка существования каталога — не здесь (спека §8: отсутствующий каталог — метка, не отказ).
+`Path.is_absolute()` — без обращения к диску; проверка существования каталога — не здесь (спека §8: отсутствующий каталог — метка, не отказ). **Правка по итогам реализации (ef66de3):** `os.path.isabs` заменён на `Path.is_absolute()` (ruff PTH117), `_insert_index` типизирован `Sequence[EdtGroup | EdtProject]` (mypy strict); `update_project` проверяет `group_id` как `add_project` — находка ревью.
 
 - [ ] **Step 4: Сторож инварианта 1**
 
@@ -3066,7 +3180,6 @@ def scan_edt(scanner: ProcessScanner, projects: Sequence[EdtProject], is_dir: Ca
 Добавить в `tests/unit/test_edt_workspace.py`:
 
 ```python
-from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from onecstarter.domain.edt import (
@@ -3499,7 +3612,7 @@ def scan_edt(
             raise EdtLaunchError(f"Не удалось запустить: {command.executable} ({error})") from error
 ```
 
-- [ ] **Step 4: Прогнать, затем две мутации**
+- [ ] **Step 4: Прогнать, затем три мутации**
 
 Run: `uv run pytest tests/unit/test_edt_workspace.py -q && uv run ruff check . && uv run mypy`
 Expected: зелёное.
@@ -3560,7 +3673,8 @@ git commit -m "feat(services): запуск EDT с активацией окна
 def test_edt_icon_is_not_empty(qapp: QApplication) -> None:
     icon = rail_icons.edt_icon(DARK)
     assert not icon.isNull()
-    assert icon.pixmap(16, 16).toImage().pixelColor(8, 8).alpha() >= 0
+    # Слэш глифа проходит через центр — пиксель (8, 8) непрозрачен.
+    assert icon.pixmap(16, 16).toImage().pixelColor(8, 8).alpha() > 0
 ```
 
 (`DARK`/`qapp` — как в соседних тестах файла; если палитра там называется иначе — взять её имя.)
@@ -3596,7 +3710,6 @@ def edt_icon(palette: Palette) -> QIcon:
 from itertools import count
 from pathlib import Path
 
-import pytest
 from PySide6.QtGui import QColor, QStandardItemModel
 
 from onecstarter.domain.edt import EdtInstallation, EdtProject
@@ -3777,8 +3890,15 @@ def _fill(
     query: str,
     palette: Palette,
 ) -> bool:
-    """Заполнить детей `group_id`; вернуть, есть ли среди них видимые записи."""
+    """Заполнить детей `group_id`; вернуть, есть ли среди них видимые строки.
+
+    Без фильтра группа видна всегда, даже пустая: иначе «Создать группу»
+    записывала бы в `edt.json` группу, которую нечем показать, использовать
+    и удалить (C1 финального ревью ветки). Под непустым фильтром показываются
+    только группы, в которых есть совпадения (спека §7).
+    """
     groups, projects = workspace.children(group_id)
+    unfiltered = not query.strip()
     visible = False
     for group in groups:
         item = QStandardItem(group.name)
@@ -3788,7 +3908,8 @@ def _fill(
         font = item.font()
         font.setBold(True)
         item.setFont(font)
-        if _fill(item, group.id, workspace, query, palette):
+        has_matches = _fill(item, group.id, workspace, query, palette)
+        if has_matches or unfiltered:
             parent.appendRow([item, _plain(""), _plain("")])
             visible = True
     for project in projects:
@@ -4036,7 +4157,6 @@ Run: `uv run pytest tests/ui/test_edt_monitor.py -q` — зелёное.
 ```python
 """EdtView: дерево, фильтр, запуск по Enter/двойному клику, статус, F5 (спека §7)."""
 
-from collections.abc import Callable
 from itertools import count
 from pathlib import Path
 
@@ -4213,6 +4333,19 @@ def test_expansion_survives_rebuild(harness: Harness, qtbot) -> None:  # type: i
     view.tree().expand(view.model().index(0, 0))
     view.rebuild()
     assert view.tree().isExpanded(view.model().index(0, 0)) is True
+
+
+def test_collapse_survives_empty_filter_round_trip(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    """Фильтр без совпадений опустошает модель; сброс фильтра не должен раскрывать свёрнутое."""
+    g = harness.workspace.add_group("2025", None)
+    _add(harness, "a", group_id=g.id)
+    view = harness.view()
+    qtbot.addWidget(view)
+    view.tree().collapse(view.model().index(0, 0))
+    view.search().setText("нет такого")
+    assert view.model().rowCount() == 0
+    view.search().setText("")
+    assert view.tree().isExpanded(view.model().index(0, 0)) is False
 ```
 
 - [ ] **Step 7: Каркас вьюхи — реализация**
@@ -4283,6 +4416,7 @@ class EdtView(QWidget):
         self._request_discover = request_discover
         self._show_error = show_error or self._default_show_error
         self._model = QStandardItemModel()
+        self._built = False  # первая сборка раскрывает всё; дальше — по запомненным id
 
         self._search = QLineEdit()
         self._search.setPlaceholderText("Поиск: начните вводить имя проекта")
@@ -4347,13 +4481,27 @@ class EdtView(QWidget):
     # --- перестройка ------------------------------------------------------
 
     def rebuild(self) -> None:
+        """Собрать модель заново, сохранив раскрытие, текущую строку и ширины колонок.
+
+        `setModel` сбрасывает всё это — ширины по умолчанию ставятся только
+        при первой сборке, дальше возвращаются снятые перед подменой (I2
+        финального ревью ветки). Последняя колонка растянута заголовком,
+        её ширина не запоминается.
+        """
         expanded = self._expanded_ids()
-        first_build = self._model.rowCount() == 0 and not expanded
+        current = self.current()
+        widths = [self._tree.columnWidth(column) for column in range(len(COLUMNS) - 1)]
         self._model = build_edt_model(self._workspace, self._search.text(), self._palette)
         self._tree.setModel(self._model)
-        self._tree.setColumnWidth(0, 320)
-        self._tree.setColumnWidth(1, 110)
-        self._restore_expansion(expanded, expand_all=first_build)
+        if not self._built:
+            self._tree.setColumnWidth(0, 320)
+            self._tree.setColumnWidth(1, 110)
+        else:
+            for column, width in enumerate(widths):
+                self._tree.setColumnWidth(column, width)
+        self._restore_expansion(expanded, expand_all=not self._built)
+        self._restore_current(current)
+        self._built = True
         self._banner.setVisible(
             not self._workspace.projects() and self._workspace.edtstart_available()
         )
@@ -4363,7 +4511,15 @@ class EdtView(QWidget):
         self.rebuild()
 
     def on_scan(self, scan: EdtScan) -> None:
+        """Снимок монитора: применить всегда, перестраивать — только если он изменился.
+
+        Тик каждые пять секунд с тем же содержимым иначе сбрасывал бы текущую
+        строку и рвал начатое перетаскивание (I2 финального ревью ветки).
+        """
         self._workspace.apply_scan(scan)
+        if scan == self._last_scan:
+            return
+        self._last_scan = scan
         self.rebuild()
 
     def on_installations(self, installations: Sequence[EdtInstallation]) -> None:
@@ -4441,6 +4597,8 @@ class EdtView(QWidget):
 
 `test_expansion_survives_rebuild`: первая сборка раскрывает всё (`expand_all`), дальше —
 по запомненным id; поэтому после `collapse` + `rebuild` группа остаётся свёрнутой.
+Признак первой сборки — флаг `_built`, а не «модель пуста»: пустая модель бывает и после
+фильтра без совпадений, и тогда сброс фильтра раскрыл бы свёрнутое (находка ревью Task 14).
 
 - [ ] **Step 8: Прогнать**
 
@@ -4453,6 +4611,24 @@ Expected: зелёное.
 git add src/onecstarter/ui/rail_icons.py src/onecstarter/ui/edt src/onecstarter/services/edt.py tests/ui/test_edt_tree_model.py tests/ui/test_edt_monitor.py tests/ui/test_edt_view.py tests/ui/test_rail_icons.py
 git commit -m "feat(ui): раздел EDT — значок, модель дерева, монитор, каркас вьюхи с запуском и F5"
 ```
+
+
+**Правки по итогам финального ревью (11.09.2026).**
+
+- **C1** — `_fill` добавлял группу только при наличии видимых записей даже без фильтра:
+  «Создать группу» писала в `edt.json` группу, которую нечем показать, использовать
+  и удалить. Без фильтра (`not query.strip()`) группа видна всегда; под непустым
+  фильтром — только группы с совпадениями. Тесты `test_empty_group_visible_without_filter`,
+  `test_empty_group_hidden_under_filter` (`tests/ui/test_edt_tree_model.py`) и проверка
+  строки группы после `view.add_group(None)` в `test_group_lifecycle_via_view`.
+- **I2** — `rebuild()` на каждом тике монитора (раз в 5 с) подменял модель целиком:
+  сбрасывал текущую строку и ширины колонок, рвал начатое перетаскивание.
+  `on_scan` хранит `self._last_scan: EdtScan | None` и пропускает `rebuild()`, когда
+  снимок равен предыдущему (`apply_scan` применяется всегда); `rebuild()` снимает
+  `current()` и ширины первых двух колонок до `setModel` и возвращает их после
+  (`_restore_current`), ширины по умолчанию — только при первой сборке (`_built`).
+  Тесты `test_unchanged_scan_does_not_rebuild` (тождество `model()`),
+  `test_current_row_and_widths_survive_rebuild` (`tests/ui/test_edt_view.py`).
 
 ---
 
@@ -4474,8 +4650,6 @@ git commit -m "feat(ui): раздел EDT — значок, модель дер�
 """Диалог записи EDT: поля, фасады vm_args, версия не из списка, проверки (спека §7)."""
 
 from pathlib import Path
-
-import pytest
 
 from onecstarter.domain.edt import EdtInstallation, EdtProject
 from onecstarter.ui.edt.dialog import (
@@ -4893,6 +5067,7 @@ git commit -m "feat(ui): диалог записи EDT — версия, JVM, п
 
 **Interfaces:**
 - Consumes: `EdtView` (Task 14), `EdtProjectDialog`, `DialogDefaults`, `browse_for_directory` (Task 15), `EdtWorkspace` (Tasks 12–13), `EditorKind`, `EDITOR_LABELS` (Task 8), `ask_confirmation` (`ui/dialogs/buttons.py`), `dropped_directory` (`ui/dialogs/infobase.py`).
+- Раскладка меню (решение заказчика 11.09.2026, ревью Task 16): блоки одного списка спеки §7 разделены `—` во всех трёх меню. Запись: Открыть в EDT · Открыть в VS Code · Открыть в Antigravity · Открыть в Проводнике · — · Добавить… · Изменить… · Удалить · — · Создать группу · — · Импорт из EDT Start…; группа: Добавить… · — · Создать группу · Переименовать группу · Удалить группу; пустое место: Добавить… · — · Создать группу · — · Импорт из EDT Start….
 - Produces: `EdtGroupDialog(name: str, *, title: str, parent=None)` с `name_text()`, `ok_button()`; в `EdtView`: новые параметры конструктора `dialog_defaults: Callable[[], tuple[int, str]] = lambda: (8192, "")` (память, язык для новых записей), `confirm: Callable[[QWidget, str, str], bool] = ask_confirmation`, `choose_directory: Callable[[], str] = browse_for_directory`; методы `build_menu(kind: str | None, item_id: str | None) -> QMenu`, `add_project(group_id: str | None, workspace: str = "")`, `edit_project(project_id)`, `remove_project(project_id)`, `add_group(parent_id)`, `rename_group(group_id)`, `remove_group(group_id)`, `open_in_editor(project_id, kind)`, `open_folder(project_id)`, `handle_drop(source: tuple[str, str], target: tuple[str, str] | None, where: DropTarget)`, `add_project_from_directory(directory: str, target: tuple[str, str] | None)`; `DropTarget(Enum)` с `BEFORE`, `INTO`, `AFTER`; тексты пунктов — константы `MENU_OPEN_EDT = "Открыть в EDT"`, `MENU_OPEN_EXPLORER = "Открыть в Проводнике"`, `MENU_ADD = "Добавить…"`, `MENU_EDIT = "Изменить…"`, `MENU_REMOVE = "Удалить"`, `MENU_ADD_GROUP = "Создать группу"`, `MENU_RENAME_GROUP = "Переименовать группу"`, `MENU_REMOVE_GROUP = "Удалить группу"`, `MENU_IMPORT = "Импорт из EDT Start…"`; пункты редакторов — `f"Открыть в {EDITOR_LABELS[kind]}"`.
 
 - [ ] **Step 1: Диалог группы — тест и реализация**
@@ -6025,6 +6200,18 @@ git add src/onecstarter/services/edt.py src/onecstarter/ui/settings_view.py test
 git commit -m "feat(ui): группа EDT в Настройках — JDK, память и язык по умолчанию, пути редакторов"
 ```
 
+
+**Правка по итогам финального ревью (11.09.2026, I3).** `notes = self._edt_notes()`
+считался один раз в конструкторе: сменил пользователь JDK или путь редактора — подпись
+«Найден: …»/«Java 17…» оставалась старой до перезапуска. `_path_control` получил параметр
+`after_save: Callable[[], None] | None`, вызываемый после `self._store.update(...)` в `save()`
+(и, через него, в `pick()`); три строки группы «EDT» передают `after_save=self._refresh_edt_notes`,
+который пересчитывает `self._edt_notes()` и ставит текст в
+`self._row_notes[EDT_JVM_ROW/EDT_VSCODE_ROW/EDT_ANTIGRAVITY_ROW]`. Память и язык на подписи
+не влияют, их обработчики пересчёт не зовут. Тест `test_edt_notes_refresh_after_edit`
+(`tests/ui/test_settings_view.py`): пробник нумерует вызовы, номер растёт после ввода
+и обзора и не растёт после смены памяти/языка.
+
 ---
 
 ### Task 19: Сборка раздела в приложении и smoke
@@ -6036,7 +6223,7 @@ git commit -m "feat(ui): группа EDT в Настройках — JDK, па�
 
 **Interfaces:**
 - Consumes: всё из Tasks 7–18; `Runtime`, `_build_main_window`, `run_smoke`, `main` (существуют).
-- Produces: `Runtime.edt: Path` (`%APPDATA%\OneCStarter\edt.json`); `_build_main_window` возвращает пятый элемент — `EdtMonitor`; раздел «EDT» между «Серверы» и «Настройки»; `main()` зовёт `edt_monitor.start()` рядом с `monitor.start()`; строка `smoke: edt=<число установок>` в самопроверке.
+- Produces: `Runtime.edt: Path` (`%APPDATA%\OneCStarter\edt.json`); `_build_main_window` возвращает пятый элемент — `EdtMonitor` (с 11.09.2026 — `EdtMonitor | None`, правка C2 ниже); раздел «EDT» между «Серверы» и «Настройки»; `main()` зовёт `edt_monitor.start()` рядом с `monitor.start()`; строка `smoke: edt=<число установок>` в самопроверке.
 
 - [ ] **Step 1: Падающие тесты**
 
@@ -6221,6 +6408,33 @@ from onecstarter.ui.edt.view import EdtView
     edt_monitor.start()
 ```
 
+**Правка по итогам финального ревью (11.09.2026, C2).** `EdtUnavailableError` из
+конструктора `EdtWorkspace` (Task 10: `edt.json` есть, но не читается, либо повреждён
+и не переносится в `.bad`) не ловил никто — `main()` перехватывает только `ServerError`,
+и программа падала целиком. Решение заказчика (спека §2/§8): **раздел становится
+недоступным, программа работает.** Реализация:
+
+- `EdtWorkspace(...)` оборачивается в `try/except EdtUnavailableError as error`;
+  при отказе `edt_workspace = None`, текст ошибки уходит в заглушку.
+- На месте `EdtView` в секцию «EDT» ставится `_edt_unavailable_placeholder(reason)` —
+  `QLabel` с переносом строк, `objectName="EdtUnavailable"`, текст
+  `Раздел EDT недоступен: <str(error)>`. `EdtView` и `EdtMonitor` не собираются;
+  `request_scan`/`request_discover` — именованные функции `edt_scan_now`/`edt_discover_now`
+  с проверкой `edt_monitor is not None` (для mypy; по факту из вьюхи недостижимо).
+- Пятый элемент кортежа типизирован `EdtMonitor | None`; `main()` зовёт
+  `edt_monitor.start()` только при `is not None`; `run_smoke` при `window.edt_workspace
+  is None` пишет `smoke: edt=unavailable` вместо `smoke: edt=<N>`.
+- `SettingsView` собирается как раньше: её `edt_notes`-лямбда от воркспейса не зависит.
+
+Тесты (`tests/ui/test_app.py`): `test_build_main_window_replaces_edt_section_when_edt_json_unreadable`
+(каталог на месте `%APPDATA%\OneCStarter\edt.json` — тот же приём, что у `servers.json`;
+секция — `QLabel` с нужным `objectName` и текстом, пятый элемент `None`, Настройки на месте),
+`test_main_keeps_working_when_edt_json_unreadable` (фикстура `assembled_edt_unavailable`
+поверх `_assemble`: `main()` доходит до `exec()`, код 0, `QMessageBox.critical` не показан),
+`test_run_smoke_reports_edt_unavailable_when_edt_json_unreadable`. Мутация «убрать
+`if edt_monitor is not None` в `main()`» — `AttributeError: 'NoneType' object has no
+attribute 'start'`, проверено 11.09.2026.
+
 В `run_smoke` после строки `smoke: keyring=…`:
 
 ```python
@@ -6335,3 +6549,501 @@ git commit -m "docs: T-17 — план 1 вехи v3 закрыт, мутаци�
 - **Сохранение раскрытия групп между сеансами, ширины колонок** — не в спеке.
 - **Общий монитор с серверами** — спека §4 допускает лишь при параметризации без правки
   поведения; калька дешевле и не трогает раздел «Серверы».
+
+---
+
+## Правки по итогам финального ревью (11.09.2026)
+
+Ревью всей ветки после закрытия Task 20 (HEAD `3b9567d`). Два Critical, три Important
+и два минора приняты в правку; каждая — своим коммитом, TDD (RED → GREEN), правки кода
+блоков плана — в соответствующих задачах выше («правка по итогам финального ревью»).
+Полный прогон после волны: `uv run pytest -q` — `2284 passed in 273.69s`;
+`uv run ruff check .` — `All checks passed!`; `uv run mypy` — `Success: no issues found
+in 202 source files`.
+
+| # | Находка | Где | Правка | Тесты | Коммит |
+| --- | --- | --- | --- | --- | --- |
+| C1 | Пустая группа не видна в дереве: `_fill` добавлял группу только при видимых записях даже без фильтра — «Создать группу» писала в `edt.json` группу, которую нечем показать, использовать и удалить | `ui/edt/tree_model.py::_fill` (Task 14) | Без фильтра группа видна всегда; под непустым фильтром — только группы с совпадениями. Спека §7 дополнена предложением | `test_empty_group_visible_without_filter`, `test_empty_group_hidden_under_filter`; строка группы после `add_group` в `test_group_lifecycle_via_view` | `60e0d7f` |
+| C2 | `EdtUnavailableError` из `EdtWorkspace(...)` в `_build_main_window` не ловил никто (`main()` — только `ServerError`): недоступный `edt.json` ронял программу | `ui/app.py` (Task 19) | Решение заказчика: раздел недоступен, программа работает. `QLabel` `EdtUnavailable` «Раздел EDT недоступен: …» вместо `EdtView`, монитор не собирается (пятый элемент `EdtMonitor \| None`), `main()` не стартует `None`, `run_smoke` пишет `smoke: edt=unavailable`. Спека §8 дополнена | `test_build_main_window_replaces_edt_section_when_edt_json_unreadable`, `test_main_keeps_working_when_edt_json_unreadable`, `test_run_smoke_reports_edt_unavailable_when_edt_json_unreadable`; мутация «убрать `if edt_monitor is not None`» — `AttributeError` | `8d95391` |
+| I1 | `running_workspaces`: `by_key = {ключ: id}` — при двух записях на один workspace (спека §1 допускает) pid получала только последняя | `domain/edt.py` (Task 4) | `by_key: dict[str, list[str]]`, pid получает каждая запись; блокировка Eclipse в докстринге помечена `[?]` | `TestRunningWorkspaces::test_two_records_on_one_workspace_both_running` | `871e8f2` |
+| I2 | `rebuild()` на каждом тике монитора сбрасывал текущую строку и ширины колонок, рвал начатое перетаскивание | `ui/edt/view.py::on_scan`, `rebuild` (Task 14) | `on_scan` хранит `_last_scan` и пропускает `rebuild()` при равном снимке; `rebuild()` возвращает `current()` и ширины первых двух колонок, умолчания — только при первой сборке | `test_unchanged_scan_does_not_rebuild`, `test_current_row_and_widths_survive_rebuild` | `e5cf839` |
+| I3 | Подписи группы «EDT» в Настройках считались один раз в конструкторе — после смены JDK или пути редактора врали до перезапуска | `ui/settings_view.py` (Task 18) | `_path_control(after_save=...)`; три строки группы зовут `_refresh_edt_notes` после каждого сохранения (ввод и обзор); память и язык подписи не трогают | `test_edt_notes_refresh_after_edit` | `305f53e` |
+| минор | `import_projects` сравнивал сырые строки workspace, `import_candidates` — `workspace_key` | `services/edt.py` (Task 13) | Ключ уникальности — `workspace_key` | `TestImport::test_import_skips_workspace_present_by_key` | `d957ec0` |
+| минор | `test_edt_heap_tolerance`: случай `("8192", 8192)` не отличал отказ строки от `int("8192")` | `tests/unit/test_settings.py` (Task 11) | Заменён на `("4096", 8192)` | — (сам тест) | `bb3f5ab` |
+
+Из отложенных миноров задач (`deferred.md` волны, вне репозитория) этой волной закрыты
+три: метка `[?]` у блокировки Eclipse (Task 4), случай `"8192"` в `test_edt_heap_tolerance`
+(Task 11), ключ сравнения в `import_projects` (Task 13). Остальные остаются отложенными.
+
+## Дополнение заказчика 11.09.2026 — индикатор и панель путей
+
+По итогам ручного чек-листа Task 19 (заказчик, 11.09.2026): статус «запущен» — зелёный
+треугольник ▶ **справа от имени**, колонка статуса убирается; под деревом — панель
+с путями workspace и каталога проекта, как `ConnectionPanel` у баз, без версии
+(она видна в списке). Спека §7 дополнена. Выполняются тем же циклом, после Task 20.
+
+### Task 21: Индикатор «запущен» — зелёный ▶ справа от имени
+
+**Files:**
+- Modify: `src/onecstarter/ui/theme.py` (роль `running` в `Palette`, обеих палитрах)
+- Modify: `tests/ui/test_theme.py` (роль в контрастном тесте и в `test_light_palette_differs_in_every_role`)
+- Create: `src/onecstarter/ui/edt/icons.py` (`running_icon(palette) -> QIcon`)
+- Modify: `src/onecstarter/ui/edt/tree_model.py` (две колонки, значок в ячейке имени)
+- Modify: `src/onecstarter/ui/edt/view.py` (делегат первой колонки — значок справа)
+- Modify: `tests/ui/test_edt_tree_model.py`, `tests/ui/test_edt_view.py`
+
+**Interfaces:**
+- Consumes: `Palette` (`ui/theme.py`), `_pixmap`/`_icon` приём из `ui/rail_icons.py`, `EdtStatus`.
+- Produces: `Palette.running: str` (`DARK` — `#66bb6a`, `LIGHT` — `#2c6e2f`); `ui/edt/icons.py::running_icon(palette: Palette) -> QIcon` (16 px, закрашенный треугольник вершиной вправо цветом `palette.running`); `tree_model.COLUMNS = ("Проект", "EDT")`; в ячейке имени `DecorationRole` = `running_icon` при `status.running_pid is not None`, подсказка ячейки дополняется строкой `Запущен (PID N)`; `CLI_BUSY_HINT` остаётся для плана 2 (значок — там); `ui/edt/view.py::_RightDecorationDelegate(QStyledItemDelegate)` — `initStyleOption` ставит `option.decorationPosition = QStyleOptionViewItem.Position.Right`; дерево ставит его на колонку 0 (`setItemDelegateForColumn(0, …)`); константа `RUNNING_GLYPH` удаляется.
+
+- [ ] **Step 1: Палитра — падающие тесты**
+
+В `tests/ui/test_theme.py`: в параметризацию `test_text_roles_meet_the_contrast_threshold`
+добавить роль `"running"`; в `test_light_palette_differs_in_every_role` — поле `"running"`;
+новый тест:
+
+```python
+def test_running_role_is_green_in_both_themes() -> None:
+    assert theme.DARK.running == "#66bb6a"
+    assert theme.LIGHT.running == "#2c6e2f"
+```
+
+Реализация: поле `running: str` в `Palette` после `problem`; значения выше в `DARK`/`LIGHT`
+с комментарием контраста (тёмная: 7,65/7,05/6,4/6,4 к четырём фонам; светлая:
+5,96/5,5/6,22/5,59). Run: `uv run pytest tests/ui/test_theme.py -q` — зелёное.
+
+- [ ] **Step 2: Значок — тест и реализация**
+
+`tests/ui/test_edt_icons.py`:
+
+```python
+from onecstarter.ui import theme
+from onecstarter.ui.edt.icons import running_icon
+
+
+def test_running_icon_is_green_triangle(qapp) -> None:  # type: ignore[no-untyped-def]
+    icon = running_icon(theme.DARK)
+    assert not icon.isNull()
+    image = icon.pixmap(16, 16).toImage()
+    assert image.pixelColor(6, 8).name() == theme.DARK.running  # внутри треугольника
+    assert image.pixelColor(14, 1).alpha() == 0  # угол вне треугольника прозрачен
+```
+
+`src/onecstarter/ui/edt/icons.py`:
+
+```python
+"""Значки раздела «EDT»: зелёный ▶ — запись запущена (решение заказчика 11.09.2026)."""
+
+from PySide6.QtCore import QPointF, Qt
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap, QPolygonF
+
+from onecstarter.ui.theme import Palette
+
+_SIZE = 16
+
+
+def running_icon(palette: Palette) -> QIcon:
+    """Закрашенный треугольник вершиной вправо, цвет — `palette.running`."""
+    pixmap = QPixmap(_SIZE, _SIZE)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    painter.setPen(Qt.PenStyle.NoPen)
+    painter.setBrush(QColor(palette.running))
+    painter.drawPolygon(QPolygonF([QPointF(3, 2), QPointF(14, 8), QPointF(3, 14)]))
+    painter.end()
+    return QIcon(pixmap)
+```
+
+- [ ] **Step 3: Модель — падающие тесты**
+
+В `tests/ui/test_edt_tree_model.py`: удалить импорт `RUNNING_GLYPH`; `test_status_and_missing_dir_after_scan` →
+
+```python
+def test_running_icon_and_missing_dir_after_scan(tmp_path: Path, qapp: QApplication) -> None:
+    ws = _workspace(tmp_path)
+    p = ws.add_project(EdtProject("", "Розница", r"D:\a", edt_version="2025.2.6+4"))
+    ws.apply_scan(EdtScan(running={p.id: 42}, present={p.id: False}))
+    model = build_edt_model(ws, "", theme.DARK)
+    name = model.item(0, 0)
+    assert name.text() == "Розница" + MISSING_SUFFIX
+    assert not name.icon().isNull()
+    assert "Запущен (PID 42)" in name.toolTip()
+    assert model.columnCount() == 2
+```
+
+Параметр `qapp: QApplication` (импорт `from PySide6.QtWidgets import QApplication`)
+обязателен: `build_edt_model` здесь строит строку с `running_pid`, значит вызывает
+`running_icon` → создаёт `QPixmap`/`QPainter` без действующего приложения — без
+`qapp` тест валит процесс (найдено при выполнении Task 21: `QPixmap` без
+`QApplication` даёт не мягкую ошибку, а крэш pytest, «7 точек и тишина»,
+воспроизводится стабильно на изолированном запуске теста). Остальные тесты
+файла `qapp` не требуют — они не создают значков.
+
+`test_no_status_before_scan`: вместо `model.item(0, 2).text() == ""` — `model.item(0, 0).icon().isNull()`.
+
+Реализация в `tree_model.py`: `COLUMNS = ("Проект", "EDT")`; `_fill` добавляет группам
+`[item, _plain("")]`; `_project_row` возвращает `[name, version]`, при `status.running_pid`
+— `name.setIcon(running_icon(palette))` и подсказка `tooltip += f"\nЗапущен (PID {pid})"`;
+`RUNNING_GLYPH` и ветка `cli_busy` со «●» удаляются (`CLI_BUSY_HINT` остаётся константой
+для плана 2). Импорт `from onecstarter.ui.edt.icons import running_icon`.
+Новая f-строка с «Запущен» и докстринг делегата (шаг 4) содержат кириллицу, похожую
+на латиницу, — добавить `# noqa: RUF001`/`RUF002` по месту, как у соседних строк файла.
+
+- [ ] **Step 4: Вьюха — делегат и тесты**
+
+В `tests/ui/test_edt_view.py`: `test_launch_running_activates` — вместо
+`view.model().item(0, 2).text() == RUNNING_GLYPH` → `not view.model().item(0, 0).icon().isNull()`;
+удалить импорт `RUNNING_GLYPH`; та же замена нужна и в `test_unchanged_scan_does_not_rebuild`
+(план это не назвал явно, но там тоже два `item(0, 2)` — один сравнивается с `RUNNING_GLYPH`,
+второй с `""`; без правки тест не компилируется после удаления импорта). Новый тест:
+
+```python
+def test_name_column_draws_decoration_on_the_right(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    from PySide6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem
+
+    _add(harness, "a")
+    view = harness.view()
+    qtbot.addWidget(view)
+    delegate = view.tree().itemDelegateForColumn(0)
+    assert isinstance(delegate, QStyledItemDelegate)  # mypy: itemDelegateForColumn -> QAbstractItemDelegate | None
+    option = QStyleOptionViewItem()
+    delegate.initStyleOption(option, view.model().index(0, 0))
+    assert option.decorationPosition == QStyleOptionViewItem.Position.Right
+```
+
+В `view.py`:
+
+```python
+class _RightDecorationDelegate(QStyledItemDelegate):
+    """Значок состояния — справа от имени, а не слева, как у Qt по умолчанию."""  # noqa: RUF002
+
+    def initStyleOption(  # noqa: N802
+        self, option: QStyleOptionViewItem, index: QModelIndex | QPersistentModelIndex
+    ) -> None:
+        super().initStyleOption(option, index)
+        option.decorationPosition = QStyleOptionViewItem.Position.Right
+```
+
+Тип индекса — обязательно `QModelIndex | QPersistentModelIndex` (импорт `QPersistentModelIndex`
+из `PySide6.QtCore`), не просто `QModelIndex`: стаб `QStyledItemDelegate.initStyleOption`
+принимает объединение обоих типов, и mypy (strict вне `ui.*`, но override-проверка
+сигнатур не отключена и для `ui.*`) валит `[override]` на более узкой сигнатуре
+(найдено при выполнении Task 21).
+
+в `_EdtTree.__init__`: `self.setItemDelegateForColumn(0, _RightDecorationDelegate(self))`;
+там же `self.header().setStretchLastSection(False)` — с двумя колонками последней стала
+«EDT», и штатное растяжение Qt раздувало бы её на всю ширину (находка ревью Task 21);
+тест с настоящей геометрией: `view.show(); view.resize(1000, 600); qapp.processEvents()`
+→ `columnWidth(1) == 110` (`test_version_column_keeps_width_in_shown_window`);
+`rebuild()` — ширины по умолчанию только для двух колонок. Тест `test_current_row_and_widths_survive_rebuild`
+поправить, если он ссылается на третью колонку — на практике не ссылается (только на
+колонки 0 и 1) и остаётся без изменений; правку `rebuild()`-логики восстановления ширины
+подтверждает мутация (временная порча восстановления ширины колонки 1 роняет именно
+этот тест) — **но это не то же самое, что проверка растяжения последней колонки**:
+`qtbot.addWidget()` без `show()`/`resize()` раскладку заголовка не делает, поэтому
+`test_current_row_and_widths_survive_rebuild` зелёный и без `setStretchLastSection(False)`
+(находка ревью — реальный крэш-тест: изначально ловилась ширина `320 656` вместо `320 110`,
+ручная `setColumnWidth(1, 90)` молча терялась). Растяжение последней колонки проверяет
+только `test_version_column_keeps_width_in_shown_window` — с настоящим `show()`/`resize()`.
+
+- [ ] **Step 5: Прогнать и закоммитить**
+
+Run: `uv run pytest tests/ui/test_theme.py tests/ui/test_edt_icons.py tests/ui/test_edt_tree_model.py tests/ui/test_edt_view.py tests/ui/test_app.py -q && uv run ruff check . && uv run mypy`
+
+```bash
+git commit -m "feat(ui): статус «запущен» в разделе EDT — зелёный ▶ справа от имени, роль running в палитре"
+```
+
+---
+
+### Task 22: Панель путей под деревом
+
+**Files:**
+- Create: `src/onecstarter/ui/edt/panel.py`
+- Modify: `src/onecstarter/ui/edt/view.py`
+- Modify: `src/onecstarter/ui/theme.py` (stylesheet: `#EdtPanel` — те же правила, что `#ConnectionPanel`)
+- Create: `tests/ui/test_edt_panel.py`
+- Modify: `tests/ui/test_edt_view.py`
+
+**Interfaces:**
+- Consumes: `EdtProject`, `EdtGroup`; `ui/bases/panel.py::open_in_explorer`; `Palette`.
+- Produces: `EdtPanel(QWidget)` с `show_project(project: EdtProject, palette)`, `show_group(name: str)`, `show_nothing()`, аксессорами `title_text()`, `workspace_field()`, `project_dir_field()`, `workspace_open_button()`, `project_dir_open_button()`, `workspace_copy_button()`, `project_dir_copy_button()`; конструктор `EdtPanel(*, open_directory: Callable[[str], bool] = open_in_explorer, copy_text: Callable[[str], None] = _copy_to_clipboard, parent=None)`; константы `PLACEHOLDER_NONE = "Выберите проект"`, `PLACEHOLDER_NO_PROJECT_DIR = "не задан — редакторы получают workspace"`; `EdtView.panel() -> EdtPanel`; `EdtView(show_error=…)` показывает «Каталог не найден: <путь>» при отказе `open_directory`.
+
+- [ ] **Step 1: Панель — падающие тесты**
+
+`tests/ui/test_edt_panel.py`:
+
+```python
+from onecstarter.domain.edt import EdtProject
+from onecstarter.ui import theme
+from onecstarter.ui.edt.panel import PLACEHOLDER_NO_PROJECT_DIR, PLACEHOLDER_NONE, EdtPanel
+
+
+def _panel(opened: list[str], copied: list[str], ok: bool = True) -> EdtPanel:
+    return EdtPanel(
+        open_directory=lambda p: opened.append(p) or ok, copy_text=copied.append
+    )
+
+
+def test_empty_state(qtbot) -> None:  # type: ignore[no-untyped-def]
+    panel = _panel([], [])
+    qtbot.addWidget(panel)
+    assert panel.title_text() == PLACEHOLDER_NONE
+    assert panel.workspace_field().isHidden() is True
+    assert panel.project_dir_field().isHidden() is True
+
+
+def test_project_with_both_paths(qtbot) -> None:  # type: ignore[no-untyped-def]
+    opened: list[str] = []
+    copied: list[str] = []
+    panel = _panel(opened, copied)
+    qtbot.addWidget(panel)
+    panel.show_project(
+        EdtProject("p", "Розница", r"D:\edt\retail", project_dir=r"D:\git\retail"), theme.DARK
+    )
+    assert panel.title_text() == "Розница"
+    assert panel.workspace_field().text() == r"D:\edt\retail"
+    assert panel.project_dir_field().text() == r"D:\git\retail"
+    assert panel.workspace_field().isHidden() is False
+    panel.workspace_open_button().click()
+    panel.project_dir_copy_button().click()
+    assert opened == [r"D:\edt\retail"]
+    assert copied == [r"D:\git\retail"]
+
+
+def test_project_without_project_dir(qtbot) -> None:  # type: ignore[no-untyped-def]
+    panel = _panel([], [])
+    qtbot.addWidget(panel)
+    panel.show_project(EdtProject("p", "Опт", r"D:\edt\w"), theme.DARK)
+    assert panel.project_dir_field().text() == ""
+    assert panel.project_dir_field().placeholderText() == PLACEHOLDER_NO_PROJECT_DIR
+    assert panel.project_dir_field().font().italic() is True
+    assert panel.project_dir_open_button().isEnabled() is False
+    assert panel.project_dir_copy_button().isEnabled() is False
+
+
+def test_group_shows_only_title(qtbot) -> None:  # type: ignore[no-untyped-def]
+    panel = _panel([], [])
+    qtbot.addWidget(panel)
+    panel.show_group("2025")
+    assert panel.title_text() == "2025"
+    assert panel.workspace_field().isHidden() is True
+
+
+def test_open_failure_reported(qtbot) -> None:  # type: ignore[no-untyped-def]
+    errors: list[str] = []
+    panel = EdtPanel(open_directory=lambda p: False, copy_text=lambda t: None)
+    panel.open_failed.connect(errors.append)
+    qtbot.addWidget(panel)
+    panel.show_project(EdtProject("p", "a", r"D:\gone"), theme.DARK)
+    panel.workspace_open_button().click()
+    assert errors == [r"Каталог не найден: D:\gone"]
+```
+
+- [ ] **Step 2: Панель — реализация**
+
+`src/onecstarter/ui/edt/panel.py`:
+
+```python
+"""Панель путей под деревом раздела «EDT» (решение заказчика 11.09.2026).
+
+Калька `ui/bases/panel.py::ConnectionPanel`: заголовок жирным, пути в read-only
+`QLineEdit` (выделение и Ctrl+C штатно), кнопки «Копировать»/«Открыть каталог»
+у каждого пути. Версии здесь нет — она видна в списке.
+"""  # noqa: RUF002
+
+from collections.abc import Callable
+
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QGuiApplication, QPalette
+from PySide6.QtWidgets import QGridLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget
+
+from onecstarter.domain.edt import EdtProject
+from onecstarter.ui.bases.panel import open_in_explorer
+from onecstarter.ui.theme import Palette
+
+PLACEHOLDER_NONE = "Выберите проект"
+PLACEHOLDER_NO_PROJECT_DIR = "не задан — редакторы получают workspace"
+
+
+def _copy_to_clipboard(text: str) -> None:
+    QGuiApplication.clipboard().setText(text)
+
+
+class _PathRow:
+    def __init__(self, caption: str, copy_text: Callable[[str], None], open_directory: Callable[[str], bool], on_failure: Callable[[str], None]) -> None:
+        self.caption = QLabel(caption)
+        self.caption.setObjectName("PanelKindWord")
+        self.field = QLineEdit()
+        self.field.setObjectName("ConnectionPath")
+        self.field.setReadOnly(True)
+        self.copy = QPushButton("Копировать")
+        self.open = QPushButton("Открыть каталог")
+        self.copy.clicked.connect(lambda: copy_text(self.field.text()))
+
+        def open_dir() -> None:
+            path = self.field.text()
+            if path and not open_directory(path):
+                on_failure(f"Каталог не найден: {path}")
+
+        self.open.clicked.connect(open_dir)
+
+    def widgets(self) -> tuple[QWidget, ...]:
+        return (self.caption, self.field, self.copy, self.open)
+
+    def show(self, path: str, placeholder: str, palette: Palette) -> None:
+        self.field.setText(path)
+        self.field.setPlaceholderText(placeholder if not path else "")
+        field_palette = self.field.palette()
+        field_palette.setColor(QPalette.ColorRole.PlaceholderText, QColor(palette.text_dim))
+        self.field.setPalette(field_palette)
+        font = self.field.font()
+        font.setItalic(not path)
+        self.field.setFont(font)
+        self.copy.setEnabled(bool(path))
+        self.open.setEnabled(bool(path))
+        for widget in self.widgets():
+            widget.setVisible(True)
+
+    def hide(self) -> None:
+        for widget in self.widgets():
+            widget.setVisible(False)
+
+
+class EdtPanel(QWidget):
+    open_failed = Signal(str)
+
+    def __init__(
+        self,
+        *,
+        open_directory: Callable[[str], bool] = open_in_explorer,
+        copy_text: Callable[[str], None] = _copy_to_clipboard,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("EdtPanel")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._title = QLabel(PLACEHOLDER_NONE)
+        font = self._title.font()
+        font.setBold(True)
+        self._title.setFont(font)
+        self._workspace = _PathRow("Workspace", copy_text, open_directory, self.open_failed.emit)
+        self._project_dir = _PathRow("Каталог проекта", copy_text, open_directory, self.open_failed.emit)
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(6)
+        for row, path_row in enumerate((self._workspace, self._project_dir)):
+            grid.addWidget(path_row.caption, row, 0)
+            grid.addWidget(path_row.field, row, 1)
+            grid.addWidget(path_row.copy, row, 2)
+            grid.addWidget(path_row.open, row, 3)
+        grid.setColumnStretch(1, 1)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(11, 8, 11, 8)
+        layout.setSpacing(3)
+        layout.addWidget(self._title)
+        layout.addLayout(grid)
+        self.show_nothing()
+
+    def show_project(self, project: EdtProject, palette: Palette) -> None:
+        self._title.setText(project.name)
+        self._workspace.show(project.workspace, "", palette)
+        self._project_dir.show(project.project_dir, PLACEHOLDER_NO_PROJECT_DIR, palette)
+
+    def show_group(self, name: str) -> None:
+        self._title.setText(name)
+        self._workspace.hide()
+        self._project_dir.hide()
+
+    def show_nothing(self) -> None:
+        self._title.setText(PLACEHOLDER_NONE)
+        self._workspace.hide()
+        self._project_dir.hide()
+
+    # --- доступ ---
+    def title_text(self) -> str:
+        return self._title.text()
+
+    def workspace_field(self) -> QLineEdit:
+        return self._workspace.field
+
+    def project_dir_field(self) -> QLineEdit:
+        return self._project_dir.field
+
+    def workspace_open_button(self) -> QPushButton:
+        return self._workspace.open
+
+    def project_dir_open_button(self) -> QPushButton:
+        return self._project_dir.open
+
+    def workspace_copy_button(self) -> QPushButton:
+        return self._workspace.copy
+
+    def project_dir_copy_button(self) -> QPushButton:
+        return self._project_dir.copy
+```
+
+В `theme.py` — рядом с правилами `#ConnectionPanel`: те же селекторы для `#EdtPanel`
+(фон `surface`, верхняя граница, кнопки), чтобы панель выглядела как у баз.
+
+- [ ] **Step 3: Вьюха — тесты и проводка**
+
+В `tests/ui/test_edt_view.py`:
+
+```python
+def test_panel_follows_selection(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    g = harness.workspace.add_group("2025", None)
+    p = _add(harness, "a", project_dir=r"D:\edt\a\proj")
+    view = harness.view()
+    qtbot.addWidget(view)
+    assert view.panel().title_text() == "Выберите проект"
+    _select(view, p.id)
+    assert view.panel().workspace_field().text() == p.workspace
+    assert view.panel().project_dir_field().text() == r"D:\edt\a\proj"
+    view.tree().setCurrentIndex(view.model().index(0, 0))  # группа стоит первой
+    assert view.panel().title_text() == "2025"
+    assert view.panel().workspace_field().isHidden() is True
+
+
+def test_panel_survives_rebuild(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    p = _add(harness, "a")
+    view = harness.view()
+    qtbot.addWidget(view)
+    _select(view, p.id)
+    view.rebuild()
+    assert view.panel().workspace_field().text() == p.workspace
+
+
+def test_panel_open_failure_goes_to_show_error(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    p = _add(harness, "a")
+    view = harness.view(open_directory=lambda path: False)
+    qtbot.addWidget(view)
+    _select(view, p.id)
+    view.panel().workspace_open_button().click()
+    assert harness.errors == [f"Каталог не найден: {p.workspace}"]
+```
+
+`Harness.view()` получает параметр `open_directory: Callable[[str], bool] = lambda p: True`
+и передаёт его в `EdtView(open_directory=…)`.
+
+В `view.py`: конструктор — параметры `open_directory: Callable[[str], bool] = open_in_explorer`
+(импорт из `ui/bases/panel.py`) и `copy_text: Callable[[str], None] | None = None`;
+`self._panel = EdtPanel(open_directory=open_directory, copy_text=copy_text or _copy_to_clipboard…)`
+— проще: `EdtPanel(open_directory=open_directory)` и `copy_text` по умолчанию из панели;
+`self._panel.open_failed.connect(self._show_error)`; `layout.addWidget(self._panel)` после дерева;
+`_sync_panel()` по `current()`: `("project", id)` → `show_project(self._workspace.project(id), self._palette)`,
+`("group", id)` → `show_group(<имя группы>)`, иначе `show_nothing()`; вызывается из
+`rebuild()` после восстановления текущей строки и из `currentChanged` (та же подписка,
+что `_sync_console` планирует использовать — общий слот `_on_current_changed`);
+`apply_palette` — `_sync_panel()`; `panel()` — аксессор.
+
+- [ ] **Step 4: Прогнать и закоммитить**
+
+Run: `uv run pytest tests/ui/test_edt_panel.py tests/ui/test_edt_view.py tests/ui/test_theme.py -q && uv run ruff check . && uv run mypy`
+
+```bash
+git commit -m "feat(ui): панель путей под деревом EDT — workspace и каталог проекта, копирование и Проводник"
+```
+
+Затем полный прогон в файл: `uv run pytest -q > e:/tmp/v3-plan1-task22.log 2>&1` — `passed`.

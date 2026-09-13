@@ -3691,3 +3691,222 @@ len([1, 1, 1, 1, 1, 1, ...])` — и прошёл после отката мут
    метки на живых базах. Заодно — версии в README (`## Установка`
    до сих пор называет артефакты `2.3.0`) обновляются на `2.4.0` вместе
    с самой сборкой, а не раньше неё.
+
+---
+
+## T-17. Проекты EDT — `DONE` (13.09.2026, ветка `feat/2026-09-10-v3-edt`; выпуск 3.0.0 — после smoke)
+
+Дизайн — [спека v3](superpowers/specs/2026-09-10-v3-edt-design.md). Планы:
+[план 1 — раздел](superpowers/plans/2026-09-10-v3-plan1-edt-section.md) (этот),
+[план 2 — CLI и консоль](superpowers/plans/2026-09-10-v3-plan2-edt-cli.md),
+[план 3 — эксперименты, скил, документы, выпуск](superpowers/plans/2026-09-10-v3-plan3-edt-closing.md).
+
+| # | Задача | Статус |
+| --- | --- | --- |
+| T-17.1 | План 1: раздел «EDT» — домен, обнаружение, реестр EDT Start, хранилище, координатор, UI, настройки, сборка (20 задач) | DONE |
+| T-17.2 | План 2: CLI EDT и консоль (спека §14) | DONE |
+| T-17.3 | План 3: эксперименты 1–7 (спека §10), скил `edt-launch`, документы, выпуск 3.0.0 | DONE (13.09.2026; выпуск — после smoke) |
+
+### Ход плана 1
+
+20 задач; восемь прошли раунд правок по находкам ревью — Tasks 2, 3, 8, 9, 10, 12, 14, 16
+(последняя, Task 16, закрыта решением заказчика, а не правкой кода). Три факта/правила
+самого плана исправлены вслед за находками: токенизатор `vm_args` в Task 2 — план
+предписывал `shlex.split(text, posix=False)`, он режет кавычки внутри токена, по факту
+реализации заменён на собственный посимвольный разбор, сохраняющий кавычки; `pick_jvm`
+(находка ревью Task 3) должен сравнивать JDK по полной версии числами, а не по строке
+пути (`17.0.9` больше `17.0.16` как число, но меньше как строка); Zulu 17 из `-vm`
+2024.2.6 действительно существует (находка Task 7) — спека §0 и план 3 исправлены вслед.
+
+### Мутационные проверки плана 1 (11.09.2026)
+
+Протокол — тот же, что в предыдущих вехах (CLAUDE.md, «Мутационная проверка тестов»):
+мутация правкой файла → прогон только названного теста → дословный `FAILED` → откат
+правкой файла (не `git checkout`) → тот же тест зелёным повторно. Мутации по брифу
+Task 20 — шесть штук, ставил не автор тестов Tasks 6, 10, 13, 14, 16, отдельный исполнитель.
+
+| # | Задача | Мутация | Ф / Т | Результат |
+| --- | --- | --- | --- | --- |
+| 1 | 10 | `_move_aside` без `replace` | `services/edt_store.py` / `test_corrupt_moves_aside_and_starts_empty`, `test_cannot_move_aside_raises` | УПАЛИ ВСЕ ПЯТЬ (4 параметра первого теста + второй): `AssertionError: assert not True` — `path.exists()` осталось `True`, `.bad` не создан (`tests/unit/test_edt_store.py:109`); `Failed: DID NOT RAISE EdtUnavailableError` (`tests/unit/test_edt_store.py:122`) |
+| 2 | 13 | `launch` без отказа при `jvm is None` | `services/edt.py` / `test_no_jvm_refuses_before_spawn` | УПАЛ — `Failed: DID NOT RAISE EdtLaunchError` (`tests/unit/test_edt_workspace.py:341`) |
+| 3 | 13 | `launch` без ветки активации | `services/edt.py` / `test_running_activates_instead_of_spawn` | УПАЛ — `AssertionError: assert <LaunchOutcome.STARTED: 'started'> is <LaunchOutcome.ACTIVATED: 'activated'>` (`tests/unit/test_edt_workspace.py:316`) |
+| 4 | 6 | `import_candidates` без фильтра по `known` | `domain/edt.py` / `test_idempotent_second_pass`, `test_import_adds_selected_and_is_idempotent` | УПАЛИ ОБА — `AssertionError: assert [ImportCandidate(...)] == []`, второй проход находит уже импортированный workspace заново (`tests/unit/test_edt_domain.py:466`, `tests/unit/test_edt_workspace.py:402`) |
+| 5 | 14 | `_project_row`: инверсия проверки пустой версии | `ui/edt/tree_model.py` / `test_version_column_marks_not_installed`, `test_empty_version_shows_dash` | УПАЛИ ОБА — `AssertionError: assert 'Версия EDT не задана' == 'EDT 2024.2.6+7 не найден'` (`tests/ui/test_edt_tree_model.py:96`); `AssertionError: assert 'EDT  не найден' == 'Версия EDT не задана'` (`tests/ui/test_edt_tree_model.py:107`) — метки поменялись местами |
+| 6 | 16 | `_fill_project_menu` без `setEnabled(False)` | `ui/edt/view.py` / `test_project_menu_open_edt_disabled_when_not_installed` | УПАЛ — `AssertionError: assert True is False` (`tests/ui/test_edt_view.py:259`) |
+
+Все шесть мутаций откачены обратной правкой того же файла; после каждой — повторный
+зелёный прогон того же теста; `git status` после отката всех шести пуст. Полный прогон
+перед мутационной стадией (шаг 1, 11.09.2026): `uv run pytest -q` — `2274 passed in
+342.54s (0:05:42)`, без `failed`/`error`; `uv run ruff check .` — `All checks passed!`;
+`uv run mypy` — `Success: no issues found in 202 source files`.
+
+### Финальное ревью ветки (11.09.2026)
+
+Ревью всей ветки плана 1 после Task 20 (HEAD `3b9567d`): 2 Critical + 3 Important + 2 минора
+приняты и исправлены, каждая находка своим коммитом по TDD (RED → GREEN); подробности —
+раздел «Правки по итогам финального ревью» в
+[плане 1](superpowers/plans/2026-09-10-v3-plan1-edt-section.md).
+
+| # | Находка | Коммит |
+| --- | --- | --- |
+| C1 | Пустая группа EDT не видна в дереве без фильтра (`_fill`) — спека §7 уточнена | `60e0d7f` |
+| C2 | Недоступный `edt.json` ронял программу — раздел заменяется заглушкой с причиной, остальное работает (решение заказчика, спека §8) | `8d95391` |
+| I1 | `running_workspaces`: две записи на один workspace — pid получала только последняя | `871e8f2` |
+| I2 | Тик монитора перестраивал дерево без изменений: сброс строки, ширин, перетаскивания | `e5cf839` |
+| I3 | Подписи группы «EDT» в Настройках не пересчитывались после правки путей | `305f53e` |
+| минор | `import_projects` сравнивал workspace сырой строкой, а не `workspace_key` | `d957ec0` |
+| минор | `test_edt_heap_tolerance`: строка `"8192"` не отличала отказ от приведения | `bb3f5ab` |
+
+Полный прогон после волны: `uv run pytest -q` — `2284 passed in 273.69s (0:04:33)`, без
+`failed`/`error`; `uv run ruff check .` — `All checks passed!`; `uv run mypy` — `Success: no
+issues found in 202 source files`.
+
+### Дополнение заказчика после ручного чек-листа (11.09.2026)
+
+Чек-лист Task 19 пройден заказчиком («похоже на ожидание»). Два пожелания
+вернулись в спеку §7 и план 1 как Tasks 21–22:
+
+| # | Задача | Коммиты | Итог ревью |
+| --- | --- | --- | --- |
+| 21 | Статус «запущен» — зелёный ▶ (роль палитры `running`) справа от имени, колонка статуса убрана | `719ddb1`, `145717a` | Раунд 1: последняя колонка наследовала `stretchLastSection` — `setStretchLastSection(False)` + тест с настоящей геометрией (дефект плана) |
+| 22 | Панель путей под деревом: workspace и каталог проекта, «Копировать» / «Открыть каталог», без версии | `7bc86cf` | Чисто |
+
+Полный прогон после Task 22: `2304 passed in 308.60s (0:05:08)`; ruff и mypy чистые.
+
+### Ход плана 2
+
+7 задач; четыре прошли раунд правок по находкам ревью — Tasks 3, 4, 5, 6: порядок событий
+журнала до spawn — фейк spawn дописывает журнал, событие обязано появиться раньше вывода
+ребёнка (Task 3, `969de6f`); тесты консоли — глиф заголовка, `expand()`, заголовок без
+пустых частей (Task 4, `e3d0239`); `ValueError` в validate-диалоге на одинарной кавычке
+в пути не перехватывался (Task 5, `9a71f50`); гонка запоздавшего сигнала наблюдателя —
+`CliWatcher.finished` несёт сам объект `run`, а не id записи, иначе сигнал старого run
+после «Прервать» закрывает новый (Task 6, `eb168be`). Три правки плана вслед за находками
+(`f79580a`, `5904c67`, `c369561`) и одна правка спеки — §14.4, каталог `logs\edt` (`c57300f`,
+записана вместе с находкой Task 6).
+
+### Мутационные проверки плана 2 (12.09.2026)
+
+Протокол — тот же, что в плане 1 (CLAUDE.md, «Мутационная проверка тестов»): мутация правкой
+файла → прогон только названного теста → дословный `FAILED`/сообщение ассерта → откат правкой
+файла (не `git checkout`) → тот же тест зелёным повторно. Мутации по брифу Task 7 — шесть
+штук, ставил не автор тестов, отдельный исполнитель.
+
+| # | Задача | Мутация | Ф / Т | Результат |
+| --- | --- | --- | --- | --- |
+| 1 | 3 | `unavailable_reason` без проверки `running_pid` | `services/edt_cli.py` / `test_running_edt_refused_before_spawn` | УПАЛ — `AssertionError: assert '' == 'Закройте EDT: workspace занят'` (`tests/unit/test_edt_cli.py:140`) |
+| 2 | 3 | `unavailable_reason` без отказа при `project_id in self._runs` | `services/edt_cli.py` / `test_second_start_on_same_project_refused` | УПАЛ — `Failed: DID NOT RAISE EdtError` (`tests/unit/test_edt_cli.py:132`) |
+| 3 | 3 | `launch` без проверки `_cli_busy` | `services/edt.py` / `test_launch_refused_while_busy` | УПАЛ — `Failed: DID NOT RAISE EdtLaunchError` (`tests/unit/test_edt_workspace.py:493`) |
+| 4 | 1 | `cli_build_args` → `"build"` (без `--yes`) | `domain/edt_cli.py` / `test_fixed_commands` | УПАЛ — `AssertionError: assert 'build' == 'build --yes'` (`tests/unit/test_edt_cli_domain.py:43`) |
+| 5 | 1 | `build_cli_command`: `-command` перемещён после `-vmargs` | `domain/edt_cli.py` / `test_order_command_before_vmargs_with_encoding` | УПАЛ — `AssertionError`: `-command "build --yes"` сместился в хвост строки после `-vmargs` вместо места перед `-vm` (`tests/unit/test_edt_cli_domain.py:143`) |
+| 6 | 6 | `_start_cli` без `self._console.expand()` | `ui/edt/view.py` / `test_cli_build_confirms_starts_and_expands_console` | УПАЛ — `AssertionError: assert False is True` (`tests/ui/test_edt_view.py:702`) |
+
+Все шесть мутаций откачены обратной правкой того же файла; после каждой — повторный зелёный
+прогон того же теста; `git status` после отката всех шести пуст. Полный прогон перед
+мутационной стадией (12.09.2026): `uv run pytest -q` — `2391 passed in 317.70s (0:05:17)`,
+без `failed`/`error`; `uv run ruff check .` — `All checks passed!`; `uv run mypy` — `Success:
+no issues found in 217 source files`.
+
+### Финальное ревью плана 2 (12.09.2026)
+
+Ревью всей ветки плана 2 после Task 7 (HEAD `3c5a5b2`): 2 Important + 8 миноров приняты
+и исправлены, каждая находка своим коммитом по TDD (RED → GREEN), четыре мутации
+(I1, M5, M6, M7) и одна на покрытие (M9) проверены; подробности — раздел «Правки по итогам
+финального ревью» в [плане 2](superpowers/plans/2026-09-10-v3-plan2-edt-cli.md).
+
+| # | Находка | Коммит |
+| --- | --- | --- |
+| I1 | `OSError` журнала уходил из `EdtCli` голым и мог оставить запись занятой — ротация в своём `try`, события старта → `EdtError`, `_log_event` глотает `OSError` | `cfbccd6` |
+| I2 | Ошибка запуска CLI без командной строки (спека §8) | `f2926fb` |
+| M3 | `quote_cli_arg` не отказывал двойной кавычке — она рвёт `-command "…"` | `8aa5c6a` |
+| M4 | Каталог TSV по умолчанию — `QStandardPaths`, диалог `validate` проверяет каталог результата | `a6f9167` |
+| M5 | `EdtCli.finish(run, code)` сверяет идентичность run — запоздавший код старого run не закрывает новый | `a9bf82f` |
+| M6 | Запись с живой командой CLI не удаляется | `579f5f8` |
+| M7 | `interrupt` не глотает `JobError` из `close()` — run остаётся, наружу `EdtError` | `f296441` |
+| M8 | Докстринг `cli_watch.py`: прерывание закрывает Job, `wait()` штатно отдаёт код; `OSError` — страховка | `ee2cf7b` |
+| M9 | Ветка «JDK не найден» `unavailable_reason` покрыта тестом (отложенный T3) | `fc45808` |
+| M10 | Холостой `cli_menu.setToolTipsVisible(True)` удалён | `1cbf228` |
+
+Полный прогон после волны: `uv run pytest -q` — `2403 passed in 306.44s (0:05:06)`, без
+`failed`/`error`; `uv run ruff check .` — `All checks passed!`; `uv run mypy` — `Success: no
+issues found in 217 source files`. Спека вслед: §8, §13, §14.4.
+
+### План 3: эксперименты Э1–Э7 (13.09.2026)
+
+Протоколы и дословные результаты — [t17-edt-experiments.md](research/t17-edt-experiments.md).
+Заказчик выполнял шаги, агент снимал командные строки процессов, `jcmd`, файлы и журналы;
+три ручных запуска `1cedtcli.exe` на тестовом workspace — с явного разрешения. Итог:
+
+| Э | Факт | Итог |
+| --- | --- | --- |
+| Э1 | Наша командная строка, JDK из `products.json`, последний `-Xmx` побеждает | [Ф]; установок две — каталог 2024.2.6+7 содержит только `1cedt.ini` (спека §0 исправлена) |
+| Э2 | Активация окна из-за других окон и из свёрнутого; во время splash — ничего | [Ф] |
+| Э3 | VS Code и Antigravity открывают каталог с пробелом и кириллицей | [Ф] по наблюдению |
+| Э4 | Ключ JVM у проекта в `projects.json` | опровергнуто: EDT Start 0.10.0.448 выбор JVM на диск не пишет |
+| Э5 | `-Duser.language=ru` последним токеном, хранится в `args` | [Ф] |
+| Э6 | Имена `import`/`validate`, `--yes`, одинарные кавычки, TSV, коды | [Ф]; **три опровержения** — см. правки ниже |
+| Э7 | Таблица `help --status-codes`; на открытом workspace — код 202 | [Ф] |
+
+Правки кода вслед за Э6 (каждая — тест RED → GREEN, спека §0-Д/§14.2/§14.3 в том же коммите):
+
+| Находка | Правка | Коммит |
+| --- | --- | --- |
+| Несколько путей `--project-list` — список Gogo `['a' 'b']`, через пробел — код 204 | `cli_validate_args` всегда ставит скобки, `_LIST_SEPARATOR` удалён | `e2b1668` |
+| Кодировка вывода — кодовая страница консоли, обёртка `1cedtcli.exe` дописывает `-Dfile.encoding` после наших `-vmargs`; флаги JVM бесполезны | `wrap_console_utf8`: `cmd.exe /d /v:off /c "chcp 65001 >nul & …"`, `CLI_ENCODING_ARGS` удалён, `%` в значениях — отказ | `e2b1668` |
+| Проекты workspace лежат снаружи, перечень — реестр `.metadata\…\.projects\*\.location` (у пяти workspace заказчика внутри нет ни одного `.project`) | `workspace_entries` читает реестр, `parse_project_location`/`location_blob` (домен) | `e2b1668` |
+| Пути с обратными слэшами в `-command` — Gogo не снимает кавычки, код 204 | `quote_cli_arg` заменяет `\` на `/` | `d0c1b6e` |
+| Коды CLI по `help --status-codes` | `CLI_STATUS_TEXTS` в консоли (тексты вместо имён) | `e2b1668` |
+
+Мутационная проверка (13.09.2026): `test_percent_in_workspace_refused_before_spawn` — при
+подмене `except CliQuoteError → raise EdtError` на `raise` тест падает с `CliQuoteError`
+вместо `EdtError` (запуск не отвергнут штатно); откачено. Остальные новые тесты —
+табличные на чистых функциях (`parse_project_location`, `wrap_console_utf8`,
+`cli_validate_args`, `quote_cli_arg`) и снимок реестра (`workspace_entries`).
+
+Сквозная проверка правок заказчиком из приложения: «Проверить проекты…» на «Тест 2026» —
+чек-лист из реестра (два проекта), код 0, TSV 273 строки, журнал чистый UTF-8.
+
+Скил `edt-launch` — по `writing-skills`: baseline-субагент без скила не знал путь установки,
+пропускал `-vm` и `--launcher.appendVmargs`, не знал реестр EDT Start, код 202, синтаксис
+`validate`, предлагал `-Dfile.encoding=UTF-8` (не работает); со скилом все семь вопросов
+отвечены верно, три уточнения по итогам проверки внесены и перепроверены.
+
+Осталось **[?]** после вехи: `-data` на несуществующий каталог; шаг 2 цепочки JDK (`-vm` из
+`1cedt.ini`); EDT на workspace, где идёт CLI; экранирование `'` внутри значения Gogo;
+единицы таймаутов `edtcli.timeout*`; соответствие имён кодов числам; раскладка
+`1cedtstart\installations\`.
+
+Полный прогон после правок: `uv run pytest -q` — `2427 passed in 459.81s`; `uv run ruff check .`
+— `All checks passed!`; `uv run mypy` — `Success: no issues found in 217 source files`.
+
+### Финальное ревью плана 3 (13.09.2026)
+
+Ревью кода плана 3 (диапазон `03e9977..dc11199`, opus): 3 Important + 4 Minor, все приняты
+и исправлены одной волной (коммит `a9f5da8`), повторное ревью волны — APPROVED.
+Ревьюер снимал факты о cmd.exe замером на живом `cmd.exe` и об Eclipse — по исходникам
+`eclipse-platform` (`URIUtil`, `SafeChunkyInputStream`, `LocalMetaArea`).
+
+| # | Находка | Правка |
+| --- | --- | --- |
+| I1 | UNC в `.location` Eclipse пишет как `file:////srv/share` (четыре слэша) — форма терялась | `_file_uri_to_path` считает ведущие слэши: 2 или ≥ 4 — UNC |
+| I2 | `& \| < > ^` вне кавычек (только `vm_args` идут без кавычек) cmd толкует: `D:\R&D` режет строку, `a\|b` уводит вывод в трубу | `wrap_console_utf8` сканирует строку с учётом кавычек — отказ `CliQuoteError` |
+| I3 | Ветка `except OSError` в `workspace_entries` без теста | тест с `read_bytes`, бросающим `PermissionError`; мутация «убрать try/except» — падает `PermissionError` (проверено дважды: автором и ревьюером) |
+| M1 | «При перезаписи чанки дописываются — действителен последний» — неверно: Eclipse очищает файл перед записью; `rfind` — страховка от оборванной записи | формулировка в коде, тесте, спеке, протоколе и обоих файлах скила |
+| M2 | Предел строки cmd 8191, код 1 читался как «нет 1cedt.ini» | отказ по длине + текст кода 1 |
+| M3 | `%ComSpec%` может быть не cmd.exe | `%SystemRoot%\System32\cmd.exe` |
+| M4 | Устаревший докстринг `workspace_projects`, фикстура с `.metadata` | обновлены |
+
+Правка скила `edt-launch` (M1, I1, I2) перепроверена субагентом по Iron Law. Полный прогон
+после волны: `2441 passed in 455.00s`; ruff и mypy чисты. Сборка 3.0.0 после волны —
+повторная (артефакты до правок отброшены).
+
+### Гейты выпуска 3.0.0 (13.09.2026)
+
+- Полный прогон: `2441 passed in 455.00s`; ruff `All checks passed!`; mypy `Success`.
+- `build/build.ps1`: PyInstaller → `smoke: OK` (включая новый гейт `smoke: edt=<число>`) →
+  `dist/OneCStarter-3.0.0-portable.zip` 54,4 МБ, `dist/OneCStarter-3.0.0-setup.exe` 36,1 МБ
+  (пересобрано после волны финального ревью).
+- Ручной smoke собранного экземпляра на машине заказчика — пять пунктов пройдены: раздел EDT
+  с записями и группами; список версий — только 2025.2.6+4 и 2026.1.2+2; «Открыть в EDT» →
+  ▶ и активация повтором; CLI «Информация по проектам» на закрытом workspace — код 0;
+  Настройки → EDT.
