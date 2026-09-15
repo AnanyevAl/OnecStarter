@@ -262,7 +262,7 @@ class EdtView(QWidget):
         self._tree.setRootIsDecorated(True)
         self._tree.doubleClicked.connect(self._launch_index)
 
-        self._panel = EdtPanel(open_directory=open_directory)
+        self._panel = EdtPanel(open_directory=open_directory, palette=self._palette)
         self._panel.open_failed.connect(self._show_error)
 
         layout = QVBoxLayout(self)

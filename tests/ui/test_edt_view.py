@@ -298,11 +298,11 @@ def test_panel_follows_selection(harness: Harness, qtbot) -> None:  # type: igno
     qtbot.addWidget(view)
     assert view.panel().title_text() == "Выберите проект"
     _select(view, p.id)
-    assert view.panel().workspace_field().text() == p.workspace
-    assert view.panel().project_dir_field().text() == r"D:\edt\a\proj"
+    assert view.panel().workspace_link().path_text() == p.workspace
+    assert view.panel().project_dir_link().path_text() == r"D:\edt\a\proj"
     view.tree().setCurrentIndex(view.model().index(0, 0))  # группа стоит первой
     assert view.panel().title_text() == "2025"
-    assert view.panel().workspace_field().isHidden() is True
+    assert view.panel().workspace_link().isHidden() is True
 
 
 def test_panel_survives_rebuild(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
@@ -311,7 +311,7 @@ def test_panel_survives_rebuild(harness: Harness, qtbot) -> None:  # type: ignor
     qtbot.addWidget(view)
     _select(view, p.id)
     view.rebuild()
-    assert view.panel().workspace_field().text() == p.workspace
+    assert view.panel().workspace_link().path_text() == p.workspace
 
 
 def test_panel_open_failure_goes_to_show_error(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
@@ -319,7 +319,7 @@ def test_panel_open_failure_goes_to_show_error(harness: Harness, qtbot) -> None:
     view = harness.view(open_directory=lambda path: False)
     qtbot.addWidget(view)
     _select(view, p.id)
-    view.panel().workspace_open_button().click()
+    view.panel().workspace_link().linkActivated.emit("")
     assert harness.errors == [f"Каталог не найден: {p.workspace}"]
 
 
