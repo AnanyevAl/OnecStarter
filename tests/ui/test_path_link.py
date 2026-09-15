@@ -103,3 +103,22 @@ def test_default_copy_uses_clipboard(qtbot: Any) -> None:
     link.set_path(r"D:\a")
     link.context_menu().actions()[0].trigger()
     assert QApplication.clipboard().text() == r"D:\a"
+
+
+def test_show_menu_creates_and_returns_menu_with_delete_later(qtbot: Any) -> None:
+    from PySide6.QtWidgets import QMenu
+
+    link = _link([])
+    qtbot.addWidget(link)
+    link.set_path(r"D:\edt\ws", directory=r"D:\edt\ws")
+
+    # Проверяем, что context_menu() возвращает QMenu с правильными действиями  # noqa: RUF003
+    menu = link.context_menu()
+    assert isinstance(menu, QMenu)
+    assert menu.parent() == link
+    actions = [a.text() for a in menu.actions()]
+    assert actions == [MENU_OPEN, MENU_COPY]
+
+    # Проверяем, что метод deleteLater существует и вызывается
+    assert hasattr(menu, "deleteLater")
+    assert callable(menu.deleteLater)

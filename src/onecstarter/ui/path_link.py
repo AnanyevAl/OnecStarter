@@ -105,6 +105,7 @@ class PathLink(QLabel):
         menu = self.context_menu()
         if menu.actions():
             menu.exec(self.mapToGlobal(pos))
+        menu.deleteLater()
 
     def _render(self) -> None:
         if not self._text:
