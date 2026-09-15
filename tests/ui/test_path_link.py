@@ -105,17 +105,32 @@ def test_default_copy_uses_clipboard(qtbot: Any) -> None:
     assert QApplication.clipboard().text() == r"D:\a"
 
 
-def test_show_menu_frees_menu_after_exec(
-    qtbot: Any, qapp: Any, monkeypatch: Any
-) -> None:
-    """Меню живёт до закрытия и освобождается — иначе утечка (ревью Task 1)."""
-    import inspect
+def test_show_menu_frees_menu_on_close(qtbot: Any) -> None:
+    """Меню освобождается при закрытии — иначе утечка на каждый ПКМ (ревью Task 1)."""
+    from PySide6.QtCore import QCoreApplication, QEvent, QPoint
+    from PySide6.QtWidgets import QMenu
 
-    # Проверяем, что deleteLater() вызывается в _show_menu (не в комментарии)
-    source = inspect.getsource(PathLink._show_menu)
-    lines = [
-        line.strip()
-        for line in source.split("\n")
-        if "deleteLater" in line and not line.strip().startswith("#")
-    ]
-    assert any("menu.deleteLater()" in line for line in lines)
+    link = _link([])
+    qtbot.addWidget(link)
+    link.set_path(r"D:\a", directory=r"D:\a")
+    link._show_menu(QPoint(0, 0))
+    link._show_menu(QPoint(0, 0))
+    # popup() не блокирует, оба меню показаны  # noqa: RUF003
+    assert len(link.findChildren(QMenu)) == 2
+    for menu in link.findChildren(QMenu):
+        menu.close()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert link.findChildren(QMenu) == []
+
+
+def test_show_menu_without_items_shows_nothing(qtbot: Any) -> None:
+    """Без элементов меню удаляется немедленно (ревью Task 1)."""
+    from PySide6.QtCore import QCoreApplication, QEvent, QPoint
+    from PySide6.QtWidgets import QMenu
+
+    link = _link([])
+    qtbot.addWidget(link)
+    link.set_path("")
+    link._show_menu(QPoint(0, 0))
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    assert link.findChildren(QMenu) == []

@@ -103,9 +103,15 @@ class PathLink(QLabel):
 
     def _show_menu(self, pos: QPoint) -> None:
         menu = self.context_menu()
-        if menu.actions():
-            menu.exec(self.mapToGlobal(pos))
-        menu.deleteLater()
+        if not menu.actions():
+            menu.deleteLater()
+            return
+        # popup() вместо exec(): не блокирует, а WA_DeleteOnClose  # noqa: RUF003
+        # освобождает меню при закрытии — иначе QMenu(self) копился
+        # бы на каждый ПКМ (ревью Task 1). Проверяется тестом с  # noqa: RUF003
+        # close() и DeferredDelete.
+        menu.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        menu.popup(self.mapToGlobal(pos))
 
     def _render(self) -> None:
         if not self._text:
