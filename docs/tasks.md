@@ -3995,3 +3995,11 @@ access violation`, T-12 п. 15, не проявился — повтор не п
 в PySide6 нельзя подменить на уровне класса — тесты меню строятся на `popup()`.
 
 Полный прогон после волны: `2477 passed in 392.03s`; ruff и mypy чисты.
+
+### Гейты выпуска 3.1.0 (15.09.2026)
+
+- Полный прогон после волны финального ревью: `2477 passed`; ruff `All checks passed!`; mypy `Success`.
+- `build/build.ps1`: PyInstaller → `smoke: OK` (гейты `frozen`, `keyring`, `edt=`, новый `version=3.1.0` —
+  метаданные пакета в сборке через `copy_metadata`) → `dist/OneCStarter-3.1.0-portable.zip` 54,4 МБ,
+  `dist/OneCStarter-3.1.0-setup.exe` 36,1 МБ.
+- Ручной smoke собранного экземпляра — см. ниже (заполняется по итогу).
