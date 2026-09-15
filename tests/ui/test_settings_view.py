@@ -18,6 +18,7 @@ from onecstarter.services.settings import (
     load_settings,
     save_settings,
 )
+from onecstarter.ui import about
 from onecstarter.ui.hotkey_edit import HotkeyEdit
 from onecstarter.ui.settings_store import SettingsStore
 from onecstarter.ui.settings_view import (
@@ -146,14 +147,16 @@ def test_save_failure_is_visible(application: QApplication, tmp_path: Path) -> N
 
 
 def test_groups_are_in_section_order(application: QApplication, tmp_path: Path) -> None:
-    """Порядок шести групп раздела: четыре группы мокапа v1 плюс СЕРВЕРЫ (v2) и EDT (v3).
+    """Порядок семи групп раздела: четыре группы мокапа v1 плюс СЕРВЕРЫ (v2), EDT (v3)
+    и О ПРОГРАММЕ (v3.1) последней.
 
     СЕРВЕРЫ стоит сразу после «ОКНО И ЗАПУСК» и перед «ГОРЯЧИЕ КЛАВИШИ» —
     требование спеки §3.5 («сосед — существующие настройки запуска»), а не
     порядок утверждённого мокапа v1 (тот заканчивается на «СПИСОК БАЗ» и
     СЕРВЕРЫ не знает вовсе). Круг исправлений 1 ревью задачи 7: группа стояла
     последней — умолчание брифа разошлось со спекой, спека главнее. EDT
-    (задача 18) вставлена сразу после СЕРВЕРОВ — бриф задачи 18.
+    (задача 18) вставлена сразу после СЕРВЕРОВ — бриф задачи 18. О ПРОГРАММЕ
+    (v3.1, замечание 6) — последней группой, после «СПИСОК БАЗ».
     """  # noqa: RUF002
     view, _ = _view(application, tmp_path)
     assert view.group_labels() == [
@@ -163,7 +166,17 @@ def test_groups_are_in_section_order(application: QApplication, tmp_path: Path) 
         "EDT",
         "ГОРЯЧИЕ КЛАВИШИ",
         "СПИСОК БАЗ",
+        "О ПРОГРАММЕ",  # noqa: RUF001
     ]
+
+
+def test_about_group_shows_version_and_repository_link(
+    application: QApplication, tmp_path: Path
+) -> None:
+    view, _ = _view(application, tmp_path)
+    assert view.version_label().text() == about.app_version()
+    assert about.REPOSITORY_URL in view.repository_label().text()
+    assert view.repository_label().openExternalLinks() is True
 
 
 def test_tray_toggle_persists(application: QApplication, tmp_path: Path) -> None:

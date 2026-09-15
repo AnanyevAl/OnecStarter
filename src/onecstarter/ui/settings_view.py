@@ -70,6 +70,7 @@ from onecstarter.services.settings import (
     ThemeMode,
     WebLaunch,
 )
+from onecstarter.ui import about
 from onecstarter.ui.hotkey_edit import HotkeyEdit
 from onecstarter.ui.settings_group import CollapsibleGroup
 from onecstarter.ui.settings_store import SettingsStore
@@ -361,6 +362,19 @@ class SettingsView(QWidget):
             "а не меняет порядок",  # noqa: RUF001
             self._build_order_segment(),
         )
+
+        self._add_group("О ПРОГРАММЕ")  # noqa: RUF001
+        self._version_label = QLabel(about.app_version())
+        self._add_row("Версия", "Из pyproject.toml — единственного места", self._version_label)
+        self._repository_label = QLabel(
+            f'<a href="{about.REPOSITORY_URL}">{about.REPOSITORY_URL}</a>'
+        )
+        self._repository_label.setOpenExternalLinks(True)
+        self._repository_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.LinksAccessibleByMouse
+            | Qt.TextInteractionFlag.LinksAccessibleByKeyboard
+        )
+        self._add_row("Репозиторий", "Исходники, выпуски, замечания", self._repository_label)
 
         layout.addWidget(self._status)
         layout.addStretch(1)
@@ -731,6 +745,14 @@ class SettingsView(QWidget):
         в layout.
         """  # noqa: RUF002
         return self._row_controls[title]
+
+    def version_label(self) -> QLabel:
+        """Версия программы, показанная в группе «О ПРОГРАММЕ» (спека v3.1, §7)."""  # noqa: RUF002
+        return self._version_label
+
+    def repository_label(self) -> QLabel:
+        """Ссылка на репозиторий в группе «О ПРОГРАММЕ» (спека v3.1, §7)."""  # noqa: RUF002
+        return self._repository_label
 
     def hotkey_note(self) -> str:
         return self._hotkey_note.text()
