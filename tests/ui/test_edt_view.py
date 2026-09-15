@@ -684,7 +684,7 @@ def test_cli_submenu_disabled_when_edt_running(harness: Harness, qtbot) -> None:
     view.on_scan(EdtScan(running={p.id: 77}, present={}))
     cli = _menu_action(view, p.id, MENU_CLI)
     assert cli.isEnabled() is False
-    assert cli.toolTip() == "Закройте EDT: workspace занят"
+    assert cli.toolTip() == "Закройте EDT: рабочая область занята"
 
 
 def test_cli_build_confirms_starts_and_expands_console(  # type: ignore[no-untyped-def]
@@ -697,7 +697,7 @@ def test_cli_build_confirms_starts_and_expands_console(  # type: ignore[no-untyp
     monkeypatch.setattr(view, "_confirm", _confirm(asked, answer=True))
     assert view.console().is_expanded() is False
     view.cli_build(p.id)
-    assert asked == ["Пересобрать все проекты workspace «a»? Это займёт время"]
+    assert asked == ["Пересобрать все проекты рабочей области «a»? Это займёт время"]
     assert '-command "build --yes"' in harness.cli_spawned[0].arguments
     assert view.console().is_expanded() is True
     assert view.console().state_label().text() == STATE_RUNNING

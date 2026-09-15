@@ -160,8 +160,8 @@ class TestStart:
         h = Harness(tmp_path)
         p = h.project()
         h.workspace.apply_scan(EdtScan(running={p.id: 9}, present={}))
-        assert h.cli.unavailable_reason(p.id) == "Закройте EDT: workspace занят"
-        with pytest.raises(EdtError, match="workspace занят"):
+        assert h.cli.unavailable_reason(p.id) == "Закройте EDT: рабочая область занята"
+        with pytest.raises(EdtError, match="рабочая область занята"):
             h.cli.start(p.id, "Информация по проектам", "project")
         assert h.spawned == []
 

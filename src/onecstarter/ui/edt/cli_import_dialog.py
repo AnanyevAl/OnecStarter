@@ -44,7 +44,7 @@ class CliImportDialog(QDialog):
         self._project_dir_browse = QPushButton("Обзор…")
         self._project_dir_browse.clicked.connect(lambda: self._browse_into(self._project_dir))
         self._project_name = QLineEdit()
-        self._project_name.setPlaceholderText("имя нового проекта в workspace")
+        self._project_name.setPlaceholderText("имя нового проекта в рабочей области")
         self._base_project = QLineEdit()
         self._base_project.setPlaceholderText("для расширений и внешних обработок")
         self._platform_version = QLineEdit()

@@ -50,7 +50,7 @@ __all__ = ["CliResult", "CliRun", "EdtCli", "workspace_entries"]
 
 _log = logging.getLogger("onecstarter.edt_cli")
 
-RUNNING_REASON = "Закройте EDT: workspace занят"
+RUNNING_REASON = "Закройте EDT: рабочая область занята"
 BUSY_REASON = "Команда CLI уже выполняется для этой записи"
 
 

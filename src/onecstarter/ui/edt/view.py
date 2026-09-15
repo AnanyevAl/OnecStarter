@@ -658,7 +658,8 @@ class EdtView(QWidget):
 
     def cli_build(self, project_id: str) -> None:
         project = self._workspace.project(project_id)
-        question = f"Пересобрать все проекты workspace «{project.name}»? Это займёт время"
+        question = f"Пересобрать все проекты рабочей области «{project.name}»? "
+        question += "Это займёт время"
         if self._confirm(self, "Пересборка", question):
             self._start_cli(project_id, CLI_BUILD, cli_build_args())
 

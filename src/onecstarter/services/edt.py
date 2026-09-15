@@ -326,7 +326,8 @@ class EdtWorkspace:
     def launch(self, project_id: str) -> LaunchOutcome:
         if project_id in self._cli_busy:
             raise EdtLaunchError(
-                "Workspace занят командой CLI — дождитесь завершения или прервите её"
+                "Рабочая область занята командой CLI — дождитесь завершения или "
+                "прервите её"
             )
         project = self.project(project_id)
         pid = self._running.get(project_id)
@@ -444,9 +445,9 @@ class EdtWorkspace:
         if not project.name.strip():
             raise InvalidRequestError("Имя записи пусто")
         if not project.workspace.strip():
-            raise InvalidRequestError("Путь workspace пуст")
+            raise InvalidRequestError("Путь рабочей области пуст")
         if not Path(project.workspace).is_absolute():
-            raise InvalidRequestError("Путь workspace должен быть абсолютным")
+            raise InvalidRequestError("Путь рабочей области должен быть абсолютным")
 
     def _project_index(self, project_id: str) -> int:
         for index, project in enumerate(self._projects):
