@@ -135,6 +135,10 @@ QToolTip {{
     border: none; background: transparent; padding: 0;
     color: {palette.text};
 }}
+#PathLink {{
+    font-family: Consolas, "Cascadia Mono", monospace;
+    background: transparent; padding: 0;
+}}
 #PanelKindWord {{ color: {palette.text_dim}; }}
 #ConnectionPanel QPushButton {{
     border: 1px solid {palette.border}; background: {palette.surface_raised};
