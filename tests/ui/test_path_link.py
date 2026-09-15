@@ -35,6 +35,30 @@ def test_text_without_directory_is_not_a_link(qtbot: Any) -> None:
     assert link.path_text() == 'Srvr="srv";Ref="acc"'
 
 
+def test_focus_policy_follows_link_presence(qtbot: Any) -> None:
+    """M-4 финального ревью ветки v3.1: Tab обязан пропускать текст без ссылки.
+
+    `LinksAccessibleByKeyboard` ставит `StrongFocus` один раз в `__init__`;
+    без явного снятия его в `_render` серверная/веб-база и placeholder
+    оставались бы мёртвой остановкой в обходе клавиатурой — Enter там
+    ничего не делает.
+    """  # noqa: RUF002
+    from PySide6.QtCore import Qt
+
+    link = _link([])
+    qtbot.addWidget(link)
+    assert link.focusPolicy() == Qt.FocusPolicy.NoFocus  # placeholder при постройке
+
+    link.set_path(r"D:\edt\ws", directory=r"D:\edt\ws")
+    assert link.focusPolicy() == Qt.FocusPolicy.StrongFocus
+
+    link.set_path('Srvr="srv";Ref="acc"')
+    assert link.focusPolicy() == Qt.FocusPolicy.NoFocus
+
+    link.set_path("")
+    assert link.focusPolicy() == Qt.FocusPolicy.NoFocus
+
+
 def test_menu_items_follow_state(qtbot: Any) -> None:
     link = _link([])
     qtbot.addWidget(link)

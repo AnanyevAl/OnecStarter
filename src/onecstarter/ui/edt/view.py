@@ -346,14 +346,19 @@ class EdtView(QWidget):
     def rebuild(self) -> None:
         """Собрать модель заново, сохранив раскрытие, текущую строку и ширины колонок.
 
-        `setModel` сбрасывает всё это — ширины по умолчанию ставятся только
-        при первой сборке, дальше возвращаются снятые перед подменой (I2
-        финального ревью ветки). Последняя колонка растянута заголовком,
-        её ширина не запоминается.
-        """
+        `setModel` сбрасывает раскрытие и текущую строку — ширины по умолчанию
+        ставятся только при первой сборке, дальше снимаются перед подменой
+        модели и возвращаются после (I2 финального ревью ветки). Последняя
+        колонка не растянута заголовком (`setStretchLastSection(False)`, ревью
+        Task 21): ширины всех колонок, включая последнюю, сохраняются между
+        пересборками наравне с первыми двумя (M-2 финального ревью ветки v3.1
+        — прежняя редакция докстринга и код `range(len(COLUMNS) - 1)` были
+        написаны для двухколоночного дерева и не обновились, когда «Память»
+        стала третьей колонкой).
+        """  # noqa: RUF002
         expanded = self._expanded_ids()
         current = self.current()
-        widths = [self._tree.columnWidth(column) for column in range(len(COLUMNS) - 1)]
+        widths = [self._tree.columnWidth(column) for column in range(len(COLUMNS))]
         self._model = build_edt_model(self._workspace, self._search.text(), self._palette)
         self._tree.setModel(self._model)
         if not self._built:

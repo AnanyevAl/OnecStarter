@@ -32,6 +32,7 @@ from onecstarter.ui.settings_view import (
     browse_for_servers_root,
 )
 from onecstarter.ui.shortcuts import BASES_SHORTCUTS
+from onecstarter.ui.theme import DARK, LIGHT, Palette
 from onecstarter.ui.theme_controller import ThemeController
 
 EXE = r"C:\Programs\OneCStarter\OneCStarter.exe"
@@ -177,6 +178,31 @@ def test_about_group_shows_version_and_repository_link(
     assert view.version_label().text() == about.app_version()
     assert about.REPOSITORY_URL in view.repository_label().text()
     assert view.repository_label().openExternalLinks() is True
+
+
+@pytest.mark.parametrize(
+    ("button_index", "palette"),
+    [(1, LIGHT), (2, DARK)],
+    ids=["light", "dark"],
+)
+def test_repository_link_colour_follows_theme_switch(
+    application: QApplication, tmp_path: Path, button_index: int, palette: Palette
+) -> None:
+    """I-1 финального ревью ветки v3.1: системная роль ссылки красит `#0000ff` —
+
+    2,11:1 к `DARK.background` (порог проекта 4,5:1, WCAG 2.1), замер
+    `probe_link_colour.py`. Цвет обязан идти из `palette.accent` и
+    перекрашиваться при смене темы, как у `PathLink`.
+
+    Мутация: убрать `style="color:{accent}"` в `_render_repository_link` —
+    тест обязан упасть, потому что в разметке ссылки не останется ни одного
+    цвета палитры.
+    """  # noqa: RUF002
+    view, _ = _view(application, tmp_path)
+
+    view.theme_buttons()[button_index].click()
+
+    assert palette.accent in view.repository_label().text()
 
 
 def test_tray_toggle_persists(application: QApplication, tmp_path: Path) -> None:

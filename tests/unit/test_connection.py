@@ -62,7 +62,6 @@ def test_connection_path_shows_only_placement(
     assert path.text == text
     assert path.directory == directory
     assert path.note is None
-    assert path.copyable
 
 
 @pytest.mark.parametrize(
@@ -72,7 +71,6 @@ def test_connection_path_shows_only_placement(
 def test_groups_and_connectless_records_show_nothing(connect: str | None, is_group: bool) -> None:
     path = connection_path(_base(connect, is_group=is_group))
     assert path.text == ""
-    assert not path.copyable
 
 
 def test_unknown_kind_gets_a_note_not_a_path() -> None:
@@ -80,14 +78,12 @@ def test_unknown_kind_gets_a_note_not_a_path() -> None:
     path = connection_path(_base("Нечто=1;"))
     assert path.text == ""
     assert path.note == "Строка соединения не распознана"
-    assert not path.copyable
 
 
 def test_web_with_unstrippable_credentials_is_hidden() -> None:
     path = connection_path(_base('ws="user:pass@srv/base";'))
     assert path.text == ""
     assert path.note == _DIRTY_URL_NOTE
-    assert not path.copyable
 
 
 def test_web_with_unparseable_address_gets_the_same_honest_note() -> None:
@@ -99,7 +95,6 @@ def test_web_with_unparseable_address_gets_the_same_honest_note() -> None:
     assert path.text == ""
     assert path.note == _DIRTY_URL_NOTE
     assert "@" not in path.note
-    assert not path.copyable
 
 
 def test_empty_file_fragment_is_reported() -> None:
@@ -113,7 +108,6 @@ def test_empty_ws_fragment_is_reported() -> None:
     path = connection_path(_base('ws="";'))
     assert path.text == ""
     assert path.note == "В строке соединения пустой адрес публикации (ws)"  # noqa: RUF001
-    assert not path.copyable
 
 
 # Helpers for panel_card tests

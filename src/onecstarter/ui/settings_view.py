@@ -365,16 +365,19 @@ class SettingsView(QWidget):
 
         self._add_group("О ПРОГРАММЕ")  # noqa: RUF001
         self._version_label = QLabel(about.app_version())
-        self._add_row("Версия", "Из pyproject.toml — единственного места", self._version_label)
-        self._repository_label = QLabel(
-            f'<a href="{about.REPOSITORY_URL}">{about.REPOSITORY_URL}</a>'
-        )
+        # M-1 финального ревью ветки v3.1: прежняя подпись «Из pyproject.toml —
+        # единственного места» — текст для разработчика, заказчик не знает,
+        # что такое pyproject.toml. Правило «версия из одного места» и так
+        # задокументировано в докстринге `about.py`.
+        self._add_row("Версия", "Установленная версия программы", self._version_label)
+        self._repository_label = QLabel()
         self._repository_label.setOpenExternalLinks(True)
         self._repository_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.LinksAccessibleByMouse
             | Qt.TextInteractionFlag.LinksAccessibleByKeyboard
         )
         self._add_row("Репозиторий", "Исходники, выпуски, замечания", self._repository_label)
+        self._render_repository_link()
 
         layout.addWidget(self._status)
         layout.addStretch(1)
@@ -579,6 +582,22 @@ class SettingsView(QWidget):
         row_layout.addWidget(self._servers_root)
         row_layout.addWidget(self._servers_root_browse)
         return row
+
+    def _render_repository_link(self) -> None:
+        """Цвет ссылки «Репозиторий» — из палитры, не системный (I-1 финального ревью).
+
+        Системная роль `QPalette.Link`, которую иначе взял бы rich-text `QLabel`,
+        даёт `#0000ff` в обеих темах: контраст к `DARK.background` — 2,11:1,
+        ниже порога проекта 4,5:1 (WCAG 2.1) — замер `probe_link_colour.py`.
+        Тот же приём, что у `PathLink._render`: цвет пишется inline в разметку
+        ссылки, а не через QSS (Qt Style Sheets роль `Link` не перекрывают).
+        Зовётся из конструктора и из `_sync()` — без вызова в `_sync()` ссылка
+        осталась бы в цветах темы, в которой раздел строился.
+        """  # noqa: RUF002
+        accent = self._controller.palette.accent
+        self._repository_label.setText(
+            f'<a href="{about.REPOSITORY_URL}" style="color:{accent}">{about.REPOSITORY_URL}</a>'
+        )
 
     def _refresh_edt_notes(self) -> None:
         """Пересчитать подписи группы «EDT» после правки пути (I3 финального ревью).
@@ -950,3 +969,6 @@ class SettingsView(QWidget):
         # темы, в которой раздел был построен.
         for group in self._groups.values():
             group.set_palette(self._controller.palette)
+        # Ссылка «Репозиторий» — тем же приёмом (I-1 финального ревью ветки v3.1):
+        # без перерисовки здесь она осталась бы в цвете темы постройки раздела.
+        self._render_repository_link()

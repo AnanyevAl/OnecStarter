@@ -24,6 +24,12 @@ class ShortcutSpec:
 
 
 BASES_SHORTCUTS: tuple[ShortcutSpec, ...] = (
+    # M-10 финального ревью ветки v3.1 (по желанию заказчика): сочетание
+    # регистрирует оболочка (`ui/shell.py`, QShortcut(StandardKey.Find)),
+    # а не вьюха «Базы» — пустой `sequences`, как у Enter/Insert/Delete ниже,  # noqa: RUF003
+    # чтобы test_shortcut_reference_matches_registered_shortcuts не ждал
+    # от этой вьюхи собственного QShortcut на Ctrl+F.
+    ShortcutSpec("Ctrl+F", "Поиск (Базы и EDT)", ()),
     ShortcutSpec("Enter", "Запустить выбранную базу; в поиске — первую найденную", ()),
     ShortcutSpec("F3", "Запустить (1С:Предприятие)", ("F3",)),  # noqa: RUF001
     ShortcutSpec("F4", "Конфигуратор", ("F4",)),

@@ -74,10 +74,6 @@ class ConnectionPath:
     note: str | None = None
     directory: str | None = None
 
-    @property
-    def copyable(self) -> bool:
-        return bool(self.text)
-
 
 _NOTHING = ConnectionPath("")
 

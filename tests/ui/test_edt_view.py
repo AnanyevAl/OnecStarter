@@ -359,18 +359,26 @@ def test_unchanged_scan_does_not_rebuild(harness: Harness, qtbot) -> None:  # ty
 
 
 def test_current_row_and_widths_survive_rebuild(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
-    """I2 финального ревью: перестройка возвращает текущую строку и ширины колонок."""
+    """I2 финального ревью: перестройка возвращает текущую строку и ширины колонок.
+
+    Третья колонка («Память») дополнена по M-2 финального ревью ветки v3.1:
+    докстринг `rebuild()` обещает сохранность ширин ВСЕХ колонок, а не только
+    первых двух — тест обязан это перечень покрывать.
+    """  # noqa: RUF002
     _add(harness, "a")
     b = _add(harness, "b")
     view = harness.view()
     qtbot.addWidget(view)
-    assert (view.tree().columnWidth(0), view.tree().columnWidth(1)) == (320, 110)  # умолчания
+    widths = (view.tree().columnWidth(0), view.tree().columnWidth(1), view.tree().columnWidth(2))
+    assert widths == (320, 110, 90)  # умолчания
     _select(view, b.id)
     view.tree().setColumnWidth(0, 200)
     view.tree().setColumnWidth(1, 90)
+    view.tree().setColumnWidth(2, 55)
     view.rebuild()
     assert view.current() == ("project", b.id)
-    assert (view.tree().columnWidth(0), view.tree().columnWidth(1)) == (200, 90)
+    widths = (view.tree().columnWidth(0), view.tree().columnWidth(1), view.tree().columnWidth(2))
+    assert widths == (200, 90, 55)
 
 
 def test_version_column_keeps_width_in_shown_window(harness: Harness, qtbot, qapp) -> None:  # type: ignore[no-untyped-def]

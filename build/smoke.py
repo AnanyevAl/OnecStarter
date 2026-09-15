@@ -89,7 +89,10 @@ def main() -> int:
             return 1
         pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
         version = tomllib.loads(pyproject.read_text("utf-8"))["project"]["version"]
-        if f"smoke: version={version}" not in log_text:
+        # M-9 финального ревью ветки v3.1: гейт подстрокой сработал бы и на
+        # "smoke: version=3.1.0.post1" — якорный регэкс, как у соседних гейтов  # noqa: RUF003
+        # (`keyring=`, `edt=`) выше.
+        if not re.search(rf"^.*smoke: version={re.escape(version)}\s*$", log_text, re.MULTILINE):
             print(
                 f"smoke: версия в сборке не совпадает с pyproject.toml ({version}) — "  # noqa: RUF001
                 "см. строку smoke: version= в логе"

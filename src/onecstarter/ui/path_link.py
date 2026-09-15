@@ -19,6 +19,11 @@ from onecstarter.ui.theme import Palette
 MENU_OPEN = "Открыть каталог"
 MENU_COPY = "Копировать"
 _MIN_TEXT_WIDTH = 40
+# QTextDocument.documentMargin() у rich-text QLabel — 4 px (замер M-5  # noqa: RUF003
+# финального ревью ветки v3.1): текст начинается с этого отступа, и обрезка  # noqa: RUF003
+# по ширине виджета обязана его вычесть, иначе последний символ обрежется  # noqa: RUF003
+# раньше правого края виджета.
+_DOCUMENT_MARGINS = 4
 
 
 def copy_to_clipboard(text: str) -> None:
@@ -117,20 +122,29 @@ class PathLink(QLabel):
         if not self._text:
             self._shown = ""
             self.setToolTip("")
+            # M-4 финального ревью ветки v3.1: без ссылки виджет не отвечает
+            # на Enter — StrongFocus, унаследованный от LinksAccessibleByKeyboard,
+            # держал бы его мёртвой остановкой в обходе Tab.  # noqa: RUF003
+            self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             self.setText(
                 f'<i style="color:{self._palette.text_dim}">{html.escape(self._placeholder)}</i>'
             )
             return
-        width = max(self.width() - 4, _MIN_TEXT_WIDTH)
+        width = max(self.width() - _DOCUMENT_MARGINS, _MIN_TEXT_WIDTH)
         self._shown = self.fontMetrics().elidedText(
             self._text, Qt.TextElideMode.ElideMiddle, width
         )
         self.setToolTip(self._text)
         shown = html.escape(self._shown)
         if self._directory is not None:
+            self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             href = html.escape(self._directory, quote=True)
             self.setText(f'<a href="{href}" style="color:{self._palette.accent}">{shown}</a>')
         else:
+            # Текст без каталога (серверная/веб-база) — не ссылка: Tab обязан
+            # его пропускать, иначе остановка на месте, где Enter ничего не  # noqa: RUF003
+            # делает (M-4 финального ревью ветки v3.1).
+            self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
             self.setText(f'<span style="color:{self._palette.text}">{shown}</span>')
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
