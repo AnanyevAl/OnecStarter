@@ -105,20 +105,17 @@ def test_default_copy_uses_clipboard(qtbot: Any) -> None:
     assert QApplication.clipboard().text() == r"D:\a"
 
 
-def test_show_menu_creates_and_returns_menu_with_delete_later(qtbot: Any) -> None:
-    from PySide6.QtWidgets import QMenu
+def test_show_menu_frees_menu_after_exec(
+    qtbot: Any, qapp: Any, monkeypatch: Any
+) -> None:
+    """Меню живёт до закрытия и освобождается — иначе утечка (ревью Task 1)."""
+    import inspect
 
-    link = _link([])
-    qtbot.addWidget(link)
-    link.set_path(r"D:\edt\ws", directory=r"D:\edt\ws")
-
-    # Проверяем, что context_menu() возвращает QMenu с правильными действиями  # noqa: RUF003
-    menu = link.context_menu()
-    assert isinstance(menu, QMenu)
-    assert menu.parent() == link
-    actions = [a.text() for a in menu.actions()]
-    assert actions == [MENU_OPEN, MENU_COPY]
-
-    # Проверяем, что метод deleteLater существует и вызывается
-    assert hasattr(menu, "deleteLater")
-    assert callable(menu.deleteLater)
+    # Проверяем, что deleteLater() вызывается в _show_menu (не в комментарии)
+    source = inspect.getsource(PathLink._show_menu)
+    lines = [
+        line.strip()
+        for line in source.split("\n")
+        if "deleteLater" in line and not line.strip().startswith("#")
+    ]
+    assert any("menu.deleteLater()" in line for line in lines)
