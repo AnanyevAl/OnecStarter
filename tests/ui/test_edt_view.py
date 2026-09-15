@@ -1003,3 +1003,15 @@ def test_selecting_project_with_old_journal_shows_it(  # type: ignore[no-untyped
     assert view.console().title_label().text() == "a · прошлый запуск"
     assert view.console().state_label().text() == "не запущен"
     assert "прошлый сеанс" in view.console().journal_panel().text()
+
+
+# -- Task 6 (v3.1): крестик очистки и подсказка Ctrl+F в поле поиска --------
+
+
+def test_search_hint_and_clear_button(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    view = harness.view()
+    qtbot.addWidget(view)
+    assert view.search().placeholderText() == "Поиск: начните вводить имя проекта (Ctrl+F)"
+    view.search().setText("x")
+    view.search().clear_action().trigger()
+    assert view.search().text() == ""

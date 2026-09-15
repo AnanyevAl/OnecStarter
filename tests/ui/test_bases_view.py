@@ -4553,3 +4553,22 @@ def test_empty_space_menu_offers_refresh(qtbot, workspace_factory):
     view, _, _, _ = _view(qtbot, workspace_factory)
     menu = view._build_empty_space_menu()
     assert "Обновить\tF5" in [action.text() for action in menu.actions()]
+
+
+# -- Task 6 (v3.1): крестик очистки и подсказка Ctrl+F в поле поиска --------
+
+
+def test_search_hint_and_clear_button(qtbot, workspace_factory):
+    workspace, _calls, _opened = workspace_factory()
+    view = BasesView(
+        workspace,
+        installations=INSTALLED,
+        cfg_rules=[],
+        recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+        list_order=lambda: ListOrder.FILE,
+    )
+    qtbot.addWidget(view)
+    assert view.search().placeholderText() == "Поиск: начните вводить имя базы (Ctrl+F)"
+    view.search().setText("x")
+    view.search().clear_action().trigger()
+    assert view.search().text() == ""

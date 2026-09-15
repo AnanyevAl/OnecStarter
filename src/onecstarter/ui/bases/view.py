@@ -27,7 +27,6 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QDialog,
     QFileDialog,
-    QLineEdit,
     QMenu,
     QMessageBox,
     QTreeView,
@@ -85,6 +84,7 @@ from onecstarter.ui.dialogs.confirm import (
 )
 from onecstarter.ui.dialogs.group import GroupDialog
 from onecstarter.ui.dialogs.infobase import InfobaseDialog, dropped_directory
+from onecstarter.ui.search_field import SearchField
 from onecstarter.ui.theme import Palette
 
 
@@ -433,8 +433,7 @@ class BasesView(QWidget):
         self._expansion: set[str] = set()
         self._filtered = False
 
-        self._search = QLineEdit()
-        self._search.setPlaceholderText("Поиск: начните вводить имя базы")
+        self._search = SearchField("Поиск: начните вводить имя базы", self._palette)
         self._tree = _BasesTree(self)
         self._tree.setHeaderHidden(False)
         self._tree.setAlternatingRowColors(False)
@@ -527,7 +526,7 @@ class BasesView(QWidget):
         # но rebuild() всегда ставит именно QStandardItemModel из build_model.
         return cast(QStandardItemModel, self._tree.model())
 
-    def search(self) -> QLineEdit:
+    def search(self) -> SearchField:
         return self._search
 
     def tree(self) -> QTreeView:
@@ -543,6 +542,7 @@ class BasesView(QWidget):
     def apply_palette(self, palette: Palette) -> None:
         """Сменить палитру и перерисовать: цвета запечены в QBrush и в значки."""
         self._palette = palette
+        self._search.apply_palette(palette)
         self.rebuild()
 
     def apply_installations(self, installations: Sequence[Installation]) -> None:

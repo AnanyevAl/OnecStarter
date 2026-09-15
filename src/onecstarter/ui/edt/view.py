@@ -29,7 +29,6 @@ from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMenu,
     QMessageBox,
     QPushButton,
@@ -78,6 +77,7 @@ from onecstarter.ui.edt.tree_model import (
     KIND_ROLE,
     build_edt_model,
 )
+from onecstarter.ui.search_field import SearchField
 from onecstarter.ui.theme import Palette
 
 MENU_OPEN_EDT = "Открыть в EDT"
@@ -241,8 +241,7 @@ class EdtView(QWidget):
         if watcher is not None:
             watcher.finished.connect(self.on_cli_finished)
 
-        self._search = QLineEdit()
-        self._search.setPlaceholderText("Поиск: начните вводить имя проекта")
+        self._search = SearchField("Поиск: начните вводить имя проекта", self._palette)
         self._search.textChanged.connect(lambda _text: self.rebuild())
         self._search.returnPressed.connect(self._launch_first_visible)
 
@@ -300,7 +299,7 @@ class EdtView(QWidget):
         """Каталог, который получит следующий диалог `validate` (последний TSV сеанса)."""
         return self._last_tsv_dir
 
-    def search(self) -> QLineEdit:
+    def search(self) -> SearchField:
         return self._search
 
     def banner(self) -> QWidget:
@@ -381,6 +380,7 @@ class EdtView(QWidget):
 
     def apply_palette(self, palette: Palette) -> None:
         self._palette = palette
+        self._search.apply_palette(palette)
         self._console.apply_palette(palette)
         self.rebuild()
 
