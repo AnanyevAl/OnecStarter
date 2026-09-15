@@ -455,7 +455,7 @@ class BasesView(QWidget):
         self._tree.setAcceptDrops(True)
         self._tree.setDropIndicatorShown(True)
         self._tree.setDragDropMode(QTreeView.DragDropMode.InternalMove)
-        self._panel = ConnectionPanel(parent=self)
+        self._panel = ConnectionPanel(palette=self._palette, parent=self)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)

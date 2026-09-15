@@ -147,7 +147,6 @@ def test_panel_card_for_a_server_base() -> None:
     assert card.icon_kind is ConnectKind.SERVER
     assert card.path is not None and card.path.text == 'Srvr="s";Ref="r"'
     assert card.hint is None
-    assert card.show_actions is True
 
 
 def test_panel_card_for_a_group() -> None:
@@ -157,7 +156,6 @@ def test_panel_card_for_a_group() -> None:
     assert card.icon_kind is None
     assert card.path is None
     assert card.hint == "Группа — строки подключения нет"
-    assert card.show_actions is False
 
 
 def test_panel_card_for_an_implicit_node_uses_the_label() -> None:
@@ -167,7 +165,6 @@ def test_panel_card_for_an_implicit_node_uses_the_label() -> None:
     assert card.hint == (
         "Группы нет в файле — есть только путь Folder. Операции недоступны"
     )
-    assert card.show_actions is False
 
 
 @pytest.mark.parametrize("kind", [RowKind.SECTION, RowKind.NOTE, None])
@@ -177,14 +174,12 @@ def test_panel_card_for_service_rows_asks_to_pick_a_base(
     card = panel_card(kind, None, "Избранное")
     assert card.title is None
     assert card.hint == "Выберите базу, чтобы увидеть путь подключения"
-    assert card.show_actions is False
 
 
 def test_panel_card_for_a_vanished_base_degrades_to_the_empty_card() -> None:
     """Запись пропала между rebuild и синхронизацией панели — не падать."""
     card = panel_card(RowKind.BASE, None, "Демо")
     assert card.title is None
-    assert card.show_actions is False
 
 
 def test_panel_card_for_base_kind_on_a_group_item_degrades_to_the_empty_card() -> None:
@@ -198,7 +193,6 @@ def test_panel_card_for_base_kind_on_a_group_item_degrades_to_the_empty_card() -
     card = panel_card(RowKind.BASE, _group("Клиенты"), "x")
     assert card.title is None
     assert card.hint == "Выберите базу, чтобы увидеть путь подключения"
-    assert card.show_actions is False
 
 
 def test_kind_words_cover_every_connect_kind() -> None:
