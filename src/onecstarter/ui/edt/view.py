@@ -360,6 +360,7 @@ class EdtView(QWidget):
         if not self._built:
             self._tree.setColumnWidth(0, 320)
             self._tree.setColumnWidth(1, 110)
+            self._tree.setColumnWidth(2, 90)
         else:
             for column, width in enumerate(widths):
                 self._tree.setColumnWidth(column, width)
