@@ -56,7 +56,8 @@ class ProjectCandidate:
 def mark_in_workspace(
     candidates: Sequence[ProjectCandidate], entries: Sequence[WorkspaceEntry]
 ) -> list[ProjectCandidate]:
-    """`in_workspace=True`, если `workspace_key(path)` совпал с путём записи реестра."""
+    """`in_workspace=True`, если `workspace_key(path)` совпал с путём любой записи реестра
+    (и без `.project` тоже — привязка есть)."""
 ```
 
 `services/edt_cli.py` (ФС через инъекцию — по образцу `workspace_entries`):
@@ -77,8 +78,9 @@ def scan_projects(
 
 Правило (факт 9): каталог с `.project` — кандидат, внутрь не заходим; иначе — в подкаталоги.
 Ограничения наши: подкаталоги с именем на точку (`.git`, `.metadata`, `.settings`)
-пропускаются; глубина — не больше `max_depth` уровней ниже корня (`root/src/cf` — второй,
-запас один; ошибочно выбранный `E:\` целиком не обходится); `OSError` на подкаталоге —
+пропускаются; глубина: корень — уровень 0, проверяются каталоги уровней 0…`max_depth`
+включительно (`root/src/cf` — уровень 2, запас один; ошибочно выбранный `E:\` целиком не
+обходится); `OSError` на подкаталоге —
 подкаталог пропускается, на корне — пустой список. Результат отсортирован по `relative`
 без учёта регистра. Корень, в котором лежит `.project`, — единственный кандидат с
 `relative` = имя каталога корня.
@@ -93,6 +95,7 @@ CliImportDialog(
     entries: Sequence[WorkspaceEntry],      # реестр рабочей области записи
     *,
     scan: Callable[[str], list[ProjectCandidate]] = scan_projects,
+    is_dir: Callable[[str], bool] = os.path.isdir,
     choose_directory: Callable[[], str] = browse_for_directory,
     parent: QWidget | None = None,
 )
@@ -115,8 +118,8 @@ CliImportDialog(
 - Кнопки «Выбрать всё» / «Снять всё» — только доступные элементы.
 - Строка состояния под списком: «Найдено N, уже в рабочей области M»;
   «Проектов не найдено: каталог с .project ищется до 3 уровней» (список пуст,
-  каталог есть); «Каталог не существует» (`scan` вернул пусто и `os.path.isdir` — ложь;
-  проверка через инъекцию `is_dir`, по умолчанию `os.path.isdir`).
+  каталог есть); «Каталог не существует» (`scan` вернул пусто и `is_dir(root)` — ложь);
+  пустое поле — строка состояния пуста, список пуст.
 - ОК доступен при хотя бы одном отмеченном; иначе строка ошибки «Не выбран ни один проект».
 - `form()` → `ImportForm(existing_project_dirs=tuple(отмеченные path в порядке списка))`.
 
