@@ -4019,7 +4019,10 @@ access violation`, T-12 п. 15, не проявился — повтор не п
 | 5 | Диалог и вьюха (раунд правок ревью: try/finally в `_rescan`) | `9c9bce7`, `b6fede8`, `1e9172f`, `0d3b071` |
 | 6 | Документы, 3.1.1, сборка | `2d3f872`, `2498e1c`, `1c49b16` |
 | 7 | Волна финального ревью (3 Important, 6 Minor; Э12 шаг 5 — ini с LF) | `84dcf1f`, `f58e27c` |
-| 8 | Re-review волны: повторный `_rescan` после Enter не сбрасывает флажки | (этот коммит) |
+| 8 | Re-review волны: повторный `_rescan` после Enter не сбрасывает флажки | `a31ad10` |
+| 9 | Дополнение после smoke: EDT — Alt+Enter изменяет, Insert добавляет; справочник сочетаний EDT (спека §10) | `5492c39`, `2672b0e`, `b4809f7` |
+| 10 | Настройки — содержимое в QScrollArea (окно не растёт), горизонтальный бегунок по необходимости, QSS только по objectName (два раунда правок ревью) | `86ac3ca`, `5ca3695`, `0c5d137` |
+| 11 | Документы дополнения, полный прогон, пересборка | (этот коммит) |
 
 Коммит 1 нёс протокол Э12 и черновой скрипт запуска на PowerShell; после проведения Э12
 (задача 2) скрипт заменён на `research/t20-edt-import.py` — воспроизводимый прогон без
@@ -4028,6 +4031,16 @@ access violation`, T-12 п. 15, не проявился — повтор не п
 отказе сканирования — исправление `b6fede8`; план приведён в соответствие находке
 (`label = CLI_IMPORT.rstrip("…")` расходился с требуемыми тестами) коммитами `1e9172f`,
 `0d3b071`.
+
+Задача 10 прошла два раунда ревью. Круг 1: горизонтальный бегунок `ScrollBarAlwaysOff`
+при снятой связи ширины окна с содержимым (`widgetResizable=True`) обрезал форму на
+узком окне без возможности докрутить — правило спеки изменено на «по необходимости»
+(`ScrollBarAsNeeded`). Круг 2: типовой QSS-селектор `#SettingsScroll > QWidget > QWidget`
+задевал заодно и служебные контейнеры `QScrollBar` (не только viewport), из-за чего
+полосы прокрутки теряли нативный вид Windows 11 и рисовались generic-стилем Qt —
+подтверждено скриншотом на живой платформе, offscreen-тесты разницу не ловят; правило
+переписано на адресные `objectName` (`#SettingsScroll`, `#SettingsViewport`,
+`#SettingsContent`).
 
 ### Итог Э12 (17.09.2026)
 
@@ -4050,6 +4063,14 @@ access violation`, T-12 п. 15, не проявился — повтор не п
 После волны финального ревью: `2508 passed in 452.66s` (`e:/tmp/v311-full-2.log`; +2 теста
 к прежним 2506 — `test_enter_in_dir_field_scans_but_does_not_accept`,
 `test_undecodable_installation_ini_is_edt_error`; флейк T-12 п. 15 не проявился, повтор не
+понадобился). `ruff check .` — `All checks passed!`. `mypy` — `Success: no issues found in
+223 source files`.
+
+После дополнения (задачи 8 «Re-review волны», 9 «EDT — Alt+Enter/Insert, справочник»,
+10 «Настройки — прокрутка», включая оба круга правок ревью задачи 10): `2520 passed in
+707.50s (0:11:47)` (`e:/tmp/v311-full-3.log`; +12 тестов к прежним 2508 — новые тесты
+Alt+Enter/Insert/справочника сочетаний EDT (задача 9) и прокрутки настроек с обоими
+кругами правок (задача 10); флейк pytest-qt T-12 п. 15 не проявился, повтор не
 понадобился). `ruff check .` — `All checks passed!`. `mypy` — `Success: no issues found in
 223 source files`.
 
@@ -4101,6 +4122,23 @@ access violation`, T-12 п. 15, не проявился — повтор не п
 
 Все пять откатов подтверждены; повторный прогон целевых тестов после каждого — зелёный.
 
+### Мутационные проверки дополнения (17.09.2026)
+
+Тот же протокол. Подробности —
+[task-7-report.md](../.superpowers/sdd/2026-09-16-v311-cli-import-projects/task-7-report.md) и
+[task-8-report.md](../.superpowers/sdd/2026-09-16-v311-cli-import-projects/task-8-report.md).
+
+| # | Задача | Тест | Что сломано | Чем упал |
+| --- | --- | --- | --- | --- |
+| 9 | 7 | `test_alt_enter_edits_current_project`, `test_alt_enter_renames_current_group`, `test_insert_adds_project_into_group_of_current_row` | `_EdtTree.keyPressEvent` — гейт `NoModifier` заменён на `if True:` | тесты остались зелёными — **находка**: Alt+Enter перехватывается `QShortcutMap` Qt раньше, чем событие доходит до `keyPressEvent` дерева; сам гейт защищает Insert/Delete/F5 от сочетаний с модификатором, а не Alt+Enter — не дефект, наблюдение о механике Qt |
+| 10 | 7 | `test_alt_enter_edits_current_project`, `test_alt_enter_renames_current_group`, `test_edt_shortcut_reference_matches_registered_shortcuts` | Регистрация `QShortcut(Alt+Return/Alt+Enter)` в `EdtView.__init__` закомментирована | `3 failed`: `edited == []`, `renamed == []`, `registered` пуст против `{'Alt+Enter', 'Alt+Return'}` |
+| 11 | 7 | `test_insert_adds_project_into_group_of_current_row` | `_add_at_current` — `self.add_project(self._group_of(self.current()))` заменён на `self.add_project(None)` | `[None] != ['id-1']` |
+| 12 | 7 | `test_alt_enter_renames_current_group` | `_edit_current` — ветка `if kind == KIND_PROJECT` заменена на `if True:` | `UnknownItemError`, `renamed == []` вместо `['id-1']` |
+| 13 | 10 (круг 1) | `test_expanding_groups_does_not_grow_minimum_height`, `test_horizontal_scrollbar_appears_when_window_is_narrower_than_content` | Горизонтальный бегунок временно возвращён на `ScrollBarAlwaysOff` | `2 failed`: `assert <ScrollBarPolicy.ScrollBarAlwaysOff: 1> == <ScrollBarPolicy.ScrollBarAsNeeded: 0>`; `assert False is True` |
+| 14 | 10 (круг 2) | `test_scroll_area_styling_targets_named_widgets_only` | QSS-правило временно возвращено на круг 1 (`#SettingsScroll, #SettingsScroll > QWidget`) | `AssertionError: assert '> QWidget' not in '#SettingsScroll, #SettingsScroll > QWidget { background: transparent; }'` |
+
+Все шесть откатов подтверждены; повторный прогон целевых тестов после каждого — зелёный.
+
 ### Гейты сборки 3.1.1 (17.09.2026)
 
 - Полный прогон: `2506 passed`; ruff `All checks passed!`; mypy `Success: no issues found in 223 source files`.
@@ -4129,3 +4167,16 @@ access violation`, T-12 п. 15, не проявился — повтор не п
   бегунок; полосы прокрутки нативного вида (не толстые, без стрелок и штриховки — офскрин не
   различает нативный/generic стиль Qt, только живой экран); фон без белого пятна на светлой
   теме. Итог: ____
+- EDT — Alt+Enter на записи открывает свойства записи, на группе — переименование
+  группы (задача 9). Итог: ____
+- EDT — Insert на записи внутри группы добавляет новую запись в ту же группу; в поле
+  поиска Insert не перехватывается (задача 9). Итог: ____
+
+Пересборка после дополнения (задачи 8 «Re-review волны», 9, 10): полный прогон `2520
+passed in 707.50s (0:11:47)`; ruff `All checks passed!`; mypy `Success: no issues found
+in 223 source files`; `build/build.ps1` → `smoke: OK` →
+`dist/OneCStarter-3.1.1-portable.zip` 54,4 МБ (57 073 368 байт),
+`dist/OneCStarter-3.1.1-setup.exe` 36,1 МБ (37 854 248 байт) — отображаемые размеры не
+изменились (те же 54,4/36,1 МБ, что и после волны финального ревью), байты чуть
+отличаются от предыдущей сборки — та же недетерминированность упаковки
+PyInstaller/Inno Setup, что и в предыдущих пересборках этой вехи.
