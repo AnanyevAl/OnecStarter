@@ -1,19 +1,22 @@
 """EdtCli: одна команда на запись, журнал с ротацией, прерывание, отказы (спека §14.4)."""  # noqa: RUF002
 
+import os
+from collections.abc import Set
 from dataclasses import replace
 from datetime import datetime
 from itertools import count
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
 from onecstarter.domain.edt import EditorResolution, EdtInstallation, EdtProject
-from onecstarter.domain.edt_cli import WorkspaceEntry, location_blob
+from onecstarter.domain.edt_cli import ProjectCandidate, WorkspaceEntry, location_blob
 from onecstarter.domain.launch import LaunchCommand
 from onecstarter.platform_1c.job import Job, JobError
 from onecstarter.platform_1c.server_spawn import LoggedProcess
 from onecstarter.services.edt import EdtScan, EdtWorkspace
-from onecstarter.services.edt_cli import CliResult, EdtCli, workspace_entries
+from onecstarter.services.edt_cli import CliResult, EdtCli, scan_projects, workspace_entries
 from onecstarter.services.errors import EdtError
 
 EXE_DIR = Path(r"C:\edt\1c-edt-2025.2.6+4-x86_64")
@@ -23,6 +26,101 @@ INSTALLED = [
 ]
 NOW = datetime(2026, 9, 10, 12, 0, 0)
 COMSPEC = Path(r"C:\Windows\System32\cmd.exe")
+INSTALL_INI = "-startup\nplugins/launcher.jar\n-vmargs\n-Dosgi.debug=.options\n-Xmx4096m\n"
+
+
+class FakeTree:
+    """Дерево каталогов без диска: `dirs` — каталог → имена внутри, `files` — полные пути
+    файлов, `broken` — каталоги, на которых listdir даёт OSError (нет прав)."""
+
+    def __init__(
+        self, dirs: dict[str, list[str]], files: set[str], broken: Set[str] = frozenset()
+    ) -> None:
+        self.dirs = dirs
+        self.files = files
+        self.broken = broken
+
+    def listdir(self, path: str) -> list[str]:
+        # Неизвестный путь — как несуществующий каталог, а не KeyError: сканер зовёт  # noqa: RUF003
+        # listdir для корня без проверки is_dir и глотает только OSError
+        if path in self.broken or path not in self.dirs:
+            raise FileNotFoundError(path)
+        return self.dirs[path]
+
+    def is_dir(self, path: str) -> bool:
+        return path in self.dirs
+
+    def is_file(self, path: str) -> bool:
+        return path in self.files
+
+    def scan(self, root: str, **kwargs: object) -> list[ProjectCandidate]:
+        return scan_projects(
+            root,
+            listdir=self.listdir,
+            is_dir=self.is_dir,
+            is_file=self.is_file,
+            **kwargs,  # type: ignore[arg-type]
+        )
+
+
+def _p(*parts: str) -> str:
+    return os.path.join(*parts)  # noqa: PTH118
+
+
+ROOT = r"D:\repo"
+
+
+class TestScanProjects:
+    def test_root_itself_is_a_project(self) -> None:
+        tree = FakeTree({ROOT: ["src"], _p(ROOT, "src"): []}, {_p(ROOT, ".project")})
+        assert tree.scan(ROOT) == [ProjectCandidate(ROOT, "repo")]
+
+    def test_clone_layout_src_name_sorted_case_insensitive(self) -> None:
+        src = _p(ROOT, "src")
+        tree = FakeTree(
+            {
+                ROOT: [".git", "src", "README.md"],
+                _p(ROOT, ".git"): ["hooks"],
+                src: ["cfe_b", "CF", "docs"],
+                _p(src, "cfe_b"): [],
+                _p(src, "CF"): [],
+                _p(src, "docs"): [],
+            },
+            {_p(src, "cfe_b", ".project"), _p(src, "CF", ".project"), _p(ROOT, ".git", ".project")},
+        )
+        assert tree.scan(ROOT) == [
+            ProjectCandidate(_p(src, "CF"), "src/CF"),
+            ProjectCandidate(_p(src, "cfe_b"), "src/cfe_b"),
+        ]
+
+    def test_project_dir_is_not_descended(self) -> None:
+        cf = _p(ROOT, "cf")
+        tree = FakeTree(
+            {ROOT: ["cf"], cf: ["nested"], _p(cf, "nested"): []},
+            {_p(cf, ".project"), _p(cf, "nested", ".project")},
+        )
+        assert tree.scan(ROOT) == [ProjectCandidate(cf, "cf")]
+
+    def test_depth_limit_inclusive(self) -> None:
+        a = _p(ROOT, "a")
+        b = _p(ROOT, "a", "b")
+        c = _p(ROOT, "a", "b", "c")
+        d = _p(ROOT, "a", "b", "c", "d")
+        tree = FakeTree(
+            {ROOT: ["a"], a: ["b"], b: ["c"], c: ["d"], d: []},
+            {_p(c, ".project"), _p(d, ".project")},
+        )
+        assert tree.scan(ROOT) == [ProjectCandidate(c, "a/b/c")]  # уровень 3 найден
+        deep = FakeTree({ROOT: ["a"], a: ["b"], b: ["c"], c: ["d"], d: []}, {_p(d, ".project")})
+        assert deep.scan(ROOT) == []  # уровень 4 не проверяется
+        assert deep.scan(ROOT, max_depth=4) == [ProjectCandidate(d, "a/b/c/d")]
+
+    def test_unreadable_subdir_skipped_unreadable_root_empty(self) -> None:
+        ok, bad = _p(ROOT, "ok"), _p(ROOT, "bad")
+        tree = FakeTree({ROOT: ["bad", "ok"], ok: [], bad: []}, {_p(ok, ".project")}, broken={bad})
+        assert tree.scan(ROOT) == [ProjectCandidate(ok, "ok")]
+        assert FakeTree({}, set(), broken={ROOT}).scan(ROOT) == []
+        assert FakeTree({}, set()).scan(r"D:\nowhere") == []  # несуществующий корень
 
 
 class FakeJob:
@@ -64,6 +162,8 @@ class Harness:
         ids = count(1)
         self.spawned: list[tuple[LaunchCommand, Path]] = []
         self.jobs: list[FakeJob] = []
+        self.installation_ini: str | None = INSTALL_INI
+        self.ini_reads: list[Path] = []
         self.workspace = EdtWorkspace(
             tmp_path / "edt.json",
             discover=lambda: list(INSTALLED),
@@ -99,7 +199,14 @@ class Harness:
             is_file=lambda p: cli_exists and p.name == "1cedtcli.exe",
             now=lambda: NOW,
             comspec=COMSPEC,
+            read_text=self._read_text,
         )
+
+    def _read_text(self, path: Path) -> str:
+        self.ini_reads.append(path)
+        if self.installation_ini is None:
+            raise FileNotFoundError(path)
+        return self.installation_ini
 
     def project(self, **overrides: object) -> EdtProject:
         values: dict[str, object] = {
@@ -225,6 +332,72 @@ class TestStart:
         journal = h.cli.journal_path(p.id).read_text(encoding="utf-8")
         assert "▶ Информация по проектам: project" in journal  # что пытались запустить
         assert "■ не запущен: OSError" in journal
+
+
+class TestStartScript:
+    COMMANDS: ClassVar[list[str]] = [
+        "import --project 'D:/repo/src/cf'",
+        "import --project 'D:/repo/src/cfe a'",
+    ]
+
+    def test_writes_script_and_ini_and_launches_in_file_mode(self, tmp_path: Path) -> None:
+        h = Harness(tmp_path)
+        p = h.project(vm_args="-Xmx4g")
+        run = h.cli.start_script(p.id, "Импортировать (проектов: 2)", self.COMMANDS)
+        script, ini = h.cli.script_path(p.id), h.cli.ini_path(p.id)
+        assert script == tmp_path / "logs" / "edt" / f"{p.id}.cli"
+        assert ini == tmp_path / "logs" / "edt" / f"{p.id}.ini"
+        raw = script.read_bytes()
+        assert raw == b"import --project 'D:/repo/src/cf'\nimport --project 'D:/repo/src/cfe a'\n"
+        assert not raw.startswith(b"\xef\xbb\xbf") and b"\r" not in raw
+        # ini: 1cedt.ini установки без -Dosgi.debug, с -vm перед -vmargs ([Ф] Э12)  # noqa: RUF003
+        assert h.ini_reads == [EXE_DIR / "1cedt.ini"]
+        assert ini.read_bytes() == (
+            b"-startup\nplugins/launcher.jar\n-vm\n" + str(JDK).encode() + b"\n-vmargs\n-Xmx4096m\n"
+        )
+        [(command, log_path)] = h.spawned
+        expected_tail = (
+            f'-ini-file "{ini}" -vmargs -Xmx8192m -Djava.library.path= -Xmx4g -file "{script}"'
+        )
+        assert expected_tail in command.arguments
+        assert "-command" not in command.arguments and "-vm " not in command.arguments
+        text = log_path.read_text(encoding="utf-8")
+        header = f"▶ Импортировать (проектов: 2): скрипт {p.id}.cli, команд: 2"
+        assert header in text
+        assert text.index(header) < text.index(self.COMMANDS[0]) < text.index(self.COMMANDS[1])
+        assert text.index(self.COMMANDS[1]) < text.index("вывод cli")
+        assert run.label == "Импортировать (проектов: 2)"
+        assert h.workspace.status(p.id).cli_busy is True
+
+    def test_busy_refused_before_script_overwrite(self, tmp_path: Path) -> None:
+        h = Harness(tmp_path)
+        p = h.project()
+        h.cli.start_script(p.id, "Импортировать (проектов: 2)", self.COMMANDS)
+        before = h.cli.script_path(p.id).read_bytes()
+        with pytest.raises(EdtError, match="уже выполняется"):
+            h.cli.start_script(p.id, "Импортировать (проектов: 2)", ["import --project 'D:/x'"])
+        assert h.cli.script_path(p.id).read_bytes() == before  # живая команда читает свой скрипт
+        assert len(h.spawned) == 1
+
+    def test_script_write_failure_is_edt_error(self, tmp_path: Path) -> None:
+        logs = tmp_path / "logs"
+        logs.write_text("файл на месте каталога", encoding="utf-8")
+        h = Harness(tmp_path, logs_dir=logs)
+        p = h.project()
+        with pytest.raises(EdtError, match="Не удалось записать скрипт CLI"):  # noqa: RUF001
+            h.cli.start_script(p.id, "Импортировать (проектов: 2)", self.COMMANDS)
+        assert h.spawned == []
+        assert h.workspace.status(p.id).cli_busy is False
+
+    def test_unreadable_installation_ini_is_edt_error(self, tmp_path: Path) -> None:
+        h = Harness(tmp_path)
+        h.installation_ini = None  # read_text бросит OSError
+        p = h.project()
+        with pytest.raises(EdtError, match=r"1cedt\.ini"):
+            h.cli.start_script(p.id, "Импортировать (проектов: 2)", self.COMMANDS)
+        assert h.spawned == []
+        assert not h.cli.script_path(p.id).exists()
+        assert h.workspace.status(p.id).cli_busy is False
 
 
 class TestFinishAndInterrupt:
