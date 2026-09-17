@@ -98,9 +98,9 @@ Start только читается.
 
 ## Установка
 
-- **Установщик:** `OneCStarter-3.1.0-setup.exe` — per-user, права
+- **Установщик:** `OneCStarter-3.1.1-setup.exe` — per-user, права
   администратора не нужны.
-- **Portable:** распаковать `OneCStarter-3.1.0-portable.zip`, запустить
+- **Portable:** распаковать `OneCStarter-3.1.1-portable.zip`, запустить
   `OneCStarter.exe`.
 
 SmartScreen при первом запуске предупредит о неизвестном издателе:
