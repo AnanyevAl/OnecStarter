@@ -94,6 +94,15 @@ QLineEdit {{
 }}
 QLineEdit:focus {{ border: 1px solid {palette.accent}; }}
 QLineEdit:read-only {{ background: {palette.surface}; color: {palette.text_dim}; }}
+/* Раздел «Настройки» (задача 8): viewport QScrollArea по умолчанию красится
+   ролью Base — на светлой теме это белое пятно поверх background #fafafa.
+   Правило снимает фон у самой QScrollArea и у её viewport; содержимое
+   (`#SettingsContent`) — обычный QWidget без собственного фона, снимать
+   с него нечего. Селектор и формулировка — из брифа задачи 8, не проверены
+   отдельным пиксельным замером (в отличие от QMenu/QTreeView::item:selected
+   выше — там `[Ф]` замер есть; здесь его нет, это известный Qt-идиом
+   для transparent viewport QScrollArea). */
+#SettingsScroll, #SettingsScroll > QWidget > QWidget {{ background: transparent; }}
 QTreeView {{ background: {palette.background}; border: none; }}
 QTreeView::item {{ padding: 4px; }}
 /* [Ф] smoke №1, 08.08.2026, замечание 1: без явного color здесь текст

@@ -48,11 +48,13 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFileDialog,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -205,7 +207,9 @@ class SettingsView(QWidget):
         self._status = QLabel("")
         self._status.setWordWrap(True)
 
-        layout = QVBoxLayout(self)
+        content = QWidget()
+        content.setObjectName("SettingsContent")
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(6)
         layout.addWidget(header)
@@ -387,6 +391,26 @@ class SettingsView(QWidget):
 
         layout.addWidget(self._status)
         layout.addStretch(1)
+
+        # Раздел лежит в QStackedWidget оболочки (`ui/shell.py`): без обёртки
+        # рост минимальной высоты содержимого при раскрытии групп раздвигал бы
+        # главное окно (замечание заказчика, спека v3.1.1 §10 п. 3). У QScrollArea  # noqa: RUF003
+        # с `widgetResizable=True` минимальная высота самой QScrollArea от высоты  # noqa: RUF003
+        # содержимого не зависит — окно расти перестаёт, а лишнее уходит в  # noqa: RUF003
+        # вертикальный бегунок. Горизонтальный бегунок отключён: ширина
+        # содержимого и так тянется вместе с разделом (см. `_add_row`,  # noqa: RUF003
+        # `wide_control`) — второй, горизонтальный бегунок был бы лишним.
+        self._scroll = QScrollArea()
+        self._scroll.setObjectName("SettingsScroll")
+        self._scroll.setWidget(content)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(self._scroll)
 
         controller.changed.connect(self._sync)
         store.changed.connect(self._sync)
@@ -669,6 +693,21 @@ class SettingsView(QWidget):
 
     def group_labels(self) -> list[str]:
         return list(self._group_labels)
+
+    def group_titles(self) -> list[str]:
+        """Заголовки ВСЕХ сворачиваемых узлов — групп и вложенных блоков.
+
+        В отличие от `group_labels()` (только группы верхнего уровня, спека
+        §1.4), сюда попадают и блоки второго уровня свёртки (справочники
+        сочетаний, `_add_block`) — тестам, которым нужно раскрыть раздел
+        целиком (задача 8: рост содержимого при раскрытии не смеет раздвигать
+        главное окно).
+        """  # noqa: RUF002
+        return list(self._groups)
+
+    def scroll_area(self) -> QScrollArea:
+        """QScrollArea, несущая содержимое раздела (задача 8)."""
+        return self._scroll
 
     def group(self, title: str) -> CollapsibleGroup:
         """Группа по заголовку — тестам, проверяющим свёртку."""
