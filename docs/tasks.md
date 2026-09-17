@@ -3706,7 +3706,7 @@ len([1, 1, 1, 1, 1, 1, ...])` — и прошёл после отката мут
 | T-17.1 | План 1: раздел «EDT» — домен, обнаружение, реестр EDT Start, хранилище, координатор, UI, настройки, сборка (20 задач) | DONE |
 | T-17.2 | План 2: CLI EDT и консоль (спека §14) | DONE |
 | T-17.3 | План 3: эксперименты 1–7 (спека §10), скил `edt-launch`, документы, выпуск 3.0.0 | DONE (13.09.2026; релиз опубликован 14.09.2026) |
-| T-17.4 | Проверка v3 заказчиком, сбор замечаний | IN PROGRESS с 14.09.2026 — замечания ниже, в разделе «Замечания по проверке v3» |
+| T-17.4 | Проверка v3 заказчиком, сбор замечаний | DONE (15.09.2026, замечания 1–6 закрыты вехой v3.1 — T-18) |
 
 ### Ход плана 1
 
@@ -3921,9 +3921,262 @@ issues found in 217 source files`. Спека вслед: §8, §13, §14.4.
 
 | # | Дата | Замечание | Решение |
 | --- | --- | --- | --- |
-| 1 | 15.09 | Панель путей под деревом EDT неудобна, особенно ряд кнопок: сам текст рабочей области и каталога проекта сделать гиперссылкой — клик открывает каталог, ПКМ — меню с «Копировать»; то же в разделе «Базы» | принято → v3.1 |
-| 2 | 15.09 | «Workspace» в интерфейсе → «Рабочая область» | принято → v3.1 |
-| 3 | 15.09 | В списке вывести размер установленной памяти (уточняется: колонка `-Xmx` записи EDT) | уточняется |
-| 4 | 15.09 | В полях поиска — крестик очистки | принято → v3.1 |
-| 5 | 15.09 | Ctrl+F — фокус в поле поиска; в подсказке поля — горячая комбинация | принято → v3.1 |
-| 6 | 15.09 | Настройки: группа «О программе» — версия и ссылка на репозиторий GitHub | принято → v3.1 |
+| 1 | 15.09 | Панель путей под деревом EDT неудобна, особенно ряд кнопок: сам текст рабочей области и каталога проекта сделать гиперссылкой — клик открывает каталог, ПКМ — меню с «Копировать»; то же в разделе «Базы» | закрыто v3.1 (T-18) |
+| 2 | 15.09 | «Workspace» в интерфейсе → «Рабочая область» | закрыто v3.1 (T-18) |
+| 3 | 15.09 | В списке EDT вывести колонку «Память» — действующий -Xmx | закрыто v3.1 (T-18) |
+| 4 | 15.09 | В полях поиска — крестик очистки | закрыто v3.1 (T-18) |
+| 5 | 15.09 | Ctrl+F — фокус в поле поиска; в подсказке поля — горячая комбинация | закрыто v3.1 (T-18) |
+| 6 | 15.09 | Настройки: группа «О программе» — версия и ссылка на репозиторий GitHub | закрыто v3.1 (T-18) |
+
+---
+
+## T-18. v3.1 — замечания по проверке v3 — DONE (15.09.2026, ветка `feat/2026-09-15-v31`)
+
+Дизайн — [спека v3.1](superpowers/specs/2026-09-15-v31-review-fixes-design.md). План —
+[план v3.1](superpowers/plans/2026-09-15-v31-review-fixes.md). Замечания 1–6 закрываются —
+раздел «Замечания по проверке v3» выше.
+
+| # | Задача | Коммит(ы) |
+| --- | --- | --- |
+| 1 | Виджет `PathLink` (три раунда правок ревью: утечка `QMenu` → показ через `popup()` + `WA_DeleteOnClose`) | `3140ed1`, `a0ed6c2`, `de85310`, `d2f2cc4` |
+| 2 | Панель EDT на `PathLink`, «Рабочая область» (замечания 1–2) | `953e60c` |
+| 3 | Панель баз на `PathLink`, `PanelCard` без `show_actions` (замечание 1) | `b9427c1` |
+| 4 | «Рабочая область» во всех остальных строках (замечание 2; один раунд правок ревью — README «1C:EDT») | `7d920e3`, `07f94a5` |
+| 5 | Колонка «Память» (замечание 3) | `6da2e3f` |
+| 6 | Поиск — крестик очистки, Ctrl+F (замечания 4–5) | `c36c9f2` |
+| 7 | Группа «О ПРОГРАММЕ», версия в сборке, гейт smoke (замечание 6) | `bc1f8c5` |
+
+Задачи 2, 3, 5, 6, 7 приняты ревью с первого раза. Задача 8 (эта запись) — версия
+`3.1.0`, полный прогон, мутационные проверки и документы; сборка, ручной smoke
+и слияние/тег — решение координатора после финального ревью ветки.
+
+### Полный прогон и статика (15.09.2026)
+
+Полный прогон: `2474 passed in 391.77s` (флейк pytest-qt `Windows fatal exception:
+access violation`, T-12 п. 15, не проявился — повтор не понадобился). `ruff check .` —
+`All checks passed!`. `mypy` — `Success: no issues found in 223 source files`.
+
+### Мутационные проверки (15.09.2026)
+
+Протокол — CLAUDE.md, «Мутационная проверка тестов»: мутация правкой файла → прогон
+только названного файла тестов → дословный `FAILED` → откат `git checkout --` →
+`git status --short` пуст → тот же файл тестов зелёным повторно.
+
+| # | Тест | Что сломано | Чем упал |
+| --- | --- | --- | --- |
+| 1 | `test_open_failure_reported` (`tests/ui/test_edt_panel.py`) | `EdtPanel._open` — условие на `if False:`, `self.open_failed` не эмитится | `AssertionError: assert [] == ['Каталог не найден: D:\\gone']` |
+| 2 | `test_open_failure_shows_a_warning_not_silence` (`tests/ui/test_panel.py`) | `ConnectionPanel._do_open` — условие на `if False:`, `QMessageBox.warning` не вызывается | `AssertionError: assert [] == ['Не удалось открыть каталог: D:\\bases\\acc']` |
+| 3 | `test_version_unknown_without_metadata` (`tests/ui/test_about.py`) | `about.app_version` — снят `try/except PackageNotFoundError` | `importlib.metadata.PackageNotFoundError: No package metadata was found for onecstarter` |
+
+Каждая мутация вносилась и откатывалась по отдельности (не разом): рабочее дерево
+после отката каждой — `git status --short` пуст, кроме заранее ожидаемых
+`pyproject.toml`/`uv.lock` (версия `3.1.0`). Целевой тест — единственный упавший
+файл, где падение предсказано напрямую (в мутациях 1–2 задет ещё один
+соседний тест того же файла — та же панель без обработчика отказа, побочный
+эффект той же правки, не дефект теста).
+
+### Финальное ревью ветки v3.1 (15.09.2026)
+
+Ревью всей ветки `00d42aa..dae91ce` (opus): 1 Important + 10 Minor, все закрыты одной волной
+(`ca4dba2` код, `c9204a7` документы), повторное ревью волны — все 11 ADDRESSED, новых дефектов нет.
+
+| # | Находка | Правка |
+| --- | --- | --- |
+| I-1 | Ссылка «Репозиторий» в настройках рисовалась системным `#0000ff` — 2,11:1 на тёмном фоне при пороге 4,5:1 | цвет из `palette.accent`, перерисовка в `_sync()`, тест по обеим темам (мутация: без `style=` падает) |
+| M-2 | `EdtView.rebuild()`: докстринг про растяжение последней колонки и `range(len(COLUMNS) - 1)` устарели | ширины всех трёх колонок сохраняются, докстринг по факту |
+| M-3 | `ConnectionPath.copyable` мёртв в продакшене | удалён |
+| M-4 | `PathLink` останавливал Tab и без ссылки | `StrongFocus` только при `directory` |
+| M-1, M-5, M-8, M-9, M-10 | подпись версии, магическое `-4`, «уточняется» в замечании 3, гейт версии подстрокой, Ctrl+F не в справочнике | пользовательская подпись, `_DOCUMENT_MARGINS`, текст замечания, якорный регэксп, строка справочника |
+| M-6, M-7 | спека §2 (`tooltip`), §11 (`clear_icon` не в `theme.py`); буллет v3.1 в README не на месте | спека и README поправлены |
+
+Задача 1 плана прошла три раунда правок: утечка `QMenu(self)` на каждый ПКМ → `deleteLater` →
+тест-пустышка (`hasattr`, затем `inspect.getsource`) отвергнут дважды → `popup()` +
+`WA_DeleteOnClose` с поведенческим тестом (ревьюер повторил мутацию). Урок: `QMenu.exec`
+в PySide6 нельзя подменить на уровне класса — тесты меню строятся на `popup()`.
+
+Полный прогон после волны: `2477 passed in 392.03s`; ruff и mypy чисты.
+
+### Гейты выпуска 3.1.0 (15.09.2026)
+
+- Полный прогон после волны финального ревью: `2477 passed`; ruff `All checks passed!`; mypy `Success`.
+- `build/build.ps1`: PyInstaller → `smoke: OK` (гейты `frozen`, `keyring`, `edt=`, новый `version=3.1.0` —
+  метаданные пакета в сборке через `copy_metadata`) → `dist/OneCStarter-3.1.0-portable.zip` 54,4 МБ,
+  `dist/OneCStarter-3.1.0-setup.exe` 36,1 МБ.
+- Ручной smoke собранного экземпляра — проведён в составе 3.1.1 (T-20): отдельный выпуск 3.1.0
+  не делался, ветка v3.1 вошла в `feat/2026-09-16-v311` и выпущена тегом `v3.1.1` 17.09.2026.
+
+## T-20. v3.1.1 — импорт выбранных проектов через CLI EDT — DONE (17.09.2026, ветка `feat/2026-09-16-v311`)
+
+Дизайн — [спека v3.1.1](superpowers/specs/2026-09-16-v311-cli-import-projects-design.md). План —
+[план v3.1.1](superpowers/plans/2026-09-16-v311-cli-import-projects.md). Эксперимент Э12 —
+[t20-edt-import-experiments.md](research/t20-edt-import-experiments.md).
+
+| # | Задача | Коммит(ы) |
+| --- | --- | --- |
+| 1 | Протокол Э12, скрипт запуска | `8a3ea83` |
+| 2 | Э12 проведён, метки, скил | `90a615d` |
+| 3 | Домен: кандидаты, `cli_import_commands`, `-file`/`cli_ini_text` | `a11d1e2` |
+| 4 | Сервис: `scan_projects`, `start_script` | `274d6b1` |
+| 5 | Диалог и вьюха (раунд правок ревью: try/finally в `_rescan`) | `9c9bce7`, `b6fede8`, `1e9172f`, `0d3b071` |
+| 6 | Документы, 3.1.1, сборка | `2d3f872`, `2498e1c`, `1c49b16` |
+| 7 | Волна финального ревью (3 Important, 6 Minor; Э12 шаг 5 — ini с LF) | `84dcf1f`, `f58e27c` |
+| 8 | Re-review волны: повторный `_rescan` после Enter не сбрасывает флажки | `a31ad10` |
+| 9 | Дополнение после smoke: EDT — Alt+Enter изменяет, Insert добавляет; справочник сочетаний EDT (спека §10) | `5492c39`, `2672b0e`, `b4809f7` |
+| 10 | Настройки — содержимое в QScrollArea (окно не растёт), горизонтальный бегунок по необходимости, QSS только по objectName (два раунда правок ревью) | `86ac3ca`, `5ca3695`, `0c5d137` |
+| 11 | Документы дополнения, полный прогон, пересборка | (этот коммит) |
+
+Коммит 1 нёс протокол Э12 и черновой скрипт запуска на PowerShell; после проведения Э12
+(задача 2) скрипт заменён на `research/t20-edt-import.py` — воспроизводимый прогон без
+экранирования PowerShell для длинных командных строк CLI. Задача 5 прошла один раунд
+правок ревью (Important): `_rescan` без `try/finally` терял отзывчивость списка при
+отказе сканирования — исправление `b6fede8`; план приведён в соответствие находке
+(`label = CLI_IMPORT.rstrip("…")` расходился с требуемыми тестами) коммитами `1e9172f`,
+`0d3b071`.
+
+Задача 10 прошла два раунда ревью. Круг 1: горизонтальный бегунок `ScrollBarAlwaysOff`
+при снятой связи ширины окна с содержимым (`widgetResizable=True`) обрезал форму на
+узком окне без возможности докрутить — правило спеки изменено на «по необходимости»
+(`ScrollBarAsNeeded`). Круг 2: типовой QSS-селектор `#SettingsScroll > QWidget > QWidget`
+совпадал и с самими `QScrollBar` — внуками `QScrollArea` внутри служебных
+`qt_scrollarea_hcontainer`/`vcontainer` — и лишал полосы нативного вида Windows 11
+(подтверждено скриншотом на живой платформе); правило переписано только по objectName
+(`#SettingsScroll`, `#SettingsViewport`, `#SettingsContent`).
+
+### Итог Э12 (17.09.2026)
+
+Несколько `import` одним сеансом CLI подтверждены через `-file`, но **только** с
+`-ini-file` (копия `1cedt.ini` установки + `-vm`/JDK перед `-vmargs`) — без него обёртка
+теряет JVM (код 1) **[Ф]**. Список в `import --project […]` отклонён (код 204, сообщение —
+в cp1251) **[Ф]**; имя проекта в реестре берётся из `.project`, не из каталога **[Ф]**.
+Скрипт останавливается на первой ошибке (код 204, текст — в stdout, UTF-8) **[Ф]**;
+повторный импорт уже привязанного проекта безвреден (код 0) **[Ф]**, но занимает весь
+сеанс — пометка «уже в рабочей области» в диалоге оправдана временем, не ошибкой. Все
+факты — Э12, 17.09.2026. Подробности и открытые вопросы —
+[t20-edt-import-experiments.md](research/t20-edt-import-experiments.md).
+
+### Полный прогон и статика (17.09.2026)
+
+Полный прогон: `2506 passed in 369.96s` (флейк pytest-qt `Windows fatal exception:
+access violation`, T-12 п. 15, не проявился — повтор не понадобился). `ruff check .` —
+`All checks passed!`. `mypy` — `Success: no issues found in 223 source files`.
+
+После волны финального ревью: `2508 passed in 452.66s` (`e:/tmp/v311-full-2.log`; +2 теста
+к прежним 2506 — `test_enter_in_dir_field_scans_but_does_not_accept`,
+`test_undecodable_installation_ini_is_edt_error`; флейк T-12 п. 15 не проявился, повтор не
+понадобился). `ruff check .` — `All checks passed!`. `mypy` — `Success: no issues found in
+223 source files`.
+
+После дополнения (задачи 8 «Re-review волны», 9 «EDT — Alt+Enter/Insert, справочник»,
+10 «Настройки — прокрутка», включая оба круга правок ревью задачи 10): `2520 passed in
+707.50s (0:11:47)` (`e:/tmp/v311-full-3.log`; +12 тестов к прежним 2508 — новые тесты
+Alt+Enter/Insert/справочника сочетаний EDT (задача 9) и прокрутки настроек с обоими
+кругами правок (задача 10); флейк pytest-qt T-12 п. 15 не проявился, повтор не
+понадобился). `ruff check .` — `All checks passed!`. `mypy` — `Success: no issues found in
+223 source files`.
+
+### Мутационные проверки (17.09.2026)
+
+Протокол — CLAUDE.md, «Мутационная проверка тестов»: мутация правкой файла → прогон
+названного теста → дословный `FAILED` → откат → тот же тест зелёным повторно.
+Подробности — задачи 4 и 5,
+`.superpowers/sdd/2026-09-16-v311-cli-import-projects/task-4-report.md` и `task-5-report.md`.
+
+| # | Задача | Тест | Что сломано | Чем упал |
+| --- | --- | --- | --- | --- |
+| 1 | 4 | `test_busy_refused_before_script_overwrite` | `EdtCli.start_script` — снята проверка `unavailable_reason` до записи скрипта (перезапись живого CLI-скрипта не блокируется занятостью проекта) | `Failed: DID NOT RAISE EdtError` |
+| 2 | 5 | `test_bound_project_never_in_form`, `test_prefilled_dir_scanned_on_open`, `test_select_all_and_none_skip_bound`, `test_unchecked_item_excluded_in_order` | `domain/edt_cli.py::mark_in_workspace` — `replace(candidate, in_workspace=False)` всегда (привязанные проекты перестают отличаться от новых) | 4 failed |
+| 3 | 5 (раунд правок) | `test_scan_failure_leaves_list_responsive` | `CliImportDialog._rescan` — блокировка сигналов списка без `try/finally` (отказ `scan` оставляет список заблокированным) | `assert dialog.list_widget().signalsBlocked() is False` → `AssertionError: assert True is False` |
+
+Все три отката подтверждены (`git checkout --` для 1 и 2, ручной откат для 3 — в файле
+были другие незакоммиченные изменения того же раунда); повторный прогон целевых тестов
+после каждого отката — зелёный.
+
+### Мутационные проверки волны финального ревью (17.09.2026)
+
+Тот же протокол. Подробности —
+[final-fix-wave-report.md](../.superpowers/sdd/2026-09-16-v311-cli-import-projects/final-fix-wave-report.md).
+
+| # | Правка | Тест | Что сломано | Чем упал |
+| --- | --- | --- | --- | --- |
+| 4 | Important 2 | `test_enter_in_dir_field_scans_but_does_not_accept` | `_ScanLineEdit.keyPressEvent` — перехват снят, только `super().keyPressEvent(event)` | `assert accepted == []` → `AssertionError: assert [True] == []` |
+| 5 | Important 3 | `test_undecodable_installation_ini_is_edt_error` | `start_script` — `except (OSError, UnicodeDecodeError)` блока чтения ini вернули к `except OSError` | `UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte` (не поймано, ушло из `_read_text` наружу) |
+| 6 | Minor 3 (запись) | `test_script_write_failure_is_edt_error` | `start_script` — `except OSError` блока записи скрипта/ini заменён на `except ValueError` | `FileExistsError: [WinError 183] Невозможно создать файл, так как он уже существует: '...\logs'` (не поймано) |
+| 7 | Minor 3 (чтение) | `test_unreadable_installation_ini_is_edt_error` | `start_script` — `except (OSError, UnicodeDecodeError)` блока чтения ini заменён на `except ValueError` | `FileNotFoundError: C:\edt\1c-edt-2025.2.6+4-x86_64\1cedt.ini` (не поймано) |
+| 8 | Re-review волны (Important 2) | `test_focus_loss_after_enter_keeps_user_choice` | `CliImportDialog.__init__` — `editingFinished` подключён обратно к `self._rescan` вместо `self._rescan_if_changed` | `assert spy.calls == [r"D:\typed"]` → `AssertionError: assert ['D:\\typed', 'D:\\typed', 'D:\\typed'] == ['D:\\typed']` (3 сканирования вместо 1) |
+
+Находка при мутации 4: дословный текст теста из ревью (`qtbot.keyClick` без `dialog.show()`)
+на сломанной реализации остаётся зелёным — без показанного и активного окна `QPushButton`
+не получает `isDefault()`, и Enter не долетает до `QDialog::keyPressEvent` независимо от
+перехвата в `_ScanLineEdit` (тот же эффект, что у `_show_exposed` в `test_bases_view.py`,
+только для QDialog, не QShortcut). Тест доработан: `with qtbot.waitExposed(dialog): dialog.show()`
+и `existing_dir_edit().setFocus()` перед `keyClick` — после доработки мутация 4 ловится
+(таблица выше), исходный текст без доработки мутацию не поймал ни разу за два прогона.
+
+Мутация 8 — re-review волны (17.09.2026): правка Important 2 (`_ScanLineEdit`) не звала
+`super().keyPressEvent(event)`, поэтому флаг `isModified()` поля после Enter оставался
+`True`, и следующая потеря фокуса заново эмитила `editingFinished` → второй `_rescan()` →
+список перестраивался, все непривязанные снова отмечались — тихий откат выбора
+пользователя (клик по списку, чтобы снять флажок, сбрасывался). Исправление —
+`self._scanned_root`/`_rescan_if_changed`: `editingFinished` перестраивает список только
+если текст с прошлого сканирования изменился; Enter и «Обзор…» сканируют безусловно.
+
+Все пять откатов подтверждены; повторный прогон целевых тестов после каждого — зелёный.
+
+### Мутационные проверки дополнения (17.09.2026)
+
+Тот же протокол. Подробности —
+[task-7-report.md](../.superpowers/sdd/2026-09-16-v311-cli-import-projects/task-7-report.md) и
+[task-8-report.md](../.superpowers/sdd/2026-09-16-v311-cli-import-projects/task-8-report.md).
+
+| # | Задача | Тест | Что сломано | Чем упал |
+| --- | --- | --- | --- | --- |
+| 9 | 7 | `test_alt_enter_edits_current_project`, `test_alt_enter_renames_current_group`, `test_insert_adds_project_into_group_of_current_row` | `_EdtTree.keyPressEvent` — гейт `NoModifier` заменён на `if True:` | тесты остались зелёными — **находка**: Alt+Enter перехватывается `QShortcutMap` Qt раньше, чем событие доходит до `keyPressEvent` дерева; сам гейт защищает Insert/Delete/F5 от сочетаний с модификатором, а не Alt+Enter — не дефект, наблюдение о механике Qt |
+| 10 | 7 | `test_alt_enter_edits_current_project`, `test_alt_enter_renames_current_group`, `test_edt_shortcut_reference_matches_registered_shortcuts` | Регистрация `QShortcut(Alt+Return/Alt+Enter)` в `EdtView.__init__` закомментирована | `3 failed`: `edited == []`, `renamed == []`, `registered` пуст против `{'Alt+Enter', 'Alt+Return'}` |
+| 11 | 7 | `test_insert_adds_project_into_group_of_current_row` | `_add_at_current` — `self.add_project(self._group_of(self.current()))` заменён на `self.add_project(None)` | `[None] != ['id-1']` |
+| 12 | 7 | `test_alt_enter_renames_current_group` | `_edit_current` — ветка `if kind == KIND_PROJECT` заменена на `if True:` | `UnknownItemError`, `renamed == []` вместо `['id-1']` |
+| 13 | 10 (круг 1) | `test_expanding_groups_does_not_grow_minimum_height`, `test_horizontal_scrollbar_appears_when_window_is_narrower_than_content` | Горизонтальный бегунок временно возвращён на `ScrollBarAlwaysOff` | `2 failed`: `assert <ScrollBarPolicy.ScrollBarAlwaysOff: 1> == <ScrollBarPolicy.ScrollBarAsNeeded: 0>`; `assert False is True` |
+| 14 | 10 (круг 2) | `test_scroll_area_styling_targets_named_widgets_only` | QSS-правило временно возвращено на круг 1 (`#SettingsScroll, #SettingsScroll > QWidget`) | `AssertionError: assert '> QWidget' not in '#SettingsScroll, #SettingsScroll > QWidget { background: transparent; }'` |
+
+Все шесть откатов подтверждены; повторный прогон целевых тестов после каждого — зелёный.
+
+### Гейты сборки 3.1.1 (17.09.2026)
+
+- Полный прогон: `2506 passed`; ruff `All checks passed!`; mypy `Success: no issues found in 223 source files`.
+- `build/build.ps1`: PyInstaller → `smoke: OK` (гейты `smoke: frozen=True`, `smoke: keyring=ok`,
+  `smoke: edt=<n>`, `smoke: version=3.1.1` — `build/smoke.py` сверяет их по `onecstarter.log`,
+  рантайм-логу собранного приложения во временном `APPDATA`, не по консольному выводу сборки) →
+  `dist/OneCStarter-3.1.1-portable.zip` 54,4 МБ, `dist/OneCStarter-3.1.1-setup.exe` 36,1 МБ.
+- Пересборка после волны финального ревью: полный прогон `2508 passed in 452.66s`; ruff
+  `All checks passed!`; mypy `Success: no issues found in 223 source files`; `build/build.ps1` →
+  `smoke: OK` → `dist/OneCStarter-3.1.1-portable.zip` 54,4 МБ (57 062 731 байт),
+  `dist/OneCStarter-3.1.1-setup.exe` 36,1 МБ (37 856 298 байт) — размеры не изменились.
+- Пересборка после re-review (Important 2, `_rescan_if_changed`): целевой прогон
+  `tests/ui/test_edt_cli_dialogs.py tests/ui/test_edt_view.py` `78 passed`; ruff
+  `All checks passed!`; mypy `Success: no issues found in 223 source files`; `build/build.ps1` →
+  `smoke: OK` → `dist/OneCStarter-3.1.1-portable.zip` 54,4 МБ (57 064 512 байт),
+  `dist/OneCStarter-3.1.1-setup.exe` 36,1 МБ (37 857 694 байт) — отображаемые размеры не
+  изменились, байты чуть отличаются (недетерминированность упаковки PyInstaller/Inno Setup).
+  Полный прогон не проводился — правка локальна для диалога (по решению координатора).
+- Ручной smoke заказчика — после подтверждения; слияние в `master`, тег `v3.1.1`, push — тем же
+  решением.
+- Ручной smoke заказчика (обязателен до слияния): запись с клоном в каталоге проекта →
+  «Импортировать проекты…» — каталог подставлен, список найден, привязанные недоступны;
+  импорт двух проектов — консоль «Импортировать (проектов: 2)», код 0; повторное открытие —
+  оба недоступны. Э12 шаг 5 (ini с LF, код 0) — уже в протоколе. Итог: прошло (заказчик, 17.09.2026)
+- Настройки (задача 8, круги правок ревью 1–2): раскрыть все группы — окно не растёт, справа
+  бегунок; полосы прокрутки нативного вида (не толстые, без стрелок и штриховки — офскрин не
+  различает нативный/generic стиль Qt, только живой экран); фон без белого пятна на светлой
+  теме. Итог: прошло (заказчик, 17.09.2026)
+- EDT — Alt+Enter на записи открывает свойства записи, на группе — переименование
+  группы (задача 9). Итог: прошло (заказчик, 17.09.2026)
+- EDT — Insert на записи внутри группы добавляет новую запись в ту же группу; в поле
+  поиска Insert не перехватывается (задача 9). Итог: прошло (заказчик, 17.09.2026)
+
+Пересборка после дополнения (задачи 8 «Re-review волны», 9, 10): полный прогон `2520
+passed in 707.50s (0:11:47)`; ruff `All checks passed!`; mypy `Success: no issues found
+in 223 source files`; `build/build.ps1` → `smoke: OK` →
+`dist/OneCStarter-3.1.1-portable.zip` 54,4 МБ (57 073 368 байт),
+`dist/OneCStarter-3.1.1-setup.exe` 36,1 МБ (37 854 248 байт) — отображаемые размеры не
+изменились (те же 54,4/36,1 МБ, что и после волны финального ревью), байты чуть
+отличаются от предыдущей сборки — та же недетерминированность упаковки
+PyInstaller/Inno Setup, что и в предыдущих пересборках этой вехи.

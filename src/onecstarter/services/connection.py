@@ -74,10 +74,6 @@ class ConnectionPath:
     note: str | None = None
     directory: str | None = None
 
-    @property
-    def copyable(self) -> bool:
-        return bool(self.text)
-
 
 _NOTHING = ConnectionPath("")
 
@@ -89,8 +85,7 @@ class PanelCard:
     Панель никогда не пустеет (мокап, «панель свойств: остальные
     состояния»): у строки без соединения карточка объясняет, почему его
     нет (`hint`), вместо пустого поля. Ровно одно из `path`/`hint`
-    заполнено. `show_actions` — показывать ли кнопки действий; их
-    доступность панель выводит из `path` сама.
+    заполнено.
     """  # noqa: RUF002
 
     title: str | None
@@ -98,10 +93,9 @@ class PanelCard:
     icon_kind: ConnectKind | None
     path: ConnectionPath | None
     hint: str | None
-    show_actions: bool
 
 
-_EMPTY_CARD = PanelCard(None, None, None, None, _PICK_HINT, False)
+_EMPTY_CARD = PanelCard(None, None, None, None, _PICK_HINT)
 
 
 def connection_path(item: InfobaseItem) -> ConnectionPath:
@@ -146,10 +140,10 @@ def panel_card(
     if kind is RowKind.BASE and item is not None and not item.is_group:
         return PanelCard(
             item.name, KIND_WORDS[item.kind], item.kind,
-            connection_path(item), None, True,
+            connection_path(item), None,
         )
     if kind is RowKind.GROUP and item is not None:
-        return PanelCard(item.name, "группа", None, None, _GROUP_HINT, False)
+        return PanelCard(item.name, "группа", None, None, _GROUP_HINT)
     if kind is RowKind.IMPLICIT_GROUP:
-        return PanelCard(label, "неявный узел", None, None, _IMPLICIT_HINT, False)
+        return PanelCard(label, "неявный узел", None, None, _IMPLICIT_HINT)
     return _EMPTY_CARD

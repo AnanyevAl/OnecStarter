@@ -94,6 +94,29 @@ QLineEdit {{
 }}
 QLineEdit:focus {{ border: 1px solid {palette.accent}; }}
 QLineEdit:read-only {{ background: {palette.surface}; color: {palette.text_dim}; }}
+/* Раздел «Настройки» (задача 8): viewport QScrollArea по умолчанию красится
+   ролью Base — на светлой теме это белое пятно поверх background #fafafa.
+   Круг правок 2 (re-review, 17.09.2026, подтверждено скриншотом на живом
+   Windows 11): селектор — ТОЛЬКО по objectName, ни одного типового `QWidget`.
+   Прошлая редакция (круг правок 1) держала `#SettingsScroll > QWidget` —
+   формально верный адрес viewport, но у QScrollArea целых три прямых
+   QWidget-потомка: сам viewport (`qt_scrollarea_viewport`) и два служебных
+   контейнера полос, `qt_scrollarea_hcontainer`/`qt_scrollarea_vcontainer`
+   (внутри каждого — единственный потомок, сам `QScrollBar`). Типовой
+   селектор `QWidget` не различает их: правило красило заодно и полосы,
+   переключая их с нативного стиля Windows 11 на generic Qt-фолбэк (толще,
+   со стрелками и штриховкой) — офскрин-тесты этого не ловят, различие
+   нативный/generic виден только на живом экране. Комментарий круга 1
+   («три реальных виджета цепочки») был неверен — контейнеров полос не учёл.
+   Правильный адрес — именование нужных виджетов кодом (`settings_view.py`:
+   `self._scroll.viewport().setObjectName("SettingsViewport")`, содержимое —
+   `SettingsContent`) и селектор по трём именам, без единого типового класса:
+   полосы прокрутки под правило не попадают в принципе, кто бы ни оказался
+   потомком QScrollArea в будущей версии Qt. Пиксельная сверка фона и вида
+   полос — не автоматизирована (офскрин не различает нативный/generic стиль),
+   проверяется вручную на живой машине (см. `docs/tasks.md`, T-20, «Ручной
+   smoke»). */
+#SettingsScroll, #SettingsViewport, #SettingsContent {{ background: transparent; }}
 QTreeView {{ background: {palette.background}; border: none; }}
 QTreeView::item {{ padding: 4px; }}
 /* [Ф] smoke №1, 08.08.2026, замечание 1: без явного color здесь текст
@@ -130,22 +153,11 @@ QToolTip {{
 }}
 #ConnectionPanel {{ background: {palette.surface}; border-top: 1px solid {palette.border}; }}
 #EdtPanel {{ background: {palette.surface}; border-top: 1px solid {palette.border}; }}
-#ConnectionPath {{
+#PathLink {{
     font-family: Consolas, "Cascadia Mono", monospace;
-    border: none; background: transparent; padding: 0;
-    color: {palette.text};
+    background: transparent; padding: 0;
 }}
 #PanelKindWord {{ color: {palette.text_dim}; }}
-#ConnectionPanel QPushButton {{
-    border: 1px solid {palette.border}; background: {palette.surface_raised};
-    border-radius: 4px; padding: 2px 9px;
-}}
-#EdtPanel QPushButton {{
-    border: 1px solid {palette.border}; background: {palette.surface_raised};
-    border-radius: 4px; padding: 2px 9px;
-}}
-#ConnectionPanel QPushButton:disabled {{ color: {palette.text_dim}; }}
-#EdtPanel QPushButton:disabled {{ color: {palette.text_dim}; }}
 #SettingsSub, #SettingsNote {{ color: {palette.text_dim}; font-size: 8pt; }}
 /* Ни font-size, ни font-weight, ни letter-spacing здесь нет НАМЕРЕННО:
    свойства шрифта заголовка группы ставит код — `ui/settings_group.py`,

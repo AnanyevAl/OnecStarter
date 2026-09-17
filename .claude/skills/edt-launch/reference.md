@@ -79,14 +79,16 @@ C:\Program Files\1C\1CE\components\1c-edt-2026.1.2+2-x86_64\1cedtc.exe --launche
 
 ## 3. Команды CLI
 
-Режимы **[Д]**: `-command "<команда>"` (результат команды — код возврата), `-file <скрипт>`,
-интерактивный; workspace — `-data`, для команд над проектами обязателен явный.
+Режимы: `-command "<команда>"` (результат команды — код возврата) **[Ф]** Э6; `-file "<скрипт>"`
+(команды по строке, UTF-8 без BOM, LF; JDK — только через `-ini-file`, см. `SKILL.md`; стоп на
+первой ошибке, код 204) **[Ф]** Э12; интерактивный **[Д]**; `-timeout N` **[Д]** usage обёртки;
+workspace — `-data`, для команд над проектами обязателен явный.
 
 | Команда | Ключи | Достоверность |
 | --- | --- | --- |
 | `project` | без аргументов — список проектов (имя, расположение); `project <имя> --details` | **[Ф]** список; `--details` **[Д]** |
 | `build` | `--yes` (без него «Really build? (y/n; default=n)») | **[Ф]** |
-| `import` | `--project '<каталог>'` (существующий проект EDT) **[Ф]**; `--configuration-files '<каталог XML>'` + `--project '<каталог>'` **или** `--project-name '<имя>'`, `--base-project-name '<имя>'`, `--version <8.3.x>`, `--build` | **[Д]** ресурсы CLI |
+| `import` | `--project '<каталог>'` (существующий проект EDT; один каталог — список Gogo даёт код 204; имя проекта — из `.project`; повтор — код 0) **[Ф]** Э6/Э12; `--configuration-files '<каталог XML>'` + `--project '<каталог>'` **или** `--project-name '<имя>'`, `--base-project-name '<имя>'`, `--version <8.3.x>`, `--build` | **[Д]** ресурсы CLI, usage при коде 204 |
 | `validate` | `--project-list ['<путь>' …]` **[Ф]**; `--project-name-list [...]` **[Д]**; `--file '<tsv>'` — существующий файл ошибка **[Д]**; варианта «все проекты» нет **[Д]** | подсказка CLI при ошибке: `validate --file "строка" --project-list ["строка1" "строка2" "строка3"...]` |
 | `help`, `help --status-codes`, `help <команда>` | | **[Ф]** |
 | `export`, `delete`, `start`, `version`, `platform-versions`, `install-platform-support`; ключи `--delete-content`, `--features`, `--quiet` | | **[Д]** имена из ресурсов, не запускались |

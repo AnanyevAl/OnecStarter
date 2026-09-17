@@ -64,7 +64,7 @@ from onecstarter.services.model import InfobaseItem
 from onecstarter.services.servers import ScanSnapshot, ServersWorkspace
 from onecstarter.services.settings import load_settings
 from onecstarter.services.workspace import Workspace, WorkspacePaths
-from onecstarter.ui import app_icon, rail_icons, theme
+from onecstarter.ui import about, app_icon, rail_icons, theme
 from onecstarter.ui.background import AvailabilityProbe, StartupTasks
 from onecstarter.ui.bases.view import BasesView
 from onecstarter.ui.dialogs.buttons import ask_confirmation
@@ -481,6 +481,7 @@ def run_smoke(
         _log.info("smoke: ярлык записан")
         vault = credential_store if credential_store is not None else _KeyringSmokeVault()
         _log.info("smoke: keyring=%s", _keyring_round_trip(vault))
+        _log.info("smoke: version=%s", about.app_version())
         # Настоящее (только чтение диска) обнаружение установок EDT — то же
         # обоснование не трогать процессы машины сборщика, что у NullScanner  # noqa: RUF003
         # выше, здесь неприменимо: discover_edt не сканирует процессы вовсе,

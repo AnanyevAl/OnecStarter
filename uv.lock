@@ -407,7 +407,7 @@ wheels = [
 
 [[package]]
 name = "onecstarter"
-version = "3.0.0"
+version = "3.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "keyring" },

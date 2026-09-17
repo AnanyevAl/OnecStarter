@@ -9,7 +9,10 @@ offscreen и обе фоновые задачи; (2) ярлык, созданн�
 он находит бэкенды через entry points, которых PyInstaller анализом импортов
 не видит, и молча уходит в пустой бэкенд; (6) раздел «EDT» поднялся и обнаружение
 установок EDT отработало — строка `smoke: edt=<число>` (спека v3 §12; `edt=unavailable`
-означает заглушку вместо раздела и в сборке считается отказом). APPDATA подменяется —
+означает заглушку вместо раздела и в сборке считается отказом); (7) версия в группе
+«О ПРОГРАММЕ» (ui/about.py) совпадает с pyproject.toml — строка `smoke: version=<x.y.z>`
+(спека v3.1 §7): без `copy_metadata("onecstarter")` в onecstarter.spec метаданные пакета
+в frozen-сборке отсутствуют, и версия показала бы «неизвестна». APPDATA подменяется —
 живые данные машины не трогаются.
 """  # noqa: RUF002
 
@@ -18,6 +21,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import tomllib
 from pathlib import Path
 
 
@@ -81,6 +85,17 @@ def main() -> int:
             print(
                 "smoke: раздел EDT не поднялся или обнаружение установок не отработало — "
                 "см. строку smoke: edt= в логе"
+            )
+            return 1
+        pyproject = Path(__file__).resolve().parent.parent / "pyproject.toml"
+        version = tomllib.loads(pyproject.read_text("utf-8"))["project"]["version"]
+        # M-9 финального ревью ветки v3.1: гейт подстрокой сработал бы и на
+        # "smoke: version=3.1.0.post1" — якорный регэкс, как у соседних гейтов  # noqa: RUF003
+        # (`keyring=`, `edt=`) выше.
+        if not re.search(rf"^.*smoke: version={re.escape(version)}\s*$", log_text, re.MULTILINE):
+            print(
+                f"smoke: версия в сборке не совпадает с pyproject.toml ({version}) — "  # noqa: RUF001
+                "см. строку smoke: version= в логе"
             )
             return 1
         lnk = out / "smoke.lnk"

@@ -62,7 +62,6 @@ def test_connection_path_shows_only_placement(
     assert path.text == text
     assert path.directory == directory
     assert path.note is None
-    assert path.copyable
 
 
 @pytest.mark.parametrize(
@@ -72,7 +71,6 @@ def test_connection_path_shows_only_placement(
 def test_groups_and_connectless_records_show_nothing(connect: str | None, is_group: bool) -> None:
     path = connection_path(_base(connect, is_group=is_group))
     assert path.text == ""
-    assert not path.copyable
 
 
 def test_unknown_kind_gets_a_note_not_a_path() -> None:
@@ -80,14 +78,12 @@ def test_unknown_kind_gets_a_note_not_a_path() -> None:
     path = connection_path(_base("Нечто=1;"))
     assert path.text == ""
     assert path.note == "Строка соединения не распознана"
-    assert not path.copyable
 
 
 def test_web_with_unstrippable_credentials_is_hidden() -> None:
     path = connection_path(_base('ws="user:pass@srv/base";'))
     assert path.text == ""
     assert path.note == _DIRTY_URL_NOTE
-    assert not path.copyable
 
 
 def test_web_with_unparseable_address_gets_the_same_honest_note() -> None:
@@ -99,7 +95,6 @@ def test_web_with_unparseable_address_gets_the_same_honest_note() -> None:
     assert path.text == ""
     assert path.note == _DIRTY_URL_NOTE
     assert "@" not in path.note
-    assert not path.copyable
 
 
 def test_empty_file_fragment_is_reported() -> None:
@@ -113,7 +108,6 @@ def test_empty_ws_fragment_is_reported() -> None:
     path = connection_path(_base('ws="";'))
     assert path.text == ""
     assert path.note == "В строке соединения пустой адрес публикации (ws)"  # noqa: RUF001
-    assert not path.copyable
 
 
 # Helpers for panel_card tests
@@ -147,7 +141,6 @@ def test_panel_card_for_a_server_base() -> None:
     assert card.icon_kind is ConnectKind.SERVER
     assert card.path is not None and card.path.text == 'Srvr="s";Ref="r"'
     assert card.hint is None
-    assert card.show_actions is True
 
 
 def test_panel_card_for_a_group() -> None:
@@ -157,7 +150,6 @@ def test_panel_card_for_a_group() -> None:
     assert card.icon_kind is None
     assert card.path is None
     assert card.hint == "Группа — строки подключения нет"
-    assert card.show_actions is False
 
 
 def test_panel_card_for_an_implicit_node_uses_the_label() -> None:
@@ -167,7 +159,6 @@ def test_panel_card_for_an_implicit_node_uses_the_label() -> None:
     assert card.hint == (
         "Группы нет в файле — есть только путь Folder. Операции недоступны"
     )
-    assert card.show_actions is False
 
 
 @pytest.mark.parametrize("kind", [RowKind.SECTION, RowKind.NOTE, None])
@@ -177,14 +168,12 @@ def test_panel_card_for_service_rows_asks_to_pick_a_base(
     card = panel_card(kind, None, "Избранное")
     assert card.title is None
     assert card.hint == "Выберите базу, чтобы увидеть путь подключения"
-    assert card.show_actions is False
 
 
 def test_panel_card_for_a_vanished_base_degrades_to_the_empty_card() -> None:
     """Запись пропала между rebuild и синхронизацией панели — не падать."""
     card = panel_card(RowKind.BASE, None, "Демо")
     assert card.title is None
-    assert card.show_actions is False
 
 
 def test_panel_card_for_base_kind_on_a_group_item_degrades_to_the_empty_card() -> None:
@@ -198,7 +187,6 @@ def test_panel_card_for_base_kind_on_a_group_item_degrades_to_the_empty_card() -
     card = panel_card(RowKind.BASE, _group("Клиенты"), "x")
     assert card.title is None
     assert card.hint == "Выберите базу, чтобы увидеть путь подключения"
-    assert card.show_actions is False
 
 
 def test_kind_words_cover_every_connect_kind() -> None:

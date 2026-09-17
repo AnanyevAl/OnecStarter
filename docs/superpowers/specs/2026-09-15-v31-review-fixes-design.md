@@ -24,7 +24,7 @@
 
 Один виджет для обеих панелей. `QLabel` с rich-text.
 
-- `set_path(text, *, directory: str | None, tooltip: str | None = None)`:
+- `set_path(text, *, directory: str | None = None)`:
   `directory` задан — текст рисуется ссылкой `<a href>` цветом `palette.accent`,
   подчёркивание, курсор-рука; `None` — обычный текст цветом `palette.text`. Пустой `text` —
   виджет показывает `placeholder` (серым, `palette.text_dim`), меню без пунктов.
@@ -148,7 +148,8 @@ EDT: рабочая область занята»), причина отказа 
 | `ui/bases/view.py` | `focus_search`, крестик, подсказка |
 | `ui/shell.py` | Ctrl+F |
 | `ui/settings_view.py` | группа «О программе» |
-| `ui/theme.py` / значки | `clear_icon(palette)`, цвета ссылки |
+| `ui/search_field.py` | `clear_icon(palette)` (крестик очистки) |
+| `ui/theme.py` | QSS: `#PathLink` вместо `#ConnectionPath`, сняты правила кнопок панелей |
 | тексты «workspace» | §4 |
 | `build/onecstarter.spec`, `build/smoke.py` | метаданные пакета, гейт версии |
 | `pyproject.toml` | `3.1.0` |

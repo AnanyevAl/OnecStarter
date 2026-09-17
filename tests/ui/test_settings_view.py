@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QComboBox, QLineEdit, QPushButton, QSpinBox
 
 from onecstarter.services.autostart import VALUE_NAME, autostart_command
@@ -18,6 +19,7 @@ from onecstarter.services.settings import (
     load_settings,
     save_settings,
 )
+from onecstarter.ui import about
 from onecstarter.ui.hotkey_edit import HotkeyEdit
 from onecstarter.ui.settings_store import SettingsStore
 from onecstarter.ui.settings_view import (
@@ -30,7 +32,8 @@ from onecstarter.ui.settings_view import (
     SettingsView,
     browse_for_servers_root,
 )
-from onecstarter.ui.shortcuts import BASES_SHORTCUTS
+from onecstarter.ui.shortcuts import BASES_SHORTCUTS, EDT_SHORTCUTS
+from onecstarter.ui.theme import DARK, LIGHT, Palette
 from onecstarter.ui.theme_controller import ThemeController
 
 EXE = r"C:\Programs\OneCStarter\OneCStarter.exe"
@@ -146,14 +149,16 @@ def test_save_failure_is_visible(application: QApplication, tmp_path: Path) -> N
 
 
 def test_groups_are_in_section_order(application: QApplication, tmp_path: Path) -> None:
-    """Порядок шести групп раздела: четыре группы мокапа v1 плюс СЕРВЕРЫ (v2) и EDT (v3).
+    """Порядок семи групп раздела: четыре группы мокапа v1 плюс СЕРВЕРЫ (v2), EDT (v3)
+    и О ПРОГРАММЕ (v3.1) последней.
 
     СЕРВЕРЫ стоит сразу после «ОКНО И ЗАПУСК» и перед «ГОРЯЧИЕ КЛАВИШИ» —
     требование спеки §3.5 («сосед — существующие настройки запуска»), а не
     порядок утверждённого мокапа v1 (тот заканчивается на «СПИСОК БАЗ» и
     СЕРВЕРЫ не знает вовсе). Круг исправлений 1 ревью задачи 7: группа стояла
     последней — умолчание брифа разошлось со спекой, спека главнее. EDT
-    (задача 18) вставлена сразу после СЕРВЕРОВ — бриф задачи 18.
+    (задача 18) вставлена сразу после СЕРВЕРОВ — бриф задачи 18. О ПРОГРАММЕ
+    (v3.1, замечание 6) — последней группой, после «СПИСОК БАЗ».
     """  # noqa: RUF002
     view, _ = _view(application, tmp_path)
     assert view.group_labels() == [
@@ -163,7 +168,42 @@ def test_groups_are_in_section_order(application: QApplication, tmp_path: Path) 
         "EDT",
         "ГОРЯЧИЕ КЛАВИШИ",
         "СПИСОК БАЗ",
+        "О ПРОГРАММЕ",  # noqa: RUF001
     ]
+
+
+def test_about_group_shows_version_and_repository_link(
+    application: QApplication, tmp_path: Path
+) -> None:
+    view, _ = _view(application, tmp_path)
+    assert view.version_label().text() == about.app_version()
+    assert about.REPOSITORY_URL in view.repository_label().text()
+    assert view.repository_label().openExternalLinks() is True
+
+
+@pytest.mark.parametrize(
+    ("button_index", "palette"),
+    [(1, LIGHT), (2, DARK)],
+    ids=["light", "dark"],
+)
+def test_repository_link_colour_follows_theme_switch(
+    application: QApplication, tmp_path: Path, button_index: int, palette: Palette
+) -> None:
+    """I-1 финального ревью ветки v3.1: системная роль ссылки красит `#0000ff` —
+
+    2,11:1 к `DARK.background` (порог проекта 4,5:1, WCAG 2.1), замер
+    `probe_link_colour.py`. Цвет обязан идти из `palette.accent` и
+    перекрашиваться при смене темы, как у `PathLink`.
+
+    Мутация: убрать `style="color:{accent}"` в `_render_repository_link` —
+    тест обязан упасть, потому что в разметке ссылки не останется ни одного
+    цвета палитры.
+    """  # noqa: RUF002
+    view, _ = _view(application, tmp_path)
+
+    view.theme_buttons()[button_index].click()
+
+    assert palette.accent in view.repository_label().text()
 
 
 def test_tray_toggle_persists(application: QApplication, tmp_path: Path) -> None:
@@ -447,6 +487,18 @@ def test_shortcut_reference_lists_every_bases_shortcut(
     ]
     assert "не меняются" in view.row_note("Сочетания раздела «Базы»").text()
     assert view.row_control("Сочетания раздела «Базы»").isHidden() is False
+
+
+def test_shortcut_reference_lists_every_edt_shortcut(
+    application: QApplication, tmp_path: Path
+) -> None:
+    view, _ = _view(application, tmp_path)
+    assert view.edt_shortcut_reference_rows() == [
+        (spec.label, spec.title) for spec in EDT_SHORTCUTS
+    ]
+    assert view.row_control("Сочетания раздела «EDT»").isHidden() is False
+    view.expand_group("ГОРЯЧИЕ КЛАВИШИ")
+    assert view.is_group_expanded("Сочетания раздела «EDT»") is False
 
 
 def test_recent_spinbox_bounds_and_persistence(
@@ -821,6 +873,28 @@ def test_shortcut_reference_is_collapsed_inside_hotkeys_group(
 #    пол — тест «проходил» бы вне зависимости от того, тянется поле или нет.
 #    Точка отсчёта — фактический `view.minimumSizeHint().width()` этого
 #    прогона, а не константы, случайно годные на одной машине.  # noqa: RUF003
+#
+# [Ф] Разбор 17.09.2026 (задача 8, обёртка QScrollArea): `view.layout()` и
+# `view.minimumSizeHint()` теперь отвечают за ОБОЛОЧКУ (`outer` — QVBoxLayout
+# с единственной QScrollArea внутри), а не за содержимое — в этом весь смысл  # noqa: RUF003
+# задачи 8: минимальная высота раздела перестаёт зависеть от высоты
+# содержимого, иначе раскрытие групп раздвигало бы главное окно. Замер:
+# `view.minimumSizeHint().width()` упал с фактической ширины содержимого  # noqa: RUF003
+# (~900 px на этой машине) до ~68 px (только хром QScrollArea) — резинки,
+# по которой раньше считался «пол», больше нет. `widgetResizable=True` не
+# сжимает содержимое ниже ЕГО СОБСТВЕННОГО минимума: при `view.resize()` до
+# 68 или даже 568 px содержимое остаётся приколоченным к своему минимуму
+# (~900 px), и оба теста ниже молча проходили бы, не проверяя вообще ничего  # noqa: RUF003
+# (поле «пола» и «пола+500» схлопывались в один и тот же реальный размер
+# содержимого — тот же класс дефекта, что в находке 2 выше). Пол теперь —
+# минимальная ширина СОДЕРЖИМОГО (`view.scroll_area().widget()`), а слой,  # noqa: RUF003
+# который активируется, — по-прежнему внешний (`view.layout()`): резайз
+# QScrollArea её `resizeEvent` при показанном окне сам синхронно доводит
+# каскад до содержимого (тот же факт из находки 1, на уровень глубже).
+def _content_floor(view: SettingsView) -> int:
+    content = view.scroll_area().widget()
+    assert content is not None
+    return content.minimumSizeHint().width()
 
 
 def test_servers_root_field_grows_with_the_section(
@@ -832,7 +906,7 @@ def test_servers_root_field_grows_with_the_section(
     view.show()
     layout = view.layout()
     assert layout is not None
-    floor = view.minimumSizeHint().width()
+    floor = _content_floor(view)
     view.resize(floor, 600)
     layout.activate()
     narrow = view.servers_root_edit().width()
@@ -853,7 +927,7 @@ def test_only_the_path_row_gets_a_wide_control(
     view.show()
     layout = view.layout()
     assert layout is not None
-    floor = view.minimumSizeHint().width()
+    floor = _content_floor(view)
     view.resize(floor, 600)
     layout.activate()
     narrow = view.row_control("Тема").width()
@@ -998,3 +1072,109 @@ def test_editor_browse_uses_choose_file_not_directory(
     view.editor_vscode_browse_button().click()
     assert view.editor_vscode_edit().text() == r"D:\code\code.cmd"
     assert store.settings.editor_vscode == r"D:\code\code.cmd"
+
+
+# -- прокрутка вместо роста окна (v3.1.1, задача 8) --------------------------
+#
+# Раздел лежит в QStackedWidget оболочки (`ui/shell.py`): рост минимальной
+# высоты содержимого при раскрытии групп раздвигал бы главное окно
+# (замечание заказчика, спека v3.1.1 §10 п. 3). Содержимое — внутри
+# QScrollArea со `widgetResizable=True`: минимальная высота самой QScrollArea  # noqa: RUF003
+# от высоты содержимого не зависит, а лишнее уходит в вертикальный бегунок.  # noqa: RUF003
+#
+# Круг правок 1 ревью (Important): горизонтальный бегунок — `AsNeeded`, а не  # noqa: RUF003
+# `AlwaysOff`. С `AlwaysOff` окно, ставшее уже минимума содержимого (свёрнутое  # noqa: RUF003
+# главное окно, узкий монитор), обрезало правый край формы БЕЗ возможности
+# прокрутки туда — прокрутки не было и достать до обрезанного было нечем.
+# `AsNeeded` в норме скрыт (ширина содержимого и так тянется вместе с разделом,  # noqa: RUF003
+# см. `_add_row`/`wide_control`) и появляется только когда окно раздела уже
+# минимума содержимого — см. тест ниже.
+
+
+def test_expanding_groups_does_not_grow_minimum_height(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Спека v3.1.1 §10 п. 3: раздел лежит в QStackedWidget, рост минимальной высоты
+    раздвигал бы главное окно — содержимое в QScrollArea."""
+    view, _ = _view(application, tmp_path)
+    before = view.minimumSizeHint().height()
+    for title in list(view.group_titles()):
+        view.expand_group(title)
+    assert view.minimumSizeHint().height() == before
+    assert view.scroll_area().widgetResizable() is True
+    # Круг правок 1 ревью: не `AlwaysOff` — с ним узкое окно (уже минимума  # noqa: RUF003
+    # содержимого) обрезало бы правый край формы без возможности прокрутки
+    # туда, см. `test_horizontal_scrollbar_appears_when_window_is_narrower_
+    # than_content` ниже. `AsNeeded` в норме скрыт (проверяется тем тестом же).
+    assert view.scroll_area().horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded
+
+
+def test_vertical_scrollbar_appears_when_content_exceeds_height(
+    application: QApplication, tmp_path: Path, qtbot: Any
+) -> None:
+    view, _ = _view(application, tmp_path)
+    view.resize(700, 320)
+    with qtbot.waitExposed(view):
+        view.show()
+    for title in list(view.group_titles()):
+        view.expand_group(title)
+    application.processEvents()
+    assert view.scroll_area().verticalScrollBar().isVisible() is True
+    view.close()
+
+
+def test_horizontal_scrollbar_appears_when_window_is_narrower_than_content(
+    application: QApplication, tmp_path: Path, qtbot: Any
+) -> None:
+    """Ревью задачи 8: без горизонтального бегунка узкое окно обрезало бы форму.
+
+    [Ф] 17.09.2026: буквальный `resize(1200, 600)` из формулировки ревью (круг
+    правок 1) на этой машине НЕ раздевает бегунок — тот же класс дефекта, что
+    уже описан у соседних тестов «широкого поля» (находка 2, 02.09.2026,
+    докстринг у `_content_floor`/`test_servers_root_field_grows_with_the_
+    section`): у этого теста самое длинное имя в файле, `tmp_path` — вложенный
+    путь `...\\pytest-of-<user>\\pytest-N\\<имя теста>0\\settings.json`, и
+    фактический минимум содержимого на этом прогоне — 1437 px, шире 1200.
+    Точка отсчёта — `_content_floor(view) + 200`, а не константа из ревью.
+    """  # noqa: RUF002
+    view, _ = _view(application, tmp_path)
+    view.resize(300, 600)
+    with qtbot.waitExposed(view):
+        view.show()
+    application.processEvents()
+    assert view.scroll_area().horizontalScrollBar().isVisible() is True
+    view.resize(_content_floor(view) + 200, 600)
+    application.processEvents()
+    assert view.scroll_area().horizontalScrollBar().isVisible() is False
+    view.close()
+
+
+def test_scroll_area_styling_targets_named_widgets_only(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Re-review задачи 8: типовой селектор задевал QScrollBar — правило только по objectName.
+
+    Находка re-review 17.09.2026 (подтверждена скриншотом на живом Windows 11): у
+    `QScrollArea` три прямых `QWidget`-потомка — viewport и два служебных
+    контейнера полос (`qt_scrollarea_hcontainer`/`qt_scrollarea_vcontainer`), а у
+    контейнеров единственный потомок — сам `QScrollBar`. Типовой селектор вида
+    `#SettingsScroll > QWidget` (или `> QWidget > QWidget`) не различает их и красит
+    заодно и полосы, лишая их нативного стиля Windows 11 (generic Qt-фолбэк —
+    офскрин этого не ловит). Правило обязано адресовать только именованные виджеты:
+    `#SettingsScroll`, `#SettingsViewport`, `#SettingsContent` — без единого
+    типового класса-селектора.
+    """  # noqa: RUF002
+    from onecstarter.ui.theme import LIGHT, stylesheet
+
+    view, _ = _view(application, tmp_path)
+    content = view.scroll_area().widget()
+    assert content is not None
+    assert view.scroll_area().objectName() == "SettingsScroll"
+    assert view.scroll_area().viewport().objectName() == "SettingsViewport"
+    assert content.objectName() == "SettingsContent"
+    rule = next(
+        line
+        for line in stylesheet(LIGHT).splitlines()
+        if "#SettingsScroll" in line and "background: transparent" in line
+    )
+    assert "> QWidget" not in rule

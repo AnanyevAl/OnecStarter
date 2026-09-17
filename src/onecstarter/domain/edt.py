@@ -258,6 +258,22 @@ def join_vm_args(max_heap_mb: int | None, language: str | None, rest: Sequence[s
     return " ".join(tokens)
 
 
+def effective_heap_mb(project_vm_args: str, installation_vm_args: str) -> int | None:
+    """Действующий `-Xmx` для колонки «Память» (спека v3.1, §5).
+
+    Запись бьёт установку — как в командной строке, где аргументы записи идут
+    после аргументов установки и JVM берёт последний `-Xmx` ([Ф] Э1). Нигде
+    не задан — `None`: JVM возьмёт `-Xmx` из `1cedt.ini` установки, который
+    мы не разбираем. Настройка «память по умолчанию» в цепочку не входит —
+    она лишь подставляется в диалог новой записи.
+    """
+    for text in (project_vm_args, installation_vm_args):
+        heap = split_vm_args(text).max_heap_mb
+        if heap is not None:
+            return heap
+    return None
+
+
 def java_version_key(version: str) -> tuple[int, ...]:
     """`17.0.16` → (17, 0, 16); `1.8.0_392` → (1, 8, 0, 392) — для сравнения числами."""
     return tuple(int(part) for part in re.findall(r"\d+", version))

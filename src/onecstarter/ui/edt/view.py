@@ -23,13 +23,14 @@ from PySide6.QtGui import (
     QDragMoveEvent,
     QDropEvent,
     QKeyEvent,
+    QKeySequence,
+    QShortcut,
     QStandardItemModel,
 )
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMenu,
     QMessageBox,
     QPushButton,
@@ -43,7 +44,7 @@ from PySide6.QtWidgets import (
 from onecstarter.domain.edt import EdtInstallation, EdtProject
 from onecstarter.domain.edt_cli import (
     cli_build_args,
-    cli_import_args,
+    cli_import_commands,
     cli_project_args,
     cli_validate_args,
     workspace_projects,
@@ -78,6 +79,7 @@ from onecstarter.ui.edt.tree_model import (
     KIND_ROLE,
     build_edt_model,
 )
+from onecstarter.ui.search_field import SearchField
 from onecstarter.ui.theme import Palette
 
 MENU_OPEN_EDT = "Открыть в EDT"
@@ -92,7 +94,7 @@ MENU_IMPORT = "Импорт из EDT Start…"
 NOT_INSTALLED_HINT = "EDT {version} не найден"
 MENU_CLI = "CLI"
 CLI_BUILD = "Пересобрать проекты"
-CLI_IMPORT = "Импортировать проект…"
+CLI_IMPORT = "Импортировать проекты…"
 CLI_VALIDATE = "Проверить проекты…"
 CLI_PROJECT = "Информация по проектам"
 # `CLI_BUSY_HINT` — из `tree_model` (одна строка на значок и меню), реэкспорт выше.
@@ -140,15 +142,23 @@ class _EdtTree(QTreeView):
         self.header().setStretchLastSection(False)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
-        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            self._view._launch_index(self.currentIndex())
-            return
-        if event.key() == Qt.Key.Key_F5:
-            self._view.refresh_all()
-            return
-        if event.key() == Qt.Key.Key_Delete:
-            self._view._remove_current()
-            return
+        """Enter — запуск, Insert/Delete/F5 — операции над списком, только без
+        модификаторов: Alt+Enter — «Изменить…» (QShortcut вьюхи, спека v3.1.1 §10),
+        Ctrl+Insert/Shift+Delete — чужие соглашения (как у баз, T-11 пп. 7–8)."""  # noqa: RUF002
+        if event.modifiers() == Qt.KeyboardModifier.NoModifier:
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self._view._launch_index(self.currentIndex())
+                return
+            if event.key() == Qt.Key.Key_F5:
+                self._view.refresh_all()
+                return
+            if event.key() == Qt.Key.Key_Insert:
+                self._view._add_at_current()
+                event.accept()
+                return
+            if event.key() == Qt.Key.Key_Delete:
+                self._view._remove_current()
+                return
         super().keyPressEvent(event)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
@@ -241,8 +251,7 @@ class EdtView(QWidget):
         if watcher is not None:
             watcher.finished.connect(self.on_cli_finished)
 
-        self._search = QLineEdit()
-        self._search.setPlaceholderText("Поиск: начните вводить имя проекта")
+        self._search = SearchField("Поиск: начните вводить имя проекта", self._palette)
         self._search.textChanged.connect(lambda _text: self.rebuild())
         self._search.returnPressed.connect(self._launch_first_visible)
 
@@ -261,8 +270,13 @@ class EdtView(QWidget):
         self._tree.setUniformRowHeights(True)
         self._tree.setRootIsDecorated(True)
         self._tree.doubleClicked.connect(self._launch_index)
+        # Alt+Enter — «Изменить…», как «Свойства…» у баз (спека v3.1.1 §10);  # noqa: RUF003
+        # Return и Enter (цифровой блок) — разные клавиши Qt. Справочник в
+        # настройках рисуется по ui/shortcuts.py::EDT_SHORTCUTS, тест сверяет.
+        QShortcut(QKeySequence("Alt+Return"), self, self._edit_current)
+        QShortcut(QKeySequence("Alt+Enter"), self, self._edit_current)
 
-        self._panel = EdtPanel(open_directory=open_directory)
+        self._panel = EdtPanel(open_directory=open_directory, palette=self._palette)
         self._panel.open_failed.connect(self._show_error)
 
         layout = QVBoxLayout(self)
@@ -300,7 +314,7 @@ class EdtView(QWidget):
         """Каталог, который получит следующий диалог `validate` (последний TSV сеанса)."""
         return self._last_tsv_dir
 
-    def search(self) -> QLineEdit:
+    def search(self) -> SearchField:
         return self._search
 
     def banner(self) -> QWidget:
@@ -347,19 +361,25 @@ class EdtView(QWidget):
     def rebuild(self) -> None:
         """Собрать модель заново, сохранив раскрытие, текущую строку и ширины колонок.
 
-        `setModel` сбрасывает всё это — ширины по умолчанию ставятся только
-        при первой сборке, дальше возвращаются снятые перед подменой (I2
-        финального ревью ветки). Последняя колонка растянута заголовком,
-        её ширина не запоминается.
-        """
+        `setModel` сбрасывает раскрытие и текущую строку — ширины по умолчанию
+        ставятся только при первой сборке, дальше снимаются перед подменой
+        модели и возвращаются после (I2 финального ревью ветки). Последняя
+        колонка не растянута заголовком (`setStretchLastSection(False)`, ревью
+        Task 21): ширины всех колонок, включая последнюю, сохраняются между
+        пересборками наравне с первыми двумя (M-2 финального ревью ветки v3.1
+        — прежняя редакция докстринга и код `range(len(COLUMNS) - 1)` были
+        написаны для двухколоночного дерева и не обновились, когда «Память»
+        стала третьей колонкой).
+        """  # noqa: RUF002
         expanded = self._expanded_ids()
         current = self.current()
-        widths = [self._tree.columnWidth(column) for column in range(len(COLUMNS) - 1)]
+        widths = [self._tree.columnWidth(column) for column in range(len(COLUMNS))]
         self._model = build_edt_model(self._workspace, self._search.text(), self._palette)
         self._tree.setModel(self._model)
         if not self._built:
             self._tree.setColumnWidth(0, 320)
             self._tree.setColumnWidth(1, 110)
+            self._tree.setColumnWidth(2, 90)
         else:
             for column, width in enumerate(widths):
                 self._tree.setColumnWidth(column, width)
@@ -380,6 +400,7 @@ class EdtView(QWidget):
 
     def apply_palette(self, palette: Palette) -> None:
         self._palette = palette
+        self._search.apply_palette(palette)
         self._console.apply_palette(palette)
         self.rebuild()
 
@@ -530,12 +551,14 @@ class EdtView(QWidget):
             group_id = None
         menu.addAction(MENU_ADD, lambda: self.add_project(group_id))
         if kind == KIND_PROJECT and item_id is not None:
-            menu.addAction(MENU_EDIT, lambda: self.edit_project(item_id))
+            menu.addAction(f"{MENU_EDIT}\tAlt+Enter", lambda: self.edit_project(item_id))
             menu.addAction(MENU_REMOVE, lambda: self.remove_project(item_id))
         menu.addSeparator()
         menu.addAction(MENU_ADD_GROUP, lambda: self.add_group(group_id))
         if kind == KIND_GROUP and item_id is not None:
-            menu.addAction(MENU_RENAME_GROUP, lambda: self.rename_group(item_id))
+            menu.addAction(
+                f"{MENU_RENAME_GROUP}\tAlt+Enter", lambda: self.rename_group(item_id)
+            )
             menu.addAction(MENU_REMOVE_GROUP, lambda: self.remove_group(item_id))
         if kind != KIND_GROUP:
             menu.addSeparator()
@@ -658,7 +681,8 @@ class EdtView(QWidget):
 
     def cli_build(self, project_id: str) -> None:
         project = self._workspace.project(project_id)
-        question = f"Пересобрать все проекты workspace «{project.name}»? Это займёт время"
+        question = f"Пересобрать все проекты рабочей области «{project.name}»? "
+        question += "Это займёт время"
         if self._confirm(self, "Пересборка", question):
             self._start_cli(project_id, CLI_BUILD, cli_build_args())
 
@@ -666,9 +690,28 @@ class EdtView(QWidget):
         self._start_cli(project_id, CLI_PROJECT, cli_project_args())
 
     def cli_import(self, project_id: str) -> None:
-        dialog = CliImportDialog(choose_directory=self._choose_directory, parent=self)
-        if self._run_dialog(dialog):
-            self._start_cli(project_id, CLI_IMPORT.rstrip("…"), cli_import_args(dialog.form()))
+        project = self._workspace.project(project_id)
+        dialog = CliImportDialog(
+            project.project_dir,
+            workspace_entries(project.workspace),
+            choose_directory=self._choose_directory,
+            parent=self,
+        )
+        if not self._run_dialog(dialog):
+            return
+        try:
+            commands = cli_import_commands(dialog.form())
+        except ValueError as error:  # диалог не даёт ОК без команд — страховка  # noqa: RUF003
+            self._show_error(str(error))
+            return
+        # Метка консоли короче пункта меню ([Interfaces] брифа: «Импортировать» /
+        # «Импортировать (проектов: N)») — не `CLI_IMPORT.rstrip("…")`, тот даёт
+        # «Импортировать проекты» и расходится с текстом брифа и тестами.  # noqa: RUF003
+        label = "Импортировать"
+        if len(commands) == 1:
+            self._start_cli(project_id, label, commands[0])
+        else:
+            self._start_cli_script(project_id, f"{label} (проектов: {len(commands)})", commands)
 
     def cli_validate(self, project_id: str) -> None:
         project = self._workspace.project(project_id)
@@ -691,8 +734,21 @@ class EdtView(QWidget):
     def _start_cli(self, project_id: str, label: str, command: str, result_file: str = "") -> None:
         if self._cli is None:
             return
+        cli = self._cli
+        self._run_cli(project_id, label, lambda: cli.start(project_id, label, command, result_file))
+
+    def _start_cli_script(self, project_id: str, label: str, commands: Sequence[str]) -> None:
+        """Несколько команд одним сеансом — скрипт `-file` (спека v3.1.1 §4.2)."""
+        if self._cli is None:
+            return
+        cli = self._cli
+        self._run_cli(project_id, label, lambda: cli.start_script(project_id, label, commands))
+
+    def _run_cli(self, project_id: str, label: str, start: Callable[[], CliRun]) -> None:
+        if self._cli is None:
+            return
         try:
-            run = self._cli.start(project_id, label, command, result_file)
+            run = start()
         except ServicesError as error:
             self._show_error(str(error))
             return
@@ -872,6 +928,22 @@ class EdtView(QWidget):
             self.remove_project(item_id)
         else:
             self.remove_group(item_id)
+
+    def _edit_current(self) -> None:
+        """Alt+Enter — правка текущей строки: запись → диалог записи, группа → диалог группы."""
+        current = self.current()
+        if current is None:
+            return
+        kind, item_id = current
+        if kind == KIND_PROJECT:
+            self.edit_project(item_id)
+        else:
+            self.rename_group(item_id)
+
+    def _add_at_current(self) -> None:
+        """Insert — новая запись в группе текущей строки (группа → в неё, запись → в её группу,
+        пусто → корень)."""
+        self.add_project(self._group_of(self.current()))
 
     def _apply(self, operation: Callable[[], object], *, rebuild: bool = True) -> None:
         try:
