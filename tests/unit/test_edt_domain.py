@@ -19,6 +19,7 @@ from onecstarter.domain.edt import (
     IniInfo,
     VmArgsParts,
     build_edt_command,
+    effective_heap_mb,
     effective_jvm,
     import_candidates,
     java_major,
@@ -201,6 +202,20 @@ class TestJoinVmArgs:
     def test_roundtrip(self, text: str) -> None:
         parts = split_vm_args(text)
         assert split_vm_args(join_vm_args(parts.max_heap_mb, parts.language, parts.rest)) == parts
+
+
+@pytest.mark.parametrize(
+    ("project_args", "installation_args", "expected"),
+    [
+        ("-Xmx6144m", "-Xmx8192m -Dx=1", 6144),  # запись бьёт установку
+        ("-Dfoo=1", "-Xmx8192m", 8192),  # только установка
+        ("", "", None),  # нигде — JVM возьмёт -Xmx из 1cedt.ini
+        ("-Xmx2g -Xmx4096m", "", 4096),  # два -Xmx — последний, как у JVM  # noqa: RUF003
+        ("-Xmx1g", "", 1024),
+    ],
+)
+def test_effective_heap_mb(project_args: str, installation_args: str, expected: int | None) -> None:
+    assert effective_heap_mb(project_args, installation_args) == expected
 
 
 def test_languages_have_default_first() -> None:

@@ -7,7 +7,7 @@
 from collections.abc import Callable, Sequence
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QCloseEvent, QIcon
+from PySide6.QtGui import QCloseEvent, QIcon, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QButtonGroup,
     QFrame,
@@ -106,6 +106,10 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._stack, stretch=1)
         self.setCentralWidget(central)
 
+        # Одна комбинация на окно: два QShortcut с Ctrl+F в разделах Qt счёл бы  # noqa: RUF003
+        # неоднозначными и не сработал бы ни один (спека v3.1, §6).
+        QShortcut(QKeySequence(QKeySequence.StandardKey.Find), self, self._focus_current_search)
+
     def section_buttons(self) -> list[QToolButton]:
         return list(self._buttons)
 
@@ -148,6 +152,15 @@ class MainWindow(QMainWindow):
             self.show()
         self.raise_()
         self.activateWindow()
+        self._focus_current_search()
+
+    def _focus_current_search(self) -> None:
+        """Поставить фокус в поиск текущего раздела — если он там вообще есть.
+
+        Не у каждого раздела есть поиск (например, «Настройки»): шов
+        getattr(...)/callable(...) молча ничего не делает для таких —
+        тот же приём, что раньше был только в show_and_focus_search.
+        """  # noqa: RUF002
         focus = getattr(self._stack.currentWidget(), "focus_search", None)
         if callable(focus):
             focus()

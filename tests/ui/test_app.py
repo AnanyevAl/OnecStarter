@@ -56,8 +56,8 @@ from onecstarter.services.settings import (
     save_settings,
 )
 from onecstarter.services.workspace import Workspace, WorkspacePaths
+from onecstarter.ui import about, rail_icons, theme
 from onecstarter.ui import app as app_module
-from onecstarter.ui import rail_icons, theme
 from onecstarter.ui.app import (
     _build_main_window,
     _confirm_quit_with_cli,
@@ -2662,6 +2662,20 @@ def test_smoke_logs_keyring_round_trip(
     assert code == 0
     assert "smoke: keyring=ok" in caplog.text
     assert vault.data == {}, "служебная запись обязана быть удалена после проверки"
+    qtbot.addWidget(captured["window"])
+
+
+def test_smoke_logs_version(tmp_path: Any, monkeypatch: Any, qtbot: Any, caplog: Any) -> None:
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    target = tmp_path / "out"
+    target.mkdir()
+    with caplog.at_level(logging.INFO):
+        code = run_smoke(
+            str(target), {"APPDATA": str(tmp_path / "appdata")}, credential_store=_MemoryVault()
+        )
+    assert code == 0
+    assert f"smoke: version={about.app_version()}" in caplog.text
     qtbot.addWidget(captured["window"])
 
 

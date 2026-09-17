@@ -25,17 +25,21 @@ Workspace, открытый в EDT, для CLI занят ([Д] спека §0-�
 import logging
 import os
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from onecstarter.domain.edt import CLI_EXE, effective_jvm
+from onecstarter.domain.edt import CLI_EXE, EdtInstallation, EdtProject, effective_jvm
 from onecstarter.domain.edt_cli import (
+    INSTALLATION_INI,
     PROJECTS_REGISTRY,
     CliQuoteError,
+    ProjectCandidate,
     WorkspaceEntry,
     build_cli_command,
+    build_cli_script_command,
+    cli_ini_text,
     parse_project_location,
     wrap_console_utf8,
 )
@@ -46,11 +50,11 @@ from onecstarter.services.edt import EdtWorkspace
 from onecstarter.services.errors import EdtError
 from onecstarter.services.server_journal import append_event, journal_path, rotate_journal
 
-__all__ = ["CliResult", "CliRun", "EdtCli", "workspace_entries"]
+__all__ = ["SCAN_MAX_DEPTH", "CliResult", "CliRun", "EdtCli", "scan_projects", "workspace_entries"]
 
 _log = logging.getLogger("onecstarter.edt_cli")
 
-RUNNING_REASON = "Закройте EDT: workspace занят"
+RUNNING_REASON = "Закройте EDT: рабочая область занята"
 BUSY_REASON = "Команда CLI уже выполняется для этой записи"
 
 
@@ -120,6 +124,70 @@ def workspace_entries(
     return entries
 
 
+SCAN_MAX_DEPTH = 3  # корень — уровень 0; клон репозитория: `src/<имя>` — уровень 2
+
+
+def scan_projects(
+    root: str,
+    *,
+    max_depth: int = SCAN_MAX_DEPTH,
+    listdir: Callable[[str], list[str]] = os.listdir,
+    is_dir: Callable[[str], bool] = os.path.isdir,
+    is_file: Callable[[str], bool] = os.path.isfile,
+) -> list[ProjectCandidate]:
+    """Проекты EDT под `root` — правило мастера импорта Eclipse (спека v3.1.1 §2, факт 9):
+    каталог с `.project` — проект, внутрь не заходим; иначе — в подкаталоги.
+
+    Наши ограничения: каталоги на точку (`.git`, `.metadata`) пропускаются; уровни
+    0…`max_depth` включительно — чтобы ошибочно выбранный `E:\\` не обходился целиком;
+    `OSError` на подкаталоге — пропуск, на корне — пустой список.
+    """  # noqa: RUF002
+    found: list[ProjectCandidate] = []
+    root_name = Path(root).name or root
+
+    def walk(directory: str, relative: str, depth: int) -> None:
+        if is_file(os.path.join(directory, ".project")):  # noqa: PTH118
+            found.append(ProjectCandidate(directory, relative or root_name))
+            return
+        if depth >= max_depth:
+            return
+        try:
+            names = listdir(directory)
+        except OSError:
+            return
+        for name in names:
+            if name.startswith("."):
+                continue
+            child = os.path.join(directory, name)  # noqa: PTH118
+            if is_dir(child):
+                walk(child, f"{relative}/{name}" if relative else name, depth + 1)
+
+    walk(root, "", 0)
+    found.sort(key=lambda candidate: candidate.relative.casefold())
+    return found
+
+
+CliBuilder = Callable[[Path, str, Path, str, str], LaunchCommand]
+"""(exe, workspace, jvm_dir, installation_vm_args, project_vm_args) → командная строка CLI."""
+
+
+def _by_command(command: str) -> CliBuilder:
+    return lambda exe, workspace, jvm, installation_args, project_args: build_cli_command(
+        exe, workspace, command, jvm, installation_args, project_args
+    )
+
+
+def _by_script(script: Path, ini: Path) -> CliBuilder:
+    # JDK уже в ini: у обёртки нет ключа -vm ([Ф] Э12), jvm_dir строке не нужен  # noqa: RUF003
+    return lambda exe, workspace, _jvm, installation_args, project_args: build_cli_script_command(
+        exe, workspace, script, ini, installation_args, project_args
+    )
+
+
+def _read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
+
+
 class EdtCli:
     def __init__(
         self,
@@ -131,6 +199,7 @@ class EdtCli:
         is_file: Callable[[Path], bool] = Path.is_file,
         now: Callable[[], datetime] = datetime.now,
         comspec: Path | None = None,
+        read_text: Callable[[Path], str] = _read_text,
     ) -> None:
         self._workspace = workspace
         self._logs_dir = logs_dir
@@ -139,6 +208,7 @@ class EdtCli:
         self._is_file = is_file
         self._now = now
         self._comspec = comspec if comspec is not None else default_comspec()
+        self._read_text = read_text
         self._runs: dict[str, CliRun] = {}
         self._results: dict[str, CliResult] = {}
 
@@ -161,15 +231,70 @@ class EdtCli:
         reason = self.unavailable_reason(project_id)
         if reason:
             raise EdtError(reason)
+        return self._start(
+            project_id, label, command, [f"▶ {label}: {command}"], _by_command(command), result_file
+        )
+
+    def start_script(self, project_id: str, label: str, commands: Sequence[str]) -> CliRun:
+        """Несколько команд одним сеансом: скрипт `<logs_dir>/<id>.cli` в режиме `-file`,
+        JDK — через ini `<logs_dir>/<id>.ini` и `-ini-file` (спека v3.1.1 §4.2, [Ф] Э12:
+        у обёртки нет ключа `-vm`). Оба файла наши, не пользовательские: обычная
+        перезапись; лежат рядом с журналом ради диагностики.
+
+        `unavailable_reason` — ДО записи: живая команда на этой записи читает свой скрипт,
+        перезаписывать его нельзя.
+        """  # noqa: RUF002
+        reason = self.unavailable_reason(project_id)
+        if reason:
+            raise EdtError(reason)
+        _, installation, jvm = self._resolve(project_id)
+        try:
+            installation_ini = self._read_text(installation.exe.parent / INSTALLATION_INI)
+        except (OSError, UnicodeDecodeError) as error:
+            raise EdtError(
+                f"Не удалось прочитать {INSTALLATION_INI} установки: {error}"  # noqa: RUF001
+            ) from error
+        script, ini = self.script_path(project_id), self.ini_path(project_id)
+        try:
+            script.parent.mkdir(parents=True, exist_ok=True)
+            ini.write_text(cli_ini_text(installation_ini, jvm), encoding="utf-8", newline="\n")
+            with script.open("w", encoding="utf-8", newline="\n") as handle:
+                handle.writelines(f"{command}\n" for command in commands)
+        except OSError as error:
+            raise EdtError(f"Не удалось записать скрипт CLI: {error}") from error  # noqa: RUF001
+        events = [f"▶ {label}: скрипт {script.name}, команд: {len(commands)}", *commands]
+        return self._start(
+            project_id, label, "\n".join(commands), events, _by_script(script, ini), ""
+        )
+
+    def script_path(self, project_id: str) -> Path:
+        return self._logs_dir / f"{project_id}.cli"
+
+    def ini_path(self, project_id: str) -> Path:
+        return self._logs_dir / f"{project_id}.ini"
+
+    def _resolve(self, project_id: str) -> tuple[EdtProject, EdtInstallation, Path]:
+        """Запись, установка и JDK; вызывается после `unavailable_reason`."""
         project = self._workspace.project(project_id)
         installation = self._workspace.installation_for(project)
         assert installation is not None  # unavailable_reason проверил
         jvm = effective_jvm(project, installation)
         assert jvm is not None
-        cli = build_cli_command(
+        return project, installation, jvm
+
+    def _start(
+        self,
+        project_id: str,
+        label: str,
+        command_text: str,
+        events: Sequence[str],
+        build: CliBuilder,
+        result_file: str,
+    ) -> CliRun:
+        project, installation, jvm = self._resolve(project_id)
+        cli = build(
             installation.exe.parent / CLI_EXE,
             project.workspace,
-            command,
             jvm,
             installation.vm_args,
             project.vm_args,
@@ -197,7 +322,8 @@ class EdtCli:
             # FILE_APPEND_DATA и может успеть написать в журнал раньше, чем
             # выполнится этот Python-код, — порядок в файле обязан быть
             # предсказуем независимо от гонки с дочерним процессом.  # noqa: RUF003
-            append_event(path, f"▶ {label}: {command}", self._now())
+            for event in events:
+                append_event(path, event, self._now())
             append_event(path, launch.command_line, self._now())
             spawned = self._spawn(launch, path, job)
         except (OSError, JobError) as error:
@@ -210,7 +336,9 @@ class EdtCli:
             raise EdtError(
                 f"Не удалось запустить {CLI_EXE}: {error}.\nКоманда: {launch.command_line}"  # noqa: RUF001
             ) from error
-        run = CliRun(project_id, label, command, spawned.pid, spawned.process, job, result_file)
+        run = CliRun(
+            project_id, label, command_text, spawned.pid, spawned.process, job, result_file
+        )
         self._runs[project_id] = run
         self._workspace.mark_cli_busy(project_id)
         return run

@@ -3,7 +3,6 @@
 from typing import Any
 
 import pytest
-from PySide6.QtGui import QColor, QPalette
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from onecstarter.domain.connect import ConnectKind, classify_connect
@@ -53,7 +52,7 @@ def test_group_and_empty_selection_show_hints_not_emptiness(qtbot: Any) -> None:
     )
     assert panel.text() == ""
     assert panel.placeholder() == "Группа — строки подключения нет"
-    assert panel.copy_button().isHidden()
+    assert panel.link().context_menu().actions() == []
 
     panel.show_card(panel_card(None, None, ""), theme.DARK)
     assert panel.placeholder() == "Выберите базу, чтобы увидеть путь подключения"
@@ -70,61 +69,55 @@ def test_copy_puts_shown_text_in_clipboard(qtbot: Any) -> None:
     """В буфер идёт ровно то, что на экране — очищенный адрес (§1.4)."""  # noqa: RUF002
     panel = _panel(qtbot, [])
     _show(panel, _item('ws="http://user:pass@srv/base";'))
-    assert panel.copy_button().isEnabled()
-    panel.copy_button().click()
+    [copy] = panel.link().context_menu().actions()
+    assert copy.text() == "Копировать"
+    copy.trigger()
     assert QApplication.clipboard().text() == "http://srv/base"
 
 
-def test_open_directory_enabled_only_for_file_kind(qtbot: Any) -> None:
-    """Мокап: у серверной базы кнопка видна, но неактивна — не спрятана."""  # noqa: RUF002
+def test_only_file_base_is_a_link(qtbot: Any) -> None:
+    """Серверная — текст с одним «Копировать»; файловая — ссылка на каталог.
+
+    Спека v3.1 §3.
+    """  # noqa: RUF002
     opened: list[str] = []
     panel = _panel(qtbot, opened)
 
     _show(panel, _item('Srvr="localhost";Ref="ACC";'))
-    assert not panel.open_button().isEnabled()
+    assert panel.link().link_href() is None
+    assert [a.text() for a in panel.link().context_menu().actions()] == ["Копировать"]
 
     _show(panel, _item(r'File="D:\bases\acc";'))
-    assert panel.open_button().isEnabled()
-    panel.open_button().click()
+    assert panel.link().link_href() == r"D:\bases\acc"
+    panel.link().linkActivated.emit("")
     assert opened == [r"D:\bases\acc"]
 
 
 @pytest.mark.parametrize("palette", [theme.DARK, theme.LIGHT], ids=["dark", "light"])
-def test_hint_placeholder_uses_the_dim_role_from_the_project_palette(
+def test_hint_uses_the_dim_colour_from_the_project_palette(
     qtbot: Any, palette: theme.Palette
 ) -> None:
-    """Important 1 финального ревью: подсказка красится палитрой проекта.
-
-    QLineEdit.placeholderText Qt берёт цвет из СИСТЕМНОЙ QPalette —
-    ThemeController применяет только stylesheet, placeholder мимо него.
-    Замер: 2,49:1 в тёмной, 2,15:1 в светлой — порог проекта 4,5:1.
-    show_card обязан выставлять QPalette.ColorRole.PlaceholderText поля
-    из переданной палитры при каждом вызове.
-    """
+    """Подсказка красится палитрой проекта (Important 1 финального ревью рестайла)."""
     panel = _panel(qtbot, [])
     panel.show_card(panel_card(None, None, ""), palette)
-    colour = panel.path_field().palette().color(QPalette.ColorRole.PlaceholderText)
-    assert colour == QColor(palette.text_dim)
+    assert palette.text_dim in panel.link().text()
 
 
 def test_hint_card_shows_the_placeholder_in_italics(qtbot: Any) -> None:
-    """Мокап: подсказка курсивом — панель никогда не пустеет, но отличима от пути."""
     panel = _panel(qtbot, [])
     panel.show_card(panel_card(None, None, ""), theme.DARK)
-    assert panel.path_field().font().italic()
+    assert "<i" in panel.link().text()
 
 
 def test_path_card_shows_the_path_upright(qtbot: Any) -> None:
-    """Обратная сторона: показан путь — курсив снят."""
     panel = _panel(qtbot, [])
     _show(panel, _item('Srvr="localhost";Ref="ACC";'))
-    assert not panel.path_field().font().italic()
+    assert "<i" not in panel.link().text()
 
 
 def test_open_failure_shows_a_warning_not_silence(
     qtbot: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """«Каталога нет → сообщение, не тишина» (бриф): открытие отказало."""
     warnings: list[str] = []
     monkeypatch.setattr(
         QMessageBox, "warning", lambda _parent, _title, text: warnings.append(text)
@@ -132,5 +125,5 @@ def test_open_failure_shows_a_warning_not_silence(
     panel = ConnectionPanel(open_directory=lambda _path: False)
     qtbot.addWidget(panel)
     _show(panel, _item(r'File="D:\bases\acc";'))
-    panel.open_button().click()
+    panel.link().linkActivated.emit("")
     assert warnings == [r"Не удалось открыть каталог: D:\bases\acc"]  # noqa: RUF001

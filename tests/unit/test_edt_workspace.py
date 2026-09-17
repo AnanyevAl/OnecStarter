@@ -490,7 +490,7 @@ class TestCliBusy:
         h.workspace.refresh_installations()
         p = h.workspace.add_project(_project("a", edt_version="2025.2.6+4"))
         h.workspace.mark_cli_busy(p.id)
-        with pytest.raises(EdtLaunchError, match="занят командой CLI"):
+        with pytest.raises(EdtLaunchError, match="занята командой CLI"):
             h.workspace.launch(p.id)
         assert h.spawned == []
 

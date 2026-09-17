@@ -48,11 +48,13 @@ from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFileDialog,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -70,10 +72,11 @@ from onecstarter.services.settings import (
     ThemeMode,
     WebLaunch,
 )
+from onecstarter.ui import about
 from onecstarter.ui.hotkey_edit import HotkeyEdit
 from onecstarter.ui.settings_group import CollapsibleGroup
 from onecstarter.ui.settings_store import SettingsStore
-from onecstarter.ui.shortcuts import BASES_SHORTCUTS
+from onecstarter.ui.shortcuts import BASES_SHORTCUTS, EDT_SHORTCUTS, ShortcutSpec
 from onecstarter.ui.theme_controller import ThemeController
 
 CHOICES = (
@@ -204,7 +207,9 @@ class SettingsView(QWidget):
         self._status = QLabel("")
         self._status.setWordWrap(True)
 
-        layout = QVBoxLayout(self)
+        content = QWidget()
+        content.setObjectName("SettingsContent")
+        layout = QVBoxLayout(content)
         layout.setContentsMargins(20, 16, 20, 16)
         layout.setSpacing(6)
         layout.addWidget(header)
@@ -338,10 +343,16 @@ class SettingsView(QWidget):
         )
 
         self._shortcut_rows: list[tuple[str, str]] = []
+        self._edt_shortcut_rows: list[tuple[str, str]] = []
         self._add_block(
             "Сочетания раздела «Базы»",
             "Зашиты в программу и не меняются (решение заказчика 29.08.2026)",
-            self._build_shortcut_reference(),
+            self._build_shortcut_reference(BASES_SHORTCUTS, self._shortcut_rows),
+        )
+        self._add_block(
+            "Сочетания раздела «EDT»",
+            "Зашиты в программу и не меняются; Ctrl+F общий с «Базами»",  # noqa: RUF001
+            self._build_shortcut_reference(EDT_SHORTCUTS, self._edt_shortcut_rows),
         )
 
         self._add_group("СПИСОК БАЗ")
@@ -362,8 +373,58 @@ class SettingsView(QWidget):
             self._build_order_segment(),
         )
 
+        self._add_group("О ПРОГРАММЕ")  # noqa: RUF001
+        self._version_label = QLabel(about.app_version())
+        # M-1 финального ревью ветки v3.1: прежняя подпись «Из pyproject.toml —
+        # единственного места» — текст для разработчика, заказчик не знает,
+        # что такое pyproject.toml. Правило «версия из одного места» и так
+        # задокументировано в докстринге `about.py`.
+        self._add_row("Версия", "Установленная версия программы", self._version_label)
+        self._repository_label = QLabel()
+        self._repository_label.setOpenExternalLinks(True)
+        self._repository_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.LinksAccessibleByMouse
+            | Qt.TextInteractionFlag.LinksAccessibleByKeyboard
+        )
+        self._add_row("Репозиторий", "Исходники, выпуски, замечания", self._repository_label)
+        self._render_repository_link()
+
         layout.addWidget(self._status)
         layout.addStretch(1)
+
+        # Раздел лежит в QStackedWidget оболочки (`ui/shell.py`): без обёртки
+        # рост минимальной высоты содержимого при раскрытии групп раздвигал бы
+        # главное окно (замечание заказчика, спека v3.1.1 §10 п. 3). У QScrollArea  # noqa: RUF003
+        # с `widgetResizable=True` минимальная высота самой QScrollArea от высоты  # noqa: RUF003
+        # содержимого не зависит — окно расти перестаёт, а лишнее уходит в  # noqa: RUF003
+        # вертикальный бегунок.
+        #
+        # Горизонтальный — «по необходимости» (круг правок 1 ревью задачи 8):
+        # с `ScrollBarAlwaysOff` окно уже минимума содержимого обрезало правый  # noqa: RUF003
+        # край формы БЕЗ возможности прокрутки туда — ревьюер воспроизвёл:
+        # `resize(300, 600)` уводит `servers_root_edit` за пределы viewport,
+        # а `horizontalScrollBar().maximum() == 609` при скрытом бегунке — доехать  # noqa: RUF003
+        # некуда и нечем. В норме бегунок скрыт: ширина содержимого и так тянется  # noqa: RUF003
+        # вместе с разделом (см. `_add_row`/`wide_control`), а появляется он  # noqa: RUF003
+        # только когда окно раздела УЖЕ минимума содержимого.
+        self._scroll = QScrollArea()
+        self._scroll.setObjectName("SettingsScroll")
+        # Круг правок 2 ревью (re-review, 17.09.2026): у QScrollArea имя нужно и  # noqa: RUF003
+        # у viewport, не только у самой QScrollArea и у содержимого  # noqa: RUF003
+        # (`SettingsContent`, см. выше) — иначе QSS красит фон типовым
+        # селектором `QWidget`, а тот совпадает и с `QScrollBar` внутри  # noqa: RUF003
+        # служебных `qt_scrollarea_*container` (см. `theme.py` рядом
+        # с правилом `#SettingsScroll`).  # noqa: RUF003
+        self._scroll.viewport().setObjectName("SettingsViewport")
+        self._scroll.setWidget(content)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(self._scroll)
 
         controller.changed.connect(self._sync)
         store.changed.connect(self._sync)
@@ -479,21 +540,29 @@ class SettingsView(QWidget):
         self._groups[title] = block
         self._target_layout().addWidget(block)
 
-    def _build_shortcut_reference(self) -> QWidget:
-        """Таблица «сочетание — действие» по `BASES_SHORTCUTS` (T-11, п. 3, только чтение)."""
+    def _build_shortcut_reference(
+        self, specs: Sequence[ShortcutSpec], rows: list[tuple[str, str]]
+    ) -> QWidget:
+        """Таблица «сочетание — действие» по переданным сочетаниям (T-11, п. 3, только чтение).
+
+        Один билдер на оба справочника (задача 7 вехи v3.1.1: `BASES_SHORTCUTS` и
+        `EDT_SHORTCUTS`) — `rows` копит строки в накопитель своего раздела,
+        чтобы `shortcut_reference_rows()`/`edt_shortcut_reference_rows()` отдавали
+        каждый свой список.
+        """  # noqa: RUF002
         table = QWidget()
         grid = QGridLayout(table)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(18)
         grid.setVerticalSpacing(2)
-        for row, spec in enumerate(BASES_SHORTCUTS):
+        for row, spec in enumerate(specs):
             keys = QLabel(spec.label)
             keys_font = keys.font()
             keys_font.setBold(True)
             keys.setFont(keys_font)
             grid.addWidget(keys, row, 0)
             grid.addWidget(QLabel(spec.title), row, 1)
-            self._shortcut_rows.append((spec.label, spec.title))
+            rows.append((spec.label, spec.title))
         grid.setColumnStretch(1, 1)
         return table
 
@@ -566,6 +635,22 @@ class SettingsView(QWidget):
         row_layout.addWidget(self._servers_root_browse)
         return row
 
+    def _render_repository_link(self) -> None:
+        """Цвет ссылки «Репозиторий» — из палитры, не системный (I-1 финального ревью).
+
+        Системная роль `QPalette.Link`, которую иначе взял бы rich-text `QLabel`,
+        даёт `#0000ff` в обеих темах: контраст к `DARK.background` — 2,11:1,
+        ниже порога проекта 4,5:1 (WCAG 2.1) — замер `probe_link_colour.py`.
+        Тот же приём, что у `PathLink._render`: цвет пишется inline в разметку
+        ссылки, а не через QSS (Qt Style Sheets роль `Link` не перекрывают).
+        Зовётся из конструктора и из `_sync()` — без вызова в `_sync()` ссылка
+        осталась бы в цветах темы, в которой раздел строился.
+        """  # noqa: RUF002
+        accent = self._controller.palette.accent
+        self._repository_label.setText(
+            f'<a href="{about.REPOSITORY_URL}" style="color:{accent}">{about.REPOSITORY_URL}</a>'
+        )
+
     def _refresh_edt_notes(self) -> None:
         """Пересчитать подписи группы «EDT» после правки пути (I3 финального ревью).
 
@@ -623,6 +708,21 @@ class SettingsView(QWidget):
     def group_labels(self) -> list[str]:
         return list(self._group_labels)
 
+    def group_titles(self) -> list[str]:
+        """Заголовки ВСЕХ сворачиваемых узлов — групп и вложенных блоков.
+
+        В отличие от `group_labels()` (только группы верхнего уровня, спека
+        §1.4), сюда попадают и блоки второго уровня свёртки (справочники
+        сочетаний, `_add_block`) — тестам, которым нужно раскрыть раздел
+        целиком (задача 8: рост содержимого при раскрытии не смеет раздвигать
+        главное окно).
+        """  # noqa: RUF002
+        return list(self._groups)
+
+    def scroll_area(self) -> QScrollArea:
+        """QScrollArea, несущая содержимое раздела (задача 8)."""
+        return self._scroll
+
     def group(self, title: str) -> CollapsibleGroup:
         """Группа по заголовку — тестам, проверяющим свёртку."""
         return self._groups[title]
@@ -660,6 +760,10 @@ class SettingsView(QWidget):
     def shortcut_reference_rows(self) -> list[tuple[str, str]]:
         """Строки справочника сочетаний в порядке показа — что реально попало в таблицу."""
         return list(self._shortcut_rows)
+
+    def edt_shortcut_reference_rows(self) -> list[tuple[str, str]]:
+        """Строки справочника сочетаний раздела «EDT» — что реально попало в таблицу."""
+        return list(self._edt_shortcut_rows)
 
     def servers_root_edit(self) -> QLineEdit:
         return self._servers_root
@@ -731,6 +835,14 @@ class SettingsView(QWidget):
         в layout.
         """  # noqa: RUF002
         return self._row_controls[title]
+
+    def version_label(self) -> QLabel:
+        """Версия программы, показанная в группе «О ПРОГРАММЕ» (спека v3.1, §7)."""  # noqa: RUF002
+        return self._version_label
+
+    def repository_label(self) -> QLabel:
+        """Ссылка на репозиторий в группе «О ПРОГРАММЕ» (спека v3.1, §7)."""  # noqa: RUF002
+        return self._repository_label
 
     def hotkey_note(self) -> str:
         return self._hotkey_note.text()
@@ -928,3 +1040,6 @@ class SettingsView(QWidget):
         # темы, в которой раздел был построен.
         for group in self._groups.values():
             group.set_palette(self._controller.palette)
+        # Ссылка «Репозиторий» — тем же приёмом (I-1 финального ревью ветки v3.1):
+        # без перерисовки здесь она осталась бы в цвете темы постройки раздела.
+        self._render_repository_link()

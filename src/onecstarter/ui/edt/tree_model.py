@@ -8,7 +8,7 @@
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor, QStandardItem, QStandardItemModel
 
-from onecstarter.domain.edt import EdtProject
+from onecstarter.domain.edt import EdtInstallation, EdtProject, effective_heap_mb
 from onecstarter.services.edt import EdtStatus, EdtWorkspace
 from onecstarter.ui.edt.icons import cli_busy_icon, running_icon
 from onecstarter.ui.theme import Palette
@@ -18,11 +18,12 @@ KIND_ROLE = Qt.ItemDataRole.UserRole + 2
 KIND_GROUP = "group"
 KIND_PROJECT = "project"
 
-COLUMNS = ("Проект", "EDT")
+COLUMNS = ("Проект", "EDT", "Память")
 MISSING_SUFFIX = " (нет каталога)"
 NOT_INSTALLED_HINT = "EDT {version} не найден"
 NO_VERSION_HINT = "Версия EDT не задана"
 CLI_BUSY_HINT = "Выполняется команда CLI"
+HEAP_DEFAULT_HINT = "-Xmx не задан — действует значение из 1cedt.ini установки"
 
 
 def matches(project: EdtProject, query: str) -> bool:
@@ -66,12 +67,14 @@ def _fill(
         item.setFont(font)
         has_matches = _fill(item, group.id, workspace, query, palette)
         if has_matches or unfiltered:
-            parent.appendRow([item, _plain("")])
+            parent.appendRow([item, _plain(""), _plain("")])
             visible = True
     for project in projects:
         if not matches(project, query):
             continue
-        parent.appendRow(_project_row(project, workspace.status(project.id), palette))
+        status = workspace.status(project.id)
+        installation = workspace.installation_for(project)
+        parent.appendRow(_project_row(project, status, installation, palette))
         visible = True
     return visible
 
@@ -82,7 +85,12 @@ def _plain(text: str) -> QStandardItem:
     return item
 
 
-def _project_row(project: EdtProject, status: EdtStatus, palette: Palette) -> list[QStandardItem]:
+def _project_row(
+    project: EdtProject,
+    status: EdtStatus,
+    installation: EdtInstallation | None,
+    palette: Palette,
+) -> list[QStandardItem]:
     name = _plain(project.name + (MISSING_SUFFIX if status.workspace_present is False else ""))
     name.setData(project.id, ID_ROLE)
     name.setData(KIND_PROJECT, KIND_ROLE)
@@ -107,4 +115,11 @@ def _project_row(project: EdtProject, status: EdtStatus, palette: Palette) -> li
         version.setToolTip(NOT_INSTALLED_HINT.format(version=project.edt_version))
         version.setForeground(QBrush(QColor(palette.problem)))
 
-    return [name, version]
+    heap = effective_heap_mb(project.vm_args, installation.vm_args if installation else "")
+    memory = _plain(f"{heap} МБ" if heap is not None else "—")
+    memory.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    if heap is None:
+        memory.setToolTip(HEAP_DEFAULT_HINT)
+        memory.setForeground(QBrush(QColor(palette.text_dim)))
+
+    return [name, version, memory]

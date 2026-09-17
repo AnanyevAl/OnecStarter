@@ -19,11 +19,19 @@
 .projects/<имя>/.location`, а не подкаталоги workspace: конфигурации заказчика
 лежат вне workspace и привязаны на месте [Ф] Э6, 11 workspace. Формат `.location` —
 `parse_project_location` ([Д] исходники Eclipse `LocalMetaArea`, [Ф] снятые байты).
+
+Несколько проектов — по одной команде `import --project` на каталог
+(`cli_import_commands`); одним сеансом их выполняет режим `-file <скрипт>`. У обёртки
+`1cedtcli.exe` нет ключа `-vm`, а после `-file` она пересобирает хвост без кавычек,
+поэтому JDK для скрипта задаётся своим ini через `-ini-file` (`cli_ini_text`,
+`build_cli_script_command`; [Ф] Э12, `docs/research/t20-edt-import-experiments.md`).
+Кандидаты на импорт (`ProjectCandidate`) находит `services/edt_cli.py::scan_projects`,
+привязанных помечает `mark_in_workspace` по реестру рабочей области.
 """  # noqa: RUF002
 
 import re
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -76,7 +84,7 @@ def cli_project_args() -> str:
 
 @dataclass(frozen=True)
 class ImportForm:
-    existing_project_dir: str = ""
+    existing_project_dirs: tuple[str, ...] = ()
     configuration_files: str = ""
     project_dir: str = ""
     project_name: str = ""
@@ -85,23 +93,26 @@ class ImportForm:
     build_after: bool = False
 
 
-def cli_import_args(form: ImportForm) -> str:
-    existing = form.existing_project_dir.strip()
+def cli_import_commands(form: ImportForm) -> list[str]:
+    """Команды `import`: по одной на каталог проекта; файлы XML — одна (спека v3.1.1 §4.1).
+
+    Порядок — как в форме: успех `import` от порядка не зависит ([Ф] Э6 — расширение
+    без базовой конфигурации импортировано с кодом 0).
+    """  # noqa: RUF002
+    existing = [path.strip() for path in form.existing_project_dirs if path.strip()]
     xml = form.configuration_files.strip()
     if existing and xml:
         msg = "Выберите один вариант импорта: существующий проект или файлы XML"
         raise ValueError(msg)
     if existing:
-        return f"import --project {quote_cli_arg(existing)}"
+        return [f"import --project {quote_cli_arg(path)}" for path in existing]
     if not xml:
         msg = "Укажите каталог проекта или каталог файлов конфигурации"
         raise ValueError(msg)
     project_dir = form.project_dir.strip()
     project_name = form.project_name.strip()
     if bool(project_dir) == bool(project_name):
-        msg = (
-            "Для файлов XML укажите каталог или имя нового проекта — одно из двух"
-        )
+        msg = "Для файлов XML укажите каталог или имя нового проекта — одно из двух"
         raise ValueError(msg)
     parts = ["import", "--configuration-files", quote_cli_arg(xml)]
     if project_dir:
@@ -117,7 +128,7 @@ def cli_import_args(form: ImportForm) -> str:
         parts += ["--version", version]
     if form.build_after:
         parts.append("--build")
-    return " ".join(parts)
+    return [" ".join(parts)]
 
 
 def cli_validate_args(paths: Sequence[str], tsv: str) -> str:
@@ -133,6 +144,32 @@ class WorkspaceEntry:
     name: str
     path: str
     is_project: bool
+
+
+@dataclass(frozen=True)
+class ProjectCandidate:
+    """Каталог с `.project`, найденный `services/edt_cli.py::scan_projects` (спека v3.1.1 §2).
+
+    `relative` — путь от корня сканирования через `/` (корень-проект — имя его каталога);
+    имя из `.project` не читаем: в списке — каталог относительно корня, его выбирает
+    пользователь; под именем из `.project` проект появится в EDT после `import` ([Ф] Э12).
+    """  # noqa: RUF002
+
+    path: str
+    relative: str
+    in_workspace: bool = False
+
+
+def mark_in_workspace(
+    candidates: Sequence[ProjectCandidate], entries: Sequence[WorkspaceEntry]
+) -> list[ProjectCandidate]:
+    """`in_workspace` по реестру рабочей области: совпадение `workspace_key` с путём
+    любой записи — и без `.project` тоже, привязка есть."""  # noqa: RUF002
+    keys = {workspace_key(entry.path) for entry in entries}
+    return [
+        replace(candidate, in_workspace=workspace_key(candidate.path) in keys)
+        for candidate in candidates
+    ]
 
 
 def workspace_projects(entries: Sequence[WorkspaceEntry], project_dir: str) -> list[str]:
@@ -165,6 +202,61 @@ def build_cli_command(
         project_vm_args.strip(),
     ]
     return LaunchCommand(executable=exe, arguments=" ".join(part for part in parts if part))
+
+
+INSTALLATION_INI = "1cedt.ini"
+
+
+def build_cli_script_command(
+    exe: Path,
+    workspace: str,
+    script: Path,
+    ini: Path,
+    installation_vm_args: str,
+    project_vm_args: str,
+) -> LaunchCommand:
+    """`-data "<ws>" -ini-file "<ini>" -vmargs <args> -file "<скрипт>"` ([Ф] Э12).
+
+    У обёртки `1cedtcli.exe` нет ключа `-vm`: после `-file` хвост уходит лаунчеру без
+    кавычек и `-vm "C:\\Program Files\\…"` превращается в `C:\\Program`. JDK — в ini
+    (`cli_ini_text`). `-ini-file` и `-vmargs` — до `-file` (грамматика обёртки); список
+    `-vmargs` не пуст никогда, иначе обёртка приняла бы `-file` за аргумент JVM.
+    """  # noqa: RUF002
+    parts = [
+        f'-data "{workspace}"',
+        f'-ini-file "{ini}"',
+        "-vmargs",
+        installation_vm_args.strip(),
+        "-Djava.library.path=",
+        project_vm_args.strip(),
+        f'-file "{script}"',
+    ]
+    return LaunchCommand(executable=exe, arguments=" ".join(part for part in parts if part))
+
+
+def cli_ini_text(installation_ini: str, jvm_dir: Path) -> str:
+    """Свой ini для `-ini-file` ([Ф] Э12): строки `1cedt.ini` установки без `-Dosgi.debug…`
+    (так же делает обёртка, копируя ini во `%TEMP%`) и без прежней пары `-vm`/<путь>,
+    плюс `-vm` и `<bin JDK>` перед `-vmargs`; нет `-vmargs` — в конец. LF."""
+    lines: list[str] = []
+    skip_path = False
+    inserted = False
+    for line in installation_ini.splitlines():
+        if skip_path:
+            skip_path = False
+            continue
+        if line.strip() == "-vm":
+            skip_path = True
+            continue
+        if line.startswith("-Dosgi.debug"):
+            continue
+        if line.strip() == "-vmargs" and not inserted:
+            lines += ["-vm", str(jvm_dir)]
+            inserted = True
+        lines.append(line)
+    if not inserted:
+        lines += ["-vm", str(jvm_dir)]
+    return "\n".join(lines) + "\n"
 
 
 def wrap_console_utf8(command: LaunchCommand, comspec: Path) -> LaunchCommand:

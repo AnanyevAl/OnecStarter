@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from PySide6.QtWidgets import QLabel
+
 from onecstarter.domain.edt import EdtInstallation, EdtProject
 from onecstarter.ui.edt.dialog import (
     HEAP_CHOICES,
@@ -81,7 +83,7 @@ def test_relative_workspace_disables_ok(qtbot) -> None:  # type: ignore[no-untyp
     dialog.name_edit().setText("a")
     dialog.workspace_edit().setText(r"edt\a")
     assert dialog.ok_button().isEnabled() is False
-    assert dialog.error_text() == "Путь workspace должен быть абсолютным"
+    assert dialog.error_text() == "Путь рабочей области должен быть абсолютным"
 
 
 def test_edit_splits_existing_vm_args_and_keeps_group(qtbot) -> None:  # type: ignore[no-untyped-def]
@@ -132,3 +134,13 @@ def test_browse_cancel_keeps_field(qtbot) -> None:  # type: ignore[no-untyped-de
 
 def test_heap_choices_listed() -> None:
     assert HEAP_CHOICES == (2048, 4096, 8192, 12288, 16384)
+
+
+def test_workspace_field_is_called_working_area(qtbot) -> None:  # type: ignore[no-untyped-def]
+    dialog = _new(qtbot)
+    labels = [w.text() for w in dialog.findChildren(QLabel)]
+    assert "Рабочая область" in labels
+    assert "Workspace" not in labels
+    dialog.name_edit().setText("a")
+    dialog.workspace_edit().setText("")
+    assert dialog.error_text() == "Рабочая область не задана"

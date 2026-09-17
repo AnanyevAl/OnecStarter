@@ -71,7 +71,7 @@ class EdtProjectDialog(QDialog):
         self._workspace_browse = QPushButton("Обзор…")
         self._workspace_browse.clicked.connect(lambda: self._browse_into(self._workspace))
         self._project_dir = QLineEdit(project.project_dir if project else "")
-        self._project_dir.setPlaceholderText("пусто — редакторы получают workspace")
+        self._project_dir.setPlaceholderText("пусто — редакторы получают рабочую область")
         self._project_dir_browse = QPushButton("Обзор…")
         self._project_dir_browse.clicked.connect(lambda: self._browse_into(self._project_dir))
 
@@ -119,7 +119,7 @@ class EdtProjectDialog(QDialog):
 
         form = QFormLayout()
         form.addRow("Имя", self._name)
-        form.addRow("Workspace", self._with_browse(self._workspace, self._workspace_browse))
+        form.addRow("Рабочая область", self._with_browse(self._workspace, self._workspace_browse))
         form.addRow(
             "Каталог проекта", self._with_browse(self._project_dir, self._project_dir_browse)
         )
@@ -174,9 +174,9 @@ class EdtProjectDialog(QDialog):
             return "Имя не задано"
         workspace = self._workspace.text().strip()
         if not workspace:
-            return "Workspace не задан"
+            return "Рабочая область не задана"
         if not Path(workspace).is_absolute():
-            return "Путь workspace должен быть абсолютным"
+            return "Путь рабочей области должен быть абсолютным"
         heap = self._heap.currentText().strip()
         if heap and not heap.isdigit():
             return _HEAP_ERROR

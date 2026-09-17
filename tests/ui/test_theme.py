@@ -156,20 +156,17 @@ def test_checked_rail_button_gets_stripe_fill_and_raised_ground() -> None:
 def test_panel_is_a_surface_with_a_monospace_path() -> None:
     """Спека рестайла §4: панель — surface с верхней границей, путь моноширинный.
 
-    Important 2 финального ревью: `QLineEdit:read-only { color: text_dim }`
-    побеждало, потому что `#ConnectionPath` не задавало `color` вовсе —
-    путь приглушался вопреки мокапу, где это главное содержимое панели.
-    Явный `color: palette.text` в правиле с более высокой специфичностью
-    ID обязан перекрыть `QLineEdit:read-only`.
+    С переходом панели на `PathLink` (v3.1, замечание 1) цвет пути задаёт
+    сам виджет через rich-text (см. `path_link.py`), а не QSS — правило
+    `#PathLink` отвечает только за шрифт.
     """  # noqa: RUF002
     for palette in (theme.DARK, theme.LIGHT):
         css = theme.stylesheet(palette)
         panel = _rule_properties(css, "#ConnectionPanel")
         assert panel["background"] == palette.surface
         assert panel["border-top"] == f"1px solid {palette.border}"
-        path = _rule_properties(css, "#ConnectionPath")
+        path = _rule_properties(css, "#PathLink")
         assert "Consolas" in path["font-family"]
-        assert path["color"] == palette.text
 
 
 def test_checked_theme_segment_uses_selection_and_accent() -> None:

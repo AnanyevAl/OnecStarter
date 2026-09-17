@@ -24,6 +24,12 @@ class ShortcutSpec:
 
 
 BASES_SHORTCUTS: tuple[ShortcutSpec, ...] = (
+    # M-10 финального ревью ветки v3.1 (по желанию заказчика): сочетание
+    # регистрирует оболочка (`ui/shell.py`, QShortcut(StandardKey.Find)),
+    # а не вьюха «Базы» — пустой `sequences`, как у Enter/Insert/Delete ниже,  # noqa: RUF003
+    # чтобы test_shortcut_reference_matches_registered_shortcuts не ждал
+    # от этой вьюхи собственного QShortcut на Ctrl+F.
+    ShortcutSpec("Ctrl+F", "Поиск (Базы и EDT)", ()),
     ShortcutSpec("Enter", "Запустить выбранную базу; в поиске — первую найденную", ()),
     ShortcutSpec("F3", "Запустить (1С:Предприятие)", ("F3",)),  # noqa: RUF001
     ShortcutSpec("F4", "Конфигуратор", ("F4",)),
@@ -43,4 +49,15 @@ BASES_SHORTCUTS: tuple[ShortcutSpec, ...] = (
         "Переставить запись или группу (только в режиме «как в файле»)",
         ("Alt+Up", "Alt+Down"),
     ),
+)
+
+EDT_SHORTCUTS: tuple[ShortcutSpec, ...] = (
+    # Как у баз: Enter/Insert/Delete/F5 — keyPressEvent дерева (пустой sequences),  # noqa: RUF003
+    # Ctrl+F — оболочка; QShortcut вьюхи регистрирует только Alt+Enter.
+    ShortcutSpec("Ctrl+F", "Поиск (Базы и EDT)", ()),
+    ShortcutSpec("Enter", "Открыть в EDT выбранную запись; в поиске — первую найденную", ()),
+    ShortcutSpec("Alt+Enter", "Изменить запись или группу", ("Alt+Return", "Alt+Enter")),
+    ShortcutSpec("Insert", "Добавить запись в группу текущей строки", ()),
+    ShortcutSpec("Delete", "Удалить запись или группу (с подтверждением)", ()),  # noqa: RUF001
+    ShortcutSpec("F5", "Обновить установки EDT и состояние записей", ()),
 )

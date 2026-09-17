@@ -6,8 +6,8 @@ from itertools import count
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction
+from PySide6.QtCore import QModelIndex, Qt
+from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import QMenu, QWidget
 
 from onecstarter.domain.edt import (
@@ -17,6 +17,7 @@ from onecstarter.domain.edt import (
     EdtStartProduct,
     EdtStartProject,
 )
+from onecstarter.domain.edt_cli import location_blob
 from onecstarter.domain.launch import LaunchCommand
 from onecstarter.platform_1c.editors import EditorKind
 from onecstarter.platform_1c.edtstart_registry import EdtStartRegistry
@@ -46,6 +47,7 @@ from onecstarter.ui.edt.view import (
     DropTarget,
     EdtView,
 )
+from onecstarter.ui.shortcuts import EDT_SHORTCUTS
 from onecstarter.ui.theme import DARK
 
 INSTALLED = [
@@ -120,6 +122,7 @@ class Harness:
             job_factory=self._job_factory,
             spawn=self._spawn_cli,
             is_file=lambda p: True,
+            read_text=lambda p: "-vmargs\n-Xmx4096m\n",
         )
         self.pending: list[Callable[[], None]] = []
         self.watcher = CliWatcher(spawn=self.pending.append)
@@ -183,13 +186,35 @@ def _add(h: Harness, name: str, **overrides: object) -> EdtProject:
 
 
 def _select(view: EdtView, project_id: str) -> None:
+    """Найти строку записи по id и сделать её текущей — рекурсивно, запись может
+    лежать внутри группы (находка задачи 7 v3.1.1: плоский обход по корню не видел
+    записи, добавленные в группу — `_fill` кладёт их дочерними элементами группы,
+    а не строками корня модели)."""  # noqa: RUF002
+    model = view.model()
+
+    def walk(parent: QModelIndex) -> bool:
+        for row in range(model.rowCount(parent)):
+            index = model.index(row, 0, parent)
+            if index.data(ID_ROLE) == project_id:
+                view.tree().setCurrentIndex(index)
+                return True
+            if walk(index):
+                return True
+        return False
+
+    if not walk(QModelIndex()):
+        raise AssertionError(f"нет строки {project_id}")
+
+
+def _select_group(view: EdtView, group_id: str) -> None:
+    """Как `_select`, но ищет строку группы — группы стоят верхним уровнем дерева."""
     model = view.model()
     for row in range(model.rowCount()):
         index = model.index(row, 0)
-        if index.data(ID_ROLE) == project_id:
+        if index.data(KIND_ROLE) == KIND_GROUP and index.data(ID_ROLE) == group_id:
             view.tree().setCurrentIndex(index)
             return
-    raise AssertionError(f"нет строки {project_id}")
+    raise AssertionError(f"нет группы {group_id}")
 
 
 def test_tree_shows_projects(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
@@ -298,11 +323,11 @@ def test_panel_follows_selection(harness: Harness, qtbot) -> None:  # type: igno
     qtbot.addWidget(view)
     assert view.panel().title_text() == "Выберите проект"
     _select(view, p.id)
-    assert view.panel().workspace_field().text() == p.workspace
-    assert view.panel().project_dir_field().text() == r"D:\edt\a\proj"
+    assert view.panel().workspace_link().path_text() == p.workspace
+    assert view.panel().project_dir_link().path_text() == r"D:\edt\a\proj"
     view.tree().setCurrentIndex(view.model().index(0, 0))  # группа стоит первой
     assert view.panel().title_text() == "2025"
-    assert view.panel().workspace_field().isHidden() is True
+    assert view.panel().workspace_link().isHidden() is True
 
 
 def test_panel_survives_rebuild(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
@@ -311,7 +336,7 @@ def test_panel_survives_rebuild(harness: Harness, qtbot) -> None:  # type: ignor
     qtbot.addWidget(view)
     _select(view, p.id)
     view.rebuild()
-    assert view.panel().workspace_field().text() == p.workspace
+    assert view.panel().workspace_link().path_text() == p.workspace
 
 
 def test_panel_open_failure_goes_to_show_error(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
@@ -319,7 +344,7 @@ def test_panel_open_failure_goes_to_show_error(harness: Harness, qtbot) -> None:
     view = harness.view(open_directory=lambda path: False)
     qtbot.addWidget(view)
     _select(view, p.id)
-    view.panel().workspace_open_button().click()
+    view.panel().workspace_link().linkActivated.emit("")
     assert harness.errors == [f"Каталог не найден: {p.workspace}"]
 
 
@@ -359,18 +384,26 @@ def test_unchanged_scan_does_not_rebuild(harness: Harness, qtbot) -> None:  # ty
 
 
 def test_current_row_and_widths_survive_rebuild(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
-    """I2 финального ревью: перестройка возвращает текущую строку и ширины колонок."""
+    """I2 финального ревью: перестройка возвращает текущую строку и ширины колонок.
+
+    Третья колонка («Память») дополнена по M-2 финального ревью ветки v3.1:
+    докстринг `rebuild()` обещает сохранность ширин ВСЕХ колонок, а не только
+    первых двух — тест обязан это перечень покрывать.
+    """  # noqa: RUF002
     _add(harness, "a")
     b = _add(harness, "b")
     view = harness.view()
     qtbot.addWidget(view)
-    assert (view.tree().columnWidth(0), view.tree().columnWidth(1)) == (320, 110)  # умолчания
+    widths = (view.tree().columnWidth(0), view.tree().columnWidth(1), view.tree().columnWidth(2))
+    assert widths == (320, 110, 90)  # умолчания
     _select(view, b.id)
     view.tree().setColumnWidth(0, 200)
     view.tree().setColumnWidth(1, 90)
+    view.tree().setColumnWidth(2, 55)
     view.rebuild()
     assert view.current() == ("project", b.id)
-    assert (view.tree().columnWidth(0), view.tree().columnWidth(1)) == (200, 90)
+    widths = (view.tree().columnWidth(0), view.tree().columnWidth(1), view.tree().columnWidth(2))
+    assert widths == (200, 90, 55)
 
 
 def test_version_column_keeps_width_in_shown_window(harness: Harness, qtbot, qapp) -> None:  # type: ignore[no-untyped-def]
@@ -422,7 +455,13 @@ def test_project_menu_items_and_editor_state(harness: Harness, qtbot) -> None:  
     assert actions["Открыть в VS Code"] is False  # редактор не найден
     assert actions["Открыть в Antigravity"] is False
     assert actions[MENU_OPEN_EXPLORER] is True
-    assert {MENU_ADD, MENU_EDIT, MENU_REMOVE, MENU_ADD_GROUP, MENU_IMPORT} <= actions.keys()
+    assert {
+        MENU_ADD,
+        f"{MENU_EDIT}\tAlt+Enter",
+        MENU_REMOVE,
+        MENU_ADD_GROUP,
+        MENU_IMPORT,
+    } <= actions.keys()
     tooltips = {a.text(): a.toolTip() for a in view.build_menu("project", p.id).actions()}
     assert tooltips["Открыть в VS Code"] == "Не найден — укажите путь в Настройках"  # noqa: RUF001
 
@@ -456,7 +495,12 @@ def test_group_and_empty_menus(harness: Harness, qtbot) -> None:  # type: ignore
     view = harness.view()
     qtbot.addWidget(view)
     group_actions = _actions(view.build_menu("group", g.id))
-    assert {MENU_ADD, MENU_ADD_GROUP, MENU_RENAME_GROUP, MENU_REMOVE_GROUP} <= group_actions.keys()
+    assert {
+        MENU_ADD,
+        MENU_ADD_GROUP,
+        f"{MENU_RENAME_GROUP}\tAlt+Enter",
+        MENU_REMOVE_GROUP,
+    } <= group_actions.keys()
     assert MENU_OPEN_EDT not in group_actions
     empty_actions = _actions(view.build_menu(None, None))
     assert set(empty_actions) == {MENU_ADD, MENU_ADD_GROUP, MENU_IMPORT}
@@ -684,7 +728,7 @@ def test_cli_submenu_disabled_when_edt_running(harness: Harness, qtbot) -> None:
     view.on_scan(EdtScan(running={p.id: 77}, present={}))
     cli = _menu_action(view, p.id, MENU_CLI)
     assert cli.isEnabled() is False
-    assert cli.toolTip() == "Закройте EDT: workspace занят"
+    assert cli.toolTip() == "Закройте EDT: рабочая область занята"
 
 
 def test_cli_build_confirms_starts_and_expands_console(  # type: ignore[no-untyped-def]
@@ -697,7 +741,7 @@ def test_cli_build_confirms_starts_and_expands_console(  # type: ignore[no-untyp
     monkeypatch.setattr(view, "_confirm", _confirm(asked, answer=True))
     assert view.console().is_expanded() is False
     view.cli_build(p.id)
-    assert asked == ["Пересобрать все проекты workspace «a»? Это займёт время"]
+    assert asked == ["Пересобрать все проекты рабочей области «a»? Это займёт время"]
     assert '-command "build --yes"' in harness.cli_spawned[0].arguments
     assert view.console().is_expanded() is True
     assert view.console().state_label().text() == STATE_RUNNING
@@ -905,20 +949,69 @@ def test_cli_validate_result_missing_after_success_hides_button(  # type: ignore
     assert view.console().result_button().isHidden() is True
 
 
-def test_cli_import_runs_dialog_form(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    p = _add(harness, "a")
+def _repo(tmp_path: Path, *names: str) -> Path:
+    """Клон с проектами `src/<имя>/.project` — как у заказчика (спека v3.1.1, факт 9)."""  # noqa: RUF002
+    repo = tmp_path / "repo"
+    for name in names:
+        (repo / "src" / name).mkdir(parents=True)
+        (repo / "src" / name / ".project").write_text("<projectDescription/>", encoding="utf-8")
+    return repo
+
+
+def test_cli_import_prefills_dir_and_imports_selected_by_script(  # type: ignore[no-untyped-def]
+    harness: Harness, qtbot, monkeypatch
+) -> None:
+    repo = _repo(harness.tmp_path, "cf", "cfe_a")
+    p = _add(harness, "a", project_dir=str(repo))
     view = harness.view()
     qtbot.addWidget(view)
+    seen: list[str] = []
 
     def run_dialog(dialog):
-        dialog.existing_dir_edit().setText(r"D:\src\proj")
-        return True
+        seen.append(dialog.existing_dir_edit().text())
+        return True  # все найденные отмечены по умолчанию
 
     monkeypatch.setattr(view, "_run_dialog", run_dialog)
     view.cli_import(p.id)
+    assert seen == [str(repo)]
+    script, ini = harness.cli.script_path(p.id), harness.cli.ini_path(p.id)
+    assert f'-ini-file "{ini}"' in harness.cli_spawned[0].arguments
+    assert f'-file "{script}"' in harness.cli_spawned[0].arguments
+    assert "-vm\n" in ini.read_text(encoding="utf-8")
+    cf = str(repo / "src" / "cf").replace("\\", "/")
+    cfe = str(repo / "src" / "cfe_a").replace("\\", "/")
+    assert script.read_text(encoding="utf-8") == (
+        f"import --project '{cf}'\nimport --project '{cfe}'\n"
+    )
+    assert view.console().title_label().text() == "a · Импортировать (проектов: 2)"
+
+
+def test_cli_import_single_project_uses_command(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    repo = _repo(harness.tmp_path, "cf")
+    p = _add(harness, "a", project_dir=str(repo))
+    view = harness.view()
+    qtbot.addWidget(view)
+    monkeypatch.setattr(view, "_run_dialog", lambda dialog: True)
+    view.cli_import(p.id)
+    cf = str(repo / "src" / "cf").replace("\\", "/")
     # Прямые слэши в -command ([Ф] Э6: с обратными Gogo не снимает кавычки, код 204)  # noqa: RUF003
-    assert "-command \"import --project 'D:/src/proj'\"" in harness.cli_spawned[0].arguments
-    assert view.console().title_label().text() == "a · Импортировать проект"
+    assert f"-command \"import --project '{cf}'\"" in harness.cli_spawned[0].arguments
+    assert view.console().title_label().text() == "a · Импортировать"
+
+
+def test_cli_import_bound_projects_are_not_offered(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    repo = _repo(harness.tmp_path, "cf", "cfe_a")
+    ws = harness.tmp_path / "ws"
+    registry = ws / ".metadata" / ".plugins" / "org.eclipse.core.resources" / ".projects" / "cf"
+    registry.mkdir(parents=True)
+    (registry / ".location").write_bytes(location_blob((repo / "src" / "cf").as_uri()))
+    p = _add(harness, "a", workspace=str(ws), project_dir=str(repo))
+    view = harness.view()
+    qtbot.addWidget(view)
+    monkeypatch.setattr(view, "_run_dialog", lambda dialog: True)
+    view.cli_import(p.id)
+    cfe = str(repo / "src" / "cfe_a").replace("\\", "/")
+    assert f"-command \"import --project '{cfe}'\"" in harness.cli_spawned[0].arguments
 
 
 def test_cli_import_cancelled_starts_nothing(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -1003,3 +1096,92 @@ def test_selecting_project_with_old_journal_shows_it(  # type: ignore[no-untyped
     assert view.console().title_label().text() == "a · прошлый запуск"
     assert view.console().state_label().text() == "не запущен"
     assert "прошлый сеанс" in view.console().journal_panel().text()
+
+
+# -- Task 6 (v3.1): крестик очистки и подсказка Ctrl+F в поле поиска --------
+
+
+def test_search_hint_and_clear_button(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    view = harness.view()
+    qtbot.addWidget(view)
+    assert view.search().placeholderText() == "Поиск: начните вводить имя проекта (Ctrl+F)"
+    view.search().setText("x")
+    view.search().clear_action().trigger()
+    assert view.search().text() == ""
+
+
+# -- Task 7 (v3.1.1): Alt+Enter изменяет запись/группу, Insert добавляет запись ---
+
+
+def test_alt_enter_edits_current_project(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    p = _add(harness, "a")
+    view = harness.view()
+    with qtbot.waitExposed(view):
+        view.show()
+    _select(view, p.id)
+    view.tree().setFocus()
+    edited: list[str] = []
+    monkeypatch.setattr(view, "edit_project", edited.append)
+    launched: list[str] = []
+    monkeypatch.setattr(view, "launch_id", launched.append)
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Return, Qt.KeyboardModifier.AltModifier)
+    assert edited == [p.id]
+    assert launched == []  # Alt+Enter — правка, не запуск EDT
+
+
+def test_alt_enter_renames_current_group(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    group = harness.workspace.add_group("g", None)
+    view = harness.view()
+    with qtbot.waitExposed(view):
+        view.show()
+    _select_group(view, group.id)
+    view.tree().setFocus()
+    renamed: list[str] = []
+    monkeypatch.setattr(view, "rename_group", renamed.append)
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Return, Qt.KeyboardModifier.AltModifier)
+    assert renamed == [group.id]
+
+
+def test_plain_enter_still_launches(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    p = _add(harness, "a")
+    view = harness.view()
+    qtbot.addWidget(view)
+    _select(view, p.id)
+    launched: list[str] = []
+    monkeypatch.setattr(view, "launch_id", launched.append)
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Return)
+    assert launched == [p.id]
+
+
+def test_insert_adds_project_into_group_of_current_row(  # type: ignore[no-untyped-def]
+    harness: Harness, qtbot, monkeypatch
+) -> None:
+    group = harness.workspace.add_group("g", None)
+    p = _add(harness, "a", group_id=group.id)
+    view = harness.view()
+    qtbot.addWidget(view)
+    _select(view, p.id)
+    added: list[str | None] = []
+    monkeypatch.setattr(view, "add_project", lambda group_id, workspace="": added.append(group_id))
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Insert)
+    assert added == [group.id]
+
+
+def test_insert_in_search_field_is_not_captured(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    view = harness.view()
+    qtbot.addWidget(view)
+    added: list[object] = []
+    monkeypatch.setattr(view, "add_project", lambda *args, **kwargs: added.append(args))
+    qtbot.keyClick(view.search(), Qt.Key.Key_Insert)
+    assert added == []
+
+
+def test_edt_shortcut_reference_matches_registered_shortcuts(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    """`EDT_SHORTCUTS` — то, что вьюха реально регистрирует (как у баз, T-11 п. 3)."""  # noqa: RUF002
+    view = harness.view()
+    qtbot.addWidget(view)
+    registered = {shortcut.key().toString() for shortcut in view.findChildren(QShortcut)}
+    expected = {
+        QKeySequence(sequence).toString() for spec in EDT_SHORTCUTS for sequence in spec.sequences
+    }
+    assert expected == registered, (expected - registered, registered - expected)

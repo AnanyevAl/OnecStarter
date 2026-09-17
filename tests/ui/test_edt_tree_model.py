@@ -3,6 +3,7 @@
 from itertools import count
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QStandardItemModel
 from PySide6.QtWidgets import QApplication
 
@@ -10,6 +11,7 @@ from onecstarter.domain.edt import EdtInstallation, EdtProject
 from onecstarter.services.edt import EdtScan, EdtWorkspace
 from onecstarter.ui.edt.tree_model import (
     CLI_BUSY_HINT,
+    HEAP_DEFAULT_HINT,
     ID_ROLE,
     KIND_GROUP,
     KIND_PROJECT,
@@ -21,7 +23,9 @@ from onecstarter.ui.edt.tree_model import (
 from onecstarter.ui.theme import DARK
 
 INSTALLED = [
-    EdtInstallation("2025.2.6+4", Path(r"C:\e\1cedt.exe"), Path(r"C:\j\bin"), "", 17, "auto")
+    EdtInstallation(
+        "2025.2.6+4", Path(r"C:\e\1cedt.exe"), Path(r"C:\j\bin"), "-Xmx8192m", 17, "auto"
+    )
 ]
 
 
@@ -144,7 +148,7 @@ def test_running_icon_and_missing_dir_after_scan(tmp_path: Path, qapp: QApplicat
     assert name.text() == "Розница" + MISSING_SUFFIX
     assert not name.icon().isNull()
     assert "Запущен (PID 42)" in name.toolTip()
-    assert model.columnCount() == 2
+    assert model.columnCount() == 3
 
 
 def test_no_status_before_scan(tmp_path: Path) -> None:
@@ -175,3 +179,24 @@ def test_cli_busy_icon_after_mark(tmp_path: Path, qapp: QApplication) -> None:
     idle = build_edt_model(ws, "", DARK)
     assert idle.item(0, 0).icon().isNull()
     assert CLI_BUSY_HINT not in idle.item(0, 0).toolTip()
+
+
+def test_memory_column_shows_effective_xmx(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path)
+    ws.add_project(EdtProject("", "Своя", r"D:\a", edt_version="2025.2.6+4", vm_args="-Xmx6144m"))
+    ws.add_project(EdtProject("", "Из установки", r"D:\b", edt_version="2025.2.6+4"))
+    ws.add_project(EdtProject("", "Без версии", r"D:\c"))
+    model = build_edt_model(ws, "", DARK)
+    assert model.horizontalHeaderItem(2).text() == "Память"
+    assert model.item(0, 2).text() == "6144 МБ"
+    assert model.item(1, 2).text() == "8192 МБ"
+    assert model.item(2, 2).text() == "—"
+    assert model.item(2, 2).toolTip() == HEAP_DEFAULT_HINT
+    assert model.item(0, 2).textAlignment() & Qt.AlignmentFlag.AlignRight
+
+
+def test_group_row_has_empty_memory_cell(tmp_path: Path) -> None:
+    ws = _workspace(tmp_path)
+    ws.add_group("2025", None)
+    model = build_edt_model(ws, "", DARK)
+    assert model.item(0, 2).text() == ""

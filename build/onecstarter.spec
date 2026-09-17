@@ -8,6 +8,7 @@ one-dir, два exe из одного Analysis: OneCStarter.exe (windowed)
 import tomllib
 from pathlib import Path
 
+from PyInstaller.utils.hooks import copy_metadata
 from PyInstaller.utils.win32.versioninfo import (
     FixedFileInfo,
     StringFileInfo,
@@ -59,12 +60,17 @@ a = Analysis(
     pathex=[str(ROOT / "src")],
     # registry.toml читается через importlib.resources (platform_1c/registry.py) —
     # не .py, PyInstaller не находит такие файлы анализом импортов, нужен явный datas.
+    # copy_metadata("onecstarter") — версия в «О программе» (ui/about.py) читается
+    # из метаданных пакета (importlib.metadata.version); без этой строки frozen-сборка
+    # не несёт .dist-info и показала бы «неизвестна» — гейт `smoke: version=` в
+    # build/smoke.py ловит регрессию.
     datas=[
         (
             str(ROOT / "src" / "onecstarter" / "platform_1c" / "registry.toml"),
             "onecstarter/platform_1c",
         )
-    ],
+    ]
+    + copy_metadata("onecstarter"),
     # keyring находит бэкенды через entry points — анализ импортов PyInstaller
     # их не видит, и без этой строки frozen-сборка молча уходит в пустой бэкенд
     # (спека v2.2, §9). Гейт — строка `smoke: keyring=ok` в самопроверке.

@@ -1,3 +1,4 @@
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QLabel, QWidget
 
 from onecstarter.ui import theme
@@ -166,6 +167,33 @@ def test_sections_sit_together_at_the_top(qtbot):
         for i in range(layout.count())
     ]
     assert kinds == ["widget", "widget", "spacer"]
+
+
+def test_ctrl_f_focuses_search_of_current_section(qtbot):
+    """Одна комбинация Ctrl+F на окно — QShortcut оболочки, не раздела (спека v3.1, §6).
+
+    Два QShortcut с одним и тем же Ctrl+F в разных разделах Qt счёл бы
+    неоднозначными и не сработал бы ни один — отсюда шов в оболочке,
+    тот же getattr(...)/callable(...), что уже был в show_and_focus_search.
+
+    Контекст `WindowShortcut` (умолчание QShortcut) требует именно АКТИВНОГО
+    окна, а не просто видимого/экспонированного — на offscreen-платформе
+    show()+waitExposed() этого не гарантирует (замер: isActiveWindow() ==
+    False сразу после них), поэтому окно явно активируется и тест ждёт
+    события активации, прежде чем слать хоткей.
+    """  # noqa: RUF002
+    section = _StubSection()
+    window = MainWindow([("Базы", section), ("Серверы", QLabel("без поиска"))])
+    qtbot.addWidget(window)
+    window.show()
+    qtbot.waitExposed(window)
+    with qtbot.waitActive(window, timeout=2000):
+        window.activateWindow()
+    qtbot.keyClick(window, Qt.Key.Key_F, Qt.KeyboardModifier.ControlModifier)
+    assert section.focus_calls == 1
+    window.show_section(1)
+    qtbot.keyClick(window, Qt.Key.Key_F, Qt.KeyboardModifier.ControlModifier)
+    assert section.focus_calls == 1  # у «Серверов» поиска нет — ничего не произошло  # noqa: RUF003
 
 
 def test_section_icon_follows_the_palette(qtbot):
