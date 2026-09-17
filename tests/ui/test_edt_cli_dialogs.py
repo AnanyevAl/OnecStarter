@@ -90,6 +90,23 @@ class TestImportDialog:
         dialog.existing_dir_edit().editingFinished.emit()
         assert spy.calls == [r"D:\typed"]
 
+    def test_enter_in_dir_field_scans_but_does_not_accept(self, qtbot) -> None:  # type: ignore[no-untyped-def]
+        # Финальное ревью v3.1.1: Enter ради списка не должен запускать импорт всего найденного.
+        # show()+waitExposed — иначе Enter не долетает до QDialog::keyPressEvent
+        # (default-кнопка активна только у активного окна): без show() тест зелёный  # noqa: RUF003
+        # и на сломанной реализации (эффект как у _show_exposed).  # noqa: RUF003
+        dialog, spy = _dialog(qtbot, project_dir="")
+        with qtbot.waitExposed(dialog):
+            dialog.show()
+        accepted: list[bool] = []
+        dialog.accepted.connect(lambda: accepted.append(True))
+        dialog.existing_dir_edit().setText(r"D:\typed")
+        dialog.existing_dir_edit().setFocus()
+        qtbot.keyClick(dialog.existing_dir_edit(), Qt.Key.Key_Return)
+        assert spy.calls == [r"D:\typed"]
+        assert accepted == []
+        assert dialog.list_widget().count() == 3
+
     def test_select_all_and_none_skip_bound(self, qtbot) -> None:  # type: ignore[no-untyped-def]
         dialog, _ = _dialog(qtbot)
         dialog.select_none_button().click()

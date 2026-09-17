@@ -4017,7 +4017,8 @@ access violation`, T-12 п. 15, не проявился — повтор не п
 | 3 | Домен: кандидаты, `cli_import_commands`, `-file`/`cli_ini_text` | `a11d1e2` |
 | 4 | Сервис: `scan_projects`, `start_script` | `274d6b1` |
 | 5 | Диалог и вьюха (раунд правок ревью: try/finally в `_rescan`) | `9c9bce7`, `b6fede8`, `1e9172f`, `0d3b071` |
-| 6 | Документы, 3.1.1, сборка | этот коммит |
+| 6 | Документы, 3.1.1, сборка | `2d3f872`, `2498e1c`, `1c49b16` |
+| 7 | Волна финального ревью (3 Important, 6 Minor; Э12 шаг 5 — ini с LF) | `84dcf1f`, коммит волны — следующий за `84dcf1f` |
 
 Коммит 1 нёс протокол Э12 и черновой скрипт запуска на PowerShell; после проведения Э12
 (задача 2) скрипт заменён на `research/t20-edt-import.py` — воспроизводимый прогон без
@@ -4045,6 +4046,12 @@ access violation`, T-12 п. 15, не проявился — повтор не п
 access violation`, T-12 п. 15, не проявился — повтор не понадобился). `ruff check .` —
 `All checks passed!`. `mypy` — `Success: no issues found in 223 source files`.
 
+После волны финального ревью: `2508 passed in 452.66s` (`e:/tmp/v311-full-2.log`; +2 теста
+к прежним 2506 — `test_enter_in_dir_field_scans_but_does_not_accept`,
+`test_undecodable_installation_ini_is_edt_error`; флейк T-12 п. 15 не проявился, повтор не
+понадобился). `ruff check .` — `All checks passed!`. `mypy` — `Success: no issues found in
+223 source files`.
+
 ### Мутационные проверки (17.09.2026)
 
 Протокол — CLAUDE.md, «Мутационная проверка тестов»: мутация правкой файла → прогон
@@ -4062,6 +4069,27 @@ access violation`, T-12 п. 15, не проявился — повтор не п
 были другие незакоммиченные изменения того же раунда); повторный прогон целевых тестов
 после каждого отката — зелёный.
 
+### Мутационные проверки волны финального ревью (17.09.2026)
+
+Тот же протокол. Подробности —
+[final-fix-wave-report.md](../.superpowers/sdd/2026-09-16-v311-cli-import-projects/final-fix-wave-report.md).
+
+| # | Правка | Тест | Что сломано | Чем упал |
+| --- | --- | --- | --- | --- |
+| 4 | Important 2 | `test_enter_in_dir_field_scans_but_does_not_accept` | `_ScanLineEdit.keyPressEvent` — перехват снят, только `super().keyPressEvent(event)` | `assert accepted == []` → `AssertionError: assert [True] == []` |
+| 5 | Important 3 | `test_undecodable_installation_ini_is_edt_error` | `start_script` — `except (OSError, UnicodeDecodeError)` блока чтения ini вернули к `except OSError` | `UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte` (не поймано, ушло из `_read_text` наружу) |
+| 6 | Minor 3 (запись) | `test_script_write_failure_is_edt_error` | `start_script` — `except OSError` блока записи скрипта/ini заменён на `except ValueError` | `FileExistsError: [WinError 183] Невозможно создать файл, так как он уже существует: '...\logs'` (не поймано) |
+| 7 | Minor 3 (чтение) | `test_unreadable_installation_ini_is_edt_error` | `start_script` — `except (OSError, UnicodeDecodeError)` блока чтения ini заменён на `except ValueError` | `FileNotFoundError: C:\edt\1c-edt-2025.2.6+4-x86_64\1cedt.ini` (не поймано) |
+
+Находка при мутации 4: дословный текст теста из ревью (`qtbot.keyClick` без `dialog.show()`)
+на сломанной реализации остаётся зелёным — без показанного и активного окна `QPushButton`
+не получает `isDefault()`, и Enter не долетает до `QDialog::keyPressEvent` независимо от
+перехвата в `_ScanLineEdit` (тот же эффект, что у `_show_exposed` в `test_bases_view.py`,
+только для QDialog, не QShortcut). Тест доработан: `with qtbot.waitExposed(dialog): dialog.show()`
+и `existing_dir_edit().setFocus()` перед `keyClick` — после доработки мутация 4 ловится
+(таблица выше), исходный текст без доработки мутацию не поймал ни разу за два прогона.
+Все четыре отката подтверждены; повторный прогон целевых тестов после каждого — зелёный.
+
 ### Гейты сборки 3.1.1 (17.09.2026)
 
 - Полный прогон: `2506 passed`; ruff `All checks passed!`; mypy `Success: no issues found in 223 source files`.
@@ -4069,5 +4097,13 @@ access violation`, T-12 п. 15, не проявился — повтор не п
   `smoke: edt=<n>`, `smoke: version=3.1.1` — `build/smoke.py` сверяет их по `onecstarter.log`,
   рантайм-логу собранного приложения во временном `APPDATA`, не по консольному выводу сборки) →
   `dist/OneCStarter-3.1.1-portable.zip` 54,4 МБ, `dist/OneCStarter-3.1.1-setup.exe` 36,1 МБ.
+- Пересборка после волны финального ревью: полный прогон `2508 passed in 452.66s`; ruff
+  `All checks passed!`; mypy `Success: no issues found in 223 source files`; `build/build.ps1` →
+  `smoke: OK` → `dist/OneCStarter-3.1.1-portable.zip` 54,4 МБ (57 062 731 байт),
+  `dist/OneCStarter-3.1.1-setup.exe` 36,1 МБ (37 856 298 байт) — размеры не изменились.
 - Ручной smoke заказчика — после подтверждения; слияние в `master`, тег `v3.1.1`, push — тем же
   решением.
+- Ручной smoke заказчика (обязателен до слияния): запись с клоном в каталоге проекта →
+  «Импортировать проекты…» — каталог подставлен, список найден, привязанные недоступны;
+  импорт двух проектов — консоль «Импортировать (проектов: 2)», код 0; повторное открытие —
+  оба недоступны. Э12 шаг 5 (ini с LF, код 0) — уже в протоколе. Итог: ____

@@ -247,10 +247,10 @@ class EdtCli:
         reason = self.unavailable_reason(project_id)
         if reason:
             raise EdtError(reason)
-        _project, installation, jvm = self._resolve(project_id)
+        _, installation, jvm = self._resolve(project_id)
         try:
             installation_ini = self._read_text(installation.exe.parent / INSTALLATION_INI)
-        except OSError as error:
+        except (OSError, UnicodeDecodeError) as error:
             raise EdtError(
                 f"Не удалось прочитать {INSTALLATION_INI} установки: {error}"  # noqa: RUF001
             ) from error
@@ -264,7 +264,7 @@ class EdtCli:
             raise EdtError(f"Не удалось записать скрипт CLI: {error}") from error  # noqa: RUF001
         events = [f"▶ {label}: скрипт {script.name}, команд: {len(commands)}", *commands]
         return self._start(
-            project_id, label, "; ".join(commands), events, _by_script(script, ini), ""
+            project_id, label, "\n".join(commands), events, _by_script(script, ini), ""
         )
 
     def script_path(self, project_id: str) -> Path:

@@ -162,7 +162,7 @@ class Harness:
         ids = count(1)
         self.spawned: list[tuple[LaunchCommand, Path]] = []
         self.jobs: list[FakeJob] = []
-        self.installation_ini: str | None = INSTALL_INI
+        self.installation_ini: str | bytes | None = INSTALL_INI
         self.ini_reads: list[Path] = []
         self.workspace = EdtWorkspace(
             tmp_path / "edt.json",
@@ -206,6 +206,8 @@ class Harness:
         self.ini_reads.append(path)
         if self.installation_ini is None:
             raise FileNotFoundError(path)
+        if isinstance(self.installation_ini, bytes):
+            return self.installation_ini.decode("utf-8")
         return self.installation_ini
 
     def project(self, **overrides: object) -> EdtProject:
@@ -397,6 +399,15 @@ class TestStartScript:
             h.cli.start_script(p.id, "Импортировать (проектов: 2)", self.COMMANDS)
         assert h.spawned == []
         assert not h.cli.script_path(p.id).exists()
+        assert h.workspace.status(p.id).cli_busy is False
+
+    def test_undecodable_installation_ini_is_edt_error(self, tmp_path: Path) -> None:
+        h = Harness(tmp_path)
+        h.installation_ini = b"\xff\xfe"  # cp1251-мусор в 1cedt.ini, правленном руками
+        p = h.project()
+        with pytest.raises(EdtError, match=r"1cedt\.ini"):
+            h.cli.start_script(p.id, "Импортировать (проектов: 2)", self.COMMANDS)
+        assert h.spawned == []
         assert h.workspace.status(p.id).cli_busy is False
 
 

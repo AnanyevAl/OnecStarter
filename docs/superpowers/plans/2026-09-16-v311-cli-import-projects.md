@@ -25,7 +25,8 @@
   именем на точку пропускаются; корень — уровень 0, проверяются уровни 0…`SCAN_MAX_DEPTH` = 3
   включительно; `OSError` на подкаталоге — пропуск, на корне — пустой список; сортировка по
   `relative` без учёта регистра; `relative` — через `/`, корень-проект — имя его каталога.
-- **Имя проекта — по каталогу, не из `.project`** (спека факт 2, [Ф] Э6).
+- **Имя проекта в реестре после `import` — из `.project`** (спека факт 2, [Ф] Э12); в
+  списке диалога — каталог относительно корня, `.project` не читаем.
 - **Тексты дословно**: заголовок «Импортировать проекты (CLI EDT)»; переключатель «Проекты EDT в
   каталоге»; placeholder «каталог с проектами EDT, например клон репозитория»; суффикс
   « — уже в рабочей области»; строки состояния «Найдено N, уже в рабочей области M»,
@@ -513,7 +514,8 @@ class ProjectCandidate:
     """Каталог с `.project`, найденный `services/edt_cli.py::scan_projects` (спека v3.1.1 §2).
 
     `relative` — путь от корня сканирования через `/` (корень-проект — имя его каталога);
-    имя из `.project` не читаем: CLI регистрирует проект по каталогу ([Ф] Э6).
+    имя из `.project` не читаем: в списке — каталог относительно корня, его выбирает
+    пользователь; под именем из `.project` проект появится в EDT после `import` ([Ф] Э12).
     """  # noqa: RUF002
 
     path: str
@@ -569,7 +571,7 @@ def build_cli_script_command(
 def cli_ini_text(installation_ini: str, jvm_dir: Path) -> str:
     """Свой ini для `-ini-file` ([Ф] Э12): строки `1cedt.ini` установки без `-Dosgi.debug…`
     (так же делает обёртка, копируя ini во `%TEMP%`) и без прежней пары `-vm`/<путь>,
-    плюс `-vm` и `<bin JDK>` перед `-vmargs`; нет `-vmargs` — в конец. LF."""  # noqa: RUF002
+    плюс `-vm` и `<bin JDK>` перед `-vmargs`; нет `-vmargs` — в конец. LF."""
     lines: list[str] = []
     skip_path = False
     inserted = False
@@ -1329,6 +1331,7 @@ import os
 from collections.abc import Callable, Sequence
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -1362,6 +1365,22 @@ NONE_SELECTED = "Не выбран ни один проект"  # noqa: RUF001
 PLACEHOLDER = "каталог с проектами EDT, например клон репозитория"
 
 
+class _ScanLineEdit(QLineEdit):
+    """Enter — только сканирование: без этого QDialog нажал бы ОК (default-кнопку)
+    на список, которого пользователь ещё не видел (финальное ревью v3.1.1)."""  # noqa: RUF002
+
+    def __init__(self, on_enter: Callable[[], None], text: str = "") -> None:
+        super().__init__(text)
+        self._on_enter = on_enter
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 — имя Qt
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self._on_enter()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class CliImportDialog(QDialog):
     def __init__(
         self,
@@ -1384,9 +1403,11 @@ class CliImportDialog(QDialog):
         self._existing = QRadioButton("Проекты EDT в каталоге")
         self._xml = QRadioButton("Файлы конфигурации XML")
         self._existing.setChecked(True)
-        self._existing_dir = QLineEdit(project_dir)
+        self._existing_dir = _ScanLineEdit(self._rescan, project_dir)
         self._existing_dir.setPlaceholderText(PLACEHOLDER)
-        # Не textChanged: обход трёх уровней от `E:\` не мгновенный
+        # Не textChanged: обход трёх уровней от `E:\` не мгновенный. Enter в поле —
+        # только сканирование, диалог не принимается (иначе ОК-по-умолчанию запустил
+        # бы импорт списка, которого пользователь не видел) — класс _ScanLineEdit выше.
         self._existing_dir.editingFinished.connect(self._rescan)
         self._existing_browse = QPushButton("Обзор…")
         self._existing_browse.clicked.connect(self._browse_existing)

@@ -9,6 +9,7 @@ import os
 from collections.abc import Callable, Sequence
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeyEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -42,6 +43,22 @@ NONE_SELECTED = "Не выбран ни один проект"  # noqa: RUF001
 PLACEHOLDER = "каталог с проектами EDT, например клон репозитория"  # noqa: RUF001
 
 
+class _ScanLineEdit(QLineEdit):
+    """Enter — только сканирование: без этого QDialog нажал бы ОК (default-кнопку)
+    на список, которого пользователь ещё не видел (финальное ревью v3.1.1)."""  # noqa: RUF002
+
+    def __init__(self, on_enter: Callable[[], None], text: str = "") -> None:
+        super().__init__(text)
+        self._on_enter = on_enter
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 — имя Qt
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self._on_enter()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
 class CliImportDialog(QDialog):
     def __init__(
         self,
@@ -64,7 +81,7 @@ class CliImportDialog(QDialog):
         self._existing = QRadioButton("Проекты EDT в каталоге")
         self._xml = QRadioButton("Файлы конфигурации XML")
         self._existing.setChecked(True)
-        self._existing_dir = QLineEdit(project_dir)
+        self._existing_dir = _ScanLineEdit(self._rescan, project_dir)
         self._existing_dir.setPlaceholderText(PLACEHOLDER)
         # Не textChanged: обход трёх уровней от `E:\` не мгновенный  # noqa: RUF003
         self._existing_dir.editingFinished.connect(self._rescan)
