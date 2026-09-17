@@ -7,13 +7,17 @@ import pytest
 from onecstarter.domain.edt_cli import (
     CliQuoteError,
     ImportForm,
+    ProjectCandidate,
     WorkspaceEntry,
     build_cli_command,
+    build_cli_script_command,
     cli_build_args,
-    cli_import_args,
+    cli_import_commands,
+    cli_ini_text,
     cli_project_args,
     cli_validate_args,
     location_blob,
+    mark_in_workspace,
     parse_project_location,
     quote_cli_arg,
     workspace_projects,
@@ -65,17 +69,23 @@ def test_fixed_commands() -> None:
     assert cli_project_args() == "project"
 
 
-class TestImportArgs:
-    def test_existing_project(self) -> None:
-        assert cli_import_args(ImportForm(existing_project_dir=r"D:\src\proj")) == (
-            "import --project 'D:/src/proj'"
-        )
+class TestImportCommands:
+    def test_one_command_per_existing_project_in_order(self) -> None:
+        form = ImportForm(existing_project_dirs=(r"D:\repo\src\cfe_b", r"D:\repo\src\cf a"))
+        assert cli_import_commands(form) == [
+            "import --project 'D:/repo/src/cfe_b'",
+            "import --project 'D:/repo/src/cf a'",
+        ]
+
+    def test_blank_entries_skipped(self) -> None:
+        form = ImportForm(existing_project_dirs=("", "  D:\\a  "))
+        assert cli_import_commands(form) == ["import --project 'D:/a'"]
 
     def test_xml_into_project_dir_minimal(self) -> None:
         form = ImportForm(configuration_files=r"D:\xml", project_dir=r"D:\edt\ws\new")
-        assert cli_import_args(form) == (
+        assert cli_import_commands(form) == [
             "import --configuration-files 'D:/xml' --project 'D:/edt/ws/new'"
-        )
+        ]
 
     def test_xml_into_named_project_full(self) -> None:
         form = ImportForm(
@@ -85,34 +95,62 @@ class TestImportArgs:
             platform_version="8.3.24",
             build_after=True,
         )
-        assert cli_import_args(form) == (
+        assert cli_import_commands(form) == [
             "import --configuration-files 'D:/xml' --project-name 'ext_a' "
             "--base-project-name 'base' --version 8.3.24 --build"
-        )
+        ]
 
     def test_both_variants_rejected(self) -> None:
         with pytest.raises(ValueError, match="один вариант"):
-            cli_import_args(ImportForm(existing_project_dir=r"D:\a", configuration_files=r"D:\xml"))
+            cli_import_commands(
+                ImportForm(existing_project_dirs=(r"D:\a",), configuration_files=r"D:\xml")
+            )
 
     def test_xml_without_target_rejected(self) -> None:
         with pytest.raises(ValueError, match="каталог или имя"):
-            cli_import_args(ImportForm(configuration_files=r"D:\xml"))
+            cli_import_commands(ImportForm(configuration_files=r"D:\xml"))
 
     def test_xml_with_both_targets_rejected(self) -> None:
         with pytest.raises(ValueError, match="каталог или имя"):
-            cli_import_args(
+            cli_import_commands(
                 ImportForm(configuration_files=r"D:\xml", project_dir=r"D:\p", project_name="n")
             )
 
     def test_empty_form_rejected(self) -> None:
-        with pytest.raises(ValueError):
-            cli_import_args(ImportForm())
+        with pytest.raises(ValueError, match="Укажите каталог"):
+            cli_import_commands(ImportForm())
+
+    def test_quote_in_project_path_rejected(self) -> None:
+        with pytest.raises(CliQuoteError):
+            cli_import_commands(ImportForm(existing_project_dirs=(r"D:\O'Reilly",)))
 
     def test_bad_platform_version_rejected(self) -> None:
         with pytest.raises(ValueError, match=r"8\.3\.x"):
-            cli_import_args(
+            cli_import_commands(
                 ImportForm(configuration_files=r"D:\xml", project_name="n", platform_version="8;3")
             )
+
+
+class TestMarkInWorkspace:
+    ENTRIES = (
+        WorkspaceEntry("cf", r"D:\repo\src\cf", True),
+        WorkspaceEntry("junk", r"D:\ws\junk", False),  # без .project, но привязан
+    )
+
+    def test_matches_ignore_case_and_slashes(self) -> None:
+        candidates = [
+            ProjectCandidate("d:/REPO/src/CF", "src/CF"),
+            ProjectCandidate(r"D:\repo\src\cfe_a", "src/cfe_a"),
+            ProjectCandidate(r"D:\ws\junk", "junk"),
+        ]
+        marked = mark_in_workspace(candidates, self.ENTRIES)
+        assert [c.in_workspace for c in marked] == [True, False, True]
+        # порядок и поля целы
+        assert [c.relative for c in marked] == ["src/CF", "src/cfe_a", "junk"]
+
+    def test_no_entries_marks_nothing(self) -> None:
+        marked = mark_in_workspace([ProjectCandidate(r"D:\a", "a")], [])
+        assert marked == [ProjectCandidate(r"D:\a", "a", False)]
 
 
 class TestValidateArgs:
@@ -179,6 +217,49 @@ class TestBuildCliCommand:
     def test_command_with_single_quotes_survives_double_quoting(self) -> None:
         command = build_cli_command(CLI, r"D:\ws", "import --project 'D:/a b'", JDK, "", "")
         assert '-command "import --project \'D:/a b\'"' in command.arguments
+
+    def test_script_mode_ini_then_vmargs_then_file(self) -> None:
+        # [Ф] Э12: у обёртки нет -vm — JDK в ini; -ini-file и -vmargs ДО -file  # noqa: RUF003
+        script = Path(r"C:\Users\u u\AppData\Roaming\OneCStarter\logs\edt\id-1.cli")
+        ini = script.with_suffix(".ini")
+        command = build_cli_script_command(CLI, r"D:\ws", script, ini, "-Xmx8192m", "-Xmx4g")
+        assert command.executable == CLI
+        assert command.arguments == (
+            f'-data "D:\\ws" -ini-file "{ini}" -vmargs -Xmx8192m -Djava.library.path= -Xmx4g '
+            f'-file "{script}"'
+        )
+        assert "-vm " not in command.arguments and "-command" not in command.arguments
+
+    def test_script_mode_empty_vm_args_keeps_library_path(self) -> None:
+        # Список -vmargs не пуст никогда: иначе обёртка приняла бы -file за аргумент JVM
+        command = build_cli_script_command(
+            CLI, r"D:\ws", Path(r"D:\s.cli"), Path(r"D:\s.ini"), "", ""
+        )
+        assert '-vmargs -Djava.library.path= -file "D:\\s.cli"' in command.arguments
+
+
+class TestCliIniText:
+    INSTALL = (
+        "-startup\nplugins/launcher.jar\n-showsplash\nx\n-vmargs\n"
+        "-Dosgi.requiredJavaVersion=17\n-Dosgi.debug=.options\n-Xmx4096m\n"
+    )
+
+    def test_inserts_vm_before_vmargs_and_drops_osgi_debug(self) -> None:
+        assert cli_ini_text(self.INSTALL, JDK) == (
+            f"-startup\nplugins/launcher.jar\n-showsplash\nx\n-vm\n{JDK}\n-vmargs\n"
+            "-Dosgi.requiredJavaVersion=17\n-Xmx4096m\n"
+        )
+
+    def test_replaces_existing_vm_pair(self) -> None:
+        assert cli_ini_text("-vm\nC:/old/bin\n-vmargs\n-Xmx1g\n", JDK) == (
+            f"-vm\n{JDK}\n-vmargs\n-Xmx1g\n"
+        )
+
+    def test_without_vmargs_appends_vm(self) -> None:
+        assert cli_ini_text("-startup\na.jar\n", JDK) == f"-startup\na.jar\n-vm\n{JDK}\n"
+
+    def test_crlf_input_gives_lf(self) -> None:
+        assert cli_ini_text("-vmargs\r\n-Xmx1g\r\n", JDK) == f"-vm\n{JDK}\n-vmargs\n-Xmx1g\n"
 
 
 class TestWrapConsoleUtf8:

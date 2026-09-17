@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from onecstarter.domain.edt_cli import ImportForm, cli_import_args
+from onecstarter.domain.edt_cli import ImportForm, cli_import_commands
 from onecstarter.ui.dialogs.buttons import ButtonKind, russian_button_box
 from onecstarter.ui.edt.dialog import browse_for_directory
 
@@ -88,7 +88,8 @@ class CliImportDialog(QDialog):
 
     def form(self) -> ImportForm:
         if self._existing.isChecked():
-            return ImportForm(existing_project_dir=self._existing_dir.text().strip())
+            text = self._existing_dir.text().strip()
+            return ImportForm(existing_project_dirs=(text,) if text else ())
         return ImportForm(
             configuration_files=self._xml_dir.text().strip(),
             project_dir=self._project_dir.text().strip(),
@@ -114,7 +115,7 @@ class CliImportDialog(QDialog):
         for widget in (self._existing_dir, self._existing_browse):
             widget.setEnabled(not xml)
         try:
-            cli_import_args(self.form())
+            cli_import_commands(self.form())
         except ValueError as error:
             self._error.setText(str(error))
             self.ok_button().setEnabled(False)

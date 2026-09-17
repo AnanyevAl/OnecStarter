@@ -13,7 +13,7 @@ class TestImportDialog:
         assert dialog.ok_button().isEnabled() is False
         dialog.existing_dir_edit().setText(r"D:\src\proj")
         assert dialog.ok_button().isEnabled() is True
-        assert dialog.form() == ImportForm(existing_project_dir=r"D:\src\proj")
+        assert dialog.form() == ImportForm(existing_project_dirs=(r"D:\src\proj",))
 
     def test_xml_variant_fields(self, qtbot) -> None:  # type: ignore[no-untyped-def]
         dialog = CliImportDialog(choose_directory=lambda: "")
@@ -41,7 +41,7 @@ class TestImportDialog:
         dialog.xml_radio().setChecked(True)
         dialog.xml_dir_edit().setText(r"D:\xml")
         dialog.project_dir_edit().setText(r"D:\new")
-        assert dialog.form().existing_project_dir == ""
+        assert dialog.form().existing_project_dirs == ()
         assert dialog.error_text() == ""
 
     def test_single_quote_reports_error(self, qtbot) -> None:  # type: ignore[no-untyped-def]

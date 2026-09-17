@@ -42,7 +42,7 @@ from PySide6.QtWidgets import (
 from onecstarter.domain.edt import EdtInstallation, EdtProject
 from onecstarter.domain.edt_cli import (
     cli_build_args,
-    cli_import_args,
+    cli_import_commands,
     cli_project_args,
     cli_validate_args,
     workspace_projects,
@@ -675,7 +675,9 @@ class EdtView(QWidget):
     def cli_import(self, project_id: str) -> None:
         dialog = CliImportDialog(choose_directory=self._choose_directory, parent=self)
         if self._run_dialog(dialog):
-            self._start_cli(project_id, CLI_IMPORT.rstrip("…"), cli_import_args(dialog.form()))
+            self._start_cli(
+                project_id, CLI_IMPORT.rstrip("…"), cli_import_commands(dialog.form())[0]
+            )
 
     def cli_validate(self, project_id: str) -> None:
         project = self._workspace.project(project_id)
