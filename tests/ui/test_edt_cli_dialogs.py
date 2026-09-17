@@ -1,3 +1,4 @@
+import pytest
 from PySide6.QtCore import Qt
 
 from onecstarter.domain.edt_cli import ImportForm, ProjectCandidate, WorkspaceEntry
@@ -145,6 +146,24 @@ class TestImportDialog:
         dialog.project_dir_edit().setText(r"D:\new")
         assert dialog.form().existing_project_dirs == ()
         assert dialog.error_text() == ""
+
+    def test_scan_failure_leaves_list_responsive(self, qtbot) -> None:  # type: ignore[no-untyped-def]
+        dialog, _ = _dialog(qtbot)
+
+        def broken(root: str) -> list[ProjectCandidate]:
+            raise RuntimeError("scan")
+
+        dialog._scan = broken  # подмена точки инъекции после открытия
+        dialog.existing_dir_edit().setText(r"D:\other")
+        # Не editingFinished.emit(): PySide6 вызывает слот синхронно, но исключение  # noqa: RUF003
+        # из слота Qt перехватывает своим хуком (печатает и гасит) — pytest.raises
+        # его не увидит. Зовём _rescan() напрямую — тот же код пути.  # noqa: RUF003
+        with pytest.raises(RuntimeError, match="scan"):
+            dialog._rescan()
+        assert dialog.list_widget().signalsBlocked() is False
+        dialog.select_none_button().click()
+        assert dialog.ok_button().isEnabled() is False
+        assert dialog.error_text() == NONE_SELECTED
 
 
 PATHS = [r"D:\ws\conf", r"D:\ws\conf.ext"]

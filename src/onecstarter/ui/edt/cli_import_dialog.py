@@ -164,32 +164,39 @@ class CliImportDialog(QDialog):
     def _rescan(self) -> None:
         root = self._existing_dir.text().strip()
         self._list.blockSignals(True)  # itemChanged на каждом addItem — лишние _refresh
-        self._list.clear()
-        self._candidates = []
-        status = ""
-        if root:
-            self._candidates = mark_in_workspace(self._scan(root), self._entries)
-            for candidate in self._candidates:
-                suffix = IN_WORKSPACE_SUFFIX if candidate.in_workspace else ""
-                item = QListWidgetItem(candidate.relative + suffix)
-                item.setToolTip(candidate.path)
-                if candidate.in_workspace:
-                    item.setFlags(Qt.ItemFlag.NoItemFlags)
-                    item.setCheckState(Qt.CheckState.Unchecked)
+        try:
+            self._list.clear()
+            self._candidates = []
+            status = ""
+            if root:
+                self._candidates = mark_in_workspace(self._scan(root), self._entries)
+                for candidate in self._candidates:
+                    suffix = IN_WORKSPACE_SUFFIX if candidate.in_workspace else ""
+                    item = QListWidgetItem(candidate.relative + suffix)
+                    item.setToolTip(candidate.path)
+                    if candidate.in_workspace:
+                        item.setFlags(Qt.ItemFlag.NoItemFlags)
+                        item.setCheckState(Qt.CheckState.Unchecked)
+                    else:
+                        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                        item.setCheckState(Qt.CheckState.Checked)
+                    self._list.addItem(item)
+                bound = sum(1 for candidate in self._candidates if candidate.in_workspace)
+                if self._candidates:
+                    status = f"Найдено {len(self._candidates)}, уже в рабочей области {bound}"
+                elif self._is_dir(root):
+                    status = NOT_FOUND
                 else:
-                    item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-                    item.setCheckState(Qt.CheckState.Checked)
-                self._list.addItem(item)
-            bound = sum(1 for candidate in self._candidates if candidate.in_workspace)
-            if self._candidates:
-                status = f"Найдено {len(self._candidates)}, уже в рабочей области {bound}"
-            elif self._is_dir(root):
-                status = NOT_FOUND
-            else:
-                status = NO_DIR
-        self._status.setText(status)
-        self._list.blockSignals(False)
-        self._refresh()
+                    status = NO_DIR
+            self._status.setText(status)
+        finally:
+            # Отказ self._scan (исключение — ошибка программы, не пользователя,
+            # наружу пропускается как есть) не должен оставить список с  # noqa: RUF003
+            # заблокированными сигналами: иначе флажки и «Выбрать всё/Снять всё»
+            # перестанут вызывать _refresh(), а ОК и строка ошибки застынут  # noqa: RUF003
+            # (ревью, раунд правок 1).
+            self._list.blockSignals(False)
+            self._refresh()
 
     def _set_all(self, state: Qt.CheckState) -> None:
         for index, candidate in enumerate(self._candidates):
