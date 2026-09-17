@@ -1,24 +1,128 @@
 from PySide6.QtCore import Qt
 
-from onecstarter.domain.edt_cli import ImportForm
-from onecstarter.ui.edt.cli_import_dialog import CliImportDialog
+from onecstarter.domain.edt_cli import ImportForm, ProjectCandidate, WorkspaceEntry
+from onecstarter.ui.edt.cli_import_dialog import (
+    IN_WORKSPACE_SUFFIX,
+    NO_DIR,
+    NONE_SELECTED,
+    NOT_FOUND,
+    CliImportDialog,
+)
 from onecstarter.ui.edt.cli_validate_dialog import CliValidateDialog
+
+CANDIDATES = [
+    ProjectCandidate(r"D:\repo\src\cf", "src/cf"),
+    ProjectCandidate(r"D:\repo\src\cfe_a", "src/cfe_a"),
+    ProjectCandidate(r"D:\repo\src\cfe_b", "src/cfe_b"),
+]
+ENTRIES = [WorkspaceEntry("cfe_a", r"D:\repo\src\cfe_a", True)]
+
+
+class ScanSpy:
+    def __init__(self, result: list[ProjectCandidate]) -> None:
+        self.result = result
+        self.calls: list[str] = []
+
+    def __call__(self, root: str) -> list[ProjectCandidate]:
+        self.calls.append(root)
+        return list(self.result)
+
+
+def _dialog(qtbot, project_dir: str = r"D:\repo", scan: ScanSpy | None = None, **kwargs):  # type: ignore[no-untyped-def]
+    spy = scan if scan is not None else ScanSpy(CANDIDATES)
+    kwargs.setdefault("is_dir", lambda p: True)
+    kwargs.setdefault("choose_directory", lambda: "")
+    dialog = CliImportDialog(project_dir, ENTRIES, scan=spy, **kwargs)
+    qtbot.addWidget(dialog)
+    return dialog, spy
 
 
 class TestImportDialog:
-    def test_existing_variant(self, qtbot) -> None:  # type: ignore[no-untyped-def]
-        dialog = CliImportDialog(choose_directory=lambda: "")
-        qtbot.addWidget(dialog)
-        assert dialog.existing_radio().isChecked() is True
-        assert dialog.ok_button().isEnabled() is False
-        dialog.existing_dir_edit().setText(r"D:\src\proj")
+    def test_prefilled_dir_scanned_on_open(self, qtbot) -> None:  # type: ignore[no-untyped-def]
+        dialog, spy = _dialog(qtbot)
+        assert dialog.windowTitle() == "Импортировать проекты (CLI EDT)"
+        assert dialog.existing_dir_edit().text() == r"D:\repo"
+        assert spy.calls == [r"D:\repo"]
+        items = [dialog.list_widget().item(i) for i in range(dialog.list_widget().count())]
+        assert [item.text() for item in items] == [
+            "src/cf", "src/cfe_a" + IN_WORKSPACE_SUFFIX, "src/cfe_b"
+        ]
+        assert [item.checkState() for item in items] == [
+            Qt.CheckState.Checked, Qt.CheckState.Unchecked, Qt.CheckState.Checked
+        ]
+        assert not items[1].flags() & Qt.ItemFlag.ItemIsEnabled
+        assert not items[1].flags() & Qt.ItemFlag.ItemIsUserCheckable
+        assert items[0].toolTip() == r"D:\repo\src\cf"
+        assert dialog.status_text() == "Найдено 3, уже в рабочей области 1"
         assert dialog.ok_button().isEnabled() is True
-        assert dialog.form() == ImportForm(existing_project_dirs=(r"D:\src\proj",))
+        assert dialog.form() == ImportForm(
+            existing_project_dirs=(r"D:\repo\src\cf", r"D:\repo\src\cfe_b")
+        )
+
+    def test_bound_project_never_in_form(self, qtbot) -> None:  # type: ignore[no-untyped-def]
+        # Мутационная проверка: mark_in_workspace → всегда False должен уронить этот тест
+        dialog, _ = _dialog(qtbot)
+        dialog.select_all_button().click()
+        assert r"D:\repo\src\cfe_a" not in dialog.selected_paths()
+
+    def test_empty_project_dir_no_scan(self, qtbot) -> None:  # type: ignore[no-untyped-def]
+        dialog, spy = _dialog(qtbot, project_dir="")
+        assert spy.calls == []
+        assert dialog.existing_dir_edit().placeholderText() == (
+            "каталог с проектами EDT, например клон репозитория"  # noqa: RUF001
+        )
+        assert dialog.status_text() == ""
+        assert dialog.ok_button().isEnabled() is False
+        assert dialog.error_text() == NONE_SELECTED
+
+    def test_browse_rescans(self, qtbot) -> None:  # type: ignore[no-untyped-def]
+        dialog, spy = _dialog(qtbot, project_dir="", choose_directory=lambda: r"D:\picked")
+        dialog.existing_browse().click()
+        assert dialog.existing_dir_edit().text() == r"D:\picked"
+        assert spy.calls == [r"D:\picked"]
+        assert dialog.list_widget().count() == 3
+
+    def test_editing_finished_rescans(self, qtbot) -> None:  # type: ignore[no-untyped-def]
+        dialog, spy = _dialog(qtbot, project_dir="")
+        dialog.existing_dir_edit().setText(r"D:\typed")
+        assert spy.calls == []  # не на каждый символ
+        dialog.existing_dir_edit().editingFinished.emit()
+        assert spy.calls == [r"D:\typed"]
+
+    def test_select_all_and_none_skip_bound(self, qtbot) -> None:  # type: ignore[no-untyped-def]
+        dialog, _ = _dialog(qtbot)
+        dialog.select_none_button().click()
+        assert dialog.selected_paths() == []
+        assert dialog.ok_button().isEnabled() is False
+        assert dialog.error_text() == NONE_SELECTED
+        dialog.select_all_button().click()
+        assert dialog.selected_paths() == [r"D:\repo\src\cf", r"D:\repo\src\cfe_b"]
+        assert dialog.list_widget().item(1).checkState() == Qt.CheckState.Unchecked
+
+    def test_unchecked_item_excluded_in_order(self, qtbot) -> None:  # type: ignore[no-untyped-def]
+        dialog, _ = _dialog(qtbot)
+        dialog.list_widget().item(0).setCheckState(Qt.CheckState.Unchecked)
+        assert dialog.form().existing_project_dirs == (r"D:\repo\src\cfe_b",)
+
+    def test_no_projects_status(self, qtbot) -> None:  # type: ignore[no-untyped-def]
+        dialog, _ = _dialog(qtbot, scan=ScanSpy([]))
+        assert dialog.status_text() == NOT_FOUND
+        assert dialog.ok_button().isEnabled() is False
+
+    def test_missing_dir_status(self, qtbot) -> None:  # type: ignore[no-untyped-def]
+        dialog, _ = _dialog(qtbot, scan=ScanSpy([]), is_dir=lambda p: False)
+        assert dialog.status_text() == NO_DIR
+        assert dialog.ok_button().isEnabled() is False
+
+    def test_quote_in_candidate_path_reports_error(self, qtbot) -> None:  # type: ignore[no-untyped-def]
+        dialog, _ = _dialog(qtbot, scan=ScanSpy([ProjectCandidate(r"D:\O'Reilly\p", "p")]))
+        assert dialog.ok_button().isEnabled() is False
+        assert "Кавычка в значении недопустима" in dialog.error_text()
 
     def test_xml_variant_fields(self, qtbot) -> None:  # type: ignore[no-untyped-def]
-        dialog = CliImportDialog(choose_directory=lambda: "")
-        qtbot.addWidget(dialog)
+        dialog, _ = _dialog(qtbot, project_dir="")
         dialog.xml_radio().setChecked(True)
+        assert dialog.list_widget().isEnabled() is False
         dialog.xml_dir_edit().setText(r"D:\xml")
         assert dialog.ok_button().isEnabled() is False  # нет каталога/имени
         dialog.project_name_edit().setText("ext")
@@ -34,28 +138,13 @@ class TestImportDialog:
             build_after=True,
         )
 
-    def test_variant_switch_clears_other_fields_from_form(self, qtbot) -> None:  # type: ignore[no-untyped-def]
-        dialog = CliImportDialog(choose_directory=lambda: "")
-        qtbot.addWidget(dialog)
-        dialog.existing_dir_edit().setText(r"D:\a")
+    def test_variant_switch_drops_projects_from_form(self, qtbot) -> None:  # type: ignore[no-untyped-def]
+        dialog, _ = _dialog(qtbot)
         dialog.xml_radio().setChecked(True)
         dialog.xml_dir_edit().setText(r"D:\xml")
         dialog.project_dir_edit().setText(r"D:\new")
         assert dialog.form().existing_project_dirs == ()
         assert dialog.error_text() == ""
-
-    def test_single_quote_reports_error(self, qtbot) -> None:  # type: ignore[no-untyped-def]
-        dialog = CliImportDialog(choose_directory=lambda: "")
-        qtbot.addWidget(dialog)
-        dialog.existing_dir_edit().setText(r"D:\O'Reilly")
-        assert dialog.ok_button().isEnabled() is False
-        assert "Кавычка в значении недопустима" in dialog.error_text()
-
-    def test_browse_fills_active_field(self, qtbot) -> None:  # type: ignore[no-untyped-def]
-        dialog = CliImportDialog(choose_directory=lambda: r"D:\picked")
-        qtbot.addWidget(dialog)
-        dialog.existing_browse().click()
-        assert dialog.existing_dir_edit().text() == r"D:\picked"
 
 
 PATHS = [r"D:\ws\conf", r"D:\ws\conf.ext"]

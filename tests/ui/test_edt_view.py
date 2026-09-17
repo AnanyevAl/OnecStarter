@@ -17,6 +17,7 @@ from onecstarter.domain.edt import (
     EdtStartProduct,
     EdtStartProject,
 )
+from onecstarter.domain.edt_cli import location_blob
 from onecstarter.domain.launch import LaunchCommand
 from onecstarter.platform_1c.editors import EditorKind
 from onecstarter.platform_1c.edtstart_registry import EdtStartRegistry
@@ -120,6 +121,7 @@ class Harness:
             job_factory=self._job_factory,
             spawn=self._spawn_cli,
             is_file=lambda p: True,
+            read_text=lambda p: "-vmargs\n-Xmx4096m\n",
         )
         self.pending: list[Callable[[], None]] = []
         self.watcher = CliWatcher(spawn=self.pending.append)
@@ -913,20 +915,69 @@ def test_cli_validate_result_missing_after_success_hides_button(  # type: ignore
     assert view.console().result_button().isHidden() is True
 
 
-def test_cli_import_runs_dialog_form(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    p = _add(harness, "a")
+def _repo(tmp_path: Path, *names: str) -> Path:
+    """Клон с проектами `src/<имя>/.project` — как у заказчика (спека v3.1.1, факт 9)."""  # noqa: RUF002
+    repo = tmp_path / "repo"
+    for name in names:
+        (repo / "src" / name).mkdir(parents=True)
+        (repo / "src" / name / ".project").write_text("<projectDescription/>", encoding="utf-8")
+    return repo
+
+
+def test_cli_import_prefills_dir_and_imports_selected_by_script(  # type: ignore[no-untyped-def]
+    harness: Harness, qtbot, monkeypatch
+) -> None:
+    repo = _repo(harness.tmp_path, "cf", "cfe_a")
+    p = _add(harness, "a", project_dir=str(repo))
     view = harness.view()
     qtbot.addWidget(view)
+    seen: list[str] = []
 
     def run_dialog(dialog):
-        dialog.existing_dir_edit().setText(r"D:\src\proj")
-        return True
+        seen.append(dialog.existing_dir_edit().text())
+        return True  # все найденные отмечены по умолчанию
 
     monkeypatch.setattr(view, "_run_dialog", run_dialog)
     view.cli_import(p.id)
+    assert seen == [str(repo)]
+    script, ini = harness.cli.script_path(p.id), harness.cli.ini_path(p.id)
+    assert f'-ini-file "{ini}"' in harness.cli_spawned[0].arguments
+    assert f'-file "{script}"' in harness.cli_spawned[0].arguments
+    assert "-vm\n" in ini.read_text(encoding="utf-8")
+    cf = str(repo / "src" / "cf").replace("\\", "/")
+    cfe = str(repo / "src" / "cfe_a").replace("\\", "/")
+    assert script.read_text(encoding="utf-8") == (
+        f"import --project '{cf}'\nimport --project '{cfe}'\n"
+    )
+    assert view.console().title_label().text() == "a · Импортировать (проектов: 2)"
+
+
+def test_cli_import_single_project_uses_command(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    repo = _repo(harness.tmp_path, "cf")
+    p = _add(harness, "a", project_dir=str(repo))
+    view = harness.view()
+    qtbot.addWidget(view)
+    monkeypatch.setattr(view, "_run_dialog", lambda dialog: True)
+    view.cli_import(p.id)
+    cf = str(repo / "src" / "cf").replace("\\", "/")
     # Прямые слэши в -command ([Ф] Э6: с обратными Gogo не снимает кавычки, код 204)  # noqa: RUF003
-    assert "-command \"import --project 'D:/src/proj'\"" in harness.cli_spawned[0].arguments
-    assert view.console().title_label().text() == "a · Импортировать проект"
+    assert f"-command \"import --project '{cf}'\"" in harness.cli_spawned[0].arguments
+    assert view.console().title_label().text() == "a · Импортировать"
+
+
+def test_cli_import_bound_projects_are_not_offered(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    repo = _repo(harness.tmp_path, "cf", "cfe_a")
+    ws = harness.tmp_path / "ws"
+    registry = ws / ".metadata" / ".plugins" / "org.eclipse.core.resources" / ".projects" / "cf"
+    registry.mkdir(parents=True)
+    (registry / ".location").write_bytes(location_blob((repo / "src" / "cf").as_uri()))
+    p = _add(harness, "a", workspace=str(ws), project_dir=str(repo))
+    view = harness.view()
+    qtbot.addWidget(view)
+    monkeypatch.setattr(view, "_run_dialog", lambda dialog: True)
+    view.cli_import(p.id)
+    cfe = str(repo / "src" / "cfe_a").replace("\\", "/")
+    assert f"-command \"import --project '{cfe}'\"" in harness.cli_spawned[0].arguments
 
 
 def test_cli_import_cancelled_starts_nothing(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]

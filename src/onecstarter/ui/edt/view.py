@@ -92,7 +92,7 @@ MENU_IMPORT = "Импорт из EDT Start…"
 NOT_INSTALLED_HINT = "EDT {version} не найден"
 MENU_CLI = "CLI"
 CLI_BUILD = "Пересобрать проекты"
-CLI_IMPORT = "Импортировать проект…"
+CLI_IMPORT = "Импортировать проекты…"
 CLI_VALIDATE = "Проверить проекты…"
 CLI_PROJECT = "Информация по проектам"
 # `CLI_BUSY_HINT` — из `tree_model` (одна строка на значок и меню), реэкспорт выше.
@@ -673,11 +673,28 @@ class EdtView(QWidget):
         self._start_cli(project_id, CLI_PROJECT, cli_project_args())
 
     def cli_import(self, project_id: str) -> None:
-        dialog = CliImportDialog(choose_directory=self._choose_directory, parent=self)
-        if self._run_dialog(dialog):
-            self._start_cli(
-                project_id, CLI_IMPORT.rstrip("…"), cli_import_commands(dialog.form())[0]
-            )
+        project = self._workspace.project(project_id)
+        dialog = CliImportDialog(
+            project.project_dir,
+            workspace_entries(project.workspace),
+            choose_directory=self._choose_directory,
+            parent=self,
+        )
+        if not self._run_dialog(dialog):
+            return
+        try:
+            commands = cli_import_commands(dialog.form())
+        except ValueError as error:  # диалог не даёт ОК без команд — страховка  # noqa: RUF003
+            self._show_error(str(error))
+            return
+        # Метка консоли короче пункта меню ([Interfaces] брифа: «Импортировать» /
+        # «Импортировать (проектов: N)») — не `CLI_IMPORT.rstrip("…")`, тот даёт
+        # «Импортировать проекты» и расходится с текстом брифа и тестами.  # noqa: RUF003
+        label = "Импортировать"
+        if len(commands) == 1:
+            self._start_cli(project_id, label, commands[0])
+        else:
+            self._start_cli_script(project_id, f"{label} (проектов: {len(commands)})", commands)
 
     def cli_validate(self, project_id: str) -> None:
         project = self._workspace.project(project_id)
@@ -700,8 +717,21 @@ class EdtView(QWidget):
     def _start_cli(self, project_id: str, label: str, command: str, result_file: str = "") -> None:
         if self._cli is None:
             return
+        cli = self._cli
+        self._run_cli(project_id, label, lambda: cli.start(project_id, label, command, result_file))
+
+    def _start_cli_script(self, project_id: str, label: str, commands: Sequence[str]) -> None:
+        """Несколько команд одним сеансом — скрипт `-file` (спека v3.1.1 §4.2)."""
+        if self._cli is None:
+            return
+        cli = self._cli
+        self._run_cli(project_id, label, lambda: cli.start_script(project_id, label, commands))
+
+    def _run_cli(self, project_id: str, label: str, start: Callable[[], CliRun]) -> None:
+        if self._cli is None:
+            return
         try:
-            run = self._cli.start(project_id, label, command, result_file)
+            run = start()
         except ServicesError as error:
             self._show_error(str(error))
             return
