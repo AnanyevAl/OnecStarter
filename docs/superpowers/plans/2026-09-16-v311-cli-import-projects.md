@@ -4,7 +4,7 @@
 
 **Goal:** диалог «Импортировать проекты (CLI EDT)» подставляет каталог проекта записи, показывает найденные в нём проекты EDT с флажками (уже привязанные — сняты и недоступны) и импортирует отмеченные одним сеансом CLI; версия `3.1.1` собрана и прошла smoke.
 
-**Architecture:** сканер каталога — `services/edt_cli.py::scan_projects` (ФС через инъекцию, правило мастера Eclipse: каталог с `.project` — проект, внутрь не заходим; предел 3 уровня; каталоги на точку пропускаются); пометка привязанных — чистая `domain/edt_cli.py::mark_in_workspace` по реестру `workspace_entries`; команды — `cli_import_commands(form) -> list[str]`; несколько команд — скрипт `<logs_dir>/<id>.cli` и режим `-file` (`EdtCli.start_script`, `build_cli_script_command`) — при условии, что эксперимент Э12 подтвердит режим `-file` ([Д]); альтернативы (список Gogo, очередь) — в приложении, план оставляет одну после Э12.
+**Architecture:** сканер каталога — `services/edt_cli.py::scan_projects` (ФС через инъекцию, правило мастера Eclipse: каталог с `.project` — проект, внутрь не заходим; предел 3 уровня; каталоги на точку пропускаются); пометка привязанных — чистая `domain/edt_cli.py::mark_in_workspace` по реестру `workspace_entries`; команды — `cli_import_commands(form) -> list[str]`; несколько команд — скрипт `<logs_dir>/<id>.cli` в режиме `-file`, JDK — через свой ini `<logs_dir>/<id>.ini` и ключ `-ini-file` (`EdtCli.start_script`, `build_cli_script_command`, `cli_ini_text`) — по итогам Э12 (17.09.2026): у обёртки `1cedtcli.exe` нет ключа `-vm`, список Gogo у `import` не принят, очередь не нужна.
 
 **Tech Stack:** Python 3.13, PySide6 6.11 (только `ui/`), pytest + pytest-qt (offscreen), ruff, mypy strict вне `ui.*`, PyInstaller + Inno Setup (`build/build.ps1`).
 
@@ -35,8 +35,12 @@
   «Импортировать» при одной; событие журнала `▶ <label>: скрипт <имя>, команд: N`;
   ошибка «Не удалось записать скрипт CLI: …».
 - **Скрипт CLI**: `<logs_dir>/<project_id>.cli`, по строке на команду, UTF-8 без BOM, LF;
-  перезаписывается каждым запуском; `unavailable_reason` проверяется **до** записи скрипта
-  (живая команда читает свой скрипт). Одна команда — по-прежнему `-command`.
+  ini — `<logs_dir>/<project_id>.ini` = строки `1cedt.ini` установки без `-Dosgi.debug…` и
+  старого `-vm`, плюс `-vm`/`<bin JDK>` перед `-vmargs`; оба перезаписываются каждым запуском;
+  `unavailable_reason` проверяется **до** записи (живая команда читает свой скрипт).
+  Командная строка скрипта: `-data "<ws>" -ini-file "<ini>" -vmargs <args> -file "<скрипт>"` —
+  `-ini-file` и `-vmargs` **до** `-file`, список `-vmargs` никогда не пуст (`-Djava.library.path=`).
+  Одна команда — по-прежнему `-command` с `-vm` ([Ф] Э6).
 - **Пути в командах CLI — прямые слэши, одинарные кавычки** (`quote_cli_arg`, [Ф] Э6); `%` и
   кавычки в путях — отказ до запуска.
 - **Мутационная проверка** (CLAUDE.md): тест «привязанный не попадает в `form()`» — сломать
@@ -53,8 +57,9 @@
 
 **Files:**
 - Create: `docs/research/t20-edt-import-experiments.md`
-- Create: `docs/research/t20-edt-import.ps1` (UTF-8 **с BOM** — PowerShell 5.1 без BOM читает
-  кириллицу как ANSI; прецедент — `t05-15-launch-matrix.ps1`)
+- Create: `docs/research/t20-edt-import.ps1` → **заменён** при выполнении Task 2 на
+  `docs/research/t20-edt-import.py` (PowerShell `Start-Process` терял кавычки; Python-раннер
+  собирает строку тем же `wrap_console_utf8`, что программа)
 - Create (вне репозитория): `E:\tmp\edt-test\ws-imp1`, `ws-imp2`, `ws-imp3` (пустые),
   `E:\tmp\edt-test\imp\консоль копия` (копия `E:\tmp\edt-test\konsol`), `E:\tmp\edt-test\imp\s1.cli`,
   `s2.cli`
@@ -260,12 +265,11 @@ Run: `powershell -ExecutionPolicy Bypass -File docs/research/t20-edt-import.ps1 
 Если шаг 4 дал ненулевой код — суффикс « — уже в рабочей области» и недоступность элемента
 обоснованы фактом; если код 0 — тоже (48 с впустую), но записать «безвреден».
 
-- [ ] **Step 5: Коммит**
-
-```bash
-git add docs/research/t20-edt-import-experiments.md docs/superpowers/specs/2026-09-16-v311-cli-import-projects-design.md docs/superpowers/plans/2026-09-16-v311-cli-import-projects.md .claude/skills/edt-launch
-git commit -m "docs: Э12 проведён — режим -file и список у import, метки §0 и скил edt-launch, план сужен до одной ветки"
-```
+- [x] **Step 5: Коммит** — 17.09.2026. **Итог Э12:** шаг 1 код 0 (скрипт работает, но только с
+  JDK через `-ini-file` — у обёртки нет `-vm`, после `-file` кавычки хвоста теряются); шаг 2 —
+  стоп на первой ошибке, код 204; шаг 3 — список не принят, код 204; шаг 4 — повтор код 0.
+  Ветка плана — §4.2 (скрипт + `-ini-file`); приложение с вариантами В1/В2 удалено.
+  Попутно: `import` регистрирует проект под именем из `.project` (факт 2 спеки исправлен).
 
 ---
 
@@ -274,7 +278,7 @@ git commit -m "docs: Э12 проведён — режим -file и список 
 **Files:**
 - Modify: `src/onecstarter/domain/edt_cli.py` (импорты; `ImportForm`; `cli_import_args` →
   `cli_import_commands`; новые `ProjectCandidate`, `mark_in_workspace`,
-  `build_cli_script_command`, общий `_build_cli`)
+  `build_cli_script_command`, `cli_ini_text`)
 - Modify: `src/onecstarter/ui/edt/cli_import_dialog.py` (только вызовы: `form()`, `_refresh`)
 - Modify: `src/onecstarter/ui/edt/view.py:675-678` (`cli_import` — `cli_import_commands(...)[0]`,
   временно до Task 5)
@@ -288,13 +292,14 @@ git commit -m "docs: Э12 проведён — режим -file и список 
   - `mark_in_workspace(candidates: Sequence[ProjectCandidate], entries: Sequence[WorkspaceEntry]) -> list[ProjectCandidate]`;
   - `ImportForm(existing_project_dirs: tuple[str, ...] = (), configuration_files="", project_dir="", project_name="", base_project_name="", platform_version="", build_after=False)`;
   - `cli_import_commands(form: ImportForm) -> list[str]` (`ValueError`/`CliQuoteError` как раньше);
-  - `build_cli_script_command(exe: Path, workspace: str, script: Path, jvm_dir: Path, installation_vm_args: str, project_vm_args: str) -> LaunchCommand`.
+  - `build_cli_script_command(exe: Path, workspace: str, script: Path, ini: Path, installation_vm_args: str, project_vm_args: str) -> LaunchCommand`;
+  - `cli_ini_text(installation_ini: str, jvm_dir: Path) -> str`.
 
 - [ ] **Step 1: Тесты домена**
 
 В `tests/unit/test_edt_cli_domain.py` импорт дополнить `ProjectCandidate`,
-`build_cli_script_command`, `cli_import_commands`, `mark_in_workspace`; `cli_import_args`
-убрать. Класс `TestImportArgs` заменить:
+`build_cli_script_command`, `cli_import_commands`, `cli_ini_text`, `mark_in_workspace`;
+`cli_import_args` убрать. Класс `TestImportArgs` заменить:
 
 ```python
 class TestImportCommands:
@@ -383,14 +388,48 @@ class TestMarkInWorkspace:
 В `TestBuildCliCommand` добавить:
 
 ```python
-    def test_script_mode_uses_file_instead_of_command(self) -> None:
-        script = Path(r"C:\Users\u\AppData\Roaming\OneCStarter\logs\edt\id-1.cli")
-        command = build_cli_script_command(CLI, r"D:\ws", script, JDK, "-Xmx8192m", "")
+    def test_script_mode_ini_then_vmargs_then_file(self) -> None:
+        # [Ф] Э12: у обёртки нет -vm — JDK в ini; -ini-file и -vmargs ДО -file
+        script = Path(r"C:\Users\u u\AppData\Roaming\OneCStarter\logs\edt\id-1.cli")
+        ini = script.with_suffix(".ini")
+        command = build_cli_script_command(CLI, r"D:\ws", script, ini, "-Xmx8192m", "-Xmx4g")
+        assert command.executable == CLI
         assert command.arguments == (
-            f'-data "D:\\ws" -file "{script}" -vm "{JDK}" --launcher.appendVmargs '
-            "-vmargs -Xmx8192m -Djava.library.path="
+            f'-data "D:\\ws" -ini-file "{ini}" -vmargs -Xmx8192m -Djava.library.path= -Xmx4g '
+            f'-file "{script}"'
         )
-        assert "-command" not in command.arguments
+        assert "-vm " not in command.arguments and "-command" not in command.arguments
+
+    def test_script_mode_empty_vm_args_keeps_library_path(self) -> None:
+        # Список -vmargs не пуст никогда: иначе обёртка приняла бы -file за аргумент JVM
+        command = build_cli_script_command(
+            CLI, r"D:\ws", Path(r"D:\s.cli"), Path(r"D:\s.ini"), "", ""
+        )
+        assert '-vmargs -Djava.library.path= -file "D:\\s.cli"' in command.arguments
+
+
+class TestCliIniText:
+    INSTALL = (
+        "-startup\nplugins/launcher.jar\n-showsplash\nx\n-vmargs\n"
+        "-Dosgi.requiredJavaVersion=17\n-Dosgi.debug=.options\n-Xmx4096m\n"
+    )
+
+    def test_inserts_vm_before_vmargs_and_drops_osgi_debug(self) -> None:
+        assert cli_ini_text(self.INSTALL, JDK) == (
+            f"-startup\nplugins/launcher.jar\n-showsplash\nx\n-vm\n{JDK}\n-vmargs\n"
+            "-Dosgi.requiredJavaVersion=17\n-Xmx4096m\n"
+        )
+
+    def test_replaces_existing_vm_pair(self) -> None:
+        assert cli_ini_text("-vm\nC:/old/bin\n-vmargs\n-Xmx1g\n", JDK) == (
+            f"-vm\n{JDK}\n-vmargs\n-Xmx1g\n"
+        )
+
+    def test_without_vmargs_appends_vm(self) -> None:
+        assert cli_ini_text("-startup\na.jar\n", JDK) == f"-startup\na.jar\n-vm\n{JDK}\n"
+
+    def test_crlf_input_gives_lf(self) -> None:
+        assert cli_ini_text("-vmargs\r\n-Xmx1g\r\n", JDK) == f"-vm\n{JDK}\n-vmargs\n-Xmx1g\n"
 ```
 
 - [ ] **Step 2: Прогон — падает**
@@ -405,8 +444,10 @@ Expected: `ImportError` (`cli_import_commands`, `ProjectCandidate`, …).
 ```python
 """
 Несколько проектов — по одной команде `import --project` на каталог
-(`cli_import_commands`); одним сеансом их выполняет режим `-file <скрипт>`
-(`build_cli_script_command`, [Ф] Э12, `docs/research/t20-edt-import-experiments.md`).
+(`cli_import_commands`); одним сеансом их выполняет режим `-file <скрипт>`. У обёртки
+`1cedtcli.exe` нет ключа `-vm`, а после `-file` она пересобирает хвост без кавычек,
+поэтому JDK для скрипта задаётся своим ini через `-ini-file` (`cli_ini_text`,
+`build_cli_script_command`; [Ф] Э12, `docs/research/t20-edt-import-experiments.md`).
 Кандидаты на импорт (`ProjectCandidate`) находит `services/edt_cli.py::scan_projects`,
 привязанных помечает `mark_in_workspace` по реестру рабочей области.
 """
@@ -492,56 +533,62 @@ def mark_in_workspace(
     ]
 ```
 
-Командная строка:
+Командная строка: `build_cli_command` не меняется; рядом — режим скрипта и ini:
 
 ```python
-def build_cli_command(
-    exe: Path,
-    workspace: str,
-    command: str,
-    jvm_dir: Path,
-    installation_vm_args: str,
-    project_vm_args: str,
-) -> LaunchCommand:
-    """`-command` до `-vmargs` ([Ф] Э6: обёртка передаёт всё после `-vmargs` JVM ребёнка)."""
-    return _build_cli(
-        exe, workspace, f'-command "{command}"', jvm_dir, installation_vm_args, project_vm_args
-    )
+INSTALLATION_INI = "1cedt.ini"
 
 
 def build_cli_script_command(
     exe: Path,
     workspace: str,
     script: Path,
-    jvm_dir: Path,
+    ini: Path,
     installation_vm_args: str,
     project_vm_args: str,
 ) -> LaunchCommand:
-    """`-file "<скрипт>"` вместо `-command`: несколько команд одним сеансом ([Ф] Э12)."""
-    return _build_cli(
-        exe, workspace, f'-file "{script}"', jvm_dir, installation_vm_args, project_vm_args
-    )
+    """`-data "<ws>" -ini-file "<ini>" -vmargs <args> -file "<скрипт>"` ([Ф] Э12).
 
-
-def _build_cli(
-    exe: Path,
-    workspace: str,
-    mode: str,
-    jvm_dir: Path,
-    installation_vm_args: str,
-    project_vm_args: str,
-) -> LaunchCommand:
+    У обёртки `1cedtcli.exe` нет ключа `-vm`: после `-file` хвост уходит лаунчеру без
+    кавычек и `-vm "C:\\Program Files\\…"` превращается в `C:\\Program`. JDK — в ini
+    (`cli_ini_text`). `-ini-file` и `-vmargs` — до `-file` (грамматика обёртки); список
+    `-vmargs` не пуст никогда, иначе обёртка приняла бы `-file` за аргумент JVM.
+    """  # noqa: RUF002
     parts = [
         f'-data "{workspace}"',
-        mode,
-        f'-vm "{jvm_dir}"',
-        "--launcher.appendVmargs",
+        f'-ini-file "{ini}"',
         "-vmargs",
         installation_vm_args.strip(),
         "-Djava.library.path=",
         project_vm_args.strip(),
+        f'-file "{script}"',
     ]
     return LaunchCommand(executable=exe, arguments=" ".join(part for part in parts if part))
+
+
+def cli_ini_text(installation_ini: str, jvm_dir: Path) -> str:
+    """Свой ini для `-ini-file` ([Ф] Э12): строки `1cedt.ini` установки без `-Dosgi.debug…`
+    (так же делает обёртка, копируя ini во `%TEMP%`) и без прежней пары `-vm`/<путь>,
+    плюс `-vm` и `<bin JDK>` перед `-vmargs`; нет `-vmargs` — в конец. LF."""  # noqa: RUF002
+    lines: list[str] = []
+    skip_path = False
+    inserted = False
+    for line in installation_ini.splitlines():
+        if skip_path:
+            skip_path = False
+            continue
+        if line.strip() == "-vm":
+            skip_path = True
+            continue
+        if line.startswith("-Dosgi.debug"):
+            continue
+        if line.strip() == "-vmargs" and not inserted:
+            lines += ["-vm", str(jvm_dir)]
+            inserted = True
+        lines.append(line)
+    if not inserted:
+        lines += ["-vm", str(jvm_dir)]
+    return "\n".join(lines) + "\n"
 ```
 
 - [ ] **Step 4: Вызывающий код — минимально, чтобы suite остался зелёным**
@@ -588,21 +635,24 @@ git commit -m "feat(domain): кандидаты импорта, пометка �
 
 **Files:**
 - Modify: `src/onecstarter/services/edt_cli.py` (`__all__`, импорты, `SCAN_MAX_DEPTH`,
-  `scan_projects`, `CliBuilder`, `_by_command`, `_by_script`, `EdtCli.start` → общий `_start`,
-  `start_script`, `script_path`)
+  `scan_projects`, `CliBuilder`, `_by_command`, `_by_script`, `EdtCli.__init__` — `read_text`,
+  `EdtCli.start` → общий `_start`, `start_script`, `script_path`, `ini_path`)
 - Test: `tests/unit/test_edt_cli.py`
 
 **Interfaces:**
-- Consumes: `ProjectCandidate`, `build_cli_command`, `build_cli_script_command` (Task 3).
+- Consumes: `ProjectCandidate`, `build_cli_command`, `build_cli_script_command`, `cli_ini_text`,
+  `INSTALLATION_INI` (Task 3).
 - Produces:
   - `SCAN_MAX_DEPTH: int = 3`;
   - `scan_projects(root: str, *, max_depth: int = SCAN_MAX_DEPTH, listdir=os.listdir, is_dir=os.path.isdir, is_file=os.path.isfile) -> list[ProjectCandidate]`;
+  - `EdtCli(…, read_text: Callable[[Path], str] = _read_text)` — чтение `1cedt.ini` установки;
   - `EdtCli.start_script(project_id: str, label: str, commands: Sequence[str]) -> CliRun`;
-  - `EdtCli.script_path(project_id: str) -> Path` — `<logs_dir>/<project_id>.cli`.
+  - `EdtCli.script_path(project_id: str) -> Path` — `<logs_dir>/<project_id>.cli`;
+  - `EdtCli.ini_path(project_id: str) -> Path` — `<logs_dir>/<project_id>.ini`.
 
 - [ ] **Step 1: Тесты сканера**
 
-В `tests/unit/test_edt_cli.py` импорт: `from onecstarter.services.edt_cli import CliResult, EdtCli, scan_projects, workspace_entries`; `from onecstarter.domain.edt_cli import ProjectCandidate, WorkspaceEntry, location_blob`; `import os`.
+В `tests/unit/test_edt_cli.py` импорт: `from onecstarter.services.edt_cli import CliResult, EdtCli, scan_projects, workspace_entries`; `from onecstarter.domain.edt_cli import ProjectCandidate, WorkspaceEntry, location_blob`; `import os`. `Harness` — см. конец Step 2 (`read_text`).
 
 ```python
 class FakeTree:
@@ -700,18 +750,24 @@ class TestScanProjects:
 class TestStartScript:
     COMMANDS = ["import --project 'D:/repo/src/cf'", "import --project 'D:/repo/src/cfe a'"]
 
-    def test_writes_script_and_launches_in_file_mode(self, tmp_path: Path) -> None:
+    def test_writes_script_and_ini_and_launches_in_file_mode(self, tmp_path: Path) -> None:
         h = Harness(tmp_path)
-        p = h.project()
+        p = h.project(vm_args="-Xmx4g")
         run = h.cli.start_script(p.id, "Импортировать (проектов: 2)", self.COMMANDS)
-        script = h.cli.script_path(p.id)
+        script, ini = h.cli.script_path(p.id), h.cli.ini_path(p.id)
         assert script == tmp_path / "logs" / "edt" / f"{p.id}.cli"
+        assert ini == tmp_path / "logs" / "edt" / f"{p.id}.ini"
         raw = script.read_bytes()
         assert raw == b"import --project 'D:/repo/src/cf'\nimport --project 'D:/repo/src/cfe a'\n"
         assert not raw.startswith(b"\xef\xbb\xbf") and b"\r" not in raw
+        # ini: 1cedt.ini установки без -Dosgi.debug, с -vm перед -vmargs ([Ф] Э12)
+        assert h.ini_reads == [EXE_DIR / "1cedt.ini"]
+        assert ini.read_bytes() == (
+            b"-startup\nplugins/launcher.jar\n-vm\n" + str(JDK).encode() + b"\n-vmargs\n-Xmx4096m\n"
+        )
         [(command, log_path)] = h.spawned
-        assert f'-file "{script}"' in command.arguments
-        assert "-command" not in command.arguments
+        assert f'-ini-file "{ini}" -vmargs -Xmx8192m -Djava.library.path= -Xmx4g -file "{script}"' in command.arguments
+        assert "-command" not in command.arguments and "-vm " not in command.arguments
         text = log_path.read_text(encoding="utf-8")
         header = f"▶ Импортировать (проектов: 2): скрипт {p.id}.cli, команд: 2"
         assert header in text
@@ -739,6 +795,35 @@ class TestStartScript:
             h.cli.start_script(p.id, "Импортировать (проектов: 2)", self.COMMANDS)
         assert h.spawned == []
         assert h.workspace.status(p.id).cli_busy is False
+
+    def test_unreadable_installation_ini_is_edt_error(self, tmp_path: Path) -> None:
+        h = Harness(tmp_path)
+        h.installation_ini = None  # read_text бросит OSError
+        p = h.project()
+        with pytest.raises(EdtError, match="1cedt.ini"):
+            h.cli.start_script(p.id, "Импортировать (проектов: 2)", self.COMMANDS)
+        assert h.spawned == []
+        assert not h.cli.script_path(p.id).exists()
+        assert h.workspace.status(p.id).cli_busy is False
+```
+
+`Harness` в том же файле: поле `self.installation_ini: str | None = INSTALL_INI`, список
+`self.ini_reads: list[Path] = []`, метод
+
+```python
+    def _read_text(self, path: Path) -> str:
+        self.ini_reads.append(path)
+        if self.installation_ini is None:
+            raise FileNotFoundError(path)
+        return self.installation_ini
+```
+
+и передача `read_text=self._read_text` в `EdtCli(...)` (метод определить до конструктора
+`EdtCli` или ссылаться на `self._read_text` — метод класса доступен в `__init__`).
+Константа модуля:
+
+```python
+INSTALL_INI = "-startup\nplugins/launcher.jar\n-vmargs\n-Dosgi.debug=.options\n-Xmx4096m\n"
 ```
 
 - [ ] **Step 3: Прогон — падает**
@@ -749,7 +834,7 @@ Expected: `ImportError: cannot import name 'scan_projects'`.
 - [ ] **Step 4: Реализация в `services/edt_cli.py`**
 
 `__all__ = ["SCAN_MAX_DEPTH", "CliResult", "CliRun", "EdtCli", "scan_projects", "workspace_entries"]`.
-Импорты: `from onecstarter.domain.edt_cli import (PROJECTS_REGISTRY, CliQuoteError, ProjectCandidate, WorkspaceEntry, build_cli_command, build_cli_script_command, parse_project_location, wrap_console_utf8)`.
+Импорты: `from onecstarter.domain.edt_cli import (INSTALLATION_INI, PROJECTS_REGISTRY, CliQuoteError, ProjectCandidate, WorkspaceEntry, build_cli_command, build_cli_script_command, cli_ini_text, parse_project_location, wrap_console_utf8)`; `from collections.abc import Callable, Sequence`; `from onecstarter.domain.edt import CLI_EXE, EdtInstallation, EdtProject, effective_jvm`.
 
 Сканер — после `workspace_entries`:
 
@@ -810,11 +895,19 @@ def _by_command(command: str) -> CliBuilder:
     )
 
 
-def _by_script(script: Path) -> CliBuilder:
-    return lambda exe, workspace, jvm, installation_args, project_args: build_cli_script_command(
-        exe, workspace, script, jvm, installation_args, project_args
+def _by_script(script: Path, ini: Path) -> CliBuilder:
+    # JDK уже в ini: у обёртки нет ключа -vm ([Ф] Э12), jvm_dir строке не нужен
+    return lambda exe, workspace, _jvm, installation_args, project_args: build_cli_script_command(
+        exe, workspace, script, ini, installation_args, project_args
     )
+
+
+def _read_text(path: Path) -> str:
+    return path.read_text(encoding="utf-8")
 ```
+
+`EdtCli.__init__` — параметр `read_text: Callable[[Path], str] = _read_text` после `comspec`,
+поле `self._read_text`.
 
 `EdtCli.start` — тело после проверки `unavailable_reason` уходит в `_start`:
 
@@ -828,9 +921,10 @@ def _by_script(script: Path) -> CliBuilder:
         )
 
     def start_script(self, project_id: str, label: str, commands: Sequence[str]) -> CliRun:
-        """Несколько команд одним сеансом: скрипт `<logs_dir>/<id>.cli` и `-file`
-        (спека v3.1.1 §4.2, [Ф] Э12). Скрипт — наш файл, не пользовательский: обычная
-        перезапись; лежит рядом с журналом ради диагностики.
+        """Несколько команд одним сеансом: скрипт `<logs_dir>/<id>.cli` в режиме `-file`,
+        JDK — через ini `<logs_dir>/<id>.ini` и `-ini-file` (спека v3.1.1 §4.2, [Ф] Э12:
+        у обёртки нет ключа `-vm`). Оба файла наши, не пользовательские: обычная
+        перезапись; лежат рядом с журналом ради диагностики.
 
         `unavailable_reason` — ДО записи: живая команда на этой записи читает свой скрипт,
         перезаписывать его нельзя.
@@ -838,18 +932,38 @@ def _by_script(script: Path) -> CliBuilder:
         reason = self.unavailable_reason(project_id)
         if reason:
             raise EdtError(reason)
-        script = self.script_path(project_id)
+        project, installation, jvm = self._resolve(project_id)
+        try:
+            installation_ini = self._read_text(installation.exe.parent / INSTALLATION_INI)
+        except OSError as error:
+            raise EdtError(f"Не удалось прочитать {INSTALLATION_INI} установки: {error}") from error
+        script, ini = self.script_path(project_id), self.ini_path(project_id)
         try:
             script.parent.mkdir(parents=True, exist_ok=True)
+            ini.write_text(cli_ini_text(installation_ini, jvm), encoding="utf-8", newline="\n")
             with script.open("w", encoding="utf-8", newline="\n") as handle:
                 handle.writelines(f"{command}\n" for command in commands)
         except OSError as error:
             raise EdtError(f"Не удалось записать скрипт CLI: {error}") from error
         events = [f"▶ {label}: скрипт {script.name}, команд: {len(commands)}", *commands]
-        return self._start(project_id, label, "; ".join(commands), events, _by_script(script), "")
+        return self._start(
+            project_id, label, "; ".join(commands), events, _by_script(script, ini), ""
+        )
 
     def script_path(self, project_id: str) -> Path:
         return self._logs_dir / f"{project_id}.cli"
+
+    def ini_path(self, project_id: str) -> Path:
+        return self._logs_dir / f"{project_id}.ini"
+
+    def _resolve(self, project_id: str) -> tuple[EdtProject, EdtInstallation, Path]:
+        """Запись, установка и JDK; вызывается после `unavailable_reason`."""
+        project = self._workspace.project(project_id)
+        installation = self._workspace.installation_for(project)
+        assert installation is not None  # unavailable_reason проверил
+        jvm = effective_jvm(project, installation)
+        assert jvm is not None
+        return project, installation, jvm
 
     def _start(
         self,
@@ -860,11 +974,7 @@ def _by_script(script: Path) -> CliBuilder:
         build: CliBuilder,
         result_file: str,
     ) -> CliRun:
-        project = self._workspace.project(project_id)
-        installation = self._workspace.installation_for(project)
-        assert installation is not None  # unavailable_reason проверил
-        jvm = effective_jvm(project, installation)
-        assert jvm is not None
+        project, installation, jvm = self._resolve(project_id)
         cli = build(
             installation.exe.parent / CLI_EXE,
             project.workspace,
@@ -919,7 +1029,7 @@ Expected: PASS.
 
 ```bash
 git add src/onecstarter/services/edt_cli.py tests/unit/test_edt_cli.py
-git commit -m "feat(services): scan_projects по правилу мастера Eclipse, EdtCli.start_script — скрипт -file"
+git commit -m "feat(services): scan_projects по правилу мастера Eclipse, EdtCli.start_script — скрипт -file с JDK через -ini-file"
 ```
 
 ---
@@ -1133,8 +1243,10 @@ def test_cli_import_prefills_dir_and_imports_selected_by_script(harness: Harness
     monkeypatch.setattr(view, "_run_dialog", run_dialog)
     view.cli_import(p.id)
     assert seen == [str(repo)]
-    script = harness.cli.script_path(p.id)
+    script, ini = harness.cli.script_path(p.id), harness.cli.ini_path(p.id)
+    assert f'-ini-file "{ini}"' in harness.cli_spawned[0].arguments
     assert f'-file "{script}"' in harness.cli_spawned[0].arguments
+    assert "-vm\n" in ini.read_text(encoding="utf-8")
     cf = str(repo / "src" / "cf").replace("\\", "/")
     cfe = str(repo / "src" / "cfe_a").replace("\\", "/")
     assert script.read_text(encoding="utf-8") == (
@@ -1173,7 +1285,9 @@ def test_cli_import_bound_projects_are_not_offered(harness: Harness, qtbot, monk
 
 `location_blob` уже импортируется в `tests/unit/test_edt_cli.py` из `onecstarter.domain.edt_cli`;
 в `test_edt_view.py` добавить тот же импорт. `test_cli_import_cancelled_starts_nothing`
-оставить как есть.
+оставить как есть. `Harness` в `test_edt_view.py`: в `EdtCli(...)` добавить
+`read_text=lambda p: "-vmargs\n-Xmx4096m\n"` — путь установки в тестах фиктивный,
+настоящий `1cedt.ini` читать нельзя.
 
 - [ ] **Step 3: Прогон — падает**
 
@@ -1643,68 +1757,3 @@ git commit -m "docs: v3.1.1 — T-20, README, requirements; версия 3.1.1, 
 `master`, тег `v3.1.1`, push — после подтверждения.
 
 ---
-
-## Приложение: варианты по итогам Э12 (Task 2 оставляет один)
-
-### В1 — список Gogo принят, скрипт нет (спека §4.3)
-
-Task 3: `cli_import_commands` в ветке `existing` возвращает одну команду:
-
-```python
-    if existing:
-        quoted = " ".join(quote_cli_arg(path) for path in existing)
-        return [f"import --project [{quoted}]"]  # список Gogo, [Ф] Э12; скобки и для одного
-```
-
-тест `test_one_command_per_existing_project_in_order` →
-`test_existing_projects_as_gogo_list`: `== ["import --project ['D:/repo/src/cfe_b' 'D:/repo/src/cf a']"]`.
-`build_cli_script_command`, `_build_cli` и их тест — не нужны. Task 4: без `CliBuilder`,
-`start_script`, `script_path`, `TestStartScript` — только `scan_projects`. Task 5: всегда
-`_start_cli(project_id, label, commands[0])`, где `label = f"{base} (проектов: {n})"` при
-`n = len(dialog.form().existing_project_dirs) >= 2`, иначе `base`; тест со скриптом заменяется
-на проверку `-command "import --project ['…cf' '…cfe_a']"` в аргументах. Предел 8191 символ
-(`wrap_console_utf8`) при длинном списке даёт `EdtError` «уменьшите перечень проектов» —
-показывается как ошибка запуска, это ожидаемо.
-
-### В2 — ни скрипт, ни список (спека §4.4): очередь во вьюхе
-
-Task 3/4 — как В1 без списка (`cli_import_commands` по одной команде, без `-file`). Task 5:
-
-```python
-        # в __init__:
-        self._cli_queue: dict[str, list[str]] = {}
-        self._cli_total: dict[str, int] = {}
-
-    def cli_import(self, project_id: str) -> None:
-        …
-        label = CLI_IMPORT.rstrip("…")
-        if len(commands) == 1:
-            self._start_cli(project_id, label, commands[0])
-            return
-        self._cli_queue[project_id] = commands[1:]
-        self._cli_total[project_id] = len(commands)
-        self._start_cli(project_id, f"{label} (1/{len(commands)})", commands[0])
-
-    def on_cli_finished(self, run: object, code: object) -> None:
-        … (после self._cli.finish(...) и обновления консоли, перед rebuild):
-        self._advance_queue(project_id, code if isinstance(code, int) else None)
-
-    def _advance_queue(self, project_id: str, code: int | None) -> None:
-        """Следующая команда очереди при коде 0; иначе очередь сбрасывается — уже
-        привязанные при повторном открытии диалога сняты, остаток импортируется заново."""
-        rest = self._cli_queue.get(project_id)
-        if rest is None:
-            return
-        if code != 0 or not rest:
-            del self._cli_queue[project_id]
-            del self._cli_total[project_id]
-            return
-        total = self._cli_total[project_id]
-        done = total - len(rest)
-        self._start_cli(project_id, f"{CLI_IMPORT.rstrip('…')} ({done + 1}/{total})", rest.pop(0))
-```
-
-В `interrupt_current_cli` после `self._cli.interrupt(...)`: `self._cli_queue.pop(project_id, None)`,
-`self._cli_total.pop(project_id, None)`. Тесты (`test_edt_view.py`): очередь из двух —
-после `harness.pending[0]()` с кодом 0 запущена вторая с меткой «(2/2)»; при
-`harness.exit_codes["code"] = 1` вторая не запускается; «Прервать» очищает очередь.
