@@ -6,8 +6,8 @@ from itertools import count
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QAction
+from PySide6.QtCore import QModelIndex, Qt
+from PySide6.QtGui import QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import QMenu, QWidget
 
 from onecstarter.domain.edt import (
@@ -47,6 +47,7 @@ from onecstarter.ui.edt.view import (
     DropTarget,
     EdtView,
 )
+from onecstarter.ui.shortcuts import EDT_SHORTCUTS
 from onecstarter.ui.theme import DARK
 
 INSTALLED = [
@@ -185,13 +186,35 @@ def _add(h: Harness, name: str, **overrides: object) -> EdtProject:
 
 
 def _select(view: EdtView, project_id: str) -> None:
+    """Найти строку записи по id и сделать её текущей — рекурсивно, запись может
+    лежать внутри группы (находка задачи 7 v3.1.1: плоский обход по корню не видел
+    записи, добавленные в группу — `_fill` кладёт их дочерними элементами группы,
+    а не строками корня модели)."""  # noqa: RUF002
+    model = view.model()
+
+    def walk(parent: QModelIndex) -> bool:
+        for row in range(model.rowCount(parent)):
+            index = model.index(row, 0, parent)
+            if index.data(ID_ROLE) == project_id:
+                view.tree().setCurrentIndex(index)
+                return True
+            if walk(index):
+                return True
+        return False
+
+    if not walk(QModelIndex()):
+        raise AssertionError(f"нет строки {project_id}")
+
+
+def _select_group(view: EdtView, group_id: str) -> None:
+    """Как `_select`, но ищет строку группы — группы стоят верхним уровнем дерева."""
     model = view.model()
     for row in range(model.rowCount()):
         index = model.index(row, 0)
-        if index.data(ID_ROLE) == project_id:
+        if index.data(KIND_ROLE) == KIND_GROUP and index.data(ID_ROLE) == group_id:
             view.tree().setCurrentIndex(index)
             return
-    raise AssertionError(f"нет строки {project_id}")
+    raise AssertionError(f"нет группы {group_id}")
 
 
 def test_tree_shows_projects(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
@@ -432,7 +455,13 @@ def test_project_menu_items_and_editor_state(harness: Harness, qtbot) -> None:  
     assert actions["Открыть в VS Code"] is False  # редактор не найден
     assert actions["Открыть в Antigravity"] is False
     assert actions[MENU_OPEN_EXPLORER] is True
-    assert {MENU_ADD, MENU_EDIT, MENU_REMOVE, MENU_ADD_GROUP, MENU_IMPORT} <= actions.keys()
+    assert {
+        MENU_ADD,
+        f"{MENU_EDIT}\tAlt+Enter",
+        MENU_REMOVE,
+        MENU_ADD_GROUP,
+        MENU_IMPORT,
+    } <= actions.keys()
     tooltips = {a.text(): a.toolTip() for a in view.build_menu("project", p.id).actions()}
     assert tooltips["Открыть в VS Code"] == "Не найден — укажите путь в Настройках"  # noqa: RUF001
 
@@ -466,7 +495,12 @@ def test_group_and_empty_menus(harness: Harness, qtbot) -> None:  # type: ignore
     view = harness.view()
     qtbot.addWidget(view)
     group_actions = _actions(view.build_menu("group", g.id))
-    assert {MENU_ADD, MENU_ADD_GROUP, MENU_RENAME_GROUP, MENU_REMOVE_GROUP} <= group_actions.keys()
+    assert {
+        MENU_ADD,
+        MENU_ADD_GROUP,
+        f"{MENU_RENAME_GROUP}\tAlt+Enter",
+        MENU_REMOVE_GROUP,
+    } <= group_actions.keys()
     assert MENU_OPEN_EDT not in group_actions
     empty_actions = _actions(view.build_menu(None, None))
     assert set(empty_actions) == {MENU_ADD, MENU_ADD_GROUP, MENU_IMPORT}
@@ -1074,3 +1108,80 @@ def test_search_hint_and_clear_button(harness: Harness, qtbot) -> None:  # type:
     view.search().setText("x")
     view.search().clear_action().trigger()
     assert view.search().text() == ""
+
+
+# -- Task 7 (v3.1.1): Alt+Enter изменяет запись/группу, Insert добавляет запись ---
+
+
+def test_alt_enter_edits_current_project(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    p = _add(harness, "a")
+    view = harness.view()
+    with qtbot.waitExposed(view):
+        view.show()
+    _select(view, p.id)
+    view.tree().setFocus()
+    edited: list[str] = []
+    monkeypatch.setattr(view, "edit_project", edited.append)
+    launched: list[str] = []
+    monkeypatch.setattr(view, "launch_id", launched.append)
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Return, Qt.KeyboardModifier.AltModifier)
+    assert edited == [p.id]
+    assert launched == []  # Alt+Enter — правка, не запуск EDT
+
+
+def test_alt_enter_renames_current_group(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    group = harness.workspace.add_group("g", None)
+    view = harness.view()
+    with qtbot.waitExposed(view):
+        view.show()
+    _select_group(view, group.id)
+    view.tree().setFocus()
+    renamed: list[str] = []
+    monkeypatch.setattr(view, "rename_group", renamed.append)
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Return, Qt.KeyboardModifier.AltModifier)
+    assert renamed == [group.id]
+
+
+def test_plain_enter_still_launches(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    p = _add(harness, "a")
+    view = harness.view()
+    qtbot.addWidget(view)
+    _select(view, p.id)
+    launched: list[str] = []
+    monkeypatch.setattr(view, "launch_id", launched.append)
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Return)
+    assert launched == [p.id]
+
+
+def test_insert_adds_project_into_group_of_current_row(  # type: ignore[no-untyped-def]
+    harness: Harness, qtbot, monkeypatch
+) -> None:
+    group = harness.workspace.add_group("g", None)
+    p = _add(harness, "a", group_id=group.id)
+    view = harness.view()
+    qtbot.addWidget(view)
+    _select(view, p.id)
+    added: list[str | None] = []
+    monkeypatch.setattr(view, "add_project", lambda group_id, workspace="": added.append(group_id))
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Insert)
+    assert added == [group.id]
+
+
+def test_insert_in_search_field_is_not_captured(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    view = harness.view()
+    qtbot.addWidget(view)
+    added: list[object] = []
+    monkeypatch.setattr(view, "add_project", lambda *args, **kwargs: added.append(args))
+    qtbot.keyClick(view.search(), Qt.Key.Key_Insert)
+    assert added == []
+
+
+def test_edt_shortcut_reference_matches_registered_shortcuts(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    """`EDT_SHORTCUTS` — то, что вьюха реально регистрирует (как у баз, T-11 п. 3)."""  # noqa: RUF002
+    view = harness.view()
+    qtbot.addWidget(view)
+    registered = {shortcut.key().toString() for shortcut in view.findChildren(QShortcut)}
+    expected = {
+        QKeySequence(sequence).toString() for spec in EDT_SHORTCUTS for sequence in spec.sequences
+    }
+    assert expected == registered, (expected - registered, registered - expected)

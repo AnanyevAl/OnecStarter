@@ -31,7 +31,7 @@ from onecstarter.ui.settings_view import (
     SettingsView,
     browse_for_servers_root,
 )
-from onecstarter.ui.shortcuts import BASES_SHORTCUTS
+from onecstarter.ui.shortcuts import BASES_SHORTCUTS, EDT_SHORTCUTS
 from onecstarter.ui.theme import DARK, LIGHT, Palette
 from onecstarter.ui.theme_controller import ThemeController
 
@@ -486,6 +486,18 @@ def test_shortcut_reference_lists_every_bases_shortcut(
     ]
     assert "не меняются" in view.row_note("Сочетания раздела «Базы»").text()
     assert view.row_control("Сочетания раздела «Базы»").isHidden() is False
+
+
+def test_shortcut_reference_lists_every_edt_shortcut(
+    application: QApplication, tmp_path: Path
+) -> None:
+    view, _ = _view(application, tmp_path)
+    assert view.edt_shortcut_reference_rows() == [
+        (spec.label, spec.title) for spec in EDT_SHORTCUTS
+    ]
+    assert view.row_control("Сочетания раздела «EDT»").isHidden() is False
+    view.expand_group("ГОРЯЧИЕ КЛАВИШИ")
+    assert view.is_group_expanded("Сочетания раздела «EDT»") is False
 
 
 def test_recent_spinbox_bounds_and_persistence(

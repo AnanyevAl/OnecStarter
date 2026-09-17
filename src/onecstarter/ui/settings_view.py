@@ -74,7 +74,7 @@ from onecstarter.ui import about
 from onecstarter.ui.hotkey_edit import HotkeyEdit
 from onecstarter.ui.settings_group import CollapsibleGroup
 from onecstarter.ui.settings_store import SettingsStore
-from onecstarter.ui.shortcuts import BASES_SHORTCUTS
+from onecstarter.ui.shortcuts import BASES_SHORTCUTS, EDT_SHORTCUTS, ShortcutSpec
 from onecstarter.ui.theme_controller import ThemeController
 
 CHOICES = (
@@ -339,10 +339,16 @@ class SettingsView(QWidget):
         )
 
         self._shortcut_rows: list[tuple[str, str]] = []
+        self._edt_shortcut_rows: list[tuple[str, str]] = []
         self._add_block(
             "Сочетания раздела «Базы»",
             "Зашиты в программу и не меняются (решение заказчика 29.08.2026)",
-            self._build_shortcut_reference(),
+            self._build_shortcut_reference(BASES_SHORTCUTS, self._shortcut_rows),
+        )
+        self._add_block(
+            "Сочетания раздела «EDT»",
+            "Зашиты в программу и не меняются; Ctrl+F общий с «Базами»",  # noqa: RUF001
+            self._build_shortcut_reference(EDT_SHORTCUTS, self._edt_shortcut_rows),
         )
 
         self._add_group("СПИСОК БАЗ")
@@ -496,21 +502,29 @@ class SettingsView(QWidget):
         self._groups[title] = block
         self._target_layout().addWidget(block)
 
-    def _build_shortcut_reference(self) -> QWidget:
-        """Таблица «сочетание — действие» по `BASES_SHORTCUTS` (T-11, п. 3, только чтение)."""
+    def _build_shortcut_reference(
+        self, specs: Sequence[ShortcutSpec], rows: list[tuple[str, str]]
+    ) -> QWidget:
+        """Таблица «сочетание — действие» по переданным сочетаниям (T-11, п. 3, только чтение).
+
+        Один билдер на оба справочника (задача 7 вехи v3.1.1: `BASES_SHORTCUTS` и
+        `EDT_SHORTCUTS`) — `rows` копит строки в накопитель своего раздела,
+        чтобы `shortcut_reference_rows()`/`edt_shortcut_reference_rows()` отдавали
+        каждый свой список.
+        """  # noqa: RUF002
         table = QWidget()
         grid = QGridLayout(table)
         grid.setContentsMargins(0, 0, 0, 0)
         grid.setHorizontalSpacing(18)
         grid.setVerticalSpacing(2)
-        for row, spec in enumerate(BASES_SHORTCUTS):
+        for row, spec in enumerate(specs):
             keys = QLabel(spec.label)
             keys_font = keys.font()
             keys_font.setBold(True)
             keys.setFont(keys_font)
             grid.addWidget(keys, row, 0)
             grid.addWidget(QLabel(spec.title), row, 1)
-            self._shortcut_rows.append((spec.label, spec.title))
+            rows.append((spec.label, spec.title))
         grid.setColumnStretch(1, 1)
         return table
 
@@ -693,6 +707,10 @@ class SettingsView(QWidget):
     def shortcut_reference_rows(self) -> list[tuple[str, str]]:
         """Строки справочника сочетаний в порядке показа — что реально попало в таблицу."""
         return list(self._shortcut_rows)
+
+    def edt_shortcut_reference_rows(self) -> list[tuple[str, str]]:
+        """Строки справочника сочетаний раздела «EDT» — что реально попало в таблицу."""
+        return list(self._edt_shortcut_rows)
 
     def servers_root_edit(self) -> QLineEdit:
         return self._servers_root
