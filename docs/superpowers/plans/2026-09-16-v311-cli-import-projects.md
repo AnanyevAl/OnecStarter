@@ -1211,7 +1211,28 @@ class TestImportDialog:
         dialog.project_dir_edit().setText(r"D:\new")
         assert dialog.form().existing_project_dirs == ()
         assert dialog.error_text() == ""
+
+    def test_scan_failure_leaves_list_responsive(self, qtbot) -> None:  # type: ignore[no-untyped-def]
+        # Ревью задачи 5: blockSignals без finally залипал бы после исключения из scan
+        dialog, _ = _dialog(qtbot)
+
+        def broken(root: str) -> list[ProjectCandidate]:
+            raise RuntimeError("scan")
+
+        dialog._scan = broken
+        dialog.existing_dir_edit().setText(r"D:\other")
+        # Прямой вызов, не editingFinished.emit(): исключение из слота Qt перехватывает
+        # своим хуком, pytest.raises вокруг emit() его не увидит
+        with pytest.raises(RuntimeError, match="scan"):
+            dialog._rescan()
+        assert dialog.list_widget().signalsBlocked() is False
+        dialog.select_none_button().click()
+        assert dialog.ok_button().isEnabled() is False
+        assert dialog.error_text() == NONE_SELECTED
 ```
+
+Мутационная проверка этого теста: убрать `try/finally` из `_rescan` — падает на
+`signalsBlocked() is False`.
 
 Остальные тесты файла (`CliValidateDialog`) не меняются.
 
@@ -1463,32 +1484,36 @@ class CliImportDialog(QDialog):
     def _rescan(self) -> None:
         root = self._existing_dir.text().strip()
         self._list.blockSignals(True)  # itemChanged на каждом addItem — лишние _refresh
-        self._list.clear()
-        self._candidates = []
-        status = ""
-        if root:
-            self._candidates = mark_in_workspace(self._scan(root), self._entries)
-            for candidate in self._candidates:
-                suffix = IN_WORKSPACE_SUFFIX if candidate.in_workspace else ""
-                item = QListWidgetItem(candidate.relative + suffix)
-                item.setToolTip(candidate.path)
-                if candidate.in_workspace:
-                    item.setFlags(Qt.ItemFlag.NoItemFlags)
-                    item.setCheckState(Qt.CheckState.Unchecked)
+        try:
+            self._list.clear()
+            self._candidates = []
+            status = ""
+            if root:
+                self._candidates = mark_in_workspace(self._scan(root), self._entries)
+                for candidate in self._candidates:
+                    suffix = IN_WORKSPACE_SUFFIX if candidate.in_workspace else ""
+                    item = QListWidgetItem(candidate.relative + suffix)
+                    item.setToolTip(candidate.path)
+                    if candidate.in_workspace:
+                        item.setFlags(Qt.ItemFlag.NoItemFlags)
+                        item.setCheckState(Qt.CheckState.Unchecked)
+                    else:
+                        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                        item.setCheckState(Qt.CheckState.Checked)
+                    self._list.addItem(item)
+                bound = sum(1 for candidate in self._candidates if candidate.in_workspace)
+                if self._candidates:
+                    status = f"Найдено {len(self._candidates)}, уже в рабочей области {bound}"
+                elif self._is_dir(root):
+                    status = NOT_FOUND
                 else:
-                    item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-                    item.setCheckState(Qt.CheckState.Checked)
-                self._list.addItem(item)
-            bound = sum(1 for candidate in self._candidates if candidate.in_workspace)
-            if self._candidates:
-                status = f"Найдено {len(self._candidates)}, уже в рабочей области {bound}"
-            elif self._is_dir(root):
-                status = NOT_FOUND
-            else:
-                status = NO_DIR
-        self._status.setText(status)
-        self._list.blockSignals(False)
-        self._refresh()
+                    status = NO_DIR
+            self._status.setText(status)
+        finally:
+            # Отказ self._scan (исключение — ошибка программы, наружу как есть) не должен
+            # оставить список с заблокированными сигналами (ревью задачи 5, раунд 1)
+            self._list.blockSignals(False)
+            self._refresh()
 
     def _set_all(self, state: Qt.CheckState) -> None:
         for index, candidate in enumerate(self._candidates):
