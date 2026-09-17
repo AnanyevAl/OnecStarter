@@ -77,6 +77,7 @@ class CliImportDialog(QDialog):
         self._is_dir = is_dir
         self._choose_directory = choose_directory
         self._candidates: list[ProjectCandidate] = []
+        self._scanned_root: str | None = None
 
         self._existing = QRadioButton("Проекты EDT в каталоге")
         self._xml = QRadioButton("Файлы конфигурации XML")
@@ -84,7 +85,7 @@ class CliImportDialog(QDialog):
         self._existing_dir = _ScanLineEdit(self._rescan, project_dir)
         self._existing_dir.setPlaceholderText(PLACEHOLDER)
         # Не textChanged: обход трёх уровней от `E:\` не мгновенный  # noqa: RUF003
-        self._existing_dir.editingFinished.connect(self._rescan)
+        self._existing_dir.editingFinished.connect(self._rescan_if_changed)
         self._existing_browse = QPushButton("Обзор…")
         self._existing_browse.clicked.connect(self._browse_existing)
         self._list = QListWidget()
@@ -206,6 +207,7 @@ class CliImportDialog(QDialog):
                 else:
                     status = NO_DIR
             self._status.setText(status)
+            self._scanned_root = root
         finally:
             # Отказ self._scan (исключение — ошибка программы, не пользователя,
             # наружу пропускается как есть) не должен оставить список с  # noqa: RUF003
@@ -214,6 +216,13 @@ class CliImportDialog(QDialog):
             # (ревью, раунд правок 1).
             self._list.blockSignals(False)
             self._refresh()
+
+    def _rescan_if_changed(self) -> None:
+        """`editingFinished` приходит и после Enter-сканирования при уходе фокуса (флаг
+        isModified поля остаётся): повторный `_rescan` вернул бы снятые флажки —
+        сканируем только если текст изменился с прошлого сканирования (re-review волны)."""  # noqa: RUF002
+        if self._existing_dir.text().strip() != self._scanned_root:
+            self._rescan()
 
     def _set_all(self, state: Qt.CheckState) -> None:
         for index, candidate in enumerate(self._candidates):

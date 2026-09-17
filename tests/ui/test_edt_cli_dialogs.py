@@ -107,6 +107,22 @@ class TestImportDialog:
         assert accepted == []
         assert dialog.list_widget().count() == 3
 
+    def test_focus_loss_after_enter_keeps_user_choice(self, qtbot) -> None:  # type: ignore[no-untyped-def]
+        # Re-review волны: editingFinished после Enter не должен перестраивать список
+        dialog, spy = _dialog(qtbot, project_dir="")
+        with qtbot.waitExposed(dialog):
+            dialog.show()
+        edit = dialog.existing_dir_edit()
+        edit.setFocus()
+        qtbot.keyClicks(edit, r"D:\typed")
+        qtbot.keyClick(edit, Qt.Key.Key_Return)
+        assert spy.calls == [r"D:\typed"]
+        dialog.list_widget().item(0).setCheckState(Qt.CheckState.Unchecked)
+        dialog.list_widget().setFocus()  # уход фокуса из поля
+        edit.editingFinished.emit()  # явно: offscreen может не прислать focusOut
+        assert spy.calls == [r"D:\typed"]
+        assert dialog.list_widget().item(0).checkState() == Qt.CheckState.Unchecked
+
     def test_select_all_and_none_skip_bound(self, qtbot) -> None:  # type: ignore[no-untyped-def]
         dialog, _ = _dialog(qtbot)
         dialog.select_none_button().click()

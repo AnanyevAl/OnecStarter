@@ -4018,7 +4018,8 @@ access violation`, T-12 п. 15, не проявился — повтор не п
 | 4 | Сервис: `scan_projects`, `start_script` | `274d6b1` |
 | 5 | Диалог и вьюха (раунд правок ревью: try/finally в `_rescan`) | `9c9bce7`, `b6fede8`, `1e9172f`, `0d3b071` |
 | 6 | Документы, 3.1.1, сборка | `2d3f872`, `2498e1c`, `1c49b16` |
-| 7 | Волна финального ревью (3 Important, 6 Minor; Э12 шаг 5 — ini с LF) | `84dcf1f`, коммит волны — следующий за `84dcf1f` |
+| 7 | Волна финального ревью (3 Important, 6 Minor; Э12 шаг 5 — ini с LF) | `84dcf1f`, `f58e27c` |
+| 8 | Re-review волны: повторный `_rescan` после Enter не сбрасывает флажки | (этот коммит) |
 
 Коммит 1 нёс протокол Э12 и черновой скрипт запуска на PowerShell; после проведения Э12
 (задача 2) скрипт заменён на `research/t20-edt-import.py` — воспроизводимый прогон без
@@ -4080,6 +4081,7 @@ access violation`, T-12 п. 15, не проявился — повтор не п
 | 5 | Important 3 | `test_undecodable_installation_ini_is_edt_error` | `start_script` — `except (OSError, UnicodeDecodeError)` блока чтения ini вернули к `except OSError` | `UnicodeDecodeError: 'utf-8' codec can't decode byte 0xff in position 0: invalid start byte` (не поймано, ушло из `_read_text` наружу) |
 | 6 | Minor 3 (запись) | `test_script_write_failure_is_edt_error` | `start_script` — `except OSError` блока записи скрипта/ini заменён на `except ValueError` | `FileExistsError: [WinError 183] Невозможно создать файл, так как он уже существует: '...\logs'` (не поймано) |
 | 7 | Minor 3 (чтение) | `test_unreadable_installation_ini_is_edt_error` | `start_script` — `except (OSError, UnicodeDecodeError)` блока чтения ini заменён на `except ValueError` | `FileNotFoundError: C:\edt\1c-edt-2025.2.6+4-x86_64\1cedt.ini` (не поймано) |
+| 8 | Re-review волны (Important 2) | `test_focus_loss_after_enter_keeps_user_choice` | `CliImportDialog.__init__` — `editingFinished` подключён обратно к `self._rescan` вместо `self._rescan_if_changed` | `assert spy.calls == [r"D:\typed"]` → `AssertionError: assert ['D:\\typed', 'D:\\typed', 'D:\\typed'] == ['D:\\typed']` (3 сканирования вместо 1) |
 
 Находка при мутации 4: дословный текст теста из ревью (`qtbot.keyClick` без `dialog.show()`)
 на сломанной реализации остаётся зелёным — без показанного и активного окна `QPushButton`
@@ -4088,7 +4090,16 @@ access violation`, T-12 п. 15, не проявился — повтор не п
 только для QDialog, не QShortcut). Тест доработан: `with qtbot.waitExposed(dialog): dialog.show()`
 и `existing_dir_edit().setFocus()` перед `keyClick` — после доработки мутация 4 ловится
 (таблица выше), исходный текст без доработки мутацию не поймал ни разу за два прогона.
-Все четыре отката подтверждены; повторный прогон целевых тестов после каждого — зелёный.
+
+Мутация 8 — re-review волны (17.09.2026): правка Important 2 (`_ScanLineEdit`) не звала
+`super().keyPressEvent(event)`, поэтому флаг `isModified()` поля после Enter оставался
+`True`, и следующая потеря фокуса заново эмитила `editingFinished` → второй `_rescan()` →
+список перестраивался, все непривязанные снова отмечались — тихий откат выбора
+пользователя (клик по списку, чтобы снять флажок, сбрасывался). Исправление —
+`self._scanned_root`/`_rescan_if_changed`: `editingFinished` перестраивает список только
+если текст с прошлого сканирования изменился; Enter и «Обзор…» сканируют безусловно.
+
+Все пять откатов подтверждены; повторный прогон целевых тестов после каждого — зелёный.
 
 ### Гейты сборки 3.1.1 (17.09.2026)
 
@@ -4101,6 +4112,13 @@ access violation`, T-12 п. 15, не проявился — повтор не п
   `All checks passed!`; mypy `Success: no issues found in 223 source files`; `build/build.ps1` →
   `smoke: OK` → `dist/OneCStarter-3.1.1-portable.zip` 54,4 МБ (57 062 731 байт),
   `dist/OneCStarter-3.1.1-setup.exe` 36,1 МБ (37 856 298 байт) — размеры не изменились.
+- Пересборка после re-review (Important 2, `_rescan_if_changed`): целевой прогон
+  `tests/ui/test_edt_cli_dialogs.py tests/ui/test_edt_view.py` `78 passed`; ruff
+  `All checks passed!`; mypy `Success: no issues found in 223 source files`; `build/build.ps1` →
+  `smoke: OK` → `dist/OneCStarter-3.1.1-portable.zip` 54,4 МБ (57 064 512 байт),
+  `dist/OneCStarter-3.1.1-setup.exe` 36,1 МБ (37 857 694 байт) — отображаемые размеры не
+  изменились, байты чуть отличаются (недетерминированность упаковки PyInstaller/Inno Setup).
+  Полный прогон не проводился — правка локальна для диалога (по решению координатора).
 - Ручной smoke заказчика — после подтверждения; слияние в `master`, тег `v3.1.1`, push — тем же
   решением.
 - Ручной smoke заказчика (обязателен до слияния): запись с клоном в каталоге проекта →
