@@ -4036,11 +4036,10 @@ access violation`, T-12 п. 15, не проявился — повтор не п
 при снятой связи ширины окна с содержимым (`widgetResizable=True`) обрезал форму на
 узком окне без возможности докрутить — правило спеки изменено на «по необходимости»
 (`ScrollBarAsNeeded`). Круг 2: типовой QSS-селектор `#SettingsScroll > QWidget > QWidget`
-задевал заодно и служебные контейнеры `QScrollBar` (не только viewport), из-за чего
-полосы прокрутки теряли нативный вид Windows 11 и рисовались generic-стилем Qt —
-подтверждено скриншотом на живой платформе, offscreen-тесты разницу не ловят; правило
-переписано на адресные `objectName` (`#SettingsScroll`, `#SettingsViewport`,
-`#SettingsContent`).
+совпадал и с самими `QScrollBar` — внуками `QScrollArea` внутри служебных
+`qt_scrollarea_hcontainer`/`vcontainer` — и лишал полосы нативного вида Windows 11
+(подтверждено скриншотом на живой платформе); правило переписано только по objectName
+(`#SettingsScroll`, `#SettingsViewport`, `#SettingsContent`).
 
 ### Итог Э12 (17.09.2026)
 
