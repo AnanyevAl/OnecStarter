@@ -1817,3 +1817,352 @@ git commit -m "docs: v3.1.1 — T-20, README, requirements; версия 3.1.1, 
 `master`, тег `v3.1.1`, push — после подтверждения.
 
 ---
+
+## Дополнение после smoke (спека §10, 17.09.2026)
+
+Три замечания заказчика после приёмки импорта; входят в 3.1.1. Ограничения — те же Global
+Constraints; тексты §10 спеки дословно.
+
+### Task 7: EDT — Alt+Enter, Insert и справочник сочетаний EDT
+
+**Files:**
+- Modify: `src/onecstarter/ui/edt/view.py` (`_EdtTree.keyPressEvent`, `EdtView.__init__` — два `QShortcut`, новые `_edit_current`, `_add_at_current`; пункт меню `MENU_EDIT`)
+- Modify: `src/onecstarter/ui/shortcuts.py` (`EDT_SHORTCUTS`)
+- Modify: `src/onecstarter/ui/settings_view.py` (второй блок справочника; `_build_shortcut_reference(specs)`; `edt_shortcut_reference_rows()`)
+- Test: `tests/ui/test_edt_view.py`, `tests/ui/test_settings_view.py`
+
+**Interfaces:**
+- Consumes: `EdtView.current() -> tuple[str, str] | None`, `_group_of(target)`, `add_project(group_id)`, `edit_project(id)`, `rename_group(id)`, `KIND_PROJECT`/`KIND_GROUP`; `ShortcutSpec`, `BASES_SHORTCUTS`; `SettingsView._add_block`.
+- Produces: `EDT_SHORTCUTS: tuple[ShortcutSpec, ...]`; `SettingsView.edt_shortcut_reference_rows() -> list[tuple[str, str]]`; блок «Сочетания раздела «EDT»».
+
+- [ ] **Step 1: Тесты EDT** (`tests/ui/test_edt_view.py`; импорт `QShortcut`, `QKeySequence` из `PySide6.QtGui`, `EDT_SHORTCUTS` из `onecstarter.ui.shortcuts`; помощник `_select_group(view, group_id)` по образцу `_select`, ищет строку с `KIND_ROLE == KIND_GROUP` и `ID_ROLE == group_id`)
+
+```python
+def test_alt_enter_edits_current_project(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    p = _add(harness, "a")
+    view = harness.view()
+    with qtbot.waitExposed(view):
+        view.show()
+    _select(view, p.id)
+    view.tree().setFocus()
+    edited: list[str] = []
+    monkeypatch.setattr(view, "edit_project", edited.append)
+    launched: list[str] = []
+    monkeypatch.setattr(view, "launch_id", launched.append)
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Return, Qt.KeyboardModifier.AltModifier)
+    assert edited == [p.id]
+    assert launched == []  # Alt+Enter — правка, не запуск EDT
+
+
+def test_alt_enter_renames_current_group(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    group = harness.workspace.add_group("g", None)
+    view = harness.view()
+    with qtbot.waitExposed(view):
+        view.show()
+    _select_group(view, group.id)
+    view.tree().setFocus()
+    renamed: list[str] = []
+    monkeypatch.setattr(view, "rename_group", renamed.append)
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Return, Qt.KeyboardModifier.AltModifier)
+    assert renamed == [group.id]
+
+
+def test_plain_enter_still_launches(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    p = _add(harness, "a")
+    view = harness.view()
+    qtbot.addWidget(view)
+    _select(view, p.id)
+    launched: list[str] = []
+    monkeypatch.setattr(view, "launch_id", launched.append)
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Return)
+    assert launched == [p.id]
+
+
+def test_insert_adds_project_into_group_of_current_row(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    group = harness.workspace.add_group("g", None)
+    p = _add(harness, "a", group_id=group.id)
+    view = harness.view()
+    qtbot.addWidget(view)
+    _select(view, p.id)
+    added: list[str | None] = []
+    monkeypatch.setattr(view, "add_project", lambda group_id, workspace="": added.append(group_id))
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Insert)
+    assert added == [group.id]
+
+
+def test_insert_in_search_field_is_not_captured(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    view = harness.view()
+    qtbot.addWidget(view)
+    added: list[object] = []
+    monkeypatch.setattr(view, "add_project", lambda *args, **kwargs: added.append(args))
+    qtbot.keyClick(view.search(), Qt.Key.Key_Insert)
+    assert added == []
+
+
+def test_edt_shortcut_reference_matches_registered_shortcuts(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    """`EDT_SHORTCUTS` — то, что вьюха реально регистрирует (как у баз, T-11 п. 3)."""
+    view = harness.view()
+    qtbot.addWidget(view)
+    registered = {shortcut.key().toString() for shortcut in view.findChildren(QShortcut)}
+    expected = {
+        QKeySequence(sequence).toString() for spec in EDT_SHORTCUTS for sequence in spec.sequences
+    }
+    assert expected == registered, (expected - registered, registered - expected)
+```
+
+Если `harness.workspace.add_group` возвращает не объект с `.id` — взять фактическую сигнатуру
+из `services/edt.py::EdtWorkspace.add_group` и существующих тестов групп в этом файле.
+Если Alt+Enter через `qtbot.keyClick` не доходит до `QShortcut` без показа окна — `show()` +
+`waitExposed` уже в тесте (как `test_alt_enter_opens_properties_of_the_current_base` в
+`test_bases_view.py` с `_show_exposed`).
+
+- [ ] **Step 2: Тесты настроек** (`tests/ui/test_settings_view.py`; импорт `EDT_SHORTCUTS`)
+
+```python
+def test_shortcut_reference_lists_every_edt_shortcut(
+    application: QApplication, tmp_path: Path
+) -> None:
+    view, _ = _view(application, tmp_path)
+    assert view.edt_shortcut_reference_rows() == [
+        (spec.label, spec.title) for spec in EDT_SHORTCUTS
+    ]
+    assert view.row_control("Сочетания раздела «EDT»").isHidden() is False
+    view.expand_group("ГОРЯЧИЕ КЛАВИШИ")
+    assert view.is_group_expanded("Сочетания раздела «EDT»") is False
+```
+
+- [ ] **Step 3: Прогон — падает**
+
+Run: `uv run pytest tests/ui/test_edt_view.py tests/ui/test_settings_view.py -q -k "alt_enter or insert or edt_shortcut"`
+Expected: `ImportError: cannot import name 'EDT_SHORTCUTS'`.
+
+- [ ] **Step 4: Реализация**
+
+`src/onecstarter/ui/shortcuts.py` — после `BASES_SHORTCUTS`:
+
+```python
+EDT_SHORTCUTS: tuple[ShortcutSpec, ...] = (
+    # Как у баз: Enter/Insert/Delete/F5 — keyPressEvent дерева (пустой sequences),
+    # Ctrl+F — оболочка; QShortcut вьюхи регистрирует только Alt+Enter.
+    ShortcutSpec("Ctrl+F", "Поиск (Базы и EDT)", ()),
+    ShortcutSpec("Enter", "Открыть в EDT выбранную запись; в поиске — первую найденную", ()),
+    ShortcutSpec("Alt+Enter", "Изменить запись или группу", ("Alt+Return", "Alt+Enter")),
+    ShortcutSpec("Insert", "Добавить запись в группу текущей строки", ()),
+    ShortcutSpec("Delete", "Удалить запись или группу (с подтверждением)", ()),  # noqa: RUF001
+    ShortcutSpec("F5", "Обновить установки EDT и состояние записей", ()),
+)
+```
+
+`F5` у EDT — `keyPressEvent` дерева (`Key_F5 → refresh_all`), не `QShortcut`: `sequences=()`.
+
+`src/onecstarter/ui/edt/view.py`:
+
+```python
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
+        """Enter — запуск, Insert/Delete/F5 — операции над списком, только без
+        модификаторов: Alt+Enter — «Изменить…» (QShortcut вьюхи, спека v3.1.1 §10),
+        Ctrl+Insert/Shift+Delete — чужие соглашения (как у баз, T-11 пп. 7–8)."""  # noqa: RUF002
+        if event.modifiers() == Qt.KeyboardModifier.NoModifier:
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                self._view._launch_index(self.currentIndex())
+                return
+            if event.key() == Qt.Key.Key_F5:
+                self._view.refresh_all()
+                return
+            if event.key() == Qt.Key.Key_Insert:
+                self._view._add_at_current()
+                event.accept()
+                return
+            if event.key() == Qt.Key.Key_Delete:
+                self._view._remove_current()
+                return
+        super().keyPressEvent(event)
+```
+
+Проверить по существующим тестам, что `Key_F5`/`Key_Delete` в них шлются без модификаторов
+(да: `qtbot.keyClick(view.tree(), Qt.Key.Key_F5)`).
+
+В `EdtView.__init__` после создания дерева (рядом с `self._tree = _EdtTree(self)`):
+
+```python
+        # Alt+Enter — «Изменить…», как «Свойства…» у баз (спека v3.1.1 §10);
+        # Return и Enter (цифровой блок) — разные клавиши Qt. Справочник в  # noqa: RUF003
+        # настройках рисуется по ui/shortcuts.py::EDT_SHORTCUTS, тест сверяет.
+        QShortcut(QKeySequence("Alt+Return"), self, self._edit_current)
+        QShortcut(QKeySequence("Alt+Enter"), self, self._edit_current)
+```
+
+Методы рядом с `_remove_current`:
+
+```python
+    def _edit_current(self) -> None:
+        """Alt+Enter — правка текущей строки: запись → диалог записи, группа → диалог группы."""
+        current = self.current()
+        if current is None:
+            return
+        kind, item_id = current
+        if kind == KIND_PROJECT:
+            self.edit_project(item_id)
+        else:
+            self.rename_group(item_id)
+
+    def _add_at_current(self) -> None:
+        """Insert — новая запись в группе текущей строки (группа → в неё, запись → в её группу,
+        пусто → корень)."""
+        self.add_project(self._group_of(self.current()))
+```
+
+Импорт `QShortcut`, `QKeySequence` из `PySide6.QtGui` (проверить, что уже есть в списке импортов
+`view.py:20-27`). Пункт меню: `menu.addAction(f"{MENU_EDIT}\tAlt+Enter", …)` — только для
+записи и группы (обе строки с `MENU_EDIT`/переименованием группы; если у группы пункт
+называется иначе — добавить `\tAlt+Enter` к нему). Существующие тесты, сравнивающие тексты
+меню с `MENU_EDIT`, поправить на новый текст.
+
+`src/onecstarter/ui/settings_view.py`: `_build_shortcut_reference(self, specs, rows)` —
+параметризовать таблицей и списком строк; два вызова `_add_block`:
+
+```python
+        self._shortcut_rows: list[tuple[str, str]] = []
+        self._edt_shortcut_rows: list[tuple[str, str]] = []
+        self._add_block(
+            "Сочетания раздела «Базы»",
+            "Зашиты в программу и не меняются (решение заказчика 29.08.2026)",
+            self._build_shortcut_reference(BASES_SHORTCUTS, self._shortcut_rows),
+        )
+        self._add_block(
+            "Сочетания раздела «EDT»",
+            "Зашиты в программу и не меняются; Ctrl+F общий с «Базами»",
+            self._build_shortcut_reference(EDT_SHORTCUTS, self._edt_shortcut_rows),
+        )
+```
+
+и аксессор `edt_shortcut_reference_rows()` по образцу `shortcut_reference_rows()`.
+
+- [ ] **Step 5: Прогон — зелёный**
+
+Run: `uv run pytest tests/ui/test_edt_view.py tests/ui/test_settings_view.py -q && uv run ruff check . && uv run mypy`
+
+- [ ] **Step 6: Коммит**
+
+```bash
+git add src/onecstarter/ui/edt/view.py src/onecstarter/ui/shortcuts.py src/onecstarter/ui/settings_view.py tests/ui/test_edt_view.py tests/ui/test_settings_view.py
+git commit -m "feat(ui): EDT — Alt+Enter изменяет запись или группу, Insert добавляет запись; справочник сочетаний EDT в настройках"
+```
+
+---
+
+### Task 8: Настройки — прокрутка вместо роста окна
+
+**Files:**
+- Modify: `src/onecstarter/ui/settings_view.py` (`__init__`: содержимое внутри `QScrollArea`; аксессор `scroll_area()`)
+- Modify: `src/onecstarter/ui/theme.py` (QSS: прозрачный фон `#SettingsScroll` и его viewport)
+- Test: `tests/ui/test_settings_view.py`
+
+**Interfaces:**
+- Produces: `SettingsView.scroll_area() -> QScrollArea`; объект `#SettingsScroll`.
+
+- [ ] **Step 1: Тесты**
+
+```python
+def test_expanding_groups_does_not_grow_minimum_height(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Спека v3.1.1 §10 п. 3: раздел лежит в QStackedWidget, рост минимальной высоты
+    раздвигал бы главное окно — содержимое в QScrollArea."""
+    view, _ = _view(application, tmp_path)
+    before = view.minimumSizeHint().height()
+    for title in list(view.group_titles()):
+        view.expand_group(title)
+    assert view.minimumSizeHint().height() == before
+    assert view.scroll_area().widgetResizable() is True
+    assert view.scroll_area().horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+
+
+def test_vertical_scrollbar_appears_when_content_exceeds_height(
+    application: QApplication, tmp_path: Path, qtbot
+) -> None:
+    view, _ = _view(application, tmp_path)
+    view.resize(700, 320)
+    with qtbot.waitExposed(view):
+        view.show()
+    for title in list(view.group_titles()):
+        view.expand_group(title)
+    application.processEvents()
+    assert view.scroll_area().verticalScrollBar().isVisible() is True
+```
+
+`group_titles()` — если аксессора нет, добавить: `return list(self._groups)`; `_view` в этом
+файле возвращает `(view, store)` — проверить по соседним тестам; `qtbot` — фикстура pytest-qt,
+добавить в параметры.
+
+- [ ] **Step 2: Прогон — падает**
+
+Run: `uv run pytest tests/ui/test_settings_view.py -q -k "minimum_height or scrollbar"`
+Expected: `AttributeError: ... scroll_area` (первый тест — ещё и рост высоты).
+
+- [ ] **Step 3: Реализация**
+
+В `SettingsView.__init__` — вместо `layout = QVBoxLayout(self)`:
+
+```python
+        content = QWidget()
+        content.setObjectName("SettingsContent")
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(6)
+        # … header, path_label, addSpacing — как было …
+        self._scroll = QScrollArea()
+        self._scroll.setObjectName("SettingsScroll")
+        self._scroll.setWidget(content)
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(self._scroll)
+```
+
+Остальной код, добавляющий группы в `self._layout` (`layout`), не меняется. Аксессор:
+
+```python
+    def scroll_area(self) -> QScrollArea:
+        return self._scroll
+
+    def group_titles(self) -> list[str]:
+        return list(self._groups)
+```
+
+`src/onecstarter/ui/theme.py`, в QSS рядом с `QTreeView {{ background … }}`:
+
+```text
+#SettingsScroll, #SettingsScroll > QWidget > QWidget {{ background: transparent; }}
+```
+
+(viewport `QScrollArea` по умолчанию красится ролью Base — на светлой теме это белое пятно на
+`#fafafa`; правило снимает фон у самого `QScrollArea` и у viewport, содержимое —
+обычный `QWidget` без фона.) Импорты `QScrollArea`, `QFrame` в `settings_view.py`.
+
+- [ ] **Step 4: Прогон — зелёный**
+
+Run: `uv run pytest tests/ui/test_settings_view.py tests/ui/test_shell.py -q && uv run ruff check . && uv run mypy`
+
+- [ ] **Step 5: Коммит**
+
+```bash
+git add src/onecstarter/ui/settings_view.py src/onecstarter/ui/theme.py tests/ui/test_settings_view.py
+git commit -m "fix(ui): настройки — содержимое в QScrollArea, окно не растёт при раскрытии групп"
+```
+
+---
+
+### Task 9: Документы, полный прогон, пересборка 3.1.1
+
+**Files:**
+- Modify: `docs/tasks.md` (T-20: строки 9–10 таблицы; «Полный прогон» третья запись; «Гейты сборки» — пересборка; «Ручной smoke» — три новых пункта), `README.md` (упомянуть Alt+Enter/Insert в абзаце про раздел EDT, если там перечислены клавиши баз — иначе не трогать), `docs/requirements.md` §5 строка `v3.1.1` — дописать «Alt+Enter/Insert в EDT, справочник EDT, прокрутка настроек»
+
+- [ ] **Step 1: Документы** — как выше.
+- [ ] **Step 2: Полный прогон** — `uv run pytest -q > e:/tmp/v311-full-3.log 2>&1; tail -3 e:/tmp/v311-full-3.log`, `uv run ruff check .`, `uv run mypy`.
+- [ ] **Step 3: Пересборка** — `powershell -ExecutionPolicy Bypass -File build/build.ps1` → `smoke: OK`, размеры артефактов в tasks.md.
+- [ ] **Step 4: Коммит** — `docs: v3.1.1 — дополнение после smoke (T-20, requirements, гейты пересборки)`.
