@@ -4003,3 +4003,69 @@ access violation`, T-12 п. 15, не проявился — повтор не п
   метаданные пакета в сборке через `copy_metadata`) → `dist/OneCStarter-3.1.0-portable.zip` 54,4 МБ,
   `dist/OneCStarter-3.1.0-setup.exe` 36,1 МБ.
 - Ручной smoke собранного экземпляра — см. ниже (заполняется по итогу).
+
+## T-20. v3.1.1 — импорт выбранных проектов через CLI EDT — DONE (17.09.2026, ветка `feat/2026-09-16-v311`)
+
+Дизайн — [спека v3.1.1](superpowers/specs/2026-09-16-v311-cli-import-projects-design.md). План —
+[план v3.1.1](superpowers/plans/2026-09-16-v311-cli-import-projects.md). Эксперимент Э12 —
+[t20-edt-import-experiments.md](research/t20-edt-import-experiments.md).
+
+| # | Задача | Коммит(ы) |
+| --- | --- | --- |
+| 1 | Протокол Э12, скрипт запуска | `8a3ea83` |
+| 2 | Э12 проведён, метки, скил | `90a615d` |
+| 3 | Домен: кандидаты, `cli_import_commands`, `-file`/`cli_ini_text` | `a11d1e2` |
+| 4 | Сервис: `scan_projects`, `start_script` | `274d6b1` |
+| 5 | Диалог и вьюха (раунд правок ревью: try/finally в `_rescan`) | `9c9bce7`, `b6fede8`, `1e9172f`, `0d3b071` |
+| 6 | Документы, 3.1.1, сборка | этот коммит |
+
+Коммит 1 нёс протокол Э12 и черновой скрипт запуска на PowerShell; после проведения Э12
+(задача 2) скрипт заменён на `research/t20-edt-import.py` — воспроизводимый прогон без
+экранирования PowerShell для длинных командных строк CLI. Задача 5 прошла один раунд
+правок ревью (Important): `_rescan` без `try/finally` терял отзывчивость списка при
+отказе сканирования — исправление `b6fede8`; план приведён в соответствие находке
+(`label = CLI_IMPORT.rstrip("…")` расходился с требуемыми тестами) коммитами `1e9172f`,
+`0d3b071`.
+
+### Итог Э12 (17.09.2026)
+
+Несколько `import` одним сеансом CLI подтверждены через `-file`, но **только** с
+`-ini-file` (копия `1cedt.ini` установки + `-vm`/JDK перед `-vmargs`) — без него обёртка
+теряет JVM (код 1). Список в `import --project […]` отклонён (код 204, сообщение — в
+cp1251); имя проекта в реестре берётся из `.project`, не из каталога. Скрипт
+останавливается на первой ошибке (код 204, текст — в stdout, UTF-8); повторный импорт
+уже привязанного проекта безвреден (код 0), но занимает весь сеанс — пометка «уже в
+рабочей области» в диалоге оправдана временем, не ошибкой. Подробности и открытые
+вопросы — [t20-edt-import-experiments.md](research/t20-edt-import-experiments.md).
+
+### Полный прогон и статика (17.09.2026)
+
+Полный прогон: `2506 passed in 369.96s` (флейк pytest-qt `Windows fatal exception:
+access violation`, T-12 п. 15, не проявился — повтор не понадобился). `ruff check .` —
+`All checks passed!`. `mypy` — `Success: no issues found in 223 source files`.
+
+### Мутационные проверки (17.09.2026)
+
+Протокол — CLAUDE.md, «Мутационная проверка тестов»: мутация правкой файла → прогон
+названного теста → дословный `FAILED` → откат → тот же тест зелёным повторно.
+Подробности — задачи 4 и 5,
+`.superpowers/sdd/2026-09-16-v311-cli-import-projects/task-4-report.md` и `task-5-report.md`.
+
+| # | Задача | Тест | Что сломано | Чем упал |
+| --- | --- | --- | --- | --- |
+| 1 | 4 | `test_busy_refused_before_script_overwrite` | `EdtCli.start_script` — снята проверка `unavailable_reason` до записи скрипта (перезапись живого CLI-скрипта не блокируется занятостью проекта) | `Failed: DID NOT RAISE EdtError` |
+| 2 | 5 | `test_bound_project_never_in_form`, `test_prefilled_dir_scanned_on_open`, `test_select_all_and_none_skip_bound`, `test_unchecked_item_excluded_in_order` | `domain/edt_cli.py::mark_in_workspace` — `replace(candidate, in_workspace=False)` всегда (привязанные проекты перестают отличаться от новых) | 4 failed |
+| 3 | 5 (раунд правок) | `test_scan_failure_leaves_list_responsive` | `CliImportDialog._rescan` — блокировка сигналов списка без `try/finally` (отказ `scan` оставляет список заблокированным) | `assert dialog.list_widget().signalsBlocked() is False` → `AssertionError: assert True is False` |
+
+Все три отката подтверждены (`git checkout --` для 1 и 2, ручной откат для 3 — в файле
+были другие незакоммиченные изменения того же раунда); повторный прогон целевых тестов
+после каждого отката — зелёный.
+
+### Гейты сборки 3.1.1 (17.09.2026)
+
+- Полный прогон: `2506 passed`; ruff `All checks passed!`; mypy `Success: no issues found in 223 source files`.
+- `build/build.ps1`: PyInstaller → `smoke: OK` (гейты `smoke: frozen=True`, `smoke: keyring=ok`,
+  `smoke: edt=<n>`, `smoke: version=3.1.1` — проверяются самим `smoke.py` по логу сборки) →
+  `dist/OneCStarter-3.1.1-portable.zip` 54,4 МБ, `dist/OneCStarter-3.1.1-setup.exe` 36,1 МБ.
+- Ручной smoke заказчика — после подтверждения; слияние в `master`, тег `v3.1.1`, push — тем же
+  решением.
