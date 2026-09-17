@@ -1617,7 +1617,7 @@ class CliImportDialog(QDialog):
         except ValueError as error:  # диалог не даёт ОК без команд — страховка
             self._show_error(str(error))
             return
-        label = CLI_IMPORT.rstrip("…")
+        label = "Импортировать"  # не CLI_IMPORT.rstrip("…"): тот даёт «Импортировать проекты»
         if len(commands) == 1:
             self._start_cli(project_id, label, commands[0])
         else:
