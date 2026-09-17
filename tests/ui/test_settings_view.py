@@ -1147,3 +1147,34 @@ def test_horizontal_scrollbar_appears_when_window_is_narrower_than_content(
     application.processEvents()
     assert view.scroll_area().horizontalScrollBar().isVisible() is False
     view.close()
+
+
+def test_scroll_area_styling_targets_named_widgets_only(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Re-review задачи 8: типовой селектор задевал QScrollBar — правило только по objectName.
+
+    Находка re-review 17.09.2026 (подтверждена скриншотом на живом Windows 11): у
+    `QScrollArea` три прямых `QWidget`-потомка — viewport и два служебных
+    контейнера полос (`qt_scrollarea_hcontainer`/`qt_scrollarea_vcontainer`), а у
+    контейнеров единственный потомок — сам `QScrollBar`. Типовой селектор вида
+    `#SettingsScroll > QWidget` (или `> QWidget > QWidget`) не различает их и красит
+    заодно и полосы, лишая их нативного стиля Windows 11 (generic Qt-фолбэк —
+    офскрин этого не ловит). Правило обязано адресовать только именованные виджеты:
+    `#SettingsScroll`, `#SettingsViewport`, `#SettingsContent` — без единого
+    типового класса-селектора.
+    """  # noqa: RUF002
+    from onecstarter.ui.theme import LIGHT, stylesheet
+
+    view, _ = _view(application, tmp_path)
+    content = view.scroll_area().widget()
+    assert content is not None
+    assert view.scroll_area().objectName() == "SettingsScroll"
+    assert view.scroll_area().viewport().objectName() == "SettingsViewport"
+    assert content.objectName() == "SettingsContent"
+    rule = next(
+        line
+        for line in stylesheet(LIGHT).splitlines()
+        if "#SettingsScroll" in line and "background: transparent" in line
+    )
+    assert "> QWidget" not in rule

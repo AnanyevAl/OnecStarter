@@ -409,6 +409,13 @@ class SettingsView(QWidget):
         # только когда окно раздела УЖЕ минимума содержимого.
         self._scroll = QScrollArea()
         self._scroll.setObjectName("SettingsScroll")
+        # Круг правок 2 ревью (re-review, 17.09.2026): у QScrollArea имя нужно и  # noqa: RUF003
+        # у viewport, не только у самой QScrollArea и у содержимого  # noqa: RUF003
+        # (`SettingsContent`, см. выше) — иначе QSS красит фон типовым
+        # селектором `QWidget`, а тот совпадает и с `QScrollBar` внутри  # noqa: RUF003
+        # служебных `qt_scrollarea_*container` (см. `theme.py` рядом
+        # с правилом `#SettingsScroll`).  # noqa: RUF003
+        self._scroll.viewport().setObjectName("SettingsViewport")
         self._scroll.setWidget(content)
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)

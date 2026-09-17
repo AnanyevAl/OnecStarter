@@ -2114,6 +2114,8 @@ Expected: `AttributeError: ... scroll_area` (первый тест — ещё и
         # … header, path_label, addSpacing — как было …
         self._scroll = QScrollArea()
         self._scroll.setObjectName("SettingsScroll")
+        # Круг правок 2 ревью (re-review): у viewport тоже нужен objectName — иначе QSS ниже красит и QScrollBar (найдено на живом Windows 11, не offscreen).
+        self._scroll.viewport().setObjectName("SettingsViewport")
         self._scroll.setWidget(content)
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -2139,15 +2141,19 @@ Expected: `AttributeError: ... scroll_area` (первый тест — ещё и
 `src/onecstarter/ui/theme.py`, в QSS рядом с `QTreeView {{ background … }}`:
 
 ```text
-#SettingsScroll, #SettingsScroll > QWidget, #SettingsScroll > QWidget > QWidget {{ background: transparent; }}
+#SettingsScroll, #SettingsViewport, #SettingsContent {{ background: transparent; }}
 ```
 
 (viewport `QScrollArea` по умолчанию красится ролью Base — на светлой теме это белое пятно на
-`#fafafa`; правило снимает фон у самого `QScrollArea`, у её viewport (средний уровень селектора)
-и у содержимого. Круг правок 1 ревью, Minor: исходный двухуровневый селектор задевал только
-содержимое — оно и так `QWidget` без фона, снимать было нечего, — а сам viewport оставался
-белым; средний уровень добавлен именно ради него.) Импорты `QScrollArea`, `QFrame` в
-`settings_view.py`.
+`#fafafa`; правило снимает фон у самого `QScrollArea`, у её viewport (`#SettingsViewport`) и у
+содержимого (`#SettingsContent`) — все три ТОЛЬКО по objectName, ни одного типового селектора
+класса. Круг правок 2 ревью (re-review, подтверждено скриншотом на живом Windows 11, не
+offscreen): у `QScrollArea` три прямых `QWidget`-потомка — viewport и два служебных контейнера
+полос (`qt_scrollarea_hcontainer`/`qt_scrollarea_vcontainer`), а у контейнеров единственный
+потомок — сам `QScrollBar`. Типовой селектор вида `#SettingsScroll > QWidget` (круг правок 1,
+Minor) не различает их и красит заодно и полосы, лишая их нативного стиля Windows 11 (generic
+Qt-фолбэк — офскрин этого не ловит, различие видно только на живом экране). Правило круга 1 —
+отменено этим кругом, не действует.) Импорты `QScrollArea`, `QFrame` в `settings_view.py`.
 
 - [ ] **Step 4: Прогон — зелёный**
 
