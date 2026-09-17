@@ -2075,7 +2075,8 @@ def test_expanding_groups_does_not_grow_minimum_height(
         view.expand_group(title)
     assert view.minimumSizeHint().height() == before
     assert view.scroll_area().widgetResizable() is True
-    assert view.scroll_area().horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    # Круг правок 1 ревью: AsNeeded, не AlwaysOff — иначе окно уже содержимого обрезало бы форму без возможности прокрутки.
+    assert view.scroll_area().horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded
 
 
 def test_vertical_scrollbar_appears_when_content_exceeds_height(
@@ -2116,7 +2117,8 @@ Expected: `AttributeError: ... scroll_area` (первый тест — ещё и
         self._scroll.setWidget(content)
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # Круг правок 1 ревью: AsNeeded, не AlwaysOff — иначе окно уже содержимого обрезало бы форму без возможности прокрутки.
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         outer = QVBoxLayout(self)
@@ -2137,12 +2139,15 @@ Expected: `AttributeError: ... scroll_area` (первый тест — ещё и
 `src/onecstarter/ui/theme.py`, в QSS рядом с `QTreeView {{ background … }}`:
 
 ```text
-#SettingsScroll, #SettingsScroll > QWidget > QWidget {{ background: transparent; }}
+#SettingsScroll, #SettingsScroll > QWidget, #SettingsScroll > QWidget > QWidget {{ background: transparent; }}
 ```
 
 (viewport `QScrollArea` по умолчанию красится ролью Base — на светлой теме это белое пятно на
-`#fafafa`; правило снимает фон у самого `QScrollArea` и у viewport, содержимое —
-обычный `QWidget` без фона.) Импорты `QScrollArea`, `QFrame` в `settings_view.py`.
+`#fafafa`; правило снимает фон у самого `QScrollArea`, у её viewport (средний уровень селектора)
+и у содержимого. Круг правок 1 ревью, Minor: исходный двухуровневый селектор задевал только
+содержимое — оно и так `QWidget` без фона, снимать было нечего, — а сам viewport оставался
+белым; средний уровень добавлен именно ради него.) Импорты `QScrollArea`, `QFrame` в
+`settings_view.py`.
 
 - [ ] **Step 4: Прогон — зелёный**
 

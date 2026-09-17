@@ -1081,6 +1081,14 @@ def test_editor_browse_uses_choose_file_not_directory(
 # (замечание заказчика, спека v3.1.1 §10 п. 3). Содержимое — внутри
 # QScrollArea со `widgetResizable=True`: минимальная высота самой QScrollArea  # noqa: RUF003
 # от высоты содержимого не зависит, а лишнее уходит в вертикальный бегунок.  # noqa: RUF003
+#
+# Круг правок 1 ревью (Important): горизонтальный бегунок — `AsNeeded`, а не  # noqa: RUF003
+# `AlwaysOff`. С `AlwaysOff` окно, ставшее уже минимума содержимого (свёрнутое  # noqa: RUF003
+# главное окно, узкий монитор), обрезало правый край формы БЕЗ возможности
+# прокрутки туда — прокрутки не было и достать до обрезанного было нечем.
+# `AsNeeded` в норме скрыт (ширина содержимого и так тянется вместе с разделом,  # noqa: RUF003
+# см. `_add_row`/`wide_control`) и появляется только когда окно раздела уже
+# минимума содержимого — см. тест ниже.
 
 
 def test_expanding_groups_does_not_grow_minimum_height(
@@ -1094,7 +1102,11 @@ def test_expanding_groups_does_not_grow_minimum_height(
         view.expand_group(title)
     assert view.minimumSizeHint().height() == before
     assert view.scroll_area().widgetResizable() is True
-    assert view.scroll_area().horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+    # Круг правок 1 ревью: не `AlwaysOff` — с ним узкое окно (уже минимума  # noqa: RUF003
+    # содержимого) обрезало бы правый край формы без возможности прокрутки
+    # туда, см. `test_horizontal_scrollbar_appears_when_window_is_narrower_
+    # than_content` ниже. `AsNeeded` в норме скрыт (проверяется тем тестом же).
+    assert view.scroll_area().horizontalScrollBarPolicy() == Qt.ScrollBarPolicy.ScrollBarAsNeeded
 
 
 def test_vertical_scrollbar_appears_when_content_exceeds_height(
@@ -1108,4 +1120,30 @@ def test_vertical_scrollbar_appears_when_content_exceeds_height(
         view.expand_group(title)
     application.processEvents()
     assert view.scroll_area().verticalScrollBar().isVisible() is True
+    view.close()
+
+
+def test_horizontal_scrollbar_appears_when_window_is_narrower_than_content(
+    application: QApplication, tmp_path: Path, qtbot: Any
+) -> None:
+    """Ревью задачи 8: без горизонтального бегунка узкое окно обрезало бы форму.
+
+    [Ф] 17.09.2026: буквальный `resize(1200, 600)` из формулировки ревью (круг
+    правок 1) на этой машине НЕ раздевает бегунок — тот же класс дефекта, что
+    уже описан у соседних тестов «широкого поля» (находка 2, 02.09.2026,
+    докстринг у `_content_floor`/`test_servers_root_field_grows_with_the_
+    section`): у этого теста самое длинное имя в файле, `tmp_path` — вложенный
+    путь `...\\pytest-of-<user>\\pytest-N\\<имя теста>0\\settings.json`, и
+    фактический минимум содержимого на этом прогоне — 1437 px, шире 1200.
+    Точка отсчёта — `_content_floor(view) + 200`, а не константа из ревью.
+    """  # noqa: RUF002
+    view, _ = _view(application, tmp_path)
+    view.resize(300, 600)
+    with qtbot.waitExposed(view):
+        view.show()
+    application.processEvents()
+    assert view.scroll_area().horizontalScrollBar().isVisible() is True
+    view.resize(_content_floor(view) + 200, 600)
+    application.processEvents()
+    assert view.scroll_area().horizontalScrollBar().isVisible() is False
     view.close()

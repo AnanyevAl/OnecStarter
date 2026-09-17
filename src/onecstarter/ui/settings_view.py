@@ -397,15 +397,22 @@ class SettingsView(QWidget):
         # главное окно (замечание заказчика, спека v3.1.1 §10 п. 3). У QScrollArea  # noqa: RUF003
         # с `widgetResizable=True` минимальная высота самой QScrollArea от высоты  # noqa: RUF003
         # содержимого не зависит — окно расти перестаёт, а лишнее уходит в  # noqa: RUF003
-        # вертикальный бегунок. Горизонтальный бегунок отключён: ширина
-        # содержимого и так тянется вместе с разделом (см. `_add_row`,  # noqa: RUF003
-        # `wide_control`) — второй, горизонтальный бегунок был бы лишним.
+        # вертикальный бегунок.
+        #
+        # Горизонтальный — «по необходимости» (круг правок 1 ревью задачи 8):
+        # с `ScrollBarAlwaysOff` окно уже минимума содержимого обрезало правый  # noqa: RUF003
+        # край формы БЕЗ возможности прокрутки туда — ревьюер воспроизвёл:
+        # `resize(300, 600)` уводит `servers_root_edit` за пределы viewport,
+        # а `horizontalScrollBar().maximum() == 609` при скрытом бегунке — доехать  # noqa: RUF003
+        # некуда и нечем. В норме бегунок скрыт: ширина содержимого и так тянется  # noqa: RUF003
+        # вместе с разделом (см. `_add_row`/`wide_control`), а появляется он  # noqa: RUF003
+        # только когда окно раздела УЖЕ минимума содержимого.
         self._scroll = QScrollArea()
         self._scroll.setObjectName("SettingsScroll")
         self._scroll.setWidget(content)
         self._scroll.setWidgetResizable(True)
         self._scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._scroll.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         outer = QVBoxLayout(self)
