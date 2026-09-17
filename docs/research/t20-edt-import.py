@@ -44,7 +44,8 @@ def write_ini() -> None:
         if line == "-vmargs":
             lines += ["-vm", str(JDK)]
         lines.append(line)
-    INI.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # LF, как пишет программа (cli_ini_text); шаги 1–2 Э12 шли с CRLF (newline по умолчанию)
+    INI.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 
 
 def script_mode(script: Path) -> str:
