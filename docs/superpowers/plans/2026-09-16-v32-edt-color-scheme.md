@@ -598,7 +598,7 @@ git commit -m "feat(edt): домен цветовой схемы — модел�
 
 **Interfaces:**
 - Consumes: Task 1 (`COLOR_KEYS`, `Scheme`, `parse_rgb`, `format_rgb`, `CURRENT_NAME`).
-- Produces: `PREFS_VERSION_LINE`, `NEW_PREFS_NEWLINE`, `PrefsLine(raw, key, key_text, value)`,
+- Produces: `PREFS_VERSION_LINE`, `NEW_PREFS_NEWLINE`, `PrefsLine(raw, key, key_text, value, newline)`,
   `unescape_property(text) -> str`, `parse_prefs_line(raw) -> PrefsLine`,
   `parse_prefs(text) -> dict[str, str]`,
   `render_prefs(existing, updates: Mapping[str, str], remove: Iterable[str] = ()) -> str`,
@@ -742,6 +742,26 @@ def test_render_without_trailing_newline_stays_without() -> None:
     assert render_prefs("a=1\nb=2", {"c": "0"}) == "a=1\nb=2\nc=0"
 
 
+def test_render_keeps_each_line_ending_as_is() -> None:
+    mixed = "a=1\nb=2\r\nc=3\rd=4"
+    assert render_prefs(mixed, {}) == mixed
+    assert render_prefs(mixed, {"b": "9"}) == "a=1\nb=9\r\nc=3\rd=4"
+    # новый ключ — доминирующим переводом строки файла (CRLF, если встречается)
+    assert render_prefs(mixed, {"e": "5"}) == "a=1\nb=2\r\nc=3\rd=4\r\ne=5"
+    assert render_prefs("a=1\nb=2\n", {"c": "0"}) == "a=1\nb=2\nc=0\n"
+
+
+def test_render_empty_existing_is_a_new_file_not_identity() -> None:
+    assert render_prefs("", {}) == PREFS_VERSION_LINE + NEW_PREFS_NEWLINE
+
+
+def test_render_trailing_newline_survives_removal_and_mixed_endings() -> None:
+    assert render_prefs("a=1\nb=2", {"c": "3"}, remove=["b"]) == "a=1\nc=3"
+    assert render_prefs("a=1\nb=2\n", {}, remove=["b"]) == "a=1\n"
+    assert render_prefs("a=1\r\nb=2\n", {}) == "a=1\r\nb=2\n"
+    assert render_prefs("a=1\r\nb=2\n", {"c": "3"}) == "a=1\r\nb=2\nc=3\r\n"
+
+
 def test_render_removes_keys_and_keeps_rest() -> None:
     rendered = render_prefs(_fixture(), {}, remove=[f"{TOKEN}Builtin\\ function.color", "absent"])
     assert "Builtin" not in rendered
@@ -791,7 +811,7 @@ Expected: `ImportError` (`parse_prefs` и остальные не определ
 - [ ] **Step 4: Реализация**
 
 В `src/onecstarter/domain/edt_scheme.py` — импорты `from collections.abc import Iterable, Mapping`,
-`from enum import Enum`; в конец модуля:
+`from dataclasses import dataclass, replace`, `from enum import Enum`; в конец модуля:
 
 ```python
 # --- Java properties без потерь --------------------------------------------------
@@ -807,7 +827,7 @@ PREFS_VERSION_LINE = "eclipse.preferences.version=1"
 # Перевод строки НОВОГО файла; существующий сохраняет свой. [?] до Э8: все пять файлов
 # заказчика — CRLF ([Ф]); Eclipse на Windows пишет `BufferedWriter.newLine()` ([Д]).
 NEW_PREFS_NEWLINE = "\r\n"
-_LINE_BREAK = re.compile(r"\r\n|\r|\n")
+_LINE_BREAK = re.compile(r"(\r\n|\r|\n)")  # группа — терминатор остаётся в результате split
 _ESCAPES = {"t": "\t", "n": "\n", "r": "\r", "f": "\f"}
 
 
@@ -817,6 +837,7 @@ class PrefsLine:
     key: str | None = None  # None — не пара «ключ=значение»
     key_text: str = ""  # ключ как записан (с экранированием и пробелами)
     value: str = ""
+    newline: str = ""  # перевод строки, каким он был в файле; "" — последняя строка без него
 
 
 def unescape_property(text: str) -> str:
@@ -841,10 +862,10 @@ def unescape_property(text: str) -> str:
     return "".join(out)
 
 
-def parse_prefs_line(raw: str) -> PrefsLine:
+def parse_prefs_line(raw: str, newline: str = "") -> PrefsLine:
     stripped = raw.lstrip()
     if not stripped or stripped[0] in "#!":
-        return PrefsLine(raw)
+        return PrefsLine(raw, newline=newline)
     index = 0
     while index < len(raw):
         char = raw[index]
@@ -854,22 +875,26 @@ def parse_prefs_line(raw: str) -> PrefsLine:
         if char == "=":
             key_text = raw[:index]
             value = unescape_property(raw[index + 1 :].lstrip())
-            return PrefsLine(raw, unescape_property(key_text).strip(), key_text, value)
+            return PrefsLine(raw, unescape_property(key_text).strip(), key_text, value, newline)
         index += 1
-    return PrefsLine(raw)
+    return PrefsLine(raw, newline=newline)
 
 
-def _split_lines(text: str) -> list[str]:
-    """Не `str.splitlines`: тот режет и по `\\x85`/`\\x1c`…, которые в latin-1 — данные."""
+def _split_lines(text: str) -> list[tuple[str, str]]:
+    """(строка, её перевод) — перевод каждой строки сохраняется как есть (инвариант 3;
+    ревью задачи 2: единый стиль на файл нормализовал бы смешанные концы строк).
+    Не `str.splitlines`: тот режет и по `\\x85`/`\\x1c`…, которые в latin-1 — данные."""
     if not text:
         return []
-    lines = _LINE_BREAK.split(text)
-    if lines and lines[-1] == "" and _LINE_BREAK.search(text[-2:]):
-        lines.pop()
-    return lines
+    parts = _LINE_BREAK.split(text)  # [текст, терминатор, текст, …, текст]
+    pairs = [(parts[i], parts[i + 1]) for i in range(0, len(parts) - 1, 2)]
+    if parts[-1]:
+        pairs.append((parts[-1], ""))
+    return pairs
 
 
 def _newline_of(existing: str) -> str:
+    """Перевод строки для НОВЫХ строк: как в файле (CRLF, если встречается), иначе LF."""
     if not existing:
         return NEW_PREFS_NEWLINE
     return "\r\n" if "\r\n" in existing else "\n"
@@ -877,7 +902,7 @@ def _newline_of(existing: str) -> str:
 
 def parse_prefs(text: str) -> dict[str, str]:
     result: dict[str, str] = {}
-    for raw in _split_lines(text):
+    for raw, _newline in _split_lines(text):
         line = parse_prefs_line(raw)
         if line.key is not None:
             result[line.key] = line.value
@@ -888,35 +913,48 @@ def render_prefs(existing: str, updates: Mapping[str, str], remove: Iterable[str
     """Подставить наши ключи в текст prefs без потерь (инвариант 3).
 
     Строки существующего файла остаются на местах: комментарии, пустые, чужие ключи,
-    порядок, перевод строки, наличие завершающего перевода. Значение нашего ключа
-    заменяется на месте (текст ключа — как был); ключ, которого не было, вставляется перед
-    первым существующим ключом, большим по алфавиту (Eclipse хранит ключи отсортированными,
-    сравнение — по снятому экранированию), иначе в конец; `remove` — ключи, строки которых
+    порядок, перевод строки КАЖДОЙ строки (в том числе отсутствие завершающего). Значение
+    нашего ключа заменяется на месте (текст ключа и его перевод строки — как были); ключ,
+    которого не было, вставляется перед первым существующим ключом, большим по алфавиту
+    (Eclipse хранит ключи отсортированными, сравнение — по снятому экранированию), иначе
+    в конец — с переводом строки файла (`_newline_of`); `remove` — ключи, строки которых
     удаляются. Пустой `existing` — новый файл: `eclipse.preferences.version=1` плюс ключи
-    по алфавиту, перевод строки `NEW_PREFS_NEWLINE`. Тождество: `render_prefs(t, {}) == t`.
+    по алфавиту, перевод строки `NEW_PREFS_NEWLINE`. Тождество для существующего файла:
+    `render_prefs(t, {}) == t` при непустом `t`; пустой `t` — новый файл, не тождество.
     """  # noqa: RUF002
     newline = _newline_of(existing)
-    lines = [parse_prefs_line(raw) for raw in _split_lines(existing)]
+    lines = [parse_prefs_line(raw, ending) for raw, ending in _split_lines(existing)]
     if not lines:
-        lines = [parse_prefs_line(PREFS_VERSION_LINE)]
+        lines = [parse_prefs_line(PREFS_VERSION_LINE, newline)]
     removed = {unescape_property(key).strip() for key in remove}
     result = [line for line in lines if line.key is None or line.key not in removed]
     pending = {unescape_property(key).strip(): (key, value) for key, value in updates.items()}
     for index, line in enumerate(result):
         if line.key is not None and line.key in pending:
             _key_text, value = pending.pop(line.key)
-            result[index] = PrefsLine(f"{line.key_text}={value}", line.key, line.key_text, value)
+            result[index] = PrefsLine(
+                f"{line.key_text}={value}", line.key, line.key_text, value, line.newline
+            )
     for normalized in sorted(pending):
         key_text, value = pending[normalized]
         position = next(
             (i for i, line in enumerate(result) if line.key is not None and line.key > normalized),
             len(result),
         )
-        result.insert(position, PrefsLine(f"{key_text}={value}", normalized, key_text, value))
-    text = newline.join(line.raw for line in result)
-    if not existing or existing.endswith(("\n", "\r")):
-        text += newline
-    return text
+        result.insert(position, PrefsLine(f"{key_text}={value}", normalized, key_text, value, newline))
+    # Терминаторы: у каждой строки, кроме последней, он обязан быть (свой или файла);
+    # у последней — свой, если файл заканчивался переводом строки, иначе никакого.
+    # Один проход после всех правок (ревью задачи 2: фикс при вставке не покрывал
+    # удаление последней строки без терминатора).
+    trailing = not existing or existing.endswith(("\n", "\r"))
+    for index, line in enumerate(result):
+        if index == len(result) - 1:
+            wanted = (line.newline or newline) if trailing else ""
+        else:
+            wanted = line.newline or newline
+        if wanted != line.newline:
+            result[index] = replace(line, newline=wanted)
+    return "".join(line.raw + line.newline for line in result)
 
 
 # --- prefs рабочей области --------------------------------------------------------
