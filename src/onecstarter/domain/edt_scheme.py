@@ -9,8 +9,9 @@ Java properties без потерь.
 """  # noqa: RUF002
 
 import re
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from enum import Enum
 
 RGB = tuple[int, int, int]
 
@@ -245,3 +246,181 @@ EDT_DEFAULTS: dict[str, RGB] = {
     "currentIPColor": (198, 219, 174),
     "printMarginColor": (176, 180, 185),
 }
+
+# --- Java properties без потерь --------------------------------------------------
+#
+# Формат [Ф] спека §0: `ключ=значение`, `eclipse.preferences.version=1`, ключи по алфавиту;
+# у заказчика — CRLF и мусорные строки `=`, `ï»¿=` (ключи с пустым значением),  # noqa: RUF003
+# которые EDT переживает. Минимальный разбор: разделитель только `=`, экранирование
+# `\ `, `\=`, `\:`, `\\`, `\uXXXX`, `\t`/`\n`/`\r`/`\f`; продолжение строки обратным слэшем
+# не поддерживается (Eclipse его не пишет). Строки без `=`, пустые и комментарии  # noqa: RUF003
+# `#`/`!` сохраняются на месте. Кодировка — забота вызывающего (latin-1).
+
+PREFS_VERSION_LINE = "eclipse.preferences.version=1"
+# Перевод строки НОВОГО файла; существующий сохраняет свой. [?] до Э8: все пять файлов
+# заказчика — CRLF ([Ф]); Eclipse на Windows пишет `BufferedWriter.newLine()` ([Д]).
+NEW_PREFS_NEWLINE = "\r\n"
+_LINE_BREAK = re.compile(r"\r\n|\r|\n")
+_ESCAPES = {"t": "\t", "n": "\n", "r": "\r", "f": "\f"}
+
+
+@dataclass(frozen=True)
+class PrefsLine:
+    raw: str  # строка без перевода
+    key: str | None = None  # None — не пара «ключ=значение»
+    key_text: str = ""  # ключ как записан (с экранированием и пробелами)  # noqa: RUF003
+    value: str = ""
+
+
+def unescape_property(text: str) -> str:
+    out: list[str] = []
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char != "\\" or index + 1 >= len(text):
+            out.append(char)
+            index += 1
+            continue
+        following = text[index + 1]
+        if following == "u" and index + 6 <= len(text):
+            try:
+                out.append(chr(int(text[index + 2 : index + 6], 16)))
+                index += 6
+                continue
+            except ValueError:
+                pass
+        out.append(_ESCAPES.get(following, following))
+        index += 2
+    return "".join(out)
+
+
+def parse_prefs_line(raw: str) -> PrefsLine:
+    stripped = raw.lstrip()
+    if not stripped or stripped[0] in "#!":
+        return PrefsLine(raw)
+    index = 0
+    while index < len(raw):
+        char = raw[index]
+        if char == "\\":
+            index += 2
+            continue
+        if char == "=":
+            key_text = raw[:index]
+            value = unescape_property(raw[index + 1 :].lstrip())
+            return PrefsLine(raw, unescape_property(key_text).strip(), key_text, value)
+        index += 1
+    return PrefsLine(raw)
+
+
+def _split_lines(text: str) -> list[str]:
+    """Не `str.splitlines`: тот режет и по `\\x85`/`\\x1c`…, которые в latin-1 — данные."""  # noqa: RUF002
+    if not text:
+        return []
+    lines = _LINE_BREAK.split(text)
+    if lines and lines[-1] == "" and _LINE_BREAK.search(text[-2:]):
+        lines.pop()
+    return lines
+
+
+def _newline_of(existing: str) -> str:
+    if not existing:
+        return NEW_PREFS_NEWLINE
+    return "\r\n" if "\r\n" in existing else "\n"
+
+
+def parse_prefs(text: str) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for raw in _split_lines(text):
+        line = parse_prefs_line(raw)
+        if line.key is not None:
+            result[line.key] = line.value
+    return result
+
+
+def render_prefs(
+    existing: str, updates: Mapping[str, str], remove: Iterable[str] = ()
+) -> str:
+    """Подставить наши ключи в текст prefs без потерь (инвариант 3).
+
+    Строки существующего файла остаются на местах: комментарии, пустые, чужие ключи,
+    порядок, перевод строки, наличие завершающего перевода. Значение нашего ключа
+    заменяется на месте (текст ключа — как был); ключ, которого не было, вставляется перед
+    первым существующим ключом, большим по алфавиту (Eclipse хранит ключи отсортированными,
+    сравнение — по снятому экранированию), иначе в конец; `remove` — ключи, строки которых
+    удаляются. Пустой `existing` — новый файл: `eclipse.preferences.version=1` плюс ключи
+    по алфавиту, перевод строки `NEW_PREFS_NEWLINE`. Тождество: `render_prefs(t, {}) == t`.
+    """
+    newline = _newline_of(existing)
+    lines = [parse_prefs_line(raw) for raw in _split_lines(existing)]
+    if not lines:
+        lines = [parse_prefs_line(PREFS_VERSION_LINE)]
+    removed = {unescape_property(key).strip() for key in remove}
+    result = [line for line in lines if line.key is None or line.key not in removed]
+    pending = {unescape_property(key).strip(): (key, value) for key, value in updates.items()}
+    for index, line in enumerate(result):
+        if line.key is not None and line.key in pending:
+            _key_text, value = pending.pop(line.key)
+            result[index] = PrefsLine(f"{line.key_text}={value}", line.key, line.key_text, value)
+    for normalized in sorted(pending):
+        key_text, value = pending[normalized]
+        position = next(
+            (i for i, line in enumerate(result) if line.key is not None and line.key > normalized),
+            len(result),
+        )
+        result.insert(position, PrefsLine(f"{key_text}={value}", normalized, key_text, value))
+    text = newline.join(line.raw for line in result)
+    if not existing or existing.endswith(("\n", "\r")):
+        text += newline
+    return text
+
+
+# --- prefs рабочей области --------------------------------------------------------
+
+
+def prefs_updates(scheme: Scheme) -> dict[str, dict[str, str]]:
+    """По файлу → пары ключ/значение схемы, включая `.SystemDefault=false` (спека §0)."""
+    result: dict[str, dict[str, str]] = {BSL_PREFS: {}, EDITORS_PREFS: {}}
+    for key in COLOR_KEYS:
+        result[key.prefs_file][key.prefs_key] = format_rgb(scheme.colors[key.name])
+        if key.system_default:
+            result[key.prefs_file][key.prefs_key + SYSTEM_DEFAULT_SUFFIX] = "false"
+    return result
+
+
+def prefs_removals() -> dict[str, list[str]]:
+    """Ключи, которые снимает «По умолчанию EDT», — те же, что пишет `prefs_updates`."""
+    return {name: list(keys) for name, keys in prefs_updates(Scheme("", EDT_DEFAULTS)).items()}
+
+
+def scheme_from_workspace_prefs(
+    bsl_prefs: str, editors_prefs: str, defaults: Mapping[str, RGB]
+) -> Scheme:
+    """«Текущая»: `R,G,B` из файла, иначе (нет ключа, не разобрался) — из `defaults`."""
+    values = {BSL_PREFS: parse_prefs(bsl_prefs), EDITORS_PREFS: parse_prefs(editors_prefs)}
+    colors: dict[str, RGB] = {}
+    for key in COLOR_KEYS:
+        raw = values[key.prefs_file].get(unescape_property(key.prefs_key))
+        rgb = parse_rgb(raw) if raw is not None else None
+        colors[key.name] = rgb if rgb is not None else defaults[key.name]
+    return Scheme(CURRENT_NAME, colors)
+
+
+# --- тема окна ----------------------------------------------------------------------
+
+
+class ThemeChoice(Enum):
+    KEEP = "keep"
+    DARK = "dark"
+    LIGHT = "light"
+
+
+THEME_KEY = "themeid"
+# [Ф] 16.09.2026: тёмная — `org.eclipse.e4.ui.css.theme.e4_dark` (тёмные рабочие области
+# заказчика). Светлая — после Э9; до него отсутствует: комбо «Тема окна» строится только по
+# подтверждённым вариантам. Читает ли EDT ключ при старте — Э9; опровергнет — словарь пуст.
+THEME_IDS: dict[ThemeChoice, str] = {ThemeChoice.DARK: "org.eclipse.e4.ui.css.theme.e4_dark"}
+
+
+def theme_prefs_update(choice: ThemeChoice) -> dict[str, str] | None:
+    theme_id = THEME_IDS.get(choice)
+    return None if theme_id is None else {THEME_KEY: theme_id}
