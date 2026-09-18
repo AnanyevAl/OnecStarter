@@ -86,7 +86,8 @@
   (22), `KEY_BY_NAME`; `Scheme(name, colors, source="")` (всегда все 22 ключа, лишние
   отбрасываются, недостающие — `ValueError`); `to_hex(rgb) -> str`, `from_hex(text) -> RGB | None`,
   `idea_color(text) -> RGB | None`, `parse_rgb(text) -> RGB | None`, `format_rgb(rgb) -> str`,
-  `luminance(rgb) -> float`, `is_dark(scheme) -> bool`, `invert(scheme) -> Scheme`,
+  `luminance(rgb) -> float`, `DARK_LUMINANCE`, `is_dark_rgb(rgb) -> bool` (целочисленно, общий
+  порог для `is_dark` и `fill_missing`), `is_dark(scheme) -> bool`, `invert(scheme) -> Scheme`,
   `fill_missing(partial, fallback_fg, fallback_bg) -> dict[str, RGB]`,
   `complete(name, partial, source="") -> Scheme`, `EDT_DEFAULTS: dict[str, RGB]`.
 
@@ -296,6 +297,19 @@ def test_fill_missing_clamps_channels() -> None:
     assert light["currentLineColor"] == (230, 230, 230)
 
 
+def test_fill_missing_and_is_dark_agree_at_mid_grey() -> None:
+    """(128,128,128) — ровно порог: не тёмный для обеих функций (целочисленная яркость)."""
+    grey: RGB = (128, 128, 128)
+    assert is_dark(_scheme(Background=grey)) is False
+    filled = fill_missing({"Background": grey, "Foreground": (0, 0, 0)}, (0, 0, 0), (0, 0, 0))
+    assert filled["currentLineColor"] == (108, 108, 108)  # светлая ветка: фон −20
+    assert filled["Comment"] == (20, 20, 20)  # текст +20
+    dark = (127, 128, 128)
+    assert is_dark(_scheme(Background=dark)) is True
+    darker = fill_missing({"Background": dark}, (0, 0, 0), (0, 0, 0))
+    assert darker["currentLineColor"] == (147, 148, 148)
+
+
 def test_complete_fills_from_edt_defaults() -> None:
     scheme = complete("t", {"BSL_Keywords": (1, 2, 3)}, "C:/t.xml")
     assert scheme.name == "t"
@@ -468,12 +482,22 @@ def format_rgb(rgb: RGB) -> str:
     return f"{rgb[0]},{rgb[1]},{rgb[2]}"
 
 
+DARK_LUMINANCE = 128  # порог яркости (0–255): ниже — тёмный фон
+
+
 def luminance(rgb: RGB) -> float:
     return 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
 
 
+def is_dark_rgb(rgb: RGB) -> bool:
+    """Тёмный ли цвет: целочисленная яркость, без плавающей точки — (128,128,128) ровно
+    на пороге и тёмным не считается. (Ревью задачи 1: `0.299·128+0.587·128+0.114·128 =
+    127.999…`, и `luminance(...) < 128` расходилось между `is_dark` и `fill_missing`.)"""
+    return 299 * rgb[0] + 587 * rgb[1] + 114 * rgb[2] < DARK_LUMINANCE * 1000
+
+
 def is_dark(scheme: Scheme) -> bool:
-    return luminance(scheme.colors["Background"]) < 128
+    return is_dark_rgb(scheme.colors["Background"])
 
 
 def invert(scheme: Scheme) -> Scheme:
@@ -496,7 +520,7 @@ def fill_missing(partial: Mapping[str, RGB], fallback_fg: RGB, fallback_bg: RGB)
     на светлом — наоборот. Заданные ключи не трогаются."""
     background = partial.get("Background", fallback_bg)
     foreground = partial.get("Foreground", fallback_fg)
-    delta = SHIFT if luminance(background) < 128 else -SHIFT
+    delta = SHIFT if is_dark_rgb(background) else -SHIFT
     result: dict[str, RGB] = {}
     for key in COLOR_KEYS:
         if key.name in partial:
