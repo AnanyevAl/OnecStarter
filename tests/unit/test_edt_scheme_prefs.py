@@ -197,3 +197,10 @@ def test_render_keeps_each_line_ending_as_is() -> None:
 
 def test_render_empty_existing_is_a_new_file_not_identity() -> None:
     assert render_prefs("", {}) == PREFS_VERSION_LINE + NEW_PREFS_NEWLINE
+
+
+def test_render_trailing_newline_survives_removal_and_mixed_endings() -> None:
+    assert render_prefs("a=1\nb=2", {"c": "3"}, remove=["b"]) == "a=1\nc=3"
+    assert render_prefs("a=1\nb=2\n", {}, remove=["b"]) == "a=1\n"
+    assert render_prefs("a=1\r\nb=2\n", {}) == "a=1\r\nb=2\n"
+    assert render_prefs("a=1\r\nb=2\n", {"c": "3"}) == "a=1\r\nb=2\nc=3\r\n"

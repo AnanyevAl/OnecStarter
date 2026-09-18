@@ -10,7 +10,7 @@ Java properties без потерь.
 
 import re
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 
 RGB = tuple[int, int, int]
@@ -316,7 +316,6 @@ def parse_prefs_line(raw: str, newline: str = "") -> PrefsLine:
 
 def _split_lines(text: str) -> list[tuple[str, str]]:
     """Не `str.splitlines`: тот режет и по `\\x85`/`\\x1c`…, которые в latin-1 — данные."""  # noqa: RUF002
-    """Возвращает список (текст_строки, перевод_строки)."""
     if not text:
         return []
     parts = _LINE_BREAK.split(text)
@@ -326,6 +325,9 @@ def _split_lines(text: str) -> list[tuple[str, str]]:
     for i in range(0, len(parts), 2):
         line_text = parts[i]
         line_newline = parts[i + 1] if i + 1 < len(parts) else ""
+        # Пропускаем пустую строку после финального переводом (файл заканчивался переводом)
+        if line_text == "" and line_newline == "" and i > 0:
+            continue
         result.append((line_text, line_newline))
     return result
 
@@ -366,7 +368,6 @@ def render_prefs(
     removed = {unescape_property(key).strip() for key in remove}
     result = [line for line in lines if line.key is None or line.key not in removed]
     pending = {unescape_property(key).strip(): (key, value) for key, value in updates.items()}
-    has_new_keys = False
     for index, line in enumerate(result):
         if line.key is not None and line.key in pending:
             _key_text, value = pending.pop(line.key)
@@ -381,50 +382,19 @@ def render_prefs(
         )
         result.insert(position, PrefsLine(f"{key_text}={value}", normalized, key_text, value,
                                           new_file_newline))
-        has_new_keys = True
-    # Handle case where we're adding new lines to a file without trailing newline:
-    # if original ended without trailing newline and we added new keys, insert newline
-    # before new keys but keep new keys without trailing newline
-    if has_new_keys and result and not existing.endswith(("\n", "\r")):
-        # Find the last original line (all non-new-key lines)
-        # New keys have newline set to new_file_newline
-        last_original_index = -1
-        for i in range(len(result) - 1, -1, -1):
-            # Original lines have newline from _split_lines; new keys have new_file_newline
-            # Check if this is likely an original line by seeing if it's in the original
-            if result[i].key is None or all(result[i].raw != line.raw for line in lines):
-                # This is likely a new key or comment
-                continue
-            last_original_index = i
-            break
-        # Simpler approach: track the count of original lines
-        # The last original line is at index original_line_count - 1 before insertions,
-        # but insertions may shift it. A safer approach is to check if the line's newline
-        # matches what was in the original
-        for i in range(len(result) - 1, -1, -1):
-            # Check if this line appears in the original input
-            found_in_original = False
-            for orig_line in lines:
-                if result[i].raw == orig_line.raw:
-                    found_in_original = True
-                    last_original_index = i
-                    break
-            if found_in_original:
-                break
-        # If we found a last original line with no newline, add the dominant newline to it
-        if last_original_index >= 0 and result[last_original_index].newline == "":
-            result[last_original_index] = PrefsLine(
-                result[last_original_index].raw,
-                result[last_original_index].key,
-                result[last_original_index].key_text,
-                result[last_original_index].value,
-                new_file_newline
-            )
-            # Make the very last key have no newline to preserve no-trailing-newline
-            result[-1] = PrefsLine(result[-1].raw, result[-1].key,
-                                   result[-1].key_text, result[-1].value, "")
-    text = "".join(line.raw + line.newline for line in result)
-    return text
+    # Терминаторы: у каждой строки, кроме последней, он обязан быть  # noqa: RUF003
+    # (свой или файла); у последней — свой, если файл заканчивался  # noqa: RUF003
+    # переводом строки, иначе никакого.
+    trailing = not existing or existing.endswith(("\n", "\r"))
+    for index, line in enumerate(result):
+        is_last = index == len(result) - 1
+        if is_last:
+            wanted = (line.newline or new_file_newline) if trailing else ""
+        else:
+            wanted = line.newline or new_file_newline
+        if wanted != line.newline:
+            result[index] = replace(line, newline=wanted)
+    return "".join(line.raw + line.newline for line in result)
 
 
 # --- prefs рабочей области --------------------------------------------------------
