@@ -1,8 +1,9 @@
 # v3.2 — цветовая схема рабочей области EDT: дизайн
 
-Решения заказчика 16.09.2026, сессия brainstorming. Базовая точка — вершина ветки
-`feat/2026-09-15-v31` (v3.1, `09c1b72`); ветка `feat/2026-09-16-v32` ответвляется от неё, слияние
-в master — после v3.1. Версия вехи — `3.2.0`.
+Решения заказчика 16.09.2026, сессия brainstorming. Базовая точка — `master` `96f0755`
+(v3.1.2, 18.09.2026; ветка `feat/2026-09-16-v32` перебазирована с вершины v3.1). Версия вехи —
+`3.2.0`. План — [2026-09-16-v32-edt-color-scheme.md](../plans/2026-09-16-v32-edt-color-scheme.md);
+уточнения, помеченные «18.09.2026 (план)», внесены при его написании по замерам и коду.
 
 Повод — просьба заказчика: «настройка цветовой схемы для проекта EDT по аналогии с обработкой
 `ColorSchemesInstaller`» (материал в `temp/color/`, читается, не копируется — CLAUDE.md
@@ -18,14 +19,15 @@
 | Утверждение | Достоверность | Следствие |
 | --- | --- | --- |
 | Цвета редактора кода EDT хранятся в workspace в двух файлах: `<workspace>\.metadata\.plugins\org.eclipse.core.runtime\.settings\com._1c.g5.v8.dt.bsl.ui.prefs` (токены) и `…\org.eclipse.ui.editors.prefs` (редактор) | **[Ф]** 16.09.2026, пять workspace заказчика с настроенными цветами | Пишем ровно эти два файла |
-| Ключи токенов: `com._1c.g5.v8.dt.bsl.Bsl.syntaxColorer.tokenStyles.<Имя>.color=R,G,B`, имена: `BSL_Keywords`, `BSL_Pragmas`, `Brackets`, `Builtin\ function` (пробел экранирован обратным слэшем — синтаксис Java properties), `Comment`, `Label`, `Numbers`, `Operators`, `Others`, `Preprocessor`, `Strings` | **[Ф]** те же пять файлов; 11 имён | Ровно этот список; ключей вне списка не пишем |
+| Ключи токенов: `com._1c.g5.v8.dt.bsl.Bsl.syntaxColorer.tokenStyles.<Имя>.color=R,G,B`, имена: `BSL_Keywords`, `BSL_Pragmas`, `Brackets`, `Builtin\ function` (пробел экранирован обратным слэшем — синтаксис Java properties), `Comment`, `Label`, `Numbers`, `Operators`, `Others`, `Preprocessor`, `Strings` | **[Ф]** те же пять файлов; 11 имён. **[Д]** 18.09.2026: те же 11 идентификаторов — строки констант класса `BslHighlightingConfiguration` в `plugins\com._1c.g5.v8.dt.bsl.ui_*.jar` установки 2026.1.2 | Ровно этот список; ключей вне списка не пишем. Короткое имя в модели и `.csi` — `Builtinfunction` (без пробела, как в `.csi` обработки) |
+| В `bsl.ui` есть `css/dark/edt-dark_preferencestyle.css`: при тёмной теме окна задаёт 9 из 11 токенов (без `Label`, `BSL_Pragmas`) через `IEclipsePreferences` — те же ключи prefs | **[Д]** ресурс плагина, 18.09.2026; перекрывает ли наши значения при запуске — **[?]** | Эксперимент Э9, шаг 4: если перекрывает — «тёмная» в диалоге либо с предупреждением, либо убирается (решение заказчика) |
 | Ключи редактора: `AbstractTextEditor.Color.Background`, `.Foreground`, `.SelectionBackground`, `.SelectionForeground`, `.FindScope` (значение `R,G,B`), у первых четырёх и у `hyperlinkColor` парный ключ `<ключ>.SystemDefault=false`; `lineNumberColor`, `currentLineColor`, `currentIPColor`, `occurrenceIndicationColor`, `printMarginColor`, `hyperlinkColor` | **[Ф]** те же файлы; 11 цветов + 5 флагов | `.SystemDefault=false` пишем всегда для этих пяти — иначе EDT берёт системный цвет и наш игнорирует **[?]** (Э8) |
-| Формат файла — Java properties: `ключ=значение`, `eclipse.preferences.version=1`; Eclipse пишет ключи по алфавиту, LF; файлы заказчика — CRLF, с мусорными строками `=` и `\u00EF\u00BB\u00BF=` (артефакты обработки) | **[Ф]** снято; CRLF/мусор EDT переживает — эти workspace работают | Читаем как properties (минимальный разбор: `\ `, `\=`, `\:`, `\uXXXX`), чужие ключи сохраняем, пишем по алфавиту; перевод строки — как в существующем файле, иначе LF |
+| Формат файла — Java properties: `ключ=значение`, `eclipse.preferences.version=1`; Eclipse пишет ключи по алфавиту; файлы заказчика — CRLF, с мусорными строками `=` и `\u00EF\u00BB\u00BF=` (артефакты обработки: BOM и пустая первая строка её `TextWriter`, переписанные Eclipse в экранированном виде) | **[Ф]** снято; CRLF/мусор EDT переживает — эти workspace работают. Перевод строки у самого Eclipse на Windows — **[Д]** `BufferedWriter.newLine()` = CRLF, проверяется Э8 | Читаем как properties (минимальный разбор: `\ `, `\=`, `\:`, `\uXXXX`), чужие ключи, комментарии и порядок сохраняем (тождество `render_prefs(t, {}) == t`), наши значения заменяем на месте, новые ключи вставляем по алфавиту; перевод строки — как в существующем файле, для нового — `NEW_PREFS_NEWLINE` (CRLF, как у всех снятых файлов; Э8 уточняет) |
 | Workspace без настроенных цветов этих файлов не имеет вовсе (6 из 11) | **[Ф]** | Отсутствие файла и каталога `.settings` — штатный случай, создаём |
 | Тема окна EDT — `org.eclipse.e4.ui.css.swt.theme.prefs`: `themeid=org.eclipse.e4.ui.css.theme.e4_dark` у тёмных workspace | **[Ф]** значение тёмной; id светлой **[?]**; чтение ключа при старте **[?]** | Эксперимент Э9; до него переключатель темы окна в диалоге неактивен |
 | EDT при выходе перезаписывает prefs из памяти — правка при запущенном EDT теряется | **[Д]** механика Eclipse Preferences; на EDT **[?]** | Предусловие «EDT не запущен на этой рабочей области» — тот же статус, что для CLI (v3 §14) |
 | Цвета EDT по умолчанию (светлая схема) не записаны в prefs — их источник в установке | **[?]** | Эксперимент Э10; без него «По умолчанию EDT» = удаление наших ключей |
-| Тема IDEA: XML `<scheme name="…" version="1" parent_scheme="…">` с `<colors><option name value/>` (фон, номера строк, выделение…) и `<attributes><option name="DEFAULT_KEYWORD"><value><option name="FOREGROUND" value="RRGGBB"/>…`; `.icls` — тот же XML; `.jar` — zip с `colors/*.xml` | **[Ф]** структура снята с тем из каталога заказчика (641 файл) | Разбор `xml.etree`, без внешних библиотек |
+| Тема IDEA: XML `<scheme name="…" version="1" parent_scheme="…">` с `<colors><option name value/>` (фон, номера строк, выделение…) и `<attributes><option name="DEFAULT_KEYWORD"><value><option name="FOREGROUND" value="RRGGBB"/>…`; `.icls` — тот же XML; `.jar` — zip с `colors/*.xml`. Значение цвета — hex **без ведущих нулей** (`ff` = `0000ff`, `7f00`, `0`; Java `Integer.toHexString`), иногда `#RRGGBB`; пусто или `undefined` — не задан; у всех 641 `parent_scheme="Default"`, у 54 нет `DEFAULT_KEYWORD` (наследуют) | **[Ф]** структура и значения сняты с 641 темы каталога заказчика (замер при планировании 18.09.2026: длины 1–6, 612 значений с `#`, 3 `undefined`) | Разбор `xml.etree`, без внешних библиотек; цвет — `idea_color` (дополнение нулями слева до 6), не `from_hex` |
 | `.tmTheme` — plist XML: `<dict>` с `settings` → массив `<dict>` (первый без `scope` — общие цвета `foreground`, `background`, `lineHighlight`, `selection`, `caret`; остальные со `scope` — категории `keyword`, `string`, `comment`, `constant.numeric`, …) | **[Д]** формат TextMate; на файлах заказчика **[?]** | Эксперимент Э11 на реальных файлах |
 | `.csi` — JSON обработки: `{"DesignerColors": [{"Name","Color":"#RRGGBB"}…], "EDTColors": [{"Name","Color"}…]}`; имена `EDTColors` — короткие имена наших 22 ключей | **[Ф]** `temp/color/…/Templates/DefaultSchemes` и код обработки | Читаем и пишем `EDTColors`, `DesignerColors` при чтении игнорируем, при записи не пишем |
 | Соответствие атрибутов IDEA/TextMate нашим 22 ключам | **[Р]** наша таблица, проверяется на реальных темах (Э11); недостающие цвета выводятся из `Foreground`/`Background` сдвигом ±20 по каналам | Таблица — одна константа в домене, правится по итогам Э11 |
@@ -65,13 +67,20 @@ class Scheme:
 Чистые функции: `is_dark(scheme) -> bool` (яркость `Background`), `invert(scheme)`,
 `fill_missing(partial: dict[str, RGB], fallback_fg: RGB, fallback_bg: RGB) -> dict` (сдвиг ±20
 по каналам, как у обработки — [Р]), `to_hex(rgb)`, `from_hex(text) -> RGB | None`
-(принимает `#RRGGBB`, `RRGGBB`, `#RGB`; иначе `None`).
+(принимает `#RRGGBB`, `RRGGBB`, `#RGB`; иначе `None`), `idea_color(text) -> RGB | None`
+(hex IDEA без ведущих нулей, см. §0; `#RGB`-сокращение здесь не действует),
+`complete(name, partial, source) -> Scheme` (`fill_missing` от `EDT_DEFAULTS`).
+Уточнение 18.09.2026 (план): короткое имя ключа `Builtin function` — **`Builtinfunction`**,
+как в `.csi` обработки; в prefs — `Builtin\ function`.
 
 ## §3. Разбор источников (домен, чистые функции над текстом/байтами)
 
 - `parse_csi(text) -> dict[str, RGB]` — `EDTColors` → короткое имя → цвет; неизвестные имена
   пропускаются; нет раздела — `ValueError`.
-- `parse_idea_xml(text) -> dict[str, RGB]` — таблица `IDEA_MAP: dict[str, str]`
+- `parse_idea_xml(text) -> tuple[str, dict[str, RGB]]` (имя из атрибута `name` или `""`,
+  цвета) — таблица `IDEA_MAP: dict[str, tuple[IdeaSource, ...]]` (`IdeaSource(attribute,
+  component)`: `component` `FOREGROUND`/`BACKGROUND` — значение из `<attributes>`, пустой —
+  из `<colors>`; кортеж — запасные источники по порядку, пополняется по Э11)
   (наш ключ → атрибут IDEA: `DEFAULT_KEYWORD`, `DEFAULT_NUMBER`, `DEFAULT_STRING`,
   `DEFAULT_OPERATION_SIGN`, `DEFAULT_LINE_COMMENT`, `DEFAULT_CONSTANT`, `DEFAULT_FUNCTION_CALL`,
   `DEFAULT_METADATA`, `DEFAULT_LABEL`, `DEFAULT_IDENTIFIER`, `DEFAULT_BRACKETS`; цвета редактора —
@@ -81,44 +90,62 @@ class Scheme:
   Пустое значение атрибута → цвет не задан → `fill_missing`.
 - `parse_idea_jar(data: bytes) -> tuple[str, dict[str, RGB]]` — первый `colors/*.xml` из zip;
   `zipfile.ZipFile(io.BytesIO(data))` работает над байтами без ФС — функция остаётся в домене.
-- `parse_tmtheme(text) -> dict[str, RGB]` — plist через `plistlib.loads` (стандартная
-  библиотека); `TMTHEME_MAP` по `scope` (первое совпадение по префиксу: `keyword` →
-  `BSL_Keywords`, `constant.numeric` → `Numbers`, `string` → `Strings`, `comment` → `Comment`,
-  `keyword.control.import`/`meta.preprocessor` → `Preprocessor`, `support.function` →
-  `Builtin function`, `constant.language` → `BSL_Pragmas`, `entity.name.tag` → `Label`,
-  `variable` → `Others`, `punctuation` → `Brackets`) и общие цвета первого словаря без `scope`.
-- `parse_prefs(text) -> dict[str, str]` и `render_prefs(existing: str, updates: dict[str, str]) -> str`
-  — минимальный Java properties: строки `ключ=значение`; при чтении снимаются `\ `, `\=`, `\:`,
-  `\uXXXX`, `\\`; строки без `=` и комментарии `#` сохраняются как есть в порядке файла; при
-  записи наши ключи подставляются/добавляются, все ключи выводятся по алфавиту (как Eclipse),
-  перевод строки — как в `existing` (CRLF, если встречается), иначе LF. `eclipse.preferences.version=1`
-  добавляется, если файла не было.
+- `parse_tmtheme(text) -> tuple[str, dict[str, RGB]]` (имя из ключа `name` или `""`, цвета)
+  — plist через `plistlib.loads` (стандартная библиотека); `TMTHEME_SCOPES` — кортеж
+  `(префикс scope, наш ключ)`, первое совпадение по префиксу, частные префиксы раньше общих
+  (`keyword.control.import`/`meta.preprocessor` → `Preprocessor`, `keyword.operator` →
+  `Operators`, `keyword` → `BSL_Keywords`, `constant.numeric` → `Numbers`, `constant.language`
+  → `BSL_Pragmas`, `string` → `Strings`, `comment` → `Comment`, `support.function` →
+  `Builtinfunction`, `entity.name.tag` → `Label`, `variable` → `Others`, `punctuation` →
+  `Brackets`); `scope` со списком через запятую — по каждому элементу; `TMTHEME_GENERAL` —
+  общие цвета словаря без `scope` (`background`, `foreground`, `lineHighlight`, `selection`,
+  `selectionForeground`, `gutterForeground`, `findHighlight`); `#RRGGBBAA` — альфа отбрасывается.
+- `parse_prefs(text) -> dict[str, str]` и `render_prefs(existing: str, updates: Mapping[str, str],
+  remove: Iterable[str] = ()) -> str` — минимальный Java properties: строки `ключ=значение`
+  (разделитель только `=`); при чтении снимаются `\ `, `\=`, `\:`, `\uXXXX`, `\\`, `\t`…;
+  строки без `=`, пустые и комментарии `#`/`!` сохраняются на своих местах; при записи значение
+  нашего ключа заменяется на месте (текст ключа — как был), ключ, которого не было, вставляется
+  перед первым существующим ключом, большим по алфавиту (сравнение по снятому экранированию —
+  так сортирует Eclipse), иначе в конец; `remove` — ключи, строки которых удаляются; перевод
+  строки — как в `existing` (CRLF, если встречается), для нового файла — `NEW_PREFS_NEWLINE`
+  (CRLF до Э8). `eclipse.preferences.version=1` добавляется, если файла не было. Тождество
+  `render_prefs(t, {}) == t` — тест инварианта 3. Кодировка чтения и записи — latin-1
+  (Java properties: любой байт проходит туда и обратно). Уточнение 18.09.2026 (план): прежняя
+  формулировка «все ключи выводятся по алфавиту» переупорядочивала бы чужой файл — заменена
+  на «на месте + вставка по алфавиту».
 - `scheme_from_workspace_prefs(bsl_prefs: str, editors_prefs: str, defaults: dict[str, RGB]) -> Scheme`
   — «Текущая»: значение `R,G,B` из файла, иначе из `defaults`.
 - `prefs_updates(scheme) -> dict[str, dict[str, str]]` — по файлу → пары ключ/значение, включая
-  `.SystemDefault=false`.
+  `.SystemDefault=false`; `prefs_removals() -> dict[str, list[str]]` — те же ключи для снятия
+  («По умолчанию EDT», §4).
 - `to_csi(scheme) -> str`, `theme_prefs_update(choice) -> dict[str, str] | None`.
 
 Имена файлов в каталоге схем — имя схемы (`stem`); у IDEA — атрибут `name` из XML, если есть.
 
 ## §4. Сервис — `services/edt_scheme.py`
 
-- `SchemeCatalog(directory: str)`: `entries() -> list[CatalogEntry]` (`name`, `path`, `kind`,
-  `error: str | None`) — скан каталога и его подкаталогов первого уровня по расширениям
-  `.csi .xml .icls .jar .tmtheme` (без учёта регистра), сортировка по имени; чтение файла
-  ленивое — `load(entry) -> Scheme` (ошибка разбора → `error` записи, диалог показывает).
-- `WorkspaceSchemes(workspace_dir)`: `settings_dir` = `<workspace>\.metadata\.plugins\org.eclipse.core.runtime\.settings`;
+- `SchemeCatalog(directory: str)`: `exists()`, `directory`, `entries() -> list[CatalogEntry]`
+  (`name` = stem файла, `path`, `kind`; frozen) — скан каталога и его подкаталогов первого
+  уровня по расширениям `.csi .xml .icls .jar .tmtheme` (без учёта регистра), сортировка по
+  имени; чтение файла ленивое — `load(entry) -> Scheme` (ошибка разбора → `EdtError`
+  «не удалось прочитать: <причина>», диалог показывает её в подсказке строки; поля `error` у
+  записи нет — уточнение 18.09.2026, план). `save_csi(path, scheme)` — атомарная запись `.csi`.
+- `WorkspaceSchemes(workspace_dir, *, is_busy)`: `settings_dir` = `<workspace>\.metadata\.plugins\org.eclipse.core.runtime\.settings`;
   `current(defaults) -> Scheme`; `apply(scheme, theme: ThemeChoice) -> None` — для каждого из
   двух файлов: прочитать (нет — пустой текст), `render_prefs`, атомарная запись (`atomic_write`,
-  инвариант 4), каталог создаётся; тема — третий файл тем же приёмом. `OSError` → `EdtError`
+  инвариант 4), каталог создаётся; тема — третий файл тем же приёмом; `reset(theme)` — снять
+  наши ключи (`prefs_removals`), отсутствующий файл не создавать. `OSError` → `EdtError`
   с путём.
 - Предусловие занятости — у вызывающего (`EdtWorkspace.running_pid(project_id) is None` и
   `cli_busy` ложно) — сервис принимает уже проверенный вызов, но повторно проверяет
   через переданный `is_busy: Callable[[], bool]` и отказывает `EdtError` («Закройте EDT:
   рабочая область занята») — защита от гонки со сканом.
 - Значения по умолчанию EDT — `EDT_DEFAULTS: dict[str, RGB]` в домене: заполняется по Э10;
-  до Э10 — светлая схема с пометкой **[?]** в комментарии и «По умолчанию EDT» = удаление
-  наших ключей из prefs (Eclipse вернёт умолчания).
+  до Э10 — светлая схема с пометкой **[?]** в комментарии. «По умолчанию EDT» **без правок
+  пользователя** = всегда удаление наших ключей из prefs (`reset`; Eclipse вернёт свои умолчания
+  любой версии — уточнение 18.09.2026, план: явная запись умолчаний устарела бы со сменой
+  версии EDT); `EDT_DEFAULTS` служит для показа «Текущей» без файлов, предпросмотра умолчаний
+  и дополнения неполных тем. Правленные умолчания — обычная запись.
 
 ## §5. Диалог — `ui/edt/scheme_dialog.py`, предпросмотр — `ui/edt/scheme_preview.py`
 
@@ -139,8 +166,10 @@ class Scheme:
   по образцу или коду — `QColorDialog`; изменение → предпросмотр; правки не трогают файл.
 - **Кнопки**: «Инвертировать»; «Сохранить в файл…» (`QFileDialog.getSaveFileName`, каталог
   схем, `<имя источника>.csi`, после записи список источников перечитывается); «Тема окна»
-  (`QComboBox`: «не трогать», «тёмная», «светлая»; id тем и сам факт чтения ключа — по итогу Э9,
-  см. §8; если Э9 опровергнет механику — переключатель убирается из диалога); «Применить»
+  (`QComboBox`: «не трогать», «тёмная», «светлая»; варианты строятся по `THEME_IDS` домена —
+  только подтверждённые id; когда кроме «не трогать» вариантов нет, комбо и подпись скрыты;
+  id тем и сам факт чтения ключа — по итогу Э9, см. §8; если Э9 опровергнет механику —
+  `THEME_IDS` пуст и переключателя в диалоге нет); «Применить»
   (неактивна при статусе «запущен»/`cli_busy` с подсказкой «Закройте EDT: рабочая область
   занята»); «Закрыть».
 - После «Применить» — `show_info`: «Схема применена. Изменения видны после запуска EDT».
@@ -166,16 +195,20 @@ class Scheme:
 
 ## §8. Эксперименты до реализации (протокол — `docs/research/t19-edt-scheme-experiments.md`)
 
-Тестовая рабочая область — `E:\edt\тест_2026` (оставлена с v3). Заказчик выполняет шаги,
-агент снимает файлы.
+Тестовая рабочая область — `E:\tmp\edt-scheme\ws1`: новый пустой каталог (тестовые области v3,
+включая `E:\edt\тест_2026`, удалены 18.09.2026; EDT создаёт `.metadata` сама, [Ф] Э1).
+Заказчик выполняет шаги, агент пишет и снимает файлы скриптом `docs/research/t19-edt-scheme.py`
+(домен без сервиса и UI); EDT запускается только заказчиком и только на этой области.
 
-- **Э8. Приём нашей записи.** Записать prefs нашим рендером (тёмная схема из вашего каталога),
-  запустить EDT, открыть модуль: цвета применились; выйти из EDT, снять файлы — что EDT
-  переписал (LF, порядок, наши ключи на месте). Отдельно: без `.SystemDefault=false` — берёт
-  ли EDT цвет фона.
-- **Э9. Тема окна.** В EDT переключить тему на светлую (Preferences → Appearance), выйти,
-  снять `themeid`; записать тёмный/светлый id руками при закрытом EDT, запустить — тема
-  соответствует.
+- **Э8. Приём нашей записи.** Записать prefs нашим рендером (`tests/fixtures/edt_schemes/dark22.csi`
+  плюс ключ-канарейка `onecstarter.canary=1`), запустить EDT, открыть модуль: цвета
+  применились; выйти из EDT, снять файлы — что EDT переписал (перевод строки, порядок, наши
+  ключи и канарейка на месте). Отдельно: правка файла при **запущенном** EDT — переживает ли
+  выход ([Д] → [Ф]); без `.SystemDefault=false` — берёт ли EDT цвет фона.
+- **Э9. Тема окна.** Агент: id тем из `plugin.xml` jar `org.eclipse.ui.themes_*` ([Д]). В EDT
+  переключить тему на светлую (Preferences → Appearance), выйти, снять `themeid`; записать
+  тёмный/светлый id руками при закрытом EDT, запустить — тема соответствует. Шаг 4: наша
+  схема + тёмный `themeid` — остаются ли токены нашими или CSS тёмной темы (§0) их перекрывает.
 - **Э10. Цвета по умолчанию.** Найти в установке источник умолчаний (`plugins\com._1c.g5.v8.dt.bsl.ui_*.jar`
   → `plugin.xml`/`preferences.ini`, `org.eclipse.ui.editors` — Eclipse-умолчания); если не
   нашлись — снять цвета глазами с чистого workspace (скриншот + пипетка) и пометить **[Ф, визуально]**.
@@ -222,5 +255,5 @@ class Scheme:
 | `ui/edt/view.py` | пункт меню «Цветовая схема…», проброс статуса занятости |
 | `ui/settings_view.py` | строка «Каталог цветовых схем» |
 | `.claude/skills/edt-launch/` | раздел «Цвета редактора» после экспериментов |
-| `docs/research/t19-edt-scheme-experiments.md` | протоколы Э8–Э11 |
+| `docs/research/t19-edt-scheme-experiments.md`, `docs/research/t19-edt-scheme.py` | протоколы Э8–Э11; скрипт записи prefs, снимков, статистики тем и поиска умолчаний |
 | `pyproject.toml` | `3.2.0` |
