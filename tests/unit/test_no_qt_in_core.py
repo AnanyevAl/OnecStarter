@@ -32,6 +32,7 @@ CORE = (
     "onecstarter.domain.server_match",
     "onecstarter.domain.edt",
     "onecstarter.domain.edt_cli",
+    "onecstarter.domain.edt_scheme",
     "onecstarter.platform_1c.console",
     "onecstarter.platform_1c.discovery",
     "onecstarter.platform_1c.elevation",
