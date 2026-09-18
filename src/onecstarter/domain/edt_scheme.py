@@ -250,7 +250,8 @@ EDT_DEFAULTS: dict[str, RGB] = {
 # --- Java properties без потерь --------------------------------------------------
 #
 # Формат [Ф] спека §0: `ключ=значение`, `eclipse.preferences.version=1`, ключи по алфавиту;
-# у заказчика — CRLF и мусорные строки `=`, `ï»¿=` (ключи с пустым значением),  # noqa: RUF003
+# у заказчика — CRLF и мусорные строки `=`, `ï»¿=` (ключи  # noqa: RUF003
+# с пустым значением),  # noqa: RUF003
 # которые EDT переживает. Минимальный разбор: разделитель только `=`, экранирование
 # `\ `, `\=`, `\:`, `\\`, `\uXXXX`, `\t`/`\n`/`\r`/`\f`; продолжение строки обратным слэшем
 # не поддерживается (Eclipse его не пишет). Строки без `=`, пустые и комментарии  # noqa: RUF003
@@ -260,7 +261,7 @@ PREFS_VERSION_LINE = "eclipse.preferences.version=1"
 # Перевод строки НОВОГО файла; существующий сохраняет свой. [?] до Э8: все пять файлов
 # заказчика — CRLF ([Ф]); Eclipse на Windows пишет `BufferedWriter.newLine()` ([Д]).
 NEW_PREFS_NEWLINE = "\r\n"
-_LINE_BREAK = re.compile(r"\r\n|\r|\n")
+_LINE_BREAK = re.compile(r"(\r\n|\r|\n)")
 _ESCAPES = {"t": "\t", "n": "\n", "r": "\r", "f": "\f"}
 
 
@@ -270,6 +271,7 @@ class PrefsLine:
     key: str | None = None  # None — не пара «ключ=значение»
     key_text: str = ""  # ключ как записан (с экранированием и пробелами)  # noqa: RUF003
     value: str = ""
+    newline: str = ""  # перевод строки (\r\n, \n, \r) или "" для последней без перевода
 
 
 def unescape_property(text: str) -> str:
@@ -294,10 +296,10 @@ def unescape_property(text: str) -> str:
     return "".join(out)
 
 
-def parse_prefs_line(raw: str) -> PrefsLine:
+def parse_prefs_line(raw: str, newline: str = "") -> PrefsLine:
     stripped = raw.lstrip()
     if not stripped or stripped[0] in "#!":
-        return PrefsLine(raw)
+        return PrefsLine(raw, newline=newline)
     index = 0
     while index < len(raw):
         char = raw[index]
@@ -307,19 +309,25 @@ def parse_prefs_line(raw: str) -> PrefsLine:
         if char == "=":
             key_text = raw[:index]
             value = unescape_property(raw[index + 1 :].lstrip())
-            return PrefsLine(raw, unescape_property(key_text).strip(), key_text, value)
+            return PrefsLine(raw, unescape_property(key_text).strip(), key_text, value, newline)
         index += 1
-    return PrefsLine(raw)
+    return PrefsLine(raw, newline=newline)
 
 
-def _split_lines(text: str) -> list[str]:
+def _split_lines(text: str) -> list[tuple[str, str]]:
     """Не `str.splitlines`: тот режет и по `\\x85`/`\\x1c`…, которые в latin-1 — данные."""  # noqa: RUF002
+    """Возвращает список (текст_строки, перевод_строки)."""
     if not text:
         return []
-    lines = _LINE_BREAK.split(text)
-    if lines and lines[-1] == "" and _LINE_BREAK.search(text[-2:]):
-        lines.pop()
-    return lines
+    parts = _LINE_BREAK.split(text)
+    # parts теперь: [text, sep, text, sep, ..., text]
+    # Собираем пары: (text[i], sep[i] или "")
+    result: list[tuple[str, str]] = []
+    for i in range(0, len(parts), 2):
+        line_text = parts[i]
+        line_newline = parts[i + 1] if i + 1 < len(parts) else ""
+        result.append((line_text, line_newline))
+    return result
 
 
 def _newline_of(existing: str) -> str:
@@ -330,7 +338,7 @@ def _newline_of(existing: str) -> str:
 
 def parse_prefs(text: str) -> dict[str, str]:
     result: dict[str, str] = {}
-    for raw in _split_lines(text):
+    for raw, _newline in _split_lines(text):
         line = parse_prefs_line(raw)
         if line.key is not None:
             result[line.key] = line.value
@@ -348,29 +356,74 @@ def render_prefs(
     первым существующим ключом, большим по алфавиту (Eclipse хранит ключи отсортированными,
     сравнение — по снятому экранированию), иначе в конец; `remove` — ключи, строки которых
     удаляются. Пустой `existing` — новый файл: `eclipse.preferences.version=1` плюс ключи
-    по алфавиту, перевод строки `NEW_PREFS_NEWLINE`. Тождество: `render_prefs(t, {}) == t`.
+    по алфавиту, перевод строки `NEW_PREFS_NEWLINE`. Тождество для существующего файла:
+    `render_prefs(t, {}) == t` при непустом `t`; пустой `t` — новый файл.
     """
-    newline = _newline_of(existing)
-    lines = [parse_prefs_line(raw) for raw in _split_lines(existing)]
+    new_file_newline = _newline_of(existing)
+    lines = [parse_prefs_line(raw, newline) for raw, newline in _split_lines(existing)]
     if not lines:
-        lines = [parse_prefs_line(PREFS_VERSION_LINE)]
+        lines = [parse_prefs_line(PREFS_VERSION_LINE, new_file_newline)]
     removed = {unescape_property(key).strip() for key in remove}
     result = [line for line in lines if line.key is None or line.key not in removed]
     pending = {unescape_property(key).strip(): (key, value) for key, value in updates.items()}
+    has_new_keys = False
     for index, line in enumerate(result):
         if line.key is not None and line.key in pending:
             _key_text, value = pending.pop(line.key)
-            result[index] = PrefsLine(f"{line.key_text}={value}", line.key, line.key_text, value)
+            result[index] = PrefsLine(
+                f"{line.key_text}={value}", line.key, line.key_text, value, line.newline
+            )
     for normalized in sorted(pending):
         key_text, value = pending[normalized]
         position = next(
             (i for i, line in enumerate(result) if line.key is not None and line.key > normalized),
             len(result),
         )
-        result.insert(position, PrefsLine(f"{key_text}={value}", normalized, key_text, value))
-    text = newline.join(line.raw for line in result)
-    if not existing or existing.endswith(("\n", "\r")):
-        text += newline
+        result.insert(position, PrefsLine(f"{key_text}={value}", normalized, key_text, value,
+                                          new_file_newline))
+        has_new_keys = True
+    # Handle case where we're adding new lines to a file without trailing newline:
+    # if original ended without trailing newline and we added new keys, insert newline
+    # before new keys but keep new keys without trailing newline
+    if has_new_keys and result and not existing.endswith(("\n", "\r")):
+        # Find the last original line (all non-new-key lines)
+        # New keys have newline set to new_file_newline
+        last_original_index = -1
+        for i in range(len(result) - 1, -1, -1):
+            # Original lines have newline from _split_lines; new keys have new_file_newline
+            # Check if this is likely an original line by seeing if it's in the original
+            if result[i].key is None or all(result[i].raw != line.raw for line in lines):
+                # This is likely a new key or comment
+                continue
+            last_original_index = i
+            break
+        # Simpler approach: track the count of original lines
+        # The last original line is at index original_line_count - 1 before insertions,
+        # but insertions may shift it. A safer approach is to check if the line's newline
+        # matches what was in the original
+        for i in range(len(result) - 1, -1, -1):
+            # Check if this line appears in the original input
+            found_in_original = False
+            for orig_line in lines:
+                if result[i].raw == orig_line.raw:
+                    found_in_original = True
+                    last_original_index = i
+                    break
+            if found_in_original:
+                break
+        # If we found a last original line with no newline, add the dominant newline to it
+        if last_original_index >= 0 and result[last_original_index].newline == "":
+            result[last_original_index] = PrefsLine(
+                result[last_original_index].raw,
+                result[last_original_index].key,
+                result[last_original_index].key_text,
+                result[last_original_index].value,
+                new_file_newline
+            )
+            # Make the very last key have no newline to preserve no-trailing-newline
+            result[-1] = PrefsLine(result[-1].raw, result[-1].key,
+                                   result[-1].key_text, result[-1].value, "")
+    text = "".join(line.raw + line.newline for line in result)
     return text
 
 

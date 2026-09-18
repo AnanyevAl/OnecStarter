@@ -184,3 +184,16 @@ def test_theme_prefs_update_follows_theme_ids() -> None:
         else None
     )
     assert theme_prefs_update(ThemeChoice.LIGHT) == expected
+
+
+def test_render_keeps_each_line_ending_as_is() -> None:
+    mixed = "a=1\nb=2\r\nc=3\rd=4"
+    assert render_prefs(mixed, {}) == mixed
+    assert render_prefs(mixed, {"b": "9"}) == "a=1\nb=9\r\nc=3\rd=4"
+    # новый ключ — доминирующим переводом строки файла (CRLF, если встречается)
+    assert render_prefs(mixed, {"e": "5"}) == "a=1\nb=2\r\nc=3\rd=4\r\ne=5"
+    assert render_prefs("a=1\nb=2\n", {"c": "0"}) == "a=1\nb=2\nc=0\n"
+
+
+def test_render_empty_existing_is_a_new_file_not_identity() -> None:
+    assert render_prefs("", {}) == PREFS_VERSION_LINE + NEW_PREFS_NEWLINE
