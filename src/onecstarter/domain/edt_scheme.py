@@ -256,7 +256,7 @@ EDT_DEFAULTS: dict[str, RGB] = {
 #
 # Формат [Ф] спека §0: `ключ=значение`, `eclipse.preferences.version=1`, ключи по
 # алфавиту; у заказчика — CRLF и мусорные строки: `=` (с пустым значением)  # noqa: RUF003
-# и строки с BOM (байты `ï»¿=`), которые EDT переживает.  # noqa: RUF003
+# и строки с BOM (байты `\u00EF\u00BB\u00BF=`), которые EDT переживает.  # noqa: RUF003
 # Минимальный разбор: разделитель только `=`, экранирование `\ `, `\=`, `\:`, `\\`,
 # `\uXXXX`, `\t`/`\n`/`\r`/`\f`; продолжение строки обратным слэшем не поддерживается
 # (Eclipse его не пишет). Строки без `=`, пустые и комментарии `#`/`!`  # noqa: RUF003
@@ -584,7 +584,7 @@ def parse_idea_jar(data: bytes) -> tuple[str, dict[str, RGB]]:
         for name in names:
             try:
                 return parse_idea_xml(archive.read(name).decode("utf-8-sig"))
-            except (ValueError, UnicodeDecodeError):
+            except (ValueError, UnicodeDecodeError, zipfile.BadZipFile):
                 continue
     raise ValueError("в архиве нет темы (colors/*.xml)")
 

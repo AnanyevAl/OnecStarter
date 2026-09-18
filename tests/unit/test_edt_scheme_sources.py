@@ -141,6 +141,16 @@ def test_parse_idea_jar_rejects(data: bytes) -> None:
         parse_idea_jar(data)
 
 
+def test_parse_idea_jar_corrupted_entry_is_value_error() -> None:
+    data = bytearray(_jar({"colors/x.xml": _read("idea-six.xml")}))
+    # портим имя в локальном заголовке первой записи (смещение 30 — начало имени):
+    # каталог архива цел, а `read()` поднимает BadZipFile  # noqa: RUF003
+    # «File name in directory ... differ»
+    data[30] = ord("z")
+    with pytest.raises(ValueError, match="нет темы"):
+        parse_idea_jar(bytes(data))
+
+
 # --- tmTheme ---
 
 
