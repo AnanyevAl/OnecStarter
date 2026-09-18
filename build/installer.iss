@@ -27,6 +27,18 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Files]
 Source: "..\dist\OneCStarter\*"; DestDir: "{app}"; Flags: recursesubdirs ignoreversion
 
+[InstallDelete]
+; Обновление поверх прежней версии: Inno Setup дописывает файлы, но не убирает
+; те, которых в новой сборке нет. **[Проверено, 18.09.2026, установка 3.1.1
+; поверх 3.1.0]** в `_internal` остались оба `onecstarter-<версия>.dist-info`,
+; и `importlib.metadata.version("onecstarter")` (Настройки → «О программе»)
+; показывала 3.1.0. Устаревшие `.pyd`/`.dll` от прежней версии PySide6 остались
+; бы так же. Поэтому перед копированием `_internal` удаляется целиком — состав
+; каталога задаёт PyInstaller, перечислять файлы поимённо нельзя. Риск тот же,
+; что у `[UninstallDelete]` ниже (чужой `_internal` в нестандартном каталоге), и
+; принят тем же решением заказчика 22.08.2026.
+Type: filesandordirs; Name: "{app}\_internal"
+
 [Icons]
 Name: "{userprograms}\OneCStarter"; Filename: "{app}\OneCStarter.exe"
 
