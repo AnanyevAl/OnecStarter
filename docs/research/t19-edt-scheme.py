@@ -43,7 +43,12 @@ from onecstarter.domain.edt_scheme import (
 SETTINGS = Path(".metadata") / ".plugins" / "org.eclipse.core.runtime" / ".settings"
 CANARY = "onecstarter.canary"
 PREFS_FILES = (BSL_PREFS, EDITORS_PREFS, THEME_PREFS)
-OUR_KEYS = {unescape_property(key.prefs_key) for key in COLOR_KEYS}
+BASE_KEYS = {unescape_property(key.prefs_key) for key in COLOR_KEYS}
+OUR_KEYS = BASE_KEYS | {
+    unescape_property(key.prefs_key + SYSTEM_DEFAULT_SUFFIX)
+    for key in COLOR_KEYS
+    if key.system_default
+}
 EDITOR_KEY_NAMES = tuple(
     key.prefs_key for key in COLOR_KEYS if key.prefs_file == EDITORS_PREFS
 )
@@ -171,7 +176,7 @@ def cmd_snapshot(args: argparse.Namespace) -> None:
             f"  ключей {len(keys)}, по алфавиту: {keys == sorted(keys)}"
         )
         print(
-            f"  наших ключей: {len(OUR_KEYS & set(keys))} из 22; "
+            f"  наших ключей: {len(BASE_KEYS & set(keys))} из 22; "
             f".SystemDefault: "
             f"{sum(k.endswith(SYSTEM_DEFAULT_SUFFIX) for k in keys)}"
         )
@@ -196,10 +201,12 @@ def _iter_idea_themes(source: Path) -> Iterator[tuple[str, str]]:
     with zipfile.ZipFile(source) as archive:
         for name in sorted(archive.namelist()):
             if name.lower().endswith((".xml", ".icls")):
-                yield (
-                    name,
-                    archive.read(name).decode("utf-8-sig", errors="replace"),
-                )
+                try:
+                    data = archive.read(name)
+                except zipfile.BadZipFile as error:
+                    print(f"! {name}: повреждённая запись архива ({error})")
+                    continue
+                yield name, data.decode("utf-8-sig", errors="replace")
 
 
 def cmd_idea_stats(args: argparse.Namespace) -> None:
