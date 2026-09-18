@@ -78,9 +78,11 @@ def test_parse_idea_xml_maps_attributes_and_colors() -> None:
     assert colors["lineNumberColor"] == (96, 99, 102)
     assert colors["SelectionBackground"] == (33, 66, 131)
     assert colors["printMarginColor"] == (47, 47, 47)  # `#2f2f2f`
-    assert "SelectionForeground" not in colors  # пустое значение
-    assert "Label" not in colors  # baseAttributes без value
-    assert "Others" not in colors
+    # SELECTION_FOREGROUND — пустое значение, запасной TEXT.FOREGROUND находит цвет:
+    assert colors["SelectionForeground"] == (169, 183, 198)
+    assert "Label" not in colors  # baseAttributes без value, DEFAULT_TAG/DEFAULT_METADATA тоже нет
+    # DEFAULT_IDENTIFIER/DEFAULT_LOCAL_VARIABLE нет, запасной TEXT.FOREGROUND находит цвет:
+    assert colors["Others"] == (169, 183, 198)
 
 
 def test_parse_idea_xml_without_colors_section_and_without_name() -> None:
@@ -90,7 +92,14 @@ def test_parse_idea_xml_without_colors_section_and_without_name() -> None:
     )
     name, colors = parse_idea_xml(text)
     assert name == ""
-    assert colors == {"BSL_Keywords": (0, 0, 1)}
+    # DEFAULT_KEYWORD — единственный источник; он же запасной в конце цепочки BSL_Pragmas,
+    # Preprocessor и hyperlinkColor (Э11) — все три тоже берут это значение.
+    assert colors == {
+        "BSL_Keywords": (0, 0, 1),
+        "BSL_Pragmas": (0, 0, 1),
+        "Preprocessor": (0, 0, 1),
+        "hyperlinkColor": (0, 0, 1),
+    }
 
 
 @pytest.mark.parametrize(
@@ -100,6 +109,37 @@ def test_parse_idea_xml_without_colors_section_and_without_name() -> None:
 def test_parse_idea_xml_rejects_non_scheme(text: str) -> None:
     with pytest.raises(ValueError):
         parse_idea_xml(text)
+
+
+def test_parse_idea_xml_uses_fallback_sources() -> None:
+    """Тема без основных атрибутов IDEA берёт запасной источник из цепочки `IDEA_MAP`
+    (Э11, 18.09.2026)."""
+    text = (
+        '<scheme name="Заглушка">'
+        "<colors>"
+        '<option name="INDENT_GUIDE" value="3c3f41" />'
+        "</colors>"
+        "<attributes>"
+        '<option name="TEXT"><value>'
+        '<option name="FOREGROUND" value="a9b7c6" />'
+        '<option name="BACKGROUND" value="2b2b2b" />'
+        "</value></option>"
+        '<option name="DEFAULT_BLOCK_COMMENT"><value>'
+        '<option name="FOREGROUND" value="808080" />'
+        "</value></option>"
+        '<option name="DEFAULT_SEMICOLON"><value>'
+        '<option name="FOREGROUND" value="cc7832" />'
+        "</value></option>"
+        "</attributes>"
+        "</scheme>"
+    )
+    _, colors = parse_idea_xml(text)
+    assert colors["Comment"] == (128, 128, 128)  # DEFAULT_LINE_COMMENT нет → DEFAULT_BLOCK_COMMENT
+    assert colors["Operators"] == (204, 120, 50)  # DEFAULT_OPERATION_SIGN нет → DEFAULT_SEMICOLON
+    assert colors["Brackets"] == (169, 183, 198)  # запасные нет → TEXT.FOREGROUND
+    assert colors["SelectionForeground"] == (169, 183, 198)  # SELECTION_FOREGROUND нет → TEXT.FG
+    assert colors["printMarginColor"] == (60, 63, 65)  # RIGHT_MARGIN_COLOR нет → INDENT_GUIDE
+    assert "Numbers" not in colors  # оба источника цепочки отсутствуют  # noqa: RUF003
 
 
 def _jar(entries: dict[str, str]) -> bytes:

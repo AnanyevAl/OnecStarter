@@ -222,11 +222,11 @@ def complete(name: str, partial: Mapping[str, RGB], source: str = "") -> Scheme:
     )
 
 
-# Светлая схема EDT по умолчанию. [?] до Э10 — значения по умолчанию Eclipse JDT/текстового
-# редактора ([Д] исходники Eclipse: lineNumberColor 120,120,120, currentLineColor 232,242,254,
-# printMarginColor 176,180,185, occurrenceIndicationColor 212,212,212, FindScope 185,176,180,
-# currentIPColor 198,219,174; фон/текст/выделение — системные цвета Windows). Э10 заменяет
-# на снятые с установки и ставит метку.  # noqa: RUF003
+# Светлая схема EDT по умолчанию — [Д] EDT 2026.1.2+2, 18.09.2026, Э10: 11 токенов —
+# байткод `BslHighlightingConfiguration` (javap -c -p); ключи редактора — `plugin.xml`
+# плагинов `org.eclipse.ui.editors`, `org.eclipse.xtext.ui`, `org.eclipse.debug.ui`;
+# Background/Foreground/SelectionBackground/SelectionForeground — умолчания Windows
+# для `.SystemDefault=true` (Окно/Текст окна/Выделение/Текст выделения).
 EDT_DEFAULTS: dict[str, RGB] = {
     "BSL_Keywords": (127, 0, 85),
     "BSL_Pragmas": (125, 125, 125),
@@ -246,7 +246,7 @@ EDT_DEFAULTS: dict[str, RGB] = {
     "currentLineColor": (232, 242, 254),
     "lineNumberColor": (120, 120, 120),
     "occurrenceIndicationColor": (212, 212, 212),
-    "hyperlinkColor": (0, 0, 255),
+    "hyperlinkColor": (0, 102, 204),
     "FindScope": (185, 176, 180),
     "currentIPColor": (198, 219, 174),
     "printMarginColor": (176, 180, 185),
@@ -495,8 +495,10 @@ def to_csi(scheme: Scheme) -> str:
 # [Ф] структура (641 тема каталога заказчика): `<scheme name version
 # parent_scheme>` с `<colors><option name value/>` и `<attributes><option  # noqa: RUF003
 # name><value><option name="FOREGROUND" value/>…`; `.icls` — тот же XML; `.jar` — zip
-# с `colors/*.xml`. Соответствие атрибутов нашим ключам — [Р] первое приближение,  # noqa: RUF003
-# Э11 правит (кортеж — запасные варианты по порядку).
+# с `colors/*.xml`. Соответствие атрибутов нашим ключам — [Р] цепочки запасных  # noqa: RUF003
+# источников, замерены на 626 из 641 темы (Э11, 18.09.2026; 15 файлов — битый XML,
+# не чиним). Кортеж — источники по убыванию приоритета, первый найденный побеждает;
+# доля темы, где цепочка находит значение, — в комментарии к каждой строке.
 
 
 @dataclass(frozen=True)
@@ -506,28 +508,88 @@ class IdeaSource:
 
 
 IDEA_MAP: dict[str, tuple[IdeaSource, ...]] = {
-    "BSL_Keywords": (IdeaSource("DEFAULT_KEYWORD", "FOREGROUND"),),
-    "BSL_Pragmas": (IdeaSource("DEFAULT_METADATA", "FOREGROUND"),),
-    "Preprocessor": (IdeaSource("DEFAULT_CONSTANT", "FOREGROUND"),),
-    "Builtinfunction": (IdeaSource("DEFAULT_FUNCTION_CALL", "FOREGROUND"),),
-    "Strings": (IdeaSource("DEFAULT_STRING", "FOREGROUND"),),
-    "Numbers": (IdeaSource("DEFAULT_NUMBER", "FOREGROUND"),),
-    "Comment": (IdeaSource("DEFAULT_LINE_COMMENT", "FOREGROUND"),),
-    "Operators": (IdeaSource("DEFAULT_OPERATION_SIGN", "FOREGROUND"),),
-    "Brackets": (IdeaSource("DEFAULT_BRACKETS", "FOREGROUND"),),
-    "Label": (IdeaSource("DEFAULT_LABEL", "FOREGROUND"),),
-    "Others": (IdeaSource("DEFAULT_IDENTIFIER", "FOREGROUND"),),
-    "Background": (IdeaSource("TEXT", "BACKGROUND"),),
-    "Foreground": (IdeaSource("TEXT", "FOREGROUND"),),
-    "SelectionBackground": (IdeaSource("SELECTION_BACKGROUND"),),
-    "SelectionForeground": (IdeaSource("SELECTION_FOREGROUND"),),
-    "currentLineColor": (IdeaSource("CARET_ROW_COLOR"),),
-    "lineNumberColor": (IdeaSource("LINE_NUMBERS_COLOR"),),
-    "occurrenceIndicationColor": (IdeaSource("IDENTIFIER_UNDER_CARET_ATTRIBUTES", "BACKGROUND"),),
-    "hyperlinkColor": (IdeaSource("HYPERLINK_ATTRIBUTES", "FOREGROUND"),),
-    "FindScope": (IdeaSource("SEARCH_RESULT_ATTRIBUTES", "BACKGROUND"),),
-    "currentIPColor": (IdeaSource("EXECUTIONPOINT_ATTRIBUTES", "BACKGROUND"),),
-    "printMarginColor": (IdeaSource("RIGHT_MARGIN_COLOR"),),
+    "BSL_Keywords": (IdeaSource("DEFAULT_KEYWORD", "FOREGROUND"),),  # 91 %
+    "BSL_Pragmas": (
+        IdeaSource("DEFAULT_METADATA", "FOREGROUND"),
+        IdeaSource("DEFAULT_KEYWORD", "FOREGROUND"),
+    ),  # 75 → 85 %
+    "Preprocessor": (
+        IdeaSource("DEFAULT_CONSTANT", "FOREGROUND"),
+        IdeaSource("DEFAULT_METADATA", "FOREGROUND"),
+        IdeaSource("DEFAULT_KEYWORD", "FOREGROUND"),
+    ),  # 79 → 83 → 92 %
+    "Builtinfunction": (
+        IdeaSource("DEFAULT_FUNCTION_CALL", "FOREGROUND"),
+        IdeaSource("DEFAULT_FUNCTION_DECLARATION", "FOREGROUND"),
+        IdeaSource("DEFAULT_CLASS_NAME", "FOREGROUND"),
+    ),  # 73 → 81 → 84 %
+    "Strings": (IdeaSource("DEFAULT_STRING", "FOREGROUND"),),  # 91 %
+    "Numbers": (
+        IdeaSource("DEFAULT_NUMBER", "FOREGROUND"),
+        IdeaSource("DEFAULT_CONSTANT", "FOREGROUND"),
+    ),  # 86 → 90 %
+    "Comment": (
+        IdeaSource("DEFAULT_LINE_COMMENT", "FOREGROUND"),
+        IdeaSource("DEFAULT_BLOCK_COMMENT", "FOREGROUND"),
+        IdeaSource("DEFAULT_DOC_COMMENT", "FOREGROUND"),
+    ),  # 84 → 85 → 87 %
+    "Operators": (
+        IdeaSource("DEFAULT_OPERATION_SIGN", "FOREGROUND"),
+        IdeaSource("DEFAULT_SEMICOLON", "FOREGROUND"),
+        IdeaSource("DEFAULT_DOT", "FOREGROUND"),
+        IdeaSource("TEXT", "FOREGROUND"),
+    ),  # 70 → 76 → 78 → 94 %
+    "Brackets": (
+        IdeaSource("DEFAULT_BRACKETS", "FOREGROUND"),
+        IdeaSource("DEFAULT_PARENTHS", "FOREGROUND"),
+        IdeaSource("DEFAULT_BRACES", "FOREGROUND"),
+        IdeaSource("TEXT", "FOREGROUND"),
+    ),  # 60 → 61 → 61 → 92 %
+    "Label": (
+        IdeaSource("DEFAULT_LABEL", "FOREGROUND"),
+        IdeaSource("DEFAULT_TAG", "FOREGROUND"),
+        IdeaSource("DEFAULT_METADATA", "FOREGROUND"),
+    ),  # 51 → 63 → 80 %
+    "Others": (
+        IdeaSource("DEFAULT_IDENTIFIER", "FOREGROUND"),
+        IdeaSource("DEFAULT_LOCAL_VARIABLE", "FOREGROUND"),
+        IdeaSource("TEXT", "FOREGROUND"),
+    ),  # 74 → 80 → 94 %
+    "Background": (IdeaSource("TEXT", "BACKGROUND"),),  # 91 %
+    "Foreground": (IdeaSource("TEXT", "FOREGROUND"),),  # 91 %
+    "SelectionBackground": (IdeaSource("SELECTION_BACKGROUND"),),  # 82 %
+    "SelectionForeground": (
+        IdeaSource("SELECTION_FOREGROUND"),
+        IdeaSource("TEXT", "FOREGROUND"),
+    ),  # 56 → 92 %
+    "currentLineColor": (IdeaSource("CARET_ROW_COLOR"),),  # 82 %
+    "lineNumberColor": (
+        IdeaSource("LINE_NUMBERS_COLOR"),
+        IdeaSource("WHITESPACES"),
+    ),  # 76 → 82 %
+    "occurrenceIndicationColor": (
+        IdeaSource("IDENTIFIER_UNDER_CARET_ATTRIBUTES", "BACKGROUND"),
+        IdeaSource("WRITE_IDENTIFIER_UNDER_CARET_ATTRIBUTES", "BACKGROUND"),
+        IdeaSource("SEARCH_RESULT_ATTRIBUTES", "BACKGROUND"),
+    ),  # 68 → 70 → 84 %
+    "hyperlinkColor": (
+        IdeaSource("HYPERLINK_ATTRIBUTES", "FOREGROUND"),
+        IdeaSource("FOLLOWED_HYPERLINK_ATTRIBUTES", "FOREGROUND"),
+        IdeaSource("DEFAULT_KEYWORD", "FOREGROUND"),
+    ),  # 69 → 71 → 93 %
+    "FindScope": (
+        IdeaSource("SEARCH_RESULT_ATTRIBUTES", "BACKGROUND"),
+        IdeaSource("TEXT_SEARCH_RESULT_ATTRIBUTES", "BACKGROUND"),
+        IdeaSource("WRITE_SEARCH_RESULT_ATTRIBUTES", "BACKGROUND"),
+    ),  # 78 → 83 → 84 %
+    "currentIPColor": (
+        IdeaSource("EXECUTIONPOINT_ATTRIBUTES", "BACKGROUND"),
+        IdeaSource("BREAKPOINT_ATTRIBUTES", "BACKGROUND"),
+    ),  # 66 → 68 %
+    "printMarginColor": (
+        IdeaSource("RIGHT_MARGIN_COLOR"),
+        IdeaSource("INDENT_GUIDE"),
+    ),  # 61 → 79 %
 }
 
 
