@@ -109,6 +109,14 @@ _HEX6 = re.compile(r"^#?([0-9A-Fa-f]{6})$")
 _HEX3 = re.compile(r"^#?([0-9A-Fa-f]{3})$")
 _IDEA_HEX = re.compile(r"^#?([0-9A-Fa-f]{1,6})$")
 
+DARK_LUMINANCE = 128  # порог яркости (0–255): ниже — тёмный фон  # noqa: RUF003
+
+
+def is_dark_rgb(rgb: RGB) -> bool:
+    """Тёмный ли цвет: целочисленная яркость, без плавающей точки — (128,128,128) ровно
+    на пороге и тёмным не считается."""
+    return 299 * rgb[0] + 587 * rgb[1] + 114 * rgb[2] < DARK_LUMINANCE * 1000
+
 
 def to_hex(rgb: RGB) -> str:
     return "#{:02X}{:02X}{:02X}".format(*rgb)
@@ -162,7 +170,7 @@ def luminance(rgb: RGB) -> float:
 
 
 def is_dark(scheme: Scheme) -> bool:
-    return luminance(scheme.colors["Background"]) < 127.5
+    return is_dark_rgb(scheme.colors["Background"])
 
 
 def invert(scheme: Scheme) -> Scheme:
@@ -185,7 +193,7 @@ def fill_missing(partial: Mapping[str, RGB], fallback_fg: RGB, fallback_bg: RGB)
     на светлом — наоборот. Заданные ключи не трогаются."""  # noqa: RUF002
     background = partial.get("Background", fallback_bg)
     foreground = partial.get("Foreground", fallback_fg)
-    delta = SHIFT if luminance(background) < 128 else -SHIFT
+    delta = SHIFT if is_dark_rgb(background) else -SHIFT
     result: dict[str, RGB] = {}
     for key in COLOR_KEYS:
         if key.name in partial:

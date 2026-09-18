@@ -205,6 +205,23 @@ def test_fill_missing_clamps_channels() -> None:
     assert light["currentLineColor"] == (230, 230, 230)
 
 
+def test_fill_missing_and_is_dark_agree_at_mid_grey() -> None:
+    """(128,128,128) — ровно порог: не тёмный для обеих функций (целочисленная яркость)."""
+    grey: RGB = (128, 128, 128)
+    assert is_dark(_scheme(Background=grey)) is False
+    filled = fill_missing(
+        {"Background": grey, "Foreground": (0, 0, 0)}, (0, 0, 0), (0, 0, 0)
+    )
+    assert filled["currentLineColor"] == (108, 108, 108)  # светлая ветка: фон −20  # noqa: RUF003
+    assert filled["Comment"] == (20, 20, 20)  # текст +20
+    dark: RGB = (127, 128, 128)
+    assert is_dark(_scheme(Background=dark)) is True
+    assert (
+        fill_missing({"Background": dark}, (0, 0, 0), (0, 0, 0))["currentLineColor"]
+        == (147, 148, 148)
+    )
+
+
 def test_complete_fills_from_edt_defaults() -> None:
     scheme = complete("t", {"BSL_Keywords": (1, 2, 3)}, "C:/t.xml")
     assert scheme.name == "t"
