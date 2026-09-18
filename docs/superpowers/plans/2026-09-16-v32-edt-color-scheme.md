@@ -1359,6 +1359,15 @@ def test_parse_idea_jar_rejects(data: bytes) -> None:
         parse_idea_jar(data)
 
 
+def test_parse_idea_jar_corrupted_entry_is_value_error() -> None:
+    data = bytearray(_jar({"colors/x.xml": _read("idea-six.xml")}))
+    # портим имя в локальном заголовке первой записи (смещение 30 — начало имени): каталог
+    # архива цел, а `read()` поднимает BadZipFile «File name in directory ... differ»
+    data[30] = ord("z")
+    with pytest.raises(ValueError, match="нет темы"):
+        parse_idea_jar(bytes(data))
+
+
 # --- tmTheme ---
 
 
@@ -1564,7 +1573,9 @@ def parse_idea_jar(data: bytes) -> tuple[str, dict[str, RGB]]:
         for name in names:
             try:
                 return parse_idea_xml(archive.read(name).decode("utf-8-sig"))
-            except (ValueError, UnicodeDecodeError):
+            except (ValueError, UnicodeDecodeError, zipfile.BadZipFile):
+                # BadZipFile и из `read()`: каталог архива цел, запись повреждена
+                # (ревью задачи 3) — такая запись просто не тема
                 continue
     raise ValueError("в архиве нет темы (colors/*.xml)")
 
