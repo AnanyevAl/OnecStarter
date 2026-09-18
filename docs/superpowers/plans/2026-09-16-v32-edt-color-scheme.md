@@ -1890,7 +1890,14 @@ from onecstarter.domain.edt_scheme import (
 SETTINGS = Path(".metadata") / ".plugins" / "org.eclipse.core.runtime" / ".settings"
 CANARY = "onecstarter.canary"
 PREFS_FILES = (BSL_PREFS, EDITORS_PREFS, THEME_PREFS)
-OUR_KEYS = {unescape_property(key.prefs_key) for key in COLOR_KEYS}
+BASE_KEYS = {unescape_property(key.prefs_key) for key in COLOR_KEYS}
+# всё, что пишет prefs_updates: 22 ключа и пять .SystemDefault (ревью задачи 4 —
+# без флагов снимок называл свои же ключи «чужими»)
+OUR_KEYS = BASE_KEYS | {
+    unescape_property(key.prefs_key + SYSTEM_DEFAULT_SUFFIX)
+    for key in COLOR_KEYS
+    if key.system_default
+}
 EDITOR_KEY_NAMES = tuple(key.prefs_key for key in COLOR_KEYS if key.prefs_file == EDITORS_PREFS)
 JAVAP_CLASSES = {
     "com._1c.g5.v8.dt.bsl.ui_": "com._1c.g5.v8.dt.bsl.ui.syntaxcoloring.BslHighlightingConfiguration",
@@ -1977,7 +1984,7 @@ def cmd_snapshot(args: argparse.Namespace) -> None:
         print(f"  {len(text)} байт, перевод строки: {newline_kind(text)}")
         print(f"  первая строка: {lines[0]!r}; последняя: {lines[-2] if lines[-1] == '' else lines[-1]!r}")
         print(f"  ключей {len(keys)}, по алфавиту: {keys == sorted(keys)}")
-        print(f"  наших ключей: {len(OUR_KEYS & set(keys))} из 22; .SystemDefault: {sum(k.endswith(SYSTEM_DEFAULT_SUFFIX) for k in keys)}")
+        print(f"  наших ключей: {len(BASE_KEYS & set(keys))} из 22; .SystemDefault: {sum(k.endswith(SYSTEM_DEFAULT_SUFFIX) for k in keys)}")
         print(f"  канарейка {CANARY}: {parsed.get(CANARY, '—')}")
         for key in sorted(set(keys) - OUR_KEYS - {CANARY, "eclipse.preferences.version"}):
             print(f"  чужой ключ: {key}={parsed[key]!r}")
@@ -1995,7 +2002,12 @@ def _iter_idea_themes(source: Path) -> Iterator[tuple[str, str]]:
     with zipfile.ZipFile(source) as archive:
         for name in sorted(archive.namelist()):
             if name.lower().endswith((".xml", ".icls")):
-                yield name, archive.read(name).decode("utf-8-sig", errors="replace")
+                try:
+                    data = archive.read(name)
+                except zipfile.BadZipFile as error:  # битая запись не роняет статистику
+                    print(f"! {name}: повреждённая запись архива ({error})")
+                    continue
+                yield name, data.decode("utf-8-sig", errors="replace")
 
 
 def cmd_idea_stats(args: argparse.Namespace) -> None:
@@ -2010,7 +2022,7 @@ def cmd_idea_stats(args: argparse.Namespace) -> None:
             print(f"! {file_name}: {error}")
             continue
         total += 1
-        present.update(colors)
+        present.update(colors.keys())  # не `update(colors)`: Counter суммировал бы значения
         try:
             root = ElementTree.fromstring(text)
         except ElementTree.ParseError:
