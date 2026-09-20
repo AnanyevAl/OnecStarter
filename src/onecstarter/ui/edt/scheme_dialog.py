@@ -121,6 +121,7 @@ class SchemeDialog(QDialog):
         show_error: Callable[[str], None],
         choose_save: Callable[[str], str] = browse_for_csi,
         choose_color: Callable[[RGB], RGB | None] = pick_color,
+        default_dir: str = str(Path.home()),
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -133,6 +134,7 @@ class SchemeDialog(QDialog):
         self._show_error = show_error
         self._choose_save = choose_save
         self._choose_color = choose_color
+        self._default_dir = default_dir  # каталог «Сохранить…», когда каталога схем нет (§7)
         self._scheme = Scheme(DEFAULT_NAME, EDT_DEFAULTS)
         self._kind = KIND_DEFAULT
         self._rows: list[tuple[str, CatalogEntry | None]] = []
@@ -165,8 +167,10 @@ class SchemeDialog(QDialog):
 
         self._invert = QPushButton(BUTTON_INVERT)
         self._invert.clicked.connect(self._on_invert)
+        self._invert.setAutoDefault(False)  # Enter в поиске не должен жать кнопки (§5)
         self._save = QPushButton(BUTTON_SAVE)
         self._save.clicked.connect(self._on_save)
+        self._save.setAutoDefault(False)
         self._theme_label = QLabel(THEME_LABEL)
         self._theme = QComboBox()
         for choice in ThemeChoice:
@@ -177,8 +181,12 @@ class SchemeDialog(QDialog):
         self._theme.setVisible(theme_visible)
         self._apply = QPushButton(BUTTON_APPLY)
         self._apply.clicked.connect(self._on_apply)
+        self._apply.setAutoDefault(False)
         self._buttons = russian_button_box(ButtonKind.CLOSE)
         self._buttons.rejected.connect(self.reject)
+        for button in self._buttons.buttons():
+            if isinstance(button, QPushButton):  # QDialogButtonBox типизирует их QAbstractButton
+                button.setAutoDefault(False)
 
         left = QWidget()
         left_layout = QVBoxLayout(left)
@@ -210,12 +218,23 @@ class SchemeDialog(QDialog):
         layout.addLayout(bottom)
         self.resize(960, 640)
 
+        # Таблица — умолчания EDT ещё до чтения источников: если `_on_source_changed` поймает
+        # `EdtError` (например, «Текущая» не читается), `_show_scheme` не позовётся вовсе, и
+        # без этого шага таблица осталась бы пустой — клик по образцу упал бы на
+        # `assert` внутри `set_color` (ревью, задача 3).
+        self._show_scheme(self._scheme)
         self._reload_sources(select=None)
         self._refresh_apply()
 
     # --- источники ---
 
-    def _reload_sources(self, select: Path | None) -> None:
+    def _reload_sources(self, select: Path | None) -> bool:
+        """Перечитать список источников; при `select` — путь, который должен остаться выбранным.
+
+        Возвращает, нашёлся ли `select` среди строк каталога — используется `_on_save`, чтобы
+        решить, остаётся ли выбор на каталожной строке или сбрасывается (§7, ревью задачи 1).
+        При `select is None` возврат не имеет смысла (выбирается строка 0, как раньше).
+        """
         self._sources.blockSignals(True)
         self._sources.clear()
         self._rows = [(KIND_CURRENT, None), (KIND_DEFAULT, None)]
@@ -236,17 +255,21 @@ class SchemeDialog(QDialog):
         self._hint.setVisible(bool(hint))
         self._sources.blockSignals(False)
         row = 0
+        found = select is None
         if select is not None:
-            row = next(
+            match = next(
                 (
                     i
                     for i, (_kind, entry) in enumerate(self._rows)
                     if entry and entry.path == select
                 ),
-                0,
+                None,
             )
+            found = match is not None
+            row = match if match is not None else 0
         self._sources.setCurrentRow(row)  # currentRowChanged → _on_source_changed
         self._filter(self._search.text())
+        return found
 
     def _on_source_changed(self, row: int) -> None:
         if row < 0 or row >= len(self._rows):
@@ -340,19 +363,32 @@ class SchemeDialog(QDialog):
         directory = (
             self._catalog.directory
             if self._catalog is not None and self._catalog.exists()
-            else Path()
+            else Path(self._default_dir)
         )
         name = _UNSAFE.sub("_", self._scheme.name).strip() or "scheme"
         chosen = self._choose_save(str(directory / f"{name}.csi"))
         if not chosen:
             return
         path = Path(chosen)
+        edited = Scheme(path.stem, self._scheme.colors, str(path))  # снято ДО _reload_sources —
+        # та может выбрать строку 0 и перерисовать self._scheme своим цветами (см. ниже)
         try:
-            save_csi(path, Scheme(path.stem, self._scheme.colors, str(path)))
+            save_csi(path, edited)
         except EdtError as error:
             self._show_error(str(error))
             return
-        self._reload_sources(select=path)
+        selected = self._reload_sources(select=path)
+        if not selected:
+            # Сохранили вне каталога (или каталога нет вовсе) — `_reload_sources` откатилась на
+            # строку 0 («Текущая»/«По умолчанию») и её `_on_source_changed` уже перезаписал
+            # `self._scheme` цветами ЭТОЙ строки. Возвращаем на экран именно `edited` (снятую
+            # до отката) и снимаем выбор строки, чтобы список и таблица не расходились
+            # (ревью v3.2, задача 1).
+            self._show_scheme(edited)
+            self._kind = KIND_CATALOG
+            self._sources.blockSignals(True)
+            self._sources.setCurrentRow(-1)
+            self._sources.blockSignals(False)
 
     def _on_apply(self) -> None:
         if self._is_busy():

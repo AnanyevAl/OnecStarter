@@ -171,10 +171,6 @@ def format_rgb(rgb: RGB) -> str:
     return f"{rgb[0]},{rgb[1]},{rgb[2]}"
 
 
-def luminance(rgb: RGB) -> float:
-    return 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
-
-
 def is_dark(scheme: Scheme) -> bool:
     return is_dark_rgb(scheme.colors["Background"])
 
@@ -215,11 +211,23 @@ def fill_missing(partial: Mapping[str, RGB], fallback_fg: RGB, fallback_bg: RGB)
     return result
 
 
+DARK_FALLBACK_FOREGROUND: RGB = (220, 220, 220)  # запасной текст на тёмном резолвленном фоне
+
+
 def complete(name: str, partial: Mapping[str, RGB], source: str = "") -> Scheme:
-    """Схема из частичного набора: недостающие — `fill_missing` от `EDT_DEFAULTS`."""
-    return Scheme(
-        name, fill_missing(partial, EDT_DEFAULTS["Foreground"], EDT_DEFAULTS["Background"]), source
+    """Схема из частичного набора: недостающие — `fill_missing` от `EDT_DEFAULTS`.
+
+    Запасной `Foreground` выбирается по темноте `partial["Background"]` (если он задан):
+    тёмный фон → светлый запасной текст `DARK_FALLBACK_FOREGROUND`, иначе —
+    `EDT_DEFAULTS["Foreground"]` (обычно тёмный). Без этого тема с тёмным фоном и без
+    своего `Foreground` получала бы тёмный текст на тёмном фоне (ревью v3.2, задача 5)."""  # noqa: RUF002
+    background = partial.get("Background")
+    fallback_fg = (
+        DARK_FALLBACK_FOREGROUND
+        if background is not None and is_dark_rgb(background)
+        else EDT_DEFAULTS["Foreground"]
     )
+    return Scheme(name, fill_missing(partial, fallback_fg, EDT_DEFAULTS["Background"]), source)
 
 
 # Светлая схема EDT по умолчанию — [Д] EDT 2026.1.2+2, 18.09.2026, Э10: 11 токенов —
@@ -722,10 +730,16 @@ def parse_tmtheme(text: str) -> tuple[str, dict[str, RGB]]:
         rgb = tm_color(raw) if isinstance(raw, str) else None
         if rgb is None:
             continue
-        scopes = [part.strip() for part in scope.split(",")]
-        for prefix, our_key in TMTHEME_SCOPES:
-            if our_key not in result and any(_scope_matches(s, prefix) for s in scopes):
-                result[our_key] = rgb
-                break
+        # Список scope через запятую — каждый элемент разбирается отдельно и может отдать цвет
+        # своему ключу («comment, string» — обоим, ревью v3.2, задача 4); внутри одного элемента
+        # побеждает самый специфичный префикс (`break`) — иначе «keyword.operator» попал бы
+        # и в Operators (точное совпадение), и в BSL_Keywords (начинается на «keyword.»).
+        for s in [part.strip() for part in scope.split(",")]:
+            for prefix, our_key in TMTHEME_SCOPES:
+                if our_key in result:
+                    continue
+                if _scope_matches(s, prefix):
+                    result[our_key] = rgb
+                    break
     name = payload.get("name")
     return (name if isinstance(name, str) else ""), result

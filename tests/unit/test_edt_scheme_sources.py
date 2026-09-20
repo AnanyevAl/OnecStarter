@@ -243,6 +243,20 @@ def test_parse_tmtheme_scope_precedence_and_first_match_wins() -> None:
     assert colors["BSL_Keywords"] == (3, 3, 3)  # первое совпадение, `keyword.control` позже
 
 
+def test_parse_tmtheme_scope_list_feeds_every_matching_key() -> None:
+    """Ревью финального прогона v3.2, задача 4 (минор): запись со списком `scope` через запятую
+    должна отдавать цвет каждому совпавшему ключу, а не только первому найденному префиксу."""  # noqa: RUF002
+    text = (
+        '<plist version="1.0"><dict><key>settings</key><array>'
+        "<dict><key>scope</key><string>comment, string</string><key>settings</key><dict>"
+        "<key>foreground</key><string>#010101</string></dict></dict>"
+        "</array></dict></plist>"
+    )
+    _name, colors = parse_tmtheme(text)
+    assert colors["Comment"] == (1, 1, 1)
+    assert colors["Strings"] == (1, 1, 1)
+
+
 @pytest.mark.parametrize(
     "text",
     ["<plist version=\"1.0\"><dict><key>name</key><string>x</string></dict></plist>",

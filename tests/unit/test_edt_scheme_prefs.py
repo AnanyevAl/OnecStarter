@@ -92,7 +92,7 @@ def test_render_replaces_in_place_keeps_order_garbage_and_crlf() -> None:
     assert len(lines) == len(text.split("\r\n"))
 
 
-def test_render_inserts_new_key_in_sorted_position_by_unescaped_key() -> None:
+def test_render_inserts_new_key_in_sorted_position() -> None:
     rendered = render_prefs(_fixture(), {f"{TOKEN}Comment.color": "9,9,9"})
     keys = [line.split("=")[0] for line in rendered.split("\r\n") if line]
     assert (

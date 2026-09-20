@@ -247,6 +247,8 @@ class EdtView(QWidget):
         # CLI EDT (план 2): `cli is None` — подменю не строится, консоль пуста.
         self._cli = cli
         self._watcher = watcher
+        self._documents_dir = documents_dir  # каталог документов — не меняется за сеанс,
+        # в отличие от `_last_tsv_dir` ниже (нужен диалогу схемы для «Сохранить…», §7)
         self._last_tsv_dir = documents_dir  # каталог последнего TSV — на сеанс (§14.2)
         self._console_project: str | None = None  # чья запись сейчас в консоли
         self._console = EdtConsole(palette=palette)
@@ -704,6 +706,7 @@ class EdtView(QWidget):
             is_busy=busy,
             show_info=self._show_info,
             show_error=self._show_error,
+            default_dir=self._documents_dir,
             parent=self,
         )
         self._run_dialog(dialog)

@@ -5,7 +5,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from PySide6.QtWidgets import QListWidget, QTableWidgetItem
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QListWidget, QPushButton, QTableWidgetItem
 
 from onecstarter.domain.edt_scheme import (
     BSL_PREFS,
@@ -57,6 +58,7 @@ class Harness:
         catalog: SchemeCatalog | str | None = "auto",
         choose_save: Callable[[str], str] = lambda initial: "",
         choose_color: Callable[[RGB], RGB | None] = lambda rgb: None,
+        default_dir: str | None = None,
     ) -> SchemeDialog:
         if catalog == "auto":
             catalog = SchemeCatalog(str(self.catalog_dir))
@@ -70,6 +72,7 @@ class Harness:
             show_error=self.errors.append,
             choose_save=choose_save,
             choose_color=choose_color,
+            default_dir=default_dir if default_dir is not None else str(Path.home()),
         )
 
 
@@ -318,3 +321,59 @@ def test_filter_hides_rows_case_insensitively(harness: Harness, qtbot) -> None: 
     assert visible == ["Шесть"]
     dialog.search().setText("")
     assert all(not sources.item(i).isHidden() for i in range(sources.count()))
+
+
+# --- ревью финального прогона v3.2 (задачи 1-3) ---
+
+
+def test_save_outside_catalog_keeps_edited_scheme_and_apply_writes_it(  # type: ignore[no-untyped-def]
+    harness: Harness, qtbot
+) -> None:
+    """Сохранение вне каталога не должно сбрасывать таблицу на «Текущую» (ревью, задача 1)."""
+    target = harness.tmp_path / "out" / "Моя.csi"
+
+    def choose(initial: str) -> str:
+        assert initial.startswith(str(harness.tmp_path))
+        return str(target)
+
+    dialog = harness.dialog(catalog=None, choose_save=choose, default_dir=str(harness.tmp_path))
+    qtbot.addWidget(dialog)
+    _select(dialog, DEFAULT_NAME)
+    dialog.set_color("Strings", (9, 9, 9))
+    dialog.save_button().click()
+    saved = parse_csi(target.read_text(encoding="utf-8"))
+    assert saved["Strings"] == (9, 9, 9)
+    assert dialog.scheme().colors["Strings"] == (9, 9, 9)
+    assert dialog.sources().currentRow() == -1
+    dialog.apply_button().click()
+    settings = harness.workspace().settings_dir
+    bsl = parse_prefs((settings / BSL_PREFS).read_bytes().decode("latin-1"))
+    assert bsl[f"{TOKEN}Strings.color"] == "9,9,9"
+
+
+def test_enter_in_search_does_not_trigger_buttons(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    dialog = harness.dialog()
+    qtbot.addWidget(dialog)
+    for button in dialog.findChildren(QPushButton):
+        assert button.isDefault() is False
+        assert button.autoDefault() is False
+    before = dialog.scheme()
+    qtbot.keyClick(dialog.search(), Qt.Key.Key_Return)
+    assert dialog.scheme() == before
+    assert harness.infos == []
+
+
+def test_unreadable_current_marks_row_and_table_has_defaults(  # type: ignore[no-untyped-def]
+    harness: Harness, qtbot
+) -> None:
+    """`WorkspaceSchemes.current()` кидает при открытии — таблица не остаётся пустой."""
+    settings = harness.workspace().settings_dir
+    (settings / BSL_PREFS).mkdir(parents=True)  # директория вместо файла → OSError не ENOENT
+    dialog = harness.dialog()
+    qtbot.addWidget(dialog)
+    row0 = dialog.sources().item(0)
+    assert row0.toolTip().startswith("Не удалось прочитать")  # noqa: RUF001
+    assert dialog.table().rowCount() == 22
+    assert _cell(dialog, 0, 2).text() == to_hex(EDT_DEFAULTS["BSL_Keywords"])
+    assert harness.errors == []
+    dialog.set_color("Strings", (1, 2, 3))  # не должно упасть на `assert swatch is not None`

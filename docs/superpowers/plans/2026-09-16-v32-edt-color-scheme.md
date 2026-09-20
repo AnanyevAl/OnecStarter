@@ -86,10 +86,13 @@
   (22), `KEY_BY_NAME`; `Scheme(name, colors, source="")` (всегда все 22 ключа, лишние
   отбрасываются, недостающие — `ValueError`); `to_hex(rgb) -> str`, `from_hex(text) -> RGB | None`,
   `idea_color(text) -> RGB | None`, `parse_rgb(text) -> RGB | None`, `format_rgb(rgb) -> str`,
-  `luminance(rgb) -> float`, `DARK_LUMINANCE`, `is_dark_rgb(rgb) -> bool` (целочисленно, общий
+  `DARK_LUMINANCE`, `is_dark_rgb(rgb) -> bool` (целочисленно, общий
   порог для `is_dark` и `fill_missing`), `is_dark(scheme) -> bool`, `invert(scheme) -> Scheme`,
   `fill_missing(partial, fallback_fg, fallback_bg) -> dict[str, RGB]`,
-  `complete(name, partial, source="") -> Scheme`, `EDT_DEFAULTS: dict[str, RGB]`.
+  `DARK_FALLBACK_FOREGROUND`, `complete(name, partial, source="") -> Scheme` (запасной
+  `Foreground` — светлый, если резолвленный `Background` тёмный; ревью финального прогона v3.2,
+  задача 5), `EDT_DEFAULTS: dict[str, RGB]`. `luminance(rgb) -> float` убран (ревью, задача 6) —
+  не используется нигде, кроме себя самого; яркость считает `is_dark_rgb`.
 
 - [ ] **Step 1: Тесты модели и цветов**
 
@@ -317,6 +320,15 @@ def test_complete_fills_from_edt_defaults() -> None:
     assert scheme.colors["BSL_Keywords"] == (1, 2, 3)
     assert scheme.colors["Background"] == EDT_DEFAULTS["Background"]
     assert scheme.colors["Foreground"] == EDT_DEFAULTS["Foreground"]
+
+
+def test_complete_picks_fallback_foreground_by_resolved_background_darkness() -> None:
+    """Ревью финального прогона v3.2, задача 5: тема без своего `Foreground`, но с тёмным
+    `Background`, не должна получать чёрный запасной текст на чёрном фоне."""
+    dark = complete("t", {"Background": (30, 30, 30)})
+    assert dark.colors["Foreground"] == (220, 220, 220)
+    light = complete("t", {})
+    assert light.colors["Foreground"] == EDT_DEFAULTS["Foreground"]
 ```
 
 - [ ] **Step 2: Прогон — падает**
@@ -485,10 +497,6 @@ def format_rgb(rgb: RGB) -> str:
 DARK_LUMINANCE = 128  # порог яркости (0–255): ниже — тёмный фон
 
 
-def luminance(rgb: RGB) -> float:
-    return 0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]
-
-
 def is_dark_rgb(rgb: RGB) -> bool:
     """Тёмный ли цвет: целочисленная яркость, без плавающей точки — (128,128,128) ровно
     на пороге и тёмным не считается. (Ревью задачи 1: `0.299·128+0.587·128+0.114·128 =
@@ -536,11 +544,23 @@ def fill_missing(partial: Mapping[str, RGB], fallback_fg: RGB, fallback_bg: RGB)
     return result
 
 
+DARK_FALLBACK_FOREGROUND: RGB = (220, 220, 220)  # запасной текст на тёмном резолвленном фоне
+
+
 def complete(name: str, partial: Mapping[str, RGB], source: str = "") -> Scheme:
-    """Схема из частичного набора: недостающие — `fill_missing` от `EDT_DEFAULTS`."""
-    return Scheme(
-        name, fill_missing(partial, EDT_DEFAULTS["Foreground"], EDT_DEFAULTS["Background"]), source
+    """Схема из частичного набора: недостающие — `fill_missing` от `EDT_DEFAULTS`.
+
+    Запасной `Foreground` берётся по темноте `partial["Background"]` (если он задан):
+    тёмный фон → светлый текст `DARK_FALLBACK_FOREGROUND`, иначе — `EDT_DEFAULTS["Foreground"]`
+    (обычно тёмный). Без этого тема с тёмным фоном и без своего `Foreground` получала бы
+    чёрный текст на чёрном фоне (ревью финального прогона v3.2, задача 5)."""
+    background = partial.get("Background")
+    fallback_fg = (
+        DARK_FALLBACK_FOREGROUND
+        if background is not None and is_dark_rgb(background)
+        else EDT_DEFAULTS["Foreground"]
     )
+    return Scheme(name, fill_missing(partial, fallback_fg, EDT_DEFAULTS["Background"]), source)
 
 
 # Светлая схема EDT по умолчанию. [?] до Э10 — значения по умолчанию Eclipse JDT/текстового
@@ -717,7 +737,7 @@ def test_render_replaces_in_place_keeps_order_garbage_and_crlf() -> None:
     assert len(lines) == len(text.split("\r\n"))
 
 
-def test_render_inserts_new_key_in_sorted_position_by_unescaped_key() -> None:
+def test_render_inserts_new_key_in_sorted_position() -> None:
     rendered = render_prefs(_fixture(), {f"{TOKEN}Comment.color": "9,9,9"})
     keys = [line.split("=")[0] for line in rendered.split("\r\n") if line]
     assert keys.index(f"{TOKEN}Comment.color") == keys.index(f"{TOKEN}Builtin\\ function.color") + 1
@@ -1414,6 +1434,20 @@ def test_parse_tmtheme_scope_precedence_and_first_match_wins() -> None:
     assert colors["BSL_Keywords"] == (3, 3, 3)  # первое совпадение, `keyword.control` позже
 
 
+def test_parse_tmtheme_scope_list_feeds_every_matching_key() -> None:
+    """Ревью финального прогона v3.2, задача 4 (минор): список `scope` через запятую должен
+    отдавать цвет каждому совпавшему ключу, а не только первому найденному префиксу."""
+    text = (
+        '<plist version="1.0"><dict><key>settings</key><array>'
+        "<dict><key>scope</key><string>comment, string</string><key>settings</key><dict>"
+        "<key>foreground</key><string>#010101</string></dict></dict>"
+        "</array></dict></plist>"
+    )
+    _name, colors = parse_tmtheme(text)
+    assert colors["Comment"] == (1, 1, 1)
+    assert colors["Strings"] == (1, 1, 1)
+
+
 @pytest.mark.parametrize(
     "text",
     ["<plist version=\"1.0\"><dict><key>name</key><string>x</string></dict></plist>", "<plist>", "", "<plist version=\"1.0\"><array/></plist>"],
@@ -1646,11 +1680,18 @@ def parse_tmtheme(text: str) -> tuple[str, dict[str, RGB]]:
         rgb = tm_color(raw) if isinstance(raw, str) else None
         if rgb is None:
             continue
-        scopes = [part.strip() for part in scope.split(",")]
-        for prefix, our_key in TMTHEME_SCOPES:
-            if our_key not in result and any(_scope_matches(s, prefix) for s in scopes):
-                result[our_key] = rgb
-                break
+        # Список scope через запятую — каждый элемент разбирается независимо и может отдать
+        # цвет своему ключу (ревью v3.2, задача 4: «comment, string» — оба); но внутри одного
+        # элемента побеждает самый специфичный префикс (`break`) — иначе, например, элемент
+        # «keyword.operator» попал бы и в Operators (точное совпадение), и в BSL_Keywords
+        # (тот же элемент начинается на «keyword.»), хотя это одна и та же категория токена.
+        for s in [part.strip() for part in scope.split(",")]:
+            for prefix, our_key in TMTHEME_SCOPES:
+                if our_key in result:
+                    continue
+                if _scope_matches(s, prefix):
+                    result[our_key] = rgb
+                    break
     name = payload.get("name")
     return (name if isinstance(name, str) else ""), result
 ```
@@ -1661,9 +1702,21 @@ def parse_tmtheme(text: str) -> tuple[str, dict[str, RGB]]:
 (`RUF100` включён и ругается на лишние `noqa`).
 
 Проверка precedence в `test_parse_tmtheme_scope_precedence…`: `keyword.operator` совпадает с
-префиксом `keyword.operator` (Operators), а с `keyword` — тоже, но `Operators` стоит раньше в
-`TMTHEME_SCOPES`, и цикл прерывается на первом совпадении; `keyword.control.import` → Preprocessor;
-`keyword` → BSL_Keywords; `keyword.control` (четвёртый) → BSL_Keywords уже занят → пропуск.
+префиксом `keyword.operator` (Operators), а с `keyword` — тоже (тот же элемент начинается на
+«keyword.»), но внутренний `break` останавливается на первом (самом специфичном) префиксе для
+ЭТОГО элемента — Operators, не BSL_Keywords; `keyword.control.import` → Preprocessor; `keyword`
+(отдельная запись) → BSL_Keywords; `keyword.control` (четвёртый) → BSL_Keywords уже занят →
+пропуск. Уточнение ревью финального прогона v3.2 (задача 4, минор): исходный код прерывал
+(`break`) ВНЕШНИЙ цикл по `TMTHEME_SCOPES` на первом совпавшем префиксе, поэтому запись со
+списком `scope` («comment, string») отдавала цвет только одному ключу — второй элемент списка
+не проверялся вовсе. Первая попытка исправления (просто снять `break`) оказалась неверной:
+один элемент («keyword.operator») тогда совпадал сразу с двумя префиксами разной специфичности
+(«keyword.operator» и «keyword») и отдавал цвет обоим — `test_parse_tmtheme_scope_precedence…`
+падал (`BSL_Keywords` получал цвет `Operators`). Верное исправление — два цикла: внешний по
+элементам `scope` (список через запятую), внутренний по `TMTHEME_SCOPES` с `break` на первом
+совпадении ДЛЯ ЭТОГО элемента. Так каждый элемент списка независимо находит свой самый
+специфичный префикс, а `test_parse_tmtheme_scope_list_feeds_every_matching_key` (новый)
+проверяет, что оба элемента списка («comment», «string») получают цвет записи.
 
 - [ ] **Step 5: Прогон — зелёный, статика**
 
@@ -3182,7 +3235,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from PySide6.QtWidgets import QListWidget
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QListWidget, QPushButton
 
 from onecstarter.domain.edt_scheme import (
     BSL_PREFS,
@@ -3234,6 +3288,7 @@ class Harness:
         catalog: SchemeCatalog | None | str = "auto",
         choose_save: Callable[[str], str] = lambda initial: "",
         choose_color: Callable[[RGB], RGB | None] = lambda rgb: None,
+        default_dir: str | None = None,
     ) -> SchemeDialog:
         if catalog == "auto":
             catalog = SchemeCatalog(str(self.catalog_dir))
@@ -3247,6 +3302,7 @@ class Harness:
             show_error=self.errors.append,
             choose_save=choose_save,
             choose_color=choose_color,
+            default_dir=default_dir if default_dir is not None else str(Path.home()),
         )
 
 
@@ -3478,6 +3534,57 @@ def test_filter_hides_rows_case_insensitively(harness: Harness, qtbot) -> None: 
     assert visible == ["Шесть"]
     dialog.search().setText("")
     assert all(not sources.item(i).isHidden() for i in range(sources.count()))
+
+
+# --- ревью финального прогона v3.2 (задачи 1–3) ---
+
+
+def test_save_outside_catalog_keeps_edited_scheme_and_apply_writes_it(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    """Сохранение вне каталога (или без каталога) не должно сбрасывать правку на «Текущую»."""
+    target = harness.tmp_path / "out" / "Моя.csi"
+
+    def choose(initial: str) -> str:
+        assert initial.startswith(str(harness.tmp_path))
+        return str(target)
+
+    dialog = harness.dialog(catalog=None, choose_save=choose, default_dir=str(harness.tmp_path))
+    qtbot.addWidget(dialog)
+    _select(dialog, DEFAULT_NAME)
+    dialog.set_color("Strings", (9, 9, 9))
+    dialog.save_button().click()
+    saved = parse_csi(target.read_text(encoding="utf-8"))
+    assert saved["Strings"] == (9, 9, 9)
+    assert dialog.scheme().colors["Strings"] == (9, 9, 9)
+    assert dialog.sources().currentRow() == -1
+    dialog.apply_button().click()
+    settings = harness.workspace().settings_dir
+    bsl = parse_prefs((settings / BSL_PREFS).read_bytes().decode("latin-1"))
+    assert bsl[f"{TOKEN}Strings.color"] == "9,9,9"
+
+
+def test_enter_in_search_does_not_trigger_buttons(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    dialog = harness.dialog()
+    qtbot.addWidget(dialog)
+    for button in dialog.findChildren(QPushButton):
+        assert button.isDefault() is False
+        assert button.autoDefault() is False
+    before = dialog.scheme()
+    qtbot.keyClick(dialog.search(), Qt.Key.Key_Return)
+    assert dialog.scheme() == before
+    assert harness.infos == []
+
+
+def test_unreadable_current_marks_row_and_table_has_defaults(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    """`WorkspaceSchemes.current()` кидает при открытии — таблица не должна остаться пустой."""
+    settings = harness.workspace().settings_dir
+    (settings / BSL_PREFS).mkdir(parents=True)  # директория вместо файла → OSError не ENOENT
+    dialog = harness.dialog()
+    qtbot.addWidget(dialog)
+    assert dialog.sources().item(0).toolTip().startswith("Не удалось прочитать")
+    assert dialog.table().rowCount() == 22
+    assert dialog.table().item(0, 2).text() == to_hex(EDT_DEFAULTS["BSL_Keywords"])
+    assert harness.errors == []
+    dialog.set_color("Strings", (1, 2, 3))  # не должно упасть на `assert swatch is not None`
 ```
 
 - [ ] **Step 2: Прогон — падает**
@@ -3611,6 +3718,7 @@ class SchemeDialog(QDialog):
         show_error: Callable[[str], None],
         choose_save: Callable[[str], str] = browse_for_csi,
         choose_color: Callable[[RGB], RGB | None] = pick_color,
+        default_dir: str = str(Path.home()),
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -3623,6 +3731,7 @@ class SchemeDialog(QDialog):
         self._show_error = show_error
         self._choose_save = choose_save
         self._choose_color = choose_color
+        self._default_dir = default_dir  # каталог для «Сохранить…», когда каталога схем нет (ревью v3.2, задача 1)
         self._scheme = Scheme(DEFAULT_NAME, EDT_DEFAULTS)
         self._kind = KIND_DEFAULT
         self._rows: list[tuple[str, CatalogEntry | None]] = []
@@ -3653,8 +3762,10 @@ class SchemeDialog(QDialog):
 
         self._invert = QPushButton(BUTTON_INVERT)
         self._invert.clicked.connect(self._on_invert)
+        self._invert.setAutoDefault(False)  # Enter в поиске не должен жать эту кнопку (ревью, задача 2)
         self._save = QPushButton(BUTTON_SAVE)
         self._save.clicked.connect(self._on_save)
+        self._save.setAutoDefault(False)
         self._theme_label = QLabel(THEME_LABEL)
         self._theme = QComboBox()
         for choice in ThemeChoice:
@@ -3665,8 +3776,12 @@ class SchemeDialog(QDialog):
         self._theme.setVisible(theme_visible)
         self._apply = QPushButton(BUTTON_APPLY)
         self._apply.clicked.connect(self._on_apply)
+        self._apply.setAutoDefault(False)
         self._buttons = russian_button_box(ButtonKind.CLOSE)
         self._buttons.rejected.connect(self.reject)
+        for button in self._buttons.buttons():
+            if isinstance(button, QPushButton):  # QDialogButtonBox типизирует их QAbstractButton
+                button.setAutoDefault(False)
 
         left = QWidget()
         left_layout = QVBoxLayout(left)
@@ -3698,12 +3813,20 @@ class SchemeDialog(QDialog):
         layout.addLayout(bottom)
         self.resize(960, 640)
 
+        self._show_scheme(self._scheme)  # таблица заполнена умолчаниями ещё до чтения источников —
+        # `WorkspaceSchemes.current` ниже может кинуть EdtError, и без этого таблица осталась бы
+        # пустой (ревью, задача 3: `assert swatch is not None` в `set_color` падал)
         self._reload_sources(select=None)
         self._refresh_apply()
 
     # --- источники ---
 
-    def _reload_sources(self, select: Path | None) -> None:
+    def _reload_sources(self, select: Path | None) -> bool:
+        """Перечитать список источников; `select` — путь, который должен остаться выбранным.
+
+        Возвращает, нашёлся ли `select` среди строк каталога (для `_on_save`, задача 1
+        ревью); при `select is None` возврат не используется — строка 0 выбирается как раньше.
+        """
         self._sources.blockSignals(True)
         self._sources.clear()
         self._rows = [(KIND_CURRENT, None), (KIND_DEFAULT, None)]
@@ -3724,13 +3847,17 @@ class SchemeDialog(QDialog):
         self._hint.setVisible(bool(hint))
         self._sources.blockSignals(False)
         row = 0
+        found = select is None
         if select is not None:
-            row = next(
+            match = next(
                 (i for i, (_kind, entry) in enumerate(self._rows) if entry and entry.path == select),
-                0,
+                None,
             )
+            found = match is not None
+            row = match if match is not None else 0
         self._sources.setCurrentRow(row)  # currentRowChanged → _on_source_changed
         self._filter(self._search.text())
+        return found
 
     def _on_source_changed(self, row: int) -> None:
         if row < 0 or row >= len(self._rows):
@@ -3822,19 +3949,32 @@ class SchemeDialog(QDialog):
         directory = (
             self._catalog.directory
             if self._catalog is not None and self._catalog.exists()
-            else Path()
+            else Path(self._default_dir)
         )
         name = _UNSAFE.sub("_", self._scheme.name).strip() or "scheme"
         chosen = self._choose_save(str(directory / f"{name}.csi"))
         if not chosen:
             return
         path = Path(chosen)
+        edited = Scheme(path.stem, self._scheme.colors, str(path))  # снято ДО _reload_sources —
+        # та может выбрать строку 0 и перерисовать self._scheme своими цветами (см. ниже)
         try:
-            save_csi(path, Scheme(path.stem, self._scheme.colors, str(path)))
+            save_csi(path, edited)
         except EdtError as error:
             self._show_error(str(error))
             return
-        self._reload_sources(select=path)
+        selected = self._reload_sources(select=path)
+        if not selected:
+            # Записали вне каталога (или каталога нет вовсе) — `_reload_sources` откатилась
+            # на строку 0 («Текущая»/«По умолчанию»), и её `_on_source_changed` уже перезаписал
+            # `self._scheme` цветами ЭТОЙ строки. Возвращаем на экран именно `edited` (снятую
+            # до отката) и снимаем выбор строки, чтобы список и таблица не расходились
+            # (ревью v3.2, задача 1).
+            self._show_scheme(edited)
+            self._kind = KIND_CATALOG
+            self._sources.blockSignals(True)
+            self._sources.setCurrentRow(-1)
+            self._sources.blockSignals(False)
 
     def _on_apply(self) -> None:
         if self._is_busy():
@@ -4097,7 +4237,7 @@ README, после подраздела «### Импорт проектов» (�
 22 цветов, каждый правится кликом по образцу или кодом `#RRGGBB`. «Инвертировать»
 переворачивает схему, «Сохранить в файл…» пишет её в `.csi` в каталог схем.
 «Применить» записывает цвета в рабочую область сразу — EDT на ней должна быть закрыта
-(при выходе EDT переписывает свои настройки из памяти); изменения видны после
+(при выходе EDT может переписать свои настройки из памяти); изменения видны после
 следующего запуска. Запись ничего не запоминает: истина — в рабочей области.
 «По умолчанию EDT» без правок снимает наши ключи, и EDT возвращает свои умолчания.
 Чужие ключи в файлах настроек сохраняются, запись атомарная.

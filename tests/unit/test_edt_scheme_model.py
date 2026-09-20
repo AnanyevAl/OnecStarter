@@ -229,3 +229,12 @@ def test_complete_fills_from_edt_defaults() -> None:
     assert scheme.colors["BSL_Keywords"] == (1, 2, 3)
     assert scheme.colors["Background"] == EDT_DEFAULTS["Background"]
     assert scheme.colors["Foreground"] == EDT_DEFAULTS["Foreground"]
+
+
+def test_complete_picks_fallback_foreground_by_resolved_background_darkness() -> None:
+    """Ревью финального прогона v3.2, задача 5: тема с тёмным `Background`, но без своего
+    `Foreground`, не должна получать тёмный запасной текст на тёмном фоне."""  # noqa: RUF002
+    dark = complete("t", {"Background": (30, 30, 30)})
+    assert dark.colors["Foreground"] == (220, 220, 220)
+    light = complete("t", {})
+    assert light.colors["Foreground"] == EDT_DEFAULTS["Foreground"]

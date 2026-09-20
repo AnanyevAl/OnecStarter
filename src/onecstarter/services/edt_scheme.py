@@ -121,7 +121,10 @@ class SchemeCatalog:
                 name, colors = parse_idea_jar(data)
             else:
                 name, colors = parse_tmtheme(data.decode("utf-8-sig"))
-        except (ValueError, UnicodeDecodeError) as error:
+        except (ValueError, UnicodeDecodeError, NotImplementedError, RuntimeError) as error:
+            # NotImplementedError/RuntimeError — `zipfile` внутри `parse_idea_jar`: неподдерживаемое
+            # сжатие / зашифрованная запись архива. Наружу из сервиса должна выходить только
+            # `EdtError` (§7).
             raise EdtError(READ_FAILED.format(reason=_reason(error))) from error
         return complete(name or entry.name, colors, str(entry.path))
 
