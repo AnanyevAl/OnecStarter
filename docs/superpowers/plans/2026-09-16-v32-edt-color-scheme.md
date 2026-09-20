@@ -2967,7 +2967,7 @@ PREVIEW_SAMPLE: tuple[tuple[Run, ...], ...] = (
         ("Процедура", "BSL_Keywords", ""),
         (" ПересчитатьИтоги", "", ""),
         ("(", "Brackets", ""),
-        ("Документ", "", ""),
+        ("Документ", "Others", ""),
         (", ", "Operators", ""),
         ("Показывать", "", ""),
         (" = ", "Operators", ""),
@@ -3031,7 +3031,7 @@ PREVIEW_SAMPLE: tuple[tuple[Run, ...], ...] = (
     (
         ("\tОбновитьСтатус", "", "hyperlink"),
         ("(", "Brackets", ""),
-        ("Документ", "", ""),
+        ("Документ", "Others", ""),
         (")", "Brackets", ""),
         (";", "Operators", ""),
     ),
@@ -3074,7 +3074,9 @@ class SchemePreview(QTextEdit):
     def show_scheme(self, scheme: Scheme) -> None:
         """Перерисовать образец цветами `scheme` (не `render`: то — `QWidget.render`)."""
         colors = scheme.colors
-        background, foreground = to_hex(colors["Background"]), to_hex(colors["Foreground"])
+        # `.lower()`: тесты сравнивают с `QColor.name()` (нижний регистр), `to_hex` даёт верхний
+        background = to_hex(colors["Background"]).lower()
+        foreground = to_hex(colors["Foreground"]).lower()
         self.setStyleSheet(
             f"QTextEdit#SchemePreview {{ background-color: {background}; color: {foreground}; }}"
         )
@@ -3114,6 +3116,7 @@ class SchemePreview(QTextEdit):
         return result
 
     def line_backgrounds(self) -> list[str]:
+        """Фон каждого блока документа (`#rrggbb` или "" — не задан): подсветка текущей строки."""
         result: list[str] = []
         block = self.document().begin()
         while block.isValid():
