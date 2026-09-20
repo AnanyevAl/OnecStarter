@@ -4005,7 +4005,7 @@ access violation`, T-12 п. 15, не проявился — повтор не п
 - Ручной smoke собранного экземпляра — проведён в составе 3.1.1 (T-20): отдельный выпуск 3.1.0
   не делался, ветка v3.1 вошла в `feat/2026-09-16-v311` и выпущена тегом `v3.1.1` 17.09.2026.
 
-## T-19. v3.2 — цветовая схема рабочей области EDT — WIP (ветка `feat/2026-09-16-v32`)
+## T-19. v3.2 — цветовая схема рабочей области EDT — DONE (20.09.2026, ветка `feat/2026-09-16-v32`)
 
 Дизайн — [спека v3.2](superpowers/specs/2026-09-16-v32-edt-color-scheme-design.md). План —
 [план v3.2](superpowers/plans/2026-09-16-v32-edt-color-scheme.md). Эксперименты Э8–Э11 —
@@ -4018,7 +4018,22 @@ access violation`, T-12 п. 15, не проявился — повтор не п
 | 3 | Домен: разбор `.csi`, IDEA xml/jar, `.tmTheme` (ревью: `BadZipFile` из `read()`) | `594ee57`, `f5e8b99`, `57b25e9` |
 | 4 | Протокол Э8–Э11 и скрипт `t19-edt-scheme.py` (ревью: `.SystemDefault` в наших ключах, битая запись архива) | `a45f1a9`, `b293b6d` |
 | 5а | Э10, Э11, Э9-0 (агент): умолчания EDT из установки, цепочки источников IDEA по 626 темам, id тем | `b6871db` |
-| 5б | Э8, Э9 (заказчик, 20.09.2026): метки в спеке и скиле, `THEME_IDS`, раздел «Цвета редактора» | (этот коммит) |
+| 5б | Э8, Э9 (заказчик, 20.09.2026): метки в спеке и скиле, `THEME_IDS`, раздел «Цвета редактора» | `e3beb0e` |
+| 6 | Сервис: `SchemeCatalog`, `WorkspaceSchemes`, `save_csi` (ревью: `reset` с одним файлом, `_reason` в `load`) | `f48d1a5`, `030511b` |
+| 7 | Настройка «Каталог цветовых схем» (`edt_schemes_dir`, строка в группе EDT) | `3a1c6df` |
+| 8 | Предпросмотр `SchemePreview` (ревью: `Others` для идентификаторов, hex в стиле в нижнем регистре) | `abfaaee`, `5676f0b` |
+| 9 | Диалог «Цветовая схема» | `c972840` |
+| 10 | Пункт меню «Цветовая схема…», `schemes_dir` из настроек (ревью: тест ветки `cli_busy`) | `e6b5df5`, `dfaf1ef` |
+| 11 | Документы, версия 3.2.0, полный прогон, сборка | (этот коммит) |
+
+Раунды ревью по задачам: задача 1 — один раунд (целочисленный порог `is_dark_rgb`);
+задача 2 — два раунда (перевод строки на каждую строку, затем пост-нормализация
+терминаторов); задача 3 — один раунд (`BadZipFile` из `read()`, эскейп моджибейка
+в комментарии); задача 4 — один раунд (`.SystemDefault` — «наш» ключ, `BadZipFile`
+в `idea-stats`); задача 6 — один раунд (сырой вывод мутаций, `reset` с одним файлом);
+задача 8 — один раунд (минор: `Others` для идентификаторов, hex в стиле в нижнем
+регистре); задача 10 — один раунд (тест ветки `cli_busy`). Задачи 5а, 5б, 7, 9 —
+приняты ревью с первого раза.
 
 ### Итог Э8–Э11 (18–20.09.2026)
 
@@ -4036,6 +4051,35 @@ EDT пережила выход. Э9 дал светлый id `org.eclipse.e4.ui
 одновременно меняет цвета в самой EDT». Все четыре эксперимента провели за четыре запуска EDT
 вместо запланированных 7–8: шаги объединяли (Э8: шаги 2 и 3 — в один запуск; Э9: шаги 1, 2 и 4 —
 в один запуск с перезапуском из Preferences).
+
+### Полный прогон и статика (20.09.2026)
+
+Полный прогон: `2653 passed in 782.79s` (`e:/tmp/v32-full.log`; флейк pytest-qt
+`Windows fatal exception: access violation`, T-12 п. 15, не проявился — повтор не
+понадобился). `ruff check .` — `All checks passed!`. `mypy` — `Success: no issues
+found in 233 source files`.
+
+### Мутационные проверки (20.09.2026)
+
+Протокол — CLAUDE.md, «Мутационная проверка тестов». Строки — дословно из отчётов
+задач 2, 4, 6, 10.
+
+| Правило | Мутация | Упавший тест | На чём |
+| --- | --- | --- | --- |
+| строки без ключа сохраняются (задача 2) | `render_prefs` отбрасывает строки без ключа | `test_render_preserves_comments_blank_lines_and_foreign_keys` | `assert rendered == "# note\n\nforeign=1\nlineNumberColor=5,5,5\n"` |
+| перевод строки сохраняется (задача 2) | `newline = "\n"` принудительно | `test_render_roundtrip_identity_crlf_and_lf`, `…keeps_order_garbage_and_crlf`, `…sorted_position…`, `…new_file…`, `…removes_keys…` | `assert render_prefs(text, {}) == text` и др. |
+| запасные источники IDEA (задача 5а) | у `Comment` убраны запасные `IdeaSource` | `test_parse_idea_xml_uses_fallback_sources` | `KeyError: 'Comment'` |
+| отказ до записи (задача 6) | `self._guard()` перенесён после цикла записи | `test_apply_refuses_when_busy_before_writing` | `assert not workspace.settings_dir.exists()` |
+| атомарность (задача 6) | `path.write_bytes` вместо `atomic_write` + оставленный `.tmp` | `test_apply_creates_settings_and_both_files_atomically` | `assert not list(settings.glob("*.tmp"))` |
+| чужие ключи при записи (задача 6) | `render_prefs("", …)` вместо существующего текста | `test_apply_preserves_foreign_keys_and_crlf` | `assert text.startswith("=\r\n")` |
+| занятость по CLI блокирует «Применить» (задача 10) | `busy()` только по `running_pid` | `test_color_scheme_dialog_sees_cli_busy_workspace_as_busy` | `assert captured[0].apply_button().isEnabled() is False` |
+
+### Гейты сборки 3.2.0 (20.09.2026)
+
+`build/build.ps1`: PyInstaller → `smoke: OK` (гейты `frozen`, `keyring=ok`, `edt=`,
+`version=3.2.0` — через `onecstarter.log` собранного экземпляра) →
+`dist/OneCStarter-3.2.0-portable.zip` 54,7 МБ, `dist/OneCStarter-3.2.0-setup.exe`
+36,2 МБ (`dist` целиком — 124,1 МБ).
 
 ## T-20. v3.1.1 — импорт выбранных проектов через CLI EDT — DONE (17.09.2026, ветка `feat/2026-09-16-v311`)
 
