@@ -92,7 +92,7 @@ PREVIEW_SAMPLE: tuple[tuple[Run, ...], ...] = (
     (
         ("\tОбновитьСтатус", "", "hyperlink"),  # noqa: RUF001
         ("(", "Brackets", ""),
-        ("Документ", "", ""),
+        ("Документ", "Others", ""),
         (")", "Brackets", ""),
         (";", "Operators", ""),
     ),
@@ -176,6 +176,7 @@ class SchemePreview(QTextEdit):
         return result
 
     def line_backgrounds(self) -> list[str]:
+        """Фон каждого блока документа (`#rrggbb` или "" — не задан): подсветка текущей строки."""
         result: list[str] = []
         block = self.document().begin()
         while block.isValid():
