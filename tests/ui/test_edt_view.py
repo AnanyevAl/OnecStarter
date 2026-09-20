@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import QModelIndex, Qt
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
-from PySide6.QtWidgets import QMenu, QWidget
+from PySide6.QtWidgets import QDialog, QMenu, QWidget
 
 from onecstarter.domain.edt import (
     EditorResolution,
@@ -27,6 +27,7 @@ from onecstarter.services.edt import EdtScan, EdtWorkspace
 from onecstarter.services.edt_cli import EdtCli
 from onecstarter.ui.edt.cli_watch import CliWatcher
 from onecstarter.ui.edt.console_panel import STATE_INTERRUPTED, STATE_RUNNING
+from onecstarter.ui.edt.scheme_dialog import SchemeDialog
 from onecstarter.ui.edt.tree_model import ID_ROLE, KIND_GROUP, KIND_ROLE
 from onecstarter.ui.edt.view import (
     CLI_BUILD,
@@ -44,6 +45,7 @@ from onecstarter.ui.edt.view import (
     MENU_REMOVE,
     MENU_REMOVE_GROUP,
     MENU_RENAME_GROUP,
+    MENU_SCHEME,
     DropTarget,
     EdtView,
 )
@@ -154,7 +156,11 @@ class Harness:
     def _discover(self) -> None:
         self.discovers_requested += 1
 
-    def view(self, open_directory: Callable[[str], bool] = lambda p: True) -> EdtView:
+    def view(
+        self,
+        open_directory: Callable[[str], bool] = lambda p: True,
+        schemes_dir: Callable[[], str] = lambda: "",
+    ) -> EdtView:
         return EdtView(
             self.workspace,
             palette=DARK,
@@ -166,6 +172,7 @@ class Harness:
             cli=self.cli,
             watcher=self.watcher,
             documents_dir=str(self.tmp_path / "Documents"),
+            schemes_dir=schemes_dir,
         )
 
 
@@ -476,6 +483,59 @@ def test_project_menu_open_edt_disabled_when_not_installed(  # type: ignore[no-u
     action = next(a for a in menu.actions() if a.text() == MENU_OPEN_EDT)
     assert action.isEnabled() is False
     assert action.toolTip() == "EDT 2024.2.6+7 не найден"
+
+
+def test_project_menu_has_color_scheme_right_after_open_edt(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    p = _add(harness, "a")
+    view = harness.view()
+    qtbot.addWidget(view)
+    texts = [a.text() for a in view.build_menu("project", p.id).actions() if not a.isSeparator()]
+    assert texts.index(MENU_SCHEME) == texts.index(MENU_OPEN_EDT) + 1
+    assert _actions(view.build_menu("project", p.id))[MENU_SCHEME] is True
+
+
+def test_color_scheme_opens_dialog_for_record(  # type: ignore[no-untyped-def]
+    harness: Harness, qtbot, monkeypatch
+) -> None:
+    p = _add(harness, "a")
+    schemes = harness.tmp_path / "schemes"
+    schemes.mkdir()
+    (schemes / "x.csi").write_text('{"EDTColors": []}', encoding="utf-8")
+    view = harness.view(schemes_dir=lambda: str(schemes))
+    qtbot.addWidget(view)
+    captured: list[SchemeDialog] = []
+
+    def run_dialog(dialog: QDialog) -> bool:
+        assert isinstance(dialog, SchemeDialog)
+        captured.append(dialog)
+        return False
+
+    monkeypatch.setattr(view, "_run_dialog", run_dialog)
+    view.color_scheme(p.id)
+    assert captured[0].windowTitle() == "Цветовая схема — a"
+    names = [captured[0].sources().item(i).text() for i in range(captured[0].sources().count())]
+    assert names[2:] == ["x"]
+    assert captured[0].apply_button().isEnabled()
+
+
+def test_color_scheme_dialog_sees_running_workspace_as_busy(  # type: ignore[no-untyped-def]
+    harness: Harness, qtbot, monkeypatch
+) -> None:
+    p = _add(harness, "a")
+    view = harness.view()
+    qtbot.addWidget(view)
+    view.on_scan(EdtScan(running={p.id: 4242}, present={p.id: True}))
+    captured: list[SchemeDialog] = []
+
+    def run_dialog(dialog: QDialog) -> bool:
+        assert isinstance(dialog, SchemeDialog)
+        captured.append(dialog)
+        return False
+
+    monkeypatch.setattr(view, "_run_dialog", run_dialog)
+    view.color_scheme(p.id)
+    assert captured[0].apply_button().isEnabled() is False
+    assert captured[0].hint_label().text() == "Каталог схем не задан — Настройки → EDT"
 
 
 def test_editor_enabled_when_found_and_opens_folder(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]

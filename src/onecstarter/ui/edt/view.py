@@ -52,6 +52,7 @@ from onecstarter.domain.edt_cli import (
 from onecstarter.platform_1c.editors import EDITOR_LABELS, EditorKind
 from onecstarter.services.edt import EdtScan, EdtWorkspace
 from onecstarter.services.edt_cli import CliRun, EdtCli, workspace_entries
+from onecstarter.services.edt_scheme import SchemeCatalog, WorkspaceSchemes
 from onecstarter.services.errors import ServicesError
 from onecstarter.ui.bases.panel import open_in_explorer
 from onecstarter.ui.dialogs.buttons import ask_confirmation
@@ -70,6 +71,7 @@ from onecstarter.ui.edt.dialog import DialogDefaults, EdtProjectDialog, browse_f
 from onecstarter.ui.edt.group_dialog import EdtGroupDialog
 from onecstarter.ui.edt.import_dialog import EdtImportDialog
 from onecstarter.ui.edt.panel import EdtPanel
+from onecstarter.ui.edt.scheme_dialog import SchemeDialog
 from onecstarter.ui.edt.tree_model import CLI_BUSY_HINT as CLI_BUSY_HINT
 from onecstarter.ui.edt.tree_model import (
     COLUMNS,
@@ -83,6 +85,7 @@ from onecstarter.ui.search_field import SearchField
 from onecstarter.ui.theme import Palette
 
 MENU_OPEN_EDT = "Открыть в EDT"
+MENU_SCHEME = "Цветовая схема…"
 MENU_OPEN_EXPLORER = "Открыть в Проводнике"
 MENU_ADD = "Добавить…"
 MENU_EDIT = "Изменить…"
@@ -218,6 +221,7 @@ class EdtView(QWidget):
         show_error: Callable[[str], None] | None = None,
         show_info: Callable[[str], None] | None = None,
         dialog_defaults: Callable[[], tuple[int, str]] = lambda: (8192, ""),
+        schemes_dir: Callable[[], str] = lambda: "",
         confirm: Callable[[QWidget, str, str], bool] = ask_confirmation,
         choose_directory: Callable[[], str] = browse_for_directory,
         open_directory: Callable[[str], bool] = open_in_explorer,
@@ -234,6 +238,7 @@ class EdtView(QWidget):
         self._show_error = show_error or self._default_show_error
         self._show_info = show_info or self._default_show_info
         self._dialog_defaults = dialog_defaults
+        self._schemes_dir = schemes_dir
         self._confirm = confirm
         self._choose_directory = choose_directory
         self._model = QStandardItemModel()
@@ -575,6 +580,8 @@ class EdtView(QWidget):
             # Меню — подсказка; сам отказ живёт в `EdtWorkspace.launch` (§14.1).
             open_edt.setEnabled(False)
             open_edt.setToolTip(CLI_BUSY_HINT)
+        # v3.2 §5: доступен всегда — занятость области видна внутри диалога («Применить»).
+        menu.addAction(MENU_SCHEME, lambda: self.color_scheme(project.id))
         for kind in EditorKind:
             resolution = self._workspace.editor(kind)
             action: QAction = menu.addAction(
@@ -676,6 +683,30 @@ class EdtView(QWidget):
 
     def open_folder(self, project_id: str) -> None:
         self._apply(lambda: self._workspace.open_folder(project_id), rebuild=False)
+
+    def color_scheme(self, project_id: str) -> None:
+        """«Цветовая схема…» (спека v3.2, §5): один диалог на запись, истина — в workspace."""
+        project = self._workspace.project(project_id)
+        directory = self._schemes_dir()
+        catalog = SchemeCatalog(directory) if directory else None
+
+        def busy() -> bool:
+            return (
+                self._workspace.running_pid(project_id) is not None
+                or self._workspace.cli_busy(project_id)
+            )
+
+        dialog = SchemeDialog(
+            project.name,
+            WorkspaceSchemes(project.workspace, is_busy=busy),
+            catalog,
+            palette=self._palette,
+            is_busy=busy,
+            show_info=self._show_info,
+            show_error=self._show_error,
+            parent=self,
+        )
+        self._run_dialog(dialog)
 
     # --- CLI (спека §14) ------------------------------------------------------
 

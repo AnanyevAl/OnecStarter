@@ -1006,6 +1006,7 @@ def _build_main_window(
                 store.settings.edt_default_max_heap_mb,
                 store.settings.edt_default_language,
             ),
+            schemes_dir=lambda: store.settings.edt_schemes_dir,
             cli=edt_cli,
             watcher=cli_watcher,
             # M4 ревью: не `~/Documents` — при OneDrive KFM «Документы» живут
