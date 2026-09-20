@@ -155,6 +155,10 @@ class Settings:
     edt_jvm_dir: str = ""
     edt_default_max_heap_mb: int = DEFAULT_EDT_HEAP_MB
     edt_default_language: str = ""
+    # Спека v3.2, §6 — каталог цветовых схем EDT (темы IDEA, .tmTheme, .csi; подкаталоги на
+    # один уровень). Пустая строка — не задан: диалог схемы показывает подсказку вместо каталога.
+    # Не валидируется здесь — несуществующий каталог не порча файла настроек.  # noqa: RUF003
+    edt_schemes_dir: str = ""
     editor_vscode: str = ""
     editor_antigravity: str = ""
 
@@ -189,6 +193,7 @@ def load_settings(path: Path) -> Settings:
         edt_jvm_dir=_text_of(payload.get("edt_jvm_dir")),
         edt_default_max_heap_mb=_heap_of(payload.get("edt_default_max_heap_mb")),
         edt_default_language=_language_of(payload.get("edt_default_language")),
+        edt_schemes_dir=_text_of(payload.get("edt_schemes_dir")),
         editor_vscode=_text_of(payload.get("editor_vscode")),
         editor_antigravity=_text_of(payload.get("editor_antigravity")),
     )
@@ -211,6 +216,7 @@ def save_settings(path: Path, settings: Settings) -> None:
         "edt_jvm_dir": settings.edt_jvm_dir,
         "edt_default_max_heap_mb": settings.edt_default_max_heap_mb,
         "edt_default_language": settings.edt_default_language,
+        "edt_schemes_dir": settings.edt_schemes_dir,
         "editor_vscode": settings.editor_vscode,
         "editor_antigravity": settings.editor_antigravity,
     }

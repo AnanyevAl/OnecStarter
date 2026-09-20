@@ -123,6 +123,11 @@ SERVERS_ROOT_ROW_NOTE = "Новые профили серверов предла
 EDT_JVM_ROW = "JDK по умолчанию"
 EDT_HEAP_ROW = "Память для новых записей, МБ"
 EDT_LANGUAGE_ROW = "Язык для новых записей"
+EDT_SCHEMES_ROW = "Каталог цветовых схем"
+EDT_SCHEMES_NOTE = (
+    "Темы IntelliJ IDEA (.xml, .icls, .jar), TextMate (.tmTheme) и файлы .csi; "
+    "подкаталоги на один уровень"
+)
 EDT_VSCODE_ROW = "VS Code"
 EDT_ANTIGRAVITY_ROW = "Antigravity"
 
@@ -309,6 +314,10 @@ class SettingsView(QWidget):
             "Подставляется в -Duser.language новой записи",
             self._edt_language,
         )
+        self._edt_schemes, self._edt_schemes_browse, schemes_row = self._path_control(
+            store.settings.edt_schemes_dir, "edt_schemes_dir"
+        )
+        self._add_row(EDT_SCHEMES_ROW, EDT_SCHEMES_NOTE, schemes_row, wide_control=True)
         self._editor_vscode, self._editor_vscode_browse, vscode_row = self._path_control(
             store.settings.editor_vscode,
             "editor_vscode",
@@ -782,6 +791,12 @@ class SettingsView(QWidget):
 
     def edt_language_combo(self) -> QComboBox:
         return self._edt_language
+
+    def edt_schemes_edit(self) -> QLineEdit:
+        return self._edt_schemes
+
+    def edt_schemes_browse_button(self) -> QPushButton:
+        return self._edt_schemes_browse
 
     def editor_vscode_edit(self) -> QLineEdit:
         return self._editor_vscode

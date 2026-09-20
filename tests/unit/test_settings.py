@@ -54,6 +54,7 @@ def test_schema_is_written(tmp_path: Path) -> None:
         "edt_jvm_dir": "",
         "edt_default_max_heap_mb": 8192,
         "edt_default_language": "",
+        "edt_schemes_dir": "",
         "editor_vscode": "",
         "editor_antigravity": "",
     }
@@ -376,6 +377,7 @@ def test_edt_fields_round_trip(tmp_path: Path) -> None:
         edt_jvm_dir=r"D:\jdk\bin",
         edt_default_max_heap_mb=4096,
         edt_default_language="ru",
+        edt_schemes_dir=r"D:\schemes",
         editor_vscode=r"D:\code\code.cmd",
         editor_antigravity=r"D:\ag\antigravity-ide.cmd",
     )
@@ -411,9 +413,17 @@ def test_edt_language_tolerance(tmp_path: Path, value: object, expected: str) ->
 def test_edt_path_fields_non_string_is_empty(tmp_path: Path) -> None:
     path = tmp_path / "settings.json"
     path.write_text(
-        json.dumps({"schema": SCHEMA_VERSION, "edt_jvm_dir": 1, "editor_vscode": None}),
+        json.dumps(
+            {
+                "schema": SCHEMA_VERSION,
+                "edt_jvm_dir": 1,
+                "editor_vscode": None,
+                "edt_schemes_dir": ["x"],
+            }
+        ),
         encoding="utf-8",
     )
     loaded = load_settings(path)
     assert loaded.edt_jvm_dir == ""
     assert loaded.editor_vscode == ""
+    assert loaded.edt_schemes_dir == ""

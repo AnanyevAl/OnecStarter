@@ -28,6 +28,7 @@ from onecstarter.ui.settings_view import (
     EDT_HEAP_ROW,
     EDT_JVM_ROW,
     EDT_LANGUAGE_ROW,
+    EDT_SCHEMES_ROW,
     EDT_VSCODE_ROW,
     SettingsView,
     browse_for_servers_root,
@@ -957,10 +958,22 @@ def test_edt_group_and_rows_registered(application: QApplication, tmp_path: Path
     assert view.edt_jvm_browse_button() in view.row_control(EDT_JVM_ROW).findChildren(QPushButton)
     assert isinstance(view.row_control(EDT_HEAP_ROW), QSpinBox)
     assert isinstance(view.row_control(EDT_LANGUAGE_ROW), QComboBox)
+    assert view.edt_schemes_edit() in view.row_control(EDT_SCHEMES_ROW).findChildren(QLineEdit)
+    assert view.edt_schemes_browse_button() in view.row_control(EDT_SCHEMES_ROW).findChildren(
+        QPushButton
+    )
     assert view.editor_vscode_edit() in view.row_control(EDT_VSCODE_ROW).findChildren(QLineEdit)
     assert view.editor_antigravity_edit() in view.row_control(EDT_ANTIGRAVITY_ROW).findChildren(
         QLineEdit
     )
+
+
+def test_edt_schemes_browse_saves_directory(application: QApplication, tmp_path: Path) -> None:
+    view, store = _view(application, tmp_path, choose_directory=lambda: r"D:\schemes")
+    view.edt_schemes_browse_button().click()
+    assert view.edt_schemes_edit().text() == r"D:\schemes"
+    assert store.settings.edt_schemes_dir == r"D:\schemes"
+    assert view.row_note(EDT_SCHEMES_ROW).text().startswith("Темы IntelliJ IDEA")
 
 
 def test_edt_group_is_right_after_servers(application: QApplication, tmp_path: Path) -> None:
