@@ -20,6 +20,7 @@ CORE = (
     "onecstarter.services.edt_store",
     "onecstarter.services.edt",
     "onecstarter.services.edt_cli",
+    "onecstarter.services.edt_scheme",
     "onecstarter.services.server_journal",
     "onecstarter.services.servers",
     "onecstarter.config.v8i",
