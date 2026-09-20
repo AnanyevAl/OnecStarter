@@ -122,7 +122,7 @@ class SchemeCatalog:
             else:
                 name, colors = parse_tmtheme(data.decode("utf-8-sig"))
         except (ValueError, UnicodeDecodeError) as error:
-            raise EdtError(READ_FAILED.format(reason=error)) from error
+            raise EdtError(READ_FAILED.format(reason=_reason(error))) from error
         return complete(name or entry.name, colors, str(entry.path))
 
 

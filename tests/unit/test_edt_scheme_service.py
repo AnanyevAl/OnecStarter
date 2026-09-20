@@ -180,6 +180,17 @@ def test_reset_removes_our_keys_keeps_foreign_and_skips_missing(tmp_path: Path) 
     assert set(editors) == {"eclipse.preferences.version"}
 
 
+def test_reset_with_only_one_prefs_file_touches_only_it(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    workspace.settings_dir.mkdir(parents=True)
+    shutil.copy(FIXTURES / "bsl-crlf.prefs", workspace.settings_dir / BSL_PREFS)
+    workspace.reset(ThemeChoice.KEEP)
+    assert not (workspace.settings_dir / EDITORS_PREFS).exists()
+    bsl = parse_prefs((workspace.settings_dir / BSL_PREFS).read_bytes().decode("latin-1"))
+    assert set(bsl) == {"", "eclipse.preferences.version", "ï»¿"}
+    assert not list(workspace.settings_dir.glob("*.tmp"))
+
+
 def test_write_failure_is_edt_error_with_path(tmp_path: Path) -> None:
     workspace = _workspace(tmp_path)
     workspace.settings_dir.parent.mkdir(parents=True)
