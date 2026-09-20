@@ -4062,17 +4062,17 @@ found in 233 source files`.
 ### Мутационные проверки (20.09.2026)
 
 Протокол — CLAUDE.md, «Мутационная проверка тестов». Строки — дословно из отчётов
-задач 2, 4, 6, 10.
+задач 2, 5а, 6, 10.
 
 | Правило | Мутация | Упавший тест | На чём |
 | --- | --- | --- | --- |
 | строки без ключа сохраняются (задача 2) | `render_prefs` отбрасывает строки без ключа | `test_render_preserves_comments_blank_lines_and_foreign_keys` | `assert rendered == "# note\n\nforeign=1\nlineNumberColor=5,5,5\n"` |
 | перевод строки сохраняется (задача 2) | `newline = "\n"` принудительно | `test_render_roundtrip_identity_crlf_and_lf`, `…keeps_order_garbage_and_crlf`, `…sorted_position…`, `…new_file…`, `…removes_keys…` | `assert render_prefs(text, {}) == text` и др. |
-| запасные источники IDEA (задача 5а) | у `Comment` убраны запасные `IdeaSource` | `test_parse_idea_xml_uses_fallback_sources` | `KeyError: 'Comment'` |
 | отказ до записи (задача 6) | `self._guard()` перенесён после цикла записи | `test_apply_refuses_when_busy_before_writing` | `assert not workspace.settings_dir.exists()` |
 | атомарность (задача 6) | `path.write_bytes` вместо `atomic_write` + оставленный `.tmp` | `test_apply_creates_settings_and_both_files_atomically` | `assert not list(settings.glob("*.tmp"))` |
 | чужие ключи при записи (задача 6) | `render_prefs("", …)` вместо существующего текста | `test_apply_preserves_foreign_keys_and_crlf` | `assert text.startswith("=\r\n")` |
 | занятость по CLI блокирует «Применить» (задача 10) | `busy()` только по `running_pid` | `test_color_scheme_dialog_sees_cli_busy_workspace_as_busy` | `assert captured[0].apply_button().isEnabled() is False` |
+| запасные источники IDEA (задача 5а) | у `Comment` убраны запасные `IdeaSource` | `test_parse_idea_xml_uses_fallback_sources` | `KeyError: 'Comment'` |
 
 ### Гейты сборки 3.2.0 (20.09.2026)
 
