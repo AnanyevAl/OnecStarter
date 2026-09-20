@@ -3221,7 +3221,9 @@ git commit -m "feat(edt): предпросмотр цветовой схемы �
   `hint_label() -> QLabel`, `search() -> SearchField`, `apply_button()`, `invert_button()`,
   `save_button()`, `theme_combo() -> QComboBox`, `scheme() -> Scheme`, `set_color(name, rgb)`;
   функции `browse_for_csi(initial) -> str`, `pick_color(current) -> RGB | None`,
-  `swatch_icon(rgb, border) -> QIcon`.
+  `swatch_icon(rgb, border) -> QIcon`, `blank_icon() -> QIcon` (прозрачная заглушка того же
+  размера — строки без значка не сдвигаются относительно строк со значком, находка ручного
+  smoke 20.09.2026).
 
 - [ ] **Step 1: Тесты**
 
@@ -3235,7 +3237,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QListWidget, QPushButton
 
 from onecstarter.domain.edt_scheme import (
@@ -3351,6 +3354,21 @@ def test_select_catalog_scheme_fills_table_preview_and_icon(harness: Harness, qt
     _select(dialog, "Шесть")
     assert dialog.scheme().name == "Шесть атрибутов"  # имя из XML
     assert dialog.table().item(0, 2).text() == "#CC7832"
+
+
+def test_every_source_row_has_icon_slot_so_text_does_not_shift(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    dialog = harness.dialog()
+    qtbot.addWidget(dialog)
+    sources = dialog.sources()
+    size = QSize(12, 12)
+    for index in range(sources.count()):
+        assert sources.item(index).icon().isNull() is False
+    # незагруженная строка — прозрачная заглушка, загруженная — кружок цвета фона схемы
+    blank = sources.item(_rows(sources).index("Тёмная")).icon().pixmap(size).toImage()
+    assert blank.pixelColor(6, 6).alpha() == 0
+    _select(dialog, "Тёмная")
+    loaded = sources.item(_rows(sources).index("Тёмная")).icon().pixmap(size).toImage()
+    assert loaded.pixelColor(6, 6) == QColor(43, 43, 43)
 
 
 def test_unreadable_entry_marked_and_table_unchanged(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
@@ -3612,7 +3630,7 @@ import re
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QBrush, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -3705,6 +3723,14 @@ def swatch_icon(rgb: RGB, border: str) -> QIcon:
     return QIcon(pixmap)
 
 
+def blank_icon() -> QIcon:
+    """Прозрачная заглушка того же размера, что `swatch_icon`: строка списка без значка
+    выравнивается так же, как строка со значком (находка ручного smoke 20.09.2026)."""  # noqa: RUF002
+    pixmap = QPixmap(_ICON, _ICON)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    return QIcon(pixmap)
+
+
 class SchemeDialog(QDialog):
     def __init__(
         self,
@@ -3741,6 +3767,7 @@ class SchemeDialog(QDialog):
         self._search.textChanged.connect(self._filter)
         self._sources = QListWidget()
         self._sources.setObjectName("SchemeSources")
+        self._sources.setIconSize(QSize(_ICON, _ICON))
         self._sources.currentRowChanged.connect(self._on_source_changed)
         self._hint = QLabel("")
         self._hint.setObjectName("SchemeHint")
@@ -3830,8 +3857,12 @@ class SchemeDialog(QDialog):
         self._sources.blockSignals(True)
         self._sources.clear()
         self._rows = [(KIND_CURRENT, None), (KIND_DEFAULT, None)]
-        self._sources.addItem(QListWidgetItem(CURRENT_NAME))
-        self._sources.addItem(QListWidgetItem(DEFAULT_NAME))
+        current_item = QListWidgetItem(CURRENT_NAME)
+        current_item.setIcon(blank_icon())
+        self._sources.addItem(current_item)
+        default_item = QListWidgetItem(DEFAULT_NAME)
+        default_item.setIcon(blank_icon())
+        self._sources.addItem(default_item)
         hint = ""
         if self._catalog is None:
             hint = HINT_NO_DIR
@@ -3841,6 +3872,7 @@ class SchemeDialog(QDialog):
             for entry in self._catalog.entries():
                 self._rows.append((KIND_CATALOG, entry))
                 item = QListWidgetItem(entry.name)
+                item.setIcon(blank_icon())
                 item.setToolTip(str(entry.path))
                 self._sources.addItem(item)
         self._hint.setText(hint)

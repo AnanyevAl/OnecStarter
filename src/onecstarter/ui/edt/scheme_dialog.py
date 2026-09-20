@@ -13,7 +13,7 @@ import re
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QBrush, QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -108,6 +108,14 @@ def swatch_icon(rgb: RGB, border: str) -> QIcon:
     return QIcon(pixmap)
 
 
+def blank_icon() -> QIcon:
+    """Прозрачная заглушка того же размера, что `swatch_icon`: строка списка без значка
+    выравнивается так же, как строка со значком (находка ручного smoke 20.09.2026)."""  # noqa: RUF002
+    pixmap = QPixmap(_ICON, _ICON)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    return QIcon(pixmap)
+
+
 class SchemeDialog(QDialog):
     def __init__(
         self,
@@ -144,6 +152,7 @@ class SchemeDialog(QDialog):
         self._search.textChanged.connect(self._filter)
         self._sources = QListWidget()
         self._sources.setObjectName("SchemeSources")
+        self._sources.setIconSize(QSize(_ICON, _ICON))
         self._sources.currentRowChanged.connect(self._on_source_changed)
         self._hint = QLabel("")
         self._hint.setObjectName("SchemeHint")
@@ -238,8 +247,12 @@ class SchemeDialog(QDialog):
         self._sources.blockSignals(True)
         self._sources.clear()
         self._rows = [(KIND_CURRENT, None), (KIND_DEFAULT, None)]
-        self._sources.addItem(QListWidgetItem(CURRENT_NAME))
-        self._sources.addItem(QListWidgetItem(DEFAULT_NAME))
+        current_item = QListWidgetItem(CURRENT_NAME)
+        current_item.setIcon(blank_icon())
+        self._sources.addItem(current_item)
+        default_item = QListWidgetItem(DEFAULT_NAME)
+        default_item.setIcon(blank_icon())
+        self._sources.addItem(default_item)
         hint = ""
         if self._catalog is None:
             hint = HINT_NO_DIR
@@ -249,6 +262,7 @@ class SchemeDialog(QDialog):
             for entry in self._catalog.entries():
                 self._rows.append((KIND_CATALOG, entry))
                 item = QListWidgetItem(entry.name)
+                item.setIcon(blank_icon())
                 item.setToolTip(str(entry.path))
                 self._sources.addItem(item)
         self._hint.setText(hint)

@@ -5,7 +5,8 @@ from collections.abc import Callable
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QListWidget, QPushButton, QTableWidgetItem
 
 from onecstarter.domain.edt_scheme import (
@@ -128,6 +129,21 @@ def test_select_catalog_scheme_fills_table_preview_and_icon(harness: Harness, qt
     _select(dialog, "Шесть")
     assert dialog.scheme().name == "Шесть атрибутов"  # имя из XML
     assert _cell(dialog, 0, 2).text() == "#CC7832"
+
+
+def test_every_source_row_has_icon_slot_so_text_does_not_shift(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    dialog = harness.dialog()
+    qtbot.addWidget(dialog)
+    sources = dialog.sources()
+    size = QSize(12, 12)
+    for index in range(sources.count()):
+        assert sources.item(index).icon().isNull() is False
+    # незагруженная строка — прозрачная заглушка, загруженная — кружок цвета фона схемы
+    blank = sources.item(_rows(sources).index("Тёмная")).icon().pixmap(size).toImage()
+    assert blank.pixelColor(6, 6).alpha() == 0
+    _select(dialog, "Тёмная")
+    loaded = sources.item(_rows(sources).index("Тёмная")).icon().pixmap(size).toImage()
+    assert loaded.pixelColor(6, 6) == QColor(43, 43, 43)
 
 
 def test_unreadable_entry_marked_and_table_unchanged(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
