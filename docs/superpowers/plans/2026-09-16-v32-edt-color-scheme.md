@@ -2353,8 +2353,8 @@ def test_catalog_loads_each_kind(tmp_path: Path) -> None:
     idea = catalog.load(by_name["B"])
     assert idea.name == "Шесть атрибутов"  # имя из XML, не stem
     assert idea.colors["BSL_Keywords"] == (204, 120, 50)
-    # `Others` в XML нет → `fill_missing`: тёмный фон, текст (169,183,198) − 20 по каналам
-    assert idea.colors["Others"] == (149, 163, 178)
+    # `Others` в XML нет → запасной источник `TEXT.FOREGROUND` (цепочки Э11)
+    assert idea.colors["Others"] == (169, 183, 198)
     assert catalog.load(by_name["c"]).colors["Strings"] == (206, 145, 120)
     assert catalog.load(by_name["e"]).name == "Шесть атрибутов"
 
@@ -2452,6 +2452,17 @@ def test_reset_removes_our_keys_keeps_foreign_and_skips_missing(tmp_path: Path) 
     assert set(bsl) == {"", "eclipse.preferences.version", "\u00ef\u00bb\u00bf"}
     editors = parse_prefs((workspace.settings_dir / EDITORS_PREFS).read_bytes().decode("latin-1"))
     assert set(editors) == {"eclipse.preferences.version"}
+
+
+def test_reset_with_only_one_prefs_file_touches_only_it(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    workspace.settings_dir.mkdir(parents=True)
+    shutil.copy(FIXTURES / "bsl-crlf.prefs", workspace.settings_dir / BSL_PREFS)
+    workspace.reset(ThemeChoice.KEEP)
+    assert not (workspace.settings_dir / EDITORS_PREFS).exists()
+    bsl = parse_prefs((workspace.settings_dir / BSL_PREFS).read_bytes().decode("latin-1"))
+    assert set(bsl) == {"", "eclipse.preferences.version", "ï»¿"}
+    assert not list(workspace.settings_dir.glob("*.tmp"))
 
 
 def test_write_failure_is_edt_error_with_path(tmp_path: Path) -> None:
@@ -2600,7 +2611,7 @@ class SchemeCatalog:
             else:
                 name, colors = parse_tmtheme(data.decode("utf-8-sig"))
         except (ValueError, UnicodeDecodeError) as error:
-            raise EdtError(READ_FAILED.format(reason=error)) from error
+            raise EdtError(READ_FAILED.format(reason=_reason(error))) from error
         return complete(name or entry.name, colors, str(entry.path))
 
 
