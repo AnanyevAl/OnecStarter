@@ -178,12 +178,10 @@ def test_theme_prefs_update_follows_theme_ids() -> None:
     assert theme_prefs_update(ThemeChoice.DARK) == {
         THEME_KEY: THEME_IDS[ThemeChoice.DARK]
     }
-    expected = (
-        {THEME_KEY: THEME_IDS[ThemeChoice.LIGHT]}
-        if ThemeChoice.LIGHT in THEME_IDS
-        else None
-    )
-    assert theme_prefs_update(ThemeChoice.LIGHT) == expected
+    assert THEME_IDS[ThemeChoice.LIGHT] == "org.eclipse.e4.ui.css.theme.e4_default"
+    assert theme_prefs_update(ThemeChoice.LIGHT) == {
+        THEME_KEY: "org.eclipse.e4.ui.css.theme.e4_default"
+    }
 
 
 def test_render_keeps_each_line_ending_as_is() -> None:

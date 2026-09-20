@@ -168,3 +168,74 @@ C0 58 FB F3 23 BC 00 14 1A 51 F3 8C 7B BB 77 C6   END_CHUNK
 | `build --yes` | 55 с |
 | `project` | 144 с |
 | `project` на занятом workspace (код 202) | 54 с |
+
+## 8. Цвета редактора **[Ф]**
+
+Два файла Java properties под `<workspace>\.metadata\.plugins\org.eclipse.core.runtime\.settings\`:
+`com._1c.g5.v8.dt.bsl.ui.prefs` (11 токенов) и `org.eclipse.ui.editors.prefs` (11 цветов
+редактора). Источник — `src/onecstarter/domain/edt_scheme.py` (`COLOR_KEYS`, `EDT_DEFAULTS`);
+значения умолчаний — Э10 (18.09.2026, байткод `BslHighlightingConfiguration` и `plugin.xml`
+`org.eclipse.ui.editors`/`org.eclipse.xtext.ui`/`org.eclipse.debug.ui`) **[Д]**.
+
+### 22 ключа
+
+| Короткое имя | Файл | Ключ | SystemDefault | Умолчание EDT 2026.1.2 (Э10, [Д]) |
+| --- | --- | --- | --- | --- |
+| BSL_Keywords | bsl.ui.prefs | `com._1c.g5.v8.dt.bsl.Bsl.syntaxColorer.tokenStyles.BSL_Keywords.color` | — | 127,0,85 |
+| BSL_Pragmas | bsl.ui.prefs | `com._1c.g5.v8.dt.bsl.Bsl.syntaxColorer.tokenStyles.BSL_Pragmas.color` | — | 125,125,125 |
+| Preprocessor | bsl.ui.prefs | `com._1c.g5.v8.dt.bsl.Bsl.syntaxColorer.tokenStyles.Preprocessor.color` | — | 0,0,205 |
+| Builtinfunction | bsl.ui.prefs | `com._1c.g5.v8.dt.bsl.Bsl.syntaxColorer.tokenStyles.Builtin\ function.color` | — | 127,0,85 |
+| Strings | bsl.ui.prefs | `com._1c.g5.v8.dt.bsl.Bsl.syntaxColorer.tokenStyles.Strings.color` | — | 42,0,255 |
+| Numbers | bsl.ui.prefs | `com._1c.g5.v8.dt.bsl.Bsl.syntaxColorer.tokenStyles.Numbers.color` | — | 0,0,0 |
+| Comment | bsl.ui.prefs | `com._1c.g5.v8.dt.bsl.Bsl.syntaxColorer.tokenStyles.Comment.color` | — | 63,127,95 |
+| Operators | bsl.ui.prefs | `com._1c.g5.v8.dt.bsl.Bsl.syntaxColorer.tokenStyles.Operators.color` | — | 0,0,0 |
+| Brackets | bsl.ui.prefs | `com._1c.g5.v8.dt.bsl.Bsl.syntaxColorer.tokenStyles.Brackets.color` | — | 0,0,0 |
+| Label | bsl.ui.prefs | `com._1c.g5.v8.dt.bsl.Bsl.syntaxColorer.tokenStyles.Label.color` | — | 125,125,125 |
+| Others | bsl.ui.prefs | `com._1c.g5.v8.dt.bsl.Bsl.syntaxColorer.tokenStyles.Others.color` | — | 0,0,0 |
+| Background | editors.prefs | `AbstractTextEditor.Color.Background` | да | 255,255,255 (системный «Окно») |
+| Foreground | editors.prefs | `AbstractTextEditor.Color.Foreground` | да | 0,0,0 (системный «Текст окна») |
+| SelectionBackground | editors.prefs | `AbstractTextEditor.Color.SelectionBackground` | да | 0,120,215 (системный «Выделение») |
+| SelectionForeground | editors.prefs | `AbstractTextEditor.Color.SelectionForeground` | да | 255,255,255 (системный «Текст выделения») |
+| currentLineColor | editors.prefs | `currentLineColor` | — | 232,242,254 |
+| lineNumberColor | editors.prefs | `lineNumberColor` | — | 120,120,120 |
+| occurrenceIndicationColor | editors.prefs | `occurrenceIndicationColor` | — | 212,212,212 |
+| hyperlinkColor | editors.prefs | `hyperlinkColor` | да | 0,102,204 (системный COLOR_HOTLIGHT) |
+| FindScope | editors.prefs | `AbstractTextEditor.Color.FindScope` | — | 185,176,180 |
+| currentIPColor | editors.prefs | `currentIPColor` | — | 198,219,174 |
+| printMarginColor | editors.prefs | `printMarginColor` | — | 176,180,185 |
+
+`.SystemDefault` — парный ключ `<ключ>.SystemDefault=false`, обязателен для помеченных «да»:
+без него EDT берёт системный цвет и наше значение в файле игнорирует **[Ф]** 20.09.2026, Э8.3.
+Формат — Java properties, CRLF, ключи по алфавиту, чужие ключи не теряются: EDT переписала
+`editors.prefs` при смене темы байт в байт с нашим файлом **[Ф]** 20.09.2026, Э9. При выходе EDT
+переписывает только узлы, изменённые в памяти — правка при запущенной EDT пережила выход, если
+EDT эти цвета не трогала **[Ф]** 20.09.2026, Э8.2.
+
+### Тема окна — `org.eclipse.e4.ui.css.swt.theme.prefs`, ключ `themeid`
+
+| id | label | Достоверность |
+| --- | --- | --- |
+| `org.eclipse.e4.ui.css.theme.e4_default` | Light | **[Д]** plugin.xml `org.eclipse.ui.themes`; **[Ф]** 20.09.2026 Э9 — записан самой EDT после выбора Light в Preferences |
+| `org.eclipse.e4.ui.css.theme.e4_dark` | Dark | **[Д]** plugin.xml; **[Ф]** 16.09.2026 (тёмные workspace заказчика) и 20.09.2026 Э9 (окно ушло в тёмную тему по нашему файлу — ключ читается при старте) |
+| `org.eclipse.e4.ui.css.theme.e4_classic` | Classic | **[Д]** plugin.xml `org.eclipse.ui.themes_1.2.2300.v20230807-1354` |
+| `org.eclipse.e4.ui.css.theme.high-contrast` | High Contrast | **[Д]** plugin.xml |
+
+### CSS тёмной темы — `css/dark/edt-dark_preferencestyle.css` (`bsl.ui`)
+
+9 из 11 токенов (без `Label`, `BSL_Pragmas`) **[Д]** ресурс плагина, 18.09.2026:
+
+| Ключ | Цвет CSS (тёмная тема) |
+| --- | --- |
+| BSL_Keywords | 255,120,90 |
+| Builtinfunction | 255,140,110 |
+| Preprocessor | 160,202,244 |
+| Strings | 240,255,125 |
+| Numbers | 181,181,181 |
+| Comment | 120,136,147 |
+| Operators | 181,181,181 |
+| Brackets | 181,181,181 |
+| Others | 181,181,181 |
+
+**[Ф]** 20.09.2026, Э9: эти значения задаются через `IEclipsePreferences` в памяти при отрисовке
+и **не перекрывают** значения, уже лежащие в prefs, — файл после цикла «наша схема + тёмная
+тема» остался байт в байт таким же, каким его записали.

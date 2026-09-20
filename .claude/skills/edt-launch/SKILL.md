@@ -6,9 +6,10 @@ description: Use when launching 1C:EDT from code or command line, discovering in
 # Запуск 1C:EDT, реестр EDT Start и CLI `1cedtcli.exe`
 
 Полные таблицы — ключи JSON EDT Start, команды и ключи CLI, коды завершения, формат
-`.location` — в `reference.md` в этом каталоге. Всё снято с машины заказчика 10–13.09.2026
+`.location` — в `reference.md` в этом каталоге. Всё снято с машины заказчика 10–20.09.2026
 (EDT 2025.2.6+4 и 2026.1.2+2, EDT Start 0.10.0.448, Windows 11); протоколы —
-`docs/research/t17-edt-experiments.md`. Легенда: **[Ф]** проверено на машине,
+`docs/research/t17-edt-experiments.md`, `docs/research/t19-edt-scheme-experiments.md`.
+Легенда: **[Ф]** проверено на машине,
 **[Д]** из документации/исходников/ресурсов плагина, **[?]** не проверено, **[Р]** наше решение.
 
 ## Раскладка на диске
@@ -117,6 +118,44 @@ workspace заказчика внутри нет ни одного катало�
 в URI — без `%XX`, пробел — `%20`; UNC — `file:////srv/share` (четыре слэша, `URIUtil.toURI`)
 **[Д]**. Разбор — `domain/edt_cli.py::parse_project_location`.
 
+## Цвета редактора
+
+**[Ф]** Цвета редактора кода EDT хранятся в workspace в двух файлах Java properties под
+`<workspace>\.metadata\.plugins\org.eclipse.core.runtime\.settings\`: `com._1c.g5.v8.dt.bsl.ui.prefs`
+(11 токенов подсветки, ключи `com._1c.g5.v8.dt.bsl.Bsl.syntaxColorer.tokenStyles.<Имя>.color=R,G,B`,
+пробел в имени экранирован — `Builtin\ function`) и `org.eclipse.ui.editors.prefs` (11 цветов
+редактора, у пяти — парный ключ `<ключ>.SystemDefault=false`). Полная таблица 22 ключей и
+умолчаний EDT — `reference.md`, раздел 8.
+
+**[Ф]** 20.09.2026, Э8.3: `.SystemDefault=false` у своих пяти ключей **обязателен** — без него
+EDT берёт системный цвет (фон остался белым, хотя в файле лежало наше значение).
+
+**[Ф]** Формат — Java properties: `ключ=значение`, `eclipse.preferences.version=1`, CRLF, ключи
+по алфавиту; чужие ключи и мусорные строки не теряются. 20.09.2026, Э9: EDT переписала
+`editors.prefs` при смене темы **байт в байт** с нашим файлом (тот же порядок, CRLF, чужой ключ
+`onecstarter.canary` сохранён) — подтверждает и формат записи, и то, что EDT читает эти файлы
+при старте.
+
+**[Ф]** 20.09.2026, Э8.2: при выходе EDT переписывает только узлы настроек, изменённые в памяти
+(dirty-флаги Eclipse Preferences) — правка файла при запущенной EDT **пережила** выход, если
+EDT эти цвета не трогала. Смена цвета в самой EDT одновременно с внешней правкой не проверялась
+**[Д]** — тогда EDT сбросит свои значения на диск и правка потеряется. Отсюда предусловие:
+писать эти файлы только при закрытой EDT на этой рабочей области.
+
+**[Ф]** Тема окна — третий файл, `org.eclipse.e4.ui.css.swt.theme.prefs`, ключ `themeid`:
+`org.eclipse.e4.ui.css.theme.e4_dark` (тёмная) / `org.eclipse.e4.ui.css.theme.e4_default`
+(светлая, Light). 20.09.2026, Э9: ключ читается при старте (окно уходит в тёмную/светлую тему
+по нашему файлу) и переписывается самой EDT при смене темы в Preferences.
+
+**[Ф]** 20.09.2026, Э9: `css/dark/edt-dark_preferencestyle.css` из `bsl.ui` (стилизует 9 из 11
+токенов под тёмной темой) **не перекрывает** значения, уже лежащие в prefs, и ничего не пишет
+в файл — предупреждение о тёмной теме не нужно.
+
+**[Д]** Цвета EDT по умолчанию (светлая схема) не записаны в prefs: 11 токенов — байткод класса
+`BslHighlightingConfiguration`, 11 цветов редактора — `plugin.xml` плагинов
+`org.eclipse.ui.editors`, `org.eclipse.xtext.ui`, `org.eclipse.debug.ui` (Э10, 18.09.2026);
+таблица значений — `reference.md`, раздел 8.
+
 ## CLI `1cedtcli.exe`
 
 **[Ф]** `1cedtcli.exe` — **обёртка**: пишет `%TEMP%\1cedt.ini` и Gogo-скрипт
@@ -219,11 +258,13 @@ Antigravity — `%LOCALAPPDATA%\Programs\Antigravity IDE\bin\antigravity-ide.cmd
   `edtcli.timeoutHardExit` (единицы, умолчания).
 - Раскладка `1cedtstart\installations\`; назначение `-DnativeFormBufferedLayoutRender`.
 - Соответствие имён кодов (`GENERAL_ERROR`, …) числам; схемы URI в `.location`, кроме `file:`.
+- Правка prefs при запущенной EDT, если пользователь одновременно меняет цвета в самой EDT.
 
 ## Где это в коде OneCStarter
 
 `domain/edt.py` (модель, `build_edt_command`, `pick_jvm`, `split/join_vm_args`),
 `domain/edt_cli.py` (`build_cli_command`, `wrap_console_utf8`, `quote_cli_arg`,
-`cli_*_args`, `parse_project_location`), `platform_1c/edt_discovery.py`,
-`platform_1c/edtstart_registry.py`, `platform_1c/window_activate.py`,
-`services/edt.py`, `services/edt_cli.py` (`workspace_entries`).
+`cli_*_args`, `parse_project_location`), `domain/edt_scheme.py` (модель 22 ключей,
+`render_prefs`, парсеры тем), `platform_1c/edt_discovery.py`, `platform_1c/edtstart_registry.py`,
+`platform_1c/window_activate.py`, `services/edt.py`, `services/edt_cli.py`
+(`workspace_entries`), `services/edt_scheme.py` (запись в рабочую область — задача 6 плана v3.2).

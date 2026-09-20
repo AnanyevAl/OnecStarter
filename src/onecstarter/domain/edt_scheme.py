@@ -263,8 +263,9 @@ EDT_DEFAULTS: dict[str, RGB] = {
 # сохраняются на месте. Кодировка — забота вызывающего (latin-1).
 
 PREFS_VERSION_LINE = "eclipse.preferences.version=1"
-# Перевод строки НОВОГО файла; существующий сохраняет свой. [?] до Э8: все пять файлов
-# заказчика — CRLF ([Ф]); Eclipse на Windows пишет `BufferedWriter.newLine()` ([Д]).
+# Перевод строки НОВОГО файла; существующий сохраняет свой. [Ф] 20.09.2026 Э9: EDT переписала
+# `org.eclipse.ui.editors.prefs` при смене темы байт в байт с нашим — CRLF, по  # noqa: RUF003
+# алфавиту, чужой ключ `onecstarter.canary` сохранён.
 NEW_PREFS_NEWLINE = "\r\n"
 _LINE_BREAK = re.compile(r"(\r\n|\r|\n)")
 _ESCAPES = {"t": "\t", "n": "\n", "r": "\r", "f": "\f"}
@@ -443,10 +444,13 @@ class ThemeChoice(Enum):
 
 
 THEME_KEY = "themeid"
-# [Ф] 16.09.2026: тёмная — `org.eclipse.e4.ui.css.theme.e4_dark` (тёмные рабочие области
-# заказчика). Светлая — после Э9; до него отсутствует: комбо «Тема окна» строится только по
-# подтверждённым вариантам. Читает ли EDT ключ при старте — Э9; опровергнет — словарь пуст.
-THEME_IDS: dict[ThemeChoice, str] = {ThemeChoice.DARK: "org.eclipse.e4.ui.css.theme.e4_dark"}
+# Тёмная — [Ф] 16.09.2026 (тёмные рабочие области заказчика) и [Ф] 20.09.2026 Э9 (окно ушло
+# в тёмную тему по нашему файлу — ключ читается при старте). Светлая —
+# [Ф] 20.09.2026 Э9 (записана самой EDT после переключения на Light в Preferences).
+THEME_IDS: dict[ThemeChoice, str] = {
+    ThemeChoice.DARK: "org.eclipse.e4.ui.css.theme.e4_dark",
+    ThemeChoice.LIGHT: "org.eclipse.e4.ui.css.theme.e4_default",
+}
 
 
 def theme_prefs_update(choice: ThemeChoice) -> dict[str, str] | None:
