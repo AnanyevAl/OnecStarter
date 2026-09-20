@@ -538,6 +538,26 @@ def test_color_scheme_dialog_sees_running_workspace_as_busy(  # type: ignore[no-
     assert captured[0].hint_label().text() == "Каталог схем не задан — Настройки → EDT"
 
 
+def test_color_scheme_dialog_sees_cli_busy_workspace_as_busy(  # type: ignore[no-untyped-def]
+    harness: Harness, qtbot, monkeypatch
+) -> None:
+    p = _add(harness, "a")
+    view = harness.view()
+    qtbot.addWidget(view)
+    harness.workspace.mark_cli_busy(p.id)
+    captured: list[SchemeDialog] = []
+
+    def run_dialog(dialog: QDialog) -> bool:
+        assert isinstance(dialog, SchemeDialog)
+        captured.append(dialog)
+        return False
+
+    monkeypatch.setattr(view, "_run_dialog", run_dialog)
+    view.color_scheme(p.id)
+    assert captured[0].apply_button().isEnabled() is False
+    assert captured[0].apply_button().toolTip() == "Закройте EDT: рабочая область занята"
+
+
 def test_editor_enabled_when_found_and_opens_folder(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
     harness.editor = EditorResolution(Path(r"C:\code\code.cmd"), "PATH", "")
     p = _add(harness, "a", project_dir=r"D:\edt\a\proj")

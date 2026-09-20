@@ -3978,7 +3978,32 @@ def test_color_scheme_dialog_sees_running_workspace_as_busy(harness: Harness, qt
     view.color_scheme(p.id)
     assert captured[0].apply_button().isEnabled() is False
     assert captured[0].hint_label().text() == "Каталог схем не задан — Настройки → EDT"
+
+
+def test_color_scheme_dialog_sees_cli_busy_workspace_as_busy(  # type: ignore[no-untyped-def]
+    harness: Harness, qtbot, monkeypatch
+) -> None:
+    """Вторая ветка `busy()` — команда CLI на записи (ревью задачи 10: без теста
+    упрощение до одного `running_pid` прошло бы зелёным)."""
+    p = _add(harness, "a")
+    view = harness.view()
+    qtbot.addWidget(view)
+    harness.workspace.mark_cli_busy(p.id)
+    captured: list[SchemeDialog] = []
+
+    def run_dialog(dialog: QDialog) -> bool:
+        assert isinstance(dialog, SchemeDialog)
+        captured.append(dialog)
+        return False
+
+    monkeypatch.setattr(view, "_run_dialog", run_dialog)
+    view.color_scheme(p.id)
+    assert captured[0].apply_button().isEnabled() is False
+    assert captured[0].apply_button().toolTip() == "Закройте EDT: рабочая область занята"
 ```
+
+Лямбда `lambda dialog: captured.append(dialog) or False` не проходит mypy strict
+(`func-returns-value`) — в файле её заменяет именованная функция, как в тесте выше.
 
 `QDialog` уже импортирован в тесте? Если нет — добавить в импорт из `PySide6.QtWidgets`.
 
