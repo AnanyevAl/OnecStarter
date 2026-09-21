@@ -328,7 +328,11 @@ class SchemeDialog(QDialog):
             title = QTableWidgetItem(key.title)
             title.setFlags(fixed)
             swatch = QTableWidgetItem("")
-            swatch.setFlags(fixed)
+            # Не ItemIsSelectable (smoke заказчика 21.09.2026): фон  # noqa: RUF003
+            # QTableView::item:selected в theme.py иначе скрывает сам цвет образца,
+            # пока ячейка текущая. Клик (cellClicked) срабатывает и без
+            # ItemIsSelectable у enabled-ячейки.  # noqa: RUF003
+            swatch.setFlags(Qt.ItemFlag.ItemIsEnabled)
             swatch.setBackground(QBrush(QColor(rgb[0], rgb[1], rgb[2])))
             self._table.setItem(row, 0, title)
             self._table.setItem(row, 1, swatch)

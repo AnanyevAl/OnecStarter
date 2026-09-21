@@ -190,6 +190,18 @@ def test_edit_hex_updates_scheme_swatch_and_preview_invalid_reverts(  # type: ig
     assert dialog.scheme().colors["BSL_Keywords"] == (255, 0, 0)
 
 
+def test_swatch_cell_is_not_selectable(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    """Smoke заказчика 21.09.2026: `QTableView::item:selected` теперь красит фон —
+
+    у образца цвета (колонка 1) это скрыло бы сам цвет, пока ячейка текущая.
+    `cellClicked` по-прежнему срабатывает у enabled-ячейки без ItemIsSelectable.
+    """  # noqa: RUF002
+    dialog = harness.dialog()
+    qtbot.addWidget(dialog)
+    swatch = _cell(dialog, 0, 1)
+    assert swatch.flags() & Qt.ItemFlag.ItemIsSelectable == Qt.ItemFlag(0)
+
+
 def test_swatch_click_picks_color(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
     asked: list[RGB] = []
 

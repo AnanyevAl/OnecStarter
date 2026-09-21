@@ -135,6 +135,16 @@ QTreeView::item {{ padding: 4px; }}
    при выделении временно теряют красный — это плата за читаемость,
    а не дефект: сам факт «строка выделена» и так виден по фону. */
 QTreeView::item:selected {{ background: {palette.selection}; color: {palette.text}; }}
+/* Списки и таблицы (v3.2, ручной smoke 21.09.2026): без правила item view красится ролью
+   Base системной палитры — в тёмном режиме Windows тёмный фон под тёмным текстом светлой
+   темы. Селекторы по типу представлений (как QTreeView выше): QScrollBar под них не
+   попадает. Явный color у выделения — по той же причине, что у QTreeView::item:selected. */
+QListView, QTableView {{ background: {palette.background}; border: 1px solid {palette.border}; }}
+QListView::item:selected, QTableView::item:selected {{
+    background: {palette.selection}; color: {palette.text};
+}}
+QTableView {{ gridline-color: {palette.border}; }}
+QTableCornerButton::section {{ background: {palette.surface}; border: none; }}
 QHeaderView::section {{
     background: {palette.surface}; color: {palette.text_dim};
     border: none; padding: 4px 8px;
