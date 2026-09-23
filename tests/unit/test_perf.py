@@ -113,3 +113,21 @@ def test_enabled_reflects_setup(tmp_path: Path) -> None:
     assert perf.enabled() is False
     perf.setup({"APPDATA": str(tmp_path), perf.ENV_NAME: "1"})
     assert perf.enabled() is True
+
+
+def test_repeated_setup_does_not_duplicate_log_lines(tmp_path: Path) -> None:
+    # Повторный setup — не гипотетика: в __main__ он может позваться дважды
+    # при повторном входе в main (тесты, будущие сценарии перезапуска).
+    # Второй RotatingFileHandler на тот же файл задвоил бы каждую строку
+    # замера, и любой подсчёт по логу стал бы неверным вдвое.
+    env = {"APPDATA": str(tmp_path), perf.ENV_NAME: "1"}
+    first = perf.setup(env)
+    second = perf.setup(env)
+    assert first == second
+    assert first is not None
+
+    with perf.measure("test-stage", n=1):
+        pass
+
+    lines = [line for line in _read(first).splitlines() if line.strip()]
+    assert len(lines) == 1
