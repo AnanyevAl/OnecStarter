@@ -1,3 +1,4 @@
+import logging
 import sys
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
@@ -19,6 +20,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QDragMoveEvent, QDropEvent, QKeyEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication, QDialog, QTreeView, QWidget
 
+from onecstarter import perf
 from onecstarter.config.shell_link import build_shell_link, safe_file_name, shortcut_command
 from onecstarter.domain.connect import ConnectKind
 from onecstarter.domain.launch import LaunchCommand, LaunchTarget
@@ -4572,3 +4574,42 @@ def test_search_hint_and_clear_button(qtbot, workspace_factory):
     view.search().setText("x")
     view.search().clear_action().trigger()
     assert view.search().text() == ""
+
+
+# -- Task 4 (v3.2.1): замер пересборки дерева баз ---------------------------
+
+
+def test_rebuild_is_measured_with_row_count(
+    qtbot: Any, workspace_factory: Any, tmp_path: Path
+) -> None:
+    view, _calls, _errors, _opened = _view(qtbot, workspace_factory)
+    path = perf.setup({"APPDATA": str(tmp_path), perf.ENV_NAME: "1"})
+    assert path is not None
+    try:
+        view.rebuild()
+        for handler in logging.getLogger("onecstarter.perf").handlers:
+            handler.flush()
+        lines = [
+            line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+        ]
+    finally:
+        perf.reset_for_tests()
+    assert len(lines) == 1
+    # `perf.measure` дописывает своё ": %d мс" к переданному stage (задача 2),
+    # а stage сам оканчивается на «rebuild» без двоеточия — в строке лога  # noqa: RUF003
+    # два двоеточия подряд: "раздел «Базы»: rebuild: N мс". Бриф задачи 4
+    # ожидал одно; здесь — фактическое поведение perf.py, без правки.
+    assert "раздел «Базы»: rebuild:" in lines[0]
+    assert " мс, строк=" in lines[0]
+
+
+def test_rebuild_writes_nothing_when_perf_is_off(
+    qtbot: Any, workspace_factory: Any, tmp_path: Path
+) -> None:
+    view, _calls, _errors, _opened = _view(qtbot, workspace_factory)
+    perf.setup({"APPDATA": str(tmp_path)})
+    try:
+        view.rebuild()
+    finally:
+        perf.reset_for_tests()
+    assert not (tmp_path / "OneCStarter" / "logs" / "perf.log").exists()

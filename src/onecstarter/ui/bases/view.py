@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from onecstarter import perf
 from onecstarter.config.atomic import atomic_write
 from onecstarter.config.shell_link import (
     LinkNameRejectedError,
@@ -560,6 +561,16 @@ class BasesView(QWidget):
     # -- перестройка --------------------------------------------------------
 
     def rebuild(self) -> None:
+        """Пересобрать дерево, замерив пересборку при включённом perf-режиме.
+
+        Тело живёт в `_rebuild_now` отдельным методом, а не внутри `with`:
+        обёртка вокруг восьмидесяти строк существующего кода потребовала бы
+        переотступить их целиком — правка, где легко потерять строку молча.
+        """  # noqa: RUF002
+        with perf.measure("раздел «Базы»: rebuild") as counters:
+            counters["строк"] = self._rebuild_now()
+
+    def _rebuild_now(self) -> int:
         """Пересобрать модель и вернуть дереву прежнюю развёрнутость и строку.
 
         Слепок развёрнутости снимается только с нефильтрованного дерева:
@@ -651,6 +662,7 @@ class BasesView(QWidget):
         if selection is not None:
             selection.currentChanged.connect(lambda *_: self._sync_panel())
         self._sync_panel()
+        return len(self._rows)
 
     def refresh_all(self) -> None:
         """`F5`: перечитать файл, пересобрать дерево, попросить новую пробу.
