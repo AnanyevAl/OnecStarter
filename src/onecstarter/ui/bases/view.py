@@ -567,7 +567,7 @@ class BasesView(QWidget):
         обёртка вокруг восьмидесяти строк существующего кода потребовала бы
         переотступить их целиком — правка, где легко потерять строку молча.
         """  # noqa: RUF002
-        with perf.measure("раздел «Базы»: rebuild") as counters:
+        with perf.measure("пересборка списка баз") as counters:
             counters["строк"] = self._rebuild_now()
 
     def _rebuild_now(self) -> int:
