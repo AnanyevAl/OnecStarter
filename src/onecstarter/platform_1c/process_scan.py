@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-import psutil
+import psutil as psutil  # реэкспорт: process_scan.psutil в тестах
 
 __all__ = [
     "NullScanner",
@@ -47,12 +47,26 @@ class ProcessScanner(Protocol):
 
 
 class PsutilScanner:
-    """Настоящий снимок процессов. Единственное место в проекте с `psutil`."""  # noqa: RUF002
+    """Настоящий снимок процессов. Единственное место в проекте с `psutil`.
+
+    Имя берётся у всех процессов, `exe`/`cmdline` — только у совпавших.
+    Порядок не косметический: имя отдаёт один системный вызов на весь
+    список, а командная строка требует открыть процесс и прочитать его
+    адресное пространство. Прежняя редакция запрашивала оба поля у всех
+    сразу через `attrs` и платила за шестьсот процессов ради семи —
+    замер 22.09.2026 на 651 процессе: 81–128 мс против 4,7–5,7 мс при
+    том же результате (спека 3.2.1, §4).
+    """  # noqa: RUF002
+
+    def __init__(self, label: str = "") -> None:
+        # Метка попадает в perf-строку (задача 3) и отличает скан серверов
+        # от скана EDT: оба монитора держат свой экземпляр сканера.  # noqa: RUF003
+        # На результат не влияет.  # noqa: RUF003
+        self._label = label
 
     def snapshot(self, names: frozenset[str]) -> list[ProcessInfo]:
         result: list[ProcessInfo] = []
-        processes = psutil.process_iter(attrs=["pid", "name", "cmdline", "exe"])
-        for process in processes:
+        for process in psutil.process_iter(attrs=["pid", "name"]):
             try:
                 info = process.info
             except (psutil.AccessDenied, psutil.NoSuchProcess):
@@ -60,14 +74,44 @@ class PsutilScanner:
             name = info.get("name")
             if name is None or name.casefold() not in names:
                 continue
-            cmdline = info.get("cmdline")
-            argv = tuple(cmdline) if cmdline else None
-            exe = info.get("exe")
-            executable = Path(exe) if exe else None
+            details = _details_of(process)
+            if details is None:
+                # Процесс умер между чтением имени и чтением деталей.
+                # Прежняя редакция теряла его тем же способом (`continue`  # noqa: RUF003
+                # на NoSuchProcess), и это правильное поведение: отдать
+                # запись с пустыми полями значило бы выдумать факт.  # noqa: RUF003
+                continue
+            executable, argv = details
             result.append(
                 ProcessInfo(pid=info["pid"], name=name, executable=executable, argv=argv)
             )
         return result
+
+
+def _details_of(
+    process: psutil.Process,
+) -> tuple[Path | None, tuple[str, ...] | None] | None:
+    """`exe` и `cmdline` совпавшего процесса. `None` — процесса уже нет.
+
+    Поля читаются ПООТДЕЛЬНОСТИ, и `AccessDenied` на одном не отменяет
+    другое: ровно так вёл себя `Process.as_dict` в прежней редакции —
+    он переводил каждое недоступное поле в `None` сам. Общий `try`
+    вокруг обоих чтений молча потерял бы доступный `argv` у процесса
+    с недоступным `exe` ([Ф] В1: чужой процесс или служба SYSTEM).
+    """  # noqa: RUF002
+    try:
+        exe = process.exe()
+    except psutil.NoSuchProcess:
+        return None
+    except psutil.AccessDenied:
+        exe = None
+    try:
+        cmdline = process.cmdline()
+    except psutil.NoSuchProcess:
+        return None
+    except psutil.AccessDenied:
+        cmdline = None
+    return (Path(exe) if exe else None, tuple(cmdline) if cmdline else None)
 
 
 class NullScanner:
