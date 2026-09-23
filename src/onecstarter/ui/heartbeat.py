@@ -33,7 +33,6 @@ class Heartbeat(QObject):
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         super().__init__(parent)
-        self._interval_ms = interval_ms
         self._threshold_ms = threshold_ms
         # Часы инъекцией: тест не обязан ждать настоящие 150 мс, чтобы
         # проверить порог, — тот же приём, что `now=` у Workspace.  # noqa: RUF003
