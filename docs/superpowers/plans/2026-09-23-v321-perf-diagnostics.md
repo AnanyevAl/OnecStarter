@@ -390,7 +390,49 @@ def test_enabled_reflects_setup(tmp_path: Path) -> None:
     assert perf.enabled() is False
     perf.setup({"APPDATA": str(tmp_path), perf.ENV_NAME: "1"})
     assert perf.enabled() is True
+
+
+def test_repeated_setup_does_not_duplicate_log_lines(tmp_path: Path) -> None:
+    # Повторный setup — не гипотетика: в __main__ он может позваться дважды
+    # при повторном входе в main (тесты, будущие сценарии перезапуска).
+    # Второй RotatingFileHandler на тот же файл задвоил бы каждую строку
+    # замера, и любой подсчёт по логу стал бы неверным вдвое.
+    env = {"APPDATA": str(tmp_path), perf.ENV_NAME: "1"}
+    first = perf.setup(env)
+    second = perf.setup(env)
+    assert first == second
+    assert first is not None
+
+    with perf.measure("test-stage", n=1):
+        pass
+
+    lines = [line for line in _read(first).splitlines() if line.strip()]
+    assert len(lines) == 1
+
+
+def test_failed_repeated_setup_keeps_the_working_handler(tmp_path: Path) -> None:
+    # Отказ поверх УЖЕ РАБОТАЮЩЕГО setup — не то же самое, что отказ с нуля  # noqa: RUF003
+    # (test_setup_survives_unwritable_directory): здесь есть что терять.
+    # Если второй setup сносит рабочий обработчик раньше, чем убедится,
+    # что новый создался, — замеры первого вызова молча пропадают:
+    # _enabled остаётся True, а писать некуда (propagate=False, до  # noqa: RUF003
+    # lastResort уровень INFO не дотягивает).
+    first = perf.setup({"APPDATA": str(tmp_path), perf.ENV_NAME: "1"})
+    assert first is not None
+
+    blocker = tmp_path / "заблокированный" / "APPDATA"
+    blocker.parent.mkdir(parents=True)
+    blocker.write_text("файл на месте каталога", encoding="utf-8")
+    second = perf.setup({"APPDATA": str(blocker), perf.ENV_NAME: "1"})
+    assert second is None
+
+    with perf.measure("после неудачного повторного setup"):
+        pass
+
+    assert "после неудачного повторного setup" in _read(first)
 ```
+
+Порядок в файле: `_read` объявляется до тестов, которые ею пользуются.
 
 - [ ] **Step 2: Запустить, убедиться что падают**
 
@@ -415,8 +457,12 @@ Expected: все FAIL с `ModuleNotFoundError: No module named 'onecstarter.perf
 
 В строки идут только метка операции, миллисекунды и ЦЕЛЫЕ счётчики:
 лог прикладывают к issue (инвариант 5). Сигнатура `**counters: int`
-делает передачу пути или имени базы ошибкой типов, а не вопросом
-дисциплины исполнителя.
+делает передачу пути или имени базы вместо счётчика ошибкой типов,
+а не вопросом дисциплины исполнителя — но только для счётчиков: `stage`
+типизирован как `str`, и mypy пропустит в него любую строку, включая
+путь или имя базы. За тем, что `stage` — литерал, а не собранная
+из данных строка, следит вызывающий код; подробнее — в докстринге
+`measure`.
 """  # noqa: RUF002
 
 import logging
@@ -456,6 +502,15 @@ def setup(env: Mapping[str, str]) -> Path | None:
 
     Отказ не роняет программу — тот же принцип, что у
     `diagnostics.setup_logging`: приложение важнее лога.
+
+    Идемпотентна: повторный вызов не добавляет второй обработчик поверх
+    старого (иначе `measure` задваивал бы каждую строку и держал открытым
+    лишний файловый дескриптор) — но снимает прежний ТОЛЬКО после того,
+    как новый успешно создан. Отказ создания (недоступный каталог) обязан
+    заставать прежнее рабочее состояние нетронутым: обратный порядок
+    однажды уже приводил к тому, что второй неудачный `setup` сносил
+    рабочий обработчик первого, `_enabled` оставался `True`, а строки
+    `measure` после этого молча терялись — писать было некуда.
     """  # noqa: RUF002
     global _enabled
     if not is_enabled(env):
@@ -470,8 +525,13 @@ def setup(env: Mapping[str, str]) -> Path | None:
             encoding="utf-8",
         )
     except OSError:
+        # Прежнее состояние (обработчики, _enabled) не тронуто: если до
+        # этого вызова режим уже работал, он продолжает работать.
         return None
     handler.setFormatter(logging.Formatter(_FORMAT))
+    for old in list(_log.handlers):
+        _log.removeHandler(old)
+        old.close()
     _log.setLevel(logging.INFO)
     _log.addHandler(handler)
     # Свои строки не уходят в корневой логгер и, значит, в onecstarter.log:
@@ -491,6 +551,12 @@ def measure(stage: str, **counters: int) -> Iterator[dict[str, int]]:
     когда блок бросил исключение: замер — диагностика, и потерять его
     на отказе значило бы потерять ровно тот случай, ради которого
     режим и включён.
+
+    `stage` обязан быть литералом ровно с текстом операции, а не строкой,
+    собранной из данных (путь, имя базы, строка соединения) — mypy это
+    не проверит: типы гарантируют целочисленность только `**counters`,
+    `stage: str` пропустит что угодно. Ответственность за это несёт
+    вызывающий код (инвариант 5).
     """  # noqa: RUF002
     if not _enabled:
         yield dict(counters)
