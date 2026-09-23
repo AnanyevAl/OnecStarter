@@ -23,6 +23,7 @@ import sys
 from collections.abc import Sequence
 
 from onecstarter import diagnostics as diagnostics  # реэкспорт: entry.diagnostics в тестах
+from onecstarter import perf as perf  # реэкспорт: entry.perf в тестах
 
 IB_NAME_OPTION = "--ib-name"
 SMOKE_OPTION = "--smoke"
@@ -90,6 +91,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     log_path = diagnostics.setup_logging(os.environ)
     diagnostics.enable_faulthandler(os.environ)
+    perf.setup(os.environ)
     try:
         return _dispatch(arguments)
     except Exception:
