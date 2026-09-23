@@ -57,17 +57,18 @@ def setup(env: Mapping[str, str]) -> Path | None:
     Отказ не роняет программу — тот же принцип, что у
     `diagnostics.setup_logging`: приложение важнее лога.
 
-    Идемпотентна: повторный вызов сперва снимает прежние обработчики,
-    а не добавляет новый поверх старого. Без этого второй `setup` на
-    включённом режиме задваивал бы каждую строку `measure` и оставлял
-    прежний файловый дескриптор висеть открытым.
+    Идемпотентна: повторный вызов не добавляет второй обработчик поверх
+    старого (иначе `measure` задваивал бы каждую строку и держал открытым
+    лишний файловый дескриптор) — но снимает прежний ТОЛЬКО после того,
+    как новый успешно создан. Отказ создания (недоступный каталог) обязан
+    заставать прежнее рабочее состояние нетронутым: обратный порядок
+    однажды уже приводил к тому, что второй неудачный `setup` сносил
+    рабочий обработчик первого, `_enabled` оставался `True`, а строки
+    `measure` после этого молча терялись — писать было некуда.
     """  # noqa: RUF002
     global _enabled
     if not is_enabled(env):
         return None
-    for handler in list(_log.handlers):
-        _log.removeHandler(handler)
-        handler.close()
     directory = Path(env.get("APPDATA", ".")) / "OneCStarter" / "logs"
     try:
         directory.mkdir(parents=True, exist_ok=True)
@@ -78,8 +79,13 @@ def setup(env: Mapping[str, str]) -> Path | None:
             encoding="utf-8",
         )
     except OSError:
+        # Прежнее состояние (обработчики, _enabled) не тронуто: если до
+        # этого вызова режим уже работал, он продолжает работать.
         return None
     handler.setFormatter(logging.Formatter(_FORMAT))
+    for old in list(_log.handlers):
+        _log.removeHandler(old)
+        old.close()
     _log.setLevel(logging.INFO)
     _log.addHandler(handler)
     # Свои строки не уходят в корневой логгер и, значит, в onecstarter.log:

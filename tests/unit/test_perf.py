@@ -64,6 +64,28 @@ def test_setup_survives_unwritable_directory(tmp_path: Path) -> None:
     assert perf.setup({"APPDATA": str(blocker), perf.ENV_NAME: "1"}) is None
 
 
+def test_failed_repeated_setup_keeps_the_working_handler(tmp_path: Path) -> None:
+    # Отказ поверх УЖЕ РАБОТАЮЩЕГО setup — не то же самое, что отказ с нуля  # noqa: RUF003
+    # (test_setup_survives_unwritable_directory): здесь есть что терять.
+    # Если второй setup сносит рабочий обработчик раньше, чем убедится,
+    # что новый создался, — замеры первого вызова молча пропадают:
+    # _enabled остаётся True, а писать некуда (propagate=False, до  # noqa: RUF003
+    # lastResort уровень INFO не дотягивает).
+    first = perf.setup({"APPDATA": str(tmp_path), perf.ENV_NAME: "1"})
+    assert first is not None
+
+    blocker = tmp_path / "заблокированный" / "APPDATA"
+    blocker.parent.mkdir(parents=True)
+    blocker.write_text("файл на месте каталога", encoding="utf-8")
+    second = perf.setup({"APPDATA": str(blocker), perf.ENV_NAME: "1"})
+    assert second is None
+
+    with perf.measure("после неудачного повторного setup"):
+        pass
+
+    assert "после неудачного повторного setup" in _read(first)
+
+
 def _read(path: Path) -> str:
     for handler in logging.getLogger("onecstarter.perf").handlers:
         handler.flush()
