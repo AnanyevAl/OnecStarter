@@ -71,6 +71,7 @@ from onecstarter.ui.dialogs.buttons import ask_confirmation
 from onecstarter.ui.edt.cli_watch import CliWatcher
 from onecstarter.ui.edt.monitor import EdtMonitor
 from onecstarter.ui.edt.view import EdtView
+from onecstarter.ui.heartbeat import maybe_start_heartbeat
 from onecstarter.ui.hotkey import GlobalHotkey
 from onecstarter.ui.servers.card_state import CardState, card_state
 from onecstarter.ui.servers.dialog import ConsoleDialog
@@ -1382,6 +1383,9 @@ def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
         window.show()
         _log.info("окно показано")
     tasks.start()
+    # Время жизни — окно, как у мониторов: ссылка нужна, иначе объект  # noqa: RUF003
+    # соберёт сборщик мусора и тики прекратятся молча.
+    maybe_start_heartbeat(os.environ, window)
     # Проба доступности — там же, где остальной фон, и по той же причине:
     # обращения к сетевым шарам не должны начаться раньше, чем окно решило,
     # показываться ему или остаться скрытым в трее.
