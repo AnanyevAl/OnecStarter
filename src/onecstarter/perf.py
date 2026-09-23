@@ -69,6 +69,17 @@ def setup(env: Mapping[str, str]) -> Path | None:
     global _enabled
     if not is_enabled(env):
         return None
+    # Находка финального ревью ветки: heartbeat (`ui/heartbeat.py`) и события
+    # дерева (`ui/bases/view.py`, `_BasesTree.event`) смотрят на `is_enabled(env)`
+    # напрямую, в обход `_enabled`/`measure()`, и пишут в этот логгер сами.
+    # Если ниже не выйдет создать файл, `setup()` вернёт `None`, но переменная
+    # окружения при этом остаётся включённой — и без `propagate = False`
+    # ИМЕННО ЗДЕСЬ, до попытки создать файл, их строки поднялись бы к корневому
+    # логгеру и попали в `onecstarter.log`, стирая ротацией (512 КБ) ровно ту
+    # историю стартов, ради которой файлы и разделены. Выставляется безусловно,
+    # как только режим признан включённым по переменной — независимо от того,
+    # получится ли завести файл.
+    _log.propagate = False
     directory = Path(env.get("APPDATA", ".")) / "OneCStarter" / "logs"
     try:
         directory.mkdir(parents=True, exist_ok=True)
@@ -81,6 +92,9 @@ def setup(env: Mapping[str, str]) -> Path | None:
     except OSError:
         # Прежнее состояние (обработчики, _enabled) не тронуто: если до
         # этого вызова режим уже работал, он продолжает работать.
+        # `propagate` уже снят выше и назад не возвращается: `is_enabled(env)`
+        # здесь истинно, а значит heartbeat и события дерева всё равно будут  # noqa: RUF003
+        # писать в этот логгер напрямую, и корень им закрыт правильно.
         return None
     handler.setFormatter(logging.Formatter(_FORMAT))
     for old in list(_log.handlers):
@@ -88,10 +102,6 @@ def setup(env: Mapping[str, str]) -> Path | None:
         old.close()
     _log.setLevel(logging.INFO)
     _log.addHandler(handler)
-    # Свои строки не уходят в корневой логгер и, значит, в onecstarter.log:
-    # иначе включённый режим залил бы основной лог и стёр его историю  # noqa: RUF003
-    # ротацией — ровно то, ради чего файл и разделён.
-    _log.propagate = False
     _enabled = True
     return directory / LOG_NAME
 
@@ -126,9 +136,21 @@ def measure(stage: str, **counters: int) -> Iterator[dict[str, int]]:
 
 
 def reset_for_tests() -> None:
-    """Снять обработчики и выключить режим. Только для тестов."""
+    """Вернуть логгер в исходное состояние целиком. Только для тестов.
+
+    До этой правки (находка финального ревью ветки) функция не возвращала
+    ни `propagate`, ни уровень: `setup()` меняет оба при первом успешном
+    вызове, а обратно их не возвращал никто. Из-за этого `propagate`
+    навсегда оставался `False` после первого же `setup()` в сессии
+    тестов — и тест на саму находку (перенос `propagate = False` в начало
+    `setup()`, до попытки создать файл) не смог бы отличить починку от
+    случайного совпадения: `False` было бы и без неё, по наследству
+    от более раннего теста.
+    """  # noqa: RUF002
     global _enabled
     for handler in list(_log.handlers):
         _log.removeHandler(handler)
         handler.close()
+    _log.propagate = True
+    _log.setLevel(logging.NOTSET)
     _enabled = False

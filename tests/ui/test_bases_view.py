@@ -4686,12 +4686,20 @@ def test_fast_tree_event_is_silent(
 
 
 def test_tree_events_are_not_measured_when_perf_is_off(
-    qtbot: Any, workspace_factory: Any, tmp_path: Path
+    qtbot: Any, workspace_factory: Any, tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
+    # Находка финального ревью ветки: файла `perf.log` при выключенном режиме
+    # нет в любом случае — этой одной проверки было мало, тест зеленел бы и
+    # на поломанной реализации, которая пишет в логгер `onecstarter.perf`
+    # напрямую (тот же класс дефекта, что и утечка в корневой логгер при
+    # неудачном создании файла — perf.py, `setup`). Вторая проверка —
+    # что в корень ничего не ушло — закрывает и этот путь.
     view, _calls, _errors, _opened = _view(qtbot, workspace_factory)
     perf.setup({"APPDATA": str(tmp_path)})
     try:
-        view.tree().event(QEvent(QEvent.Type.User))
+        with caplog.at_level(logging.INFO):
+            view.tree().event(QEvent(QEvent.Type.User))
     finally:
         perf.reset_for_tests()
     assert not (tmp_path / "OneCStarter" / "logs" / "perf.log").exists()
+    assert not any(record.name == "onecstarter.perf" for record in caplog.records)

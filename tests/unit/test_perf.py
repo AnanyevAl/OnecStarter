@@ -153,3 +153,41 @@ def test_repeated_setup_does_not_duplicate_log_lines(tmp_path: Path) -> None:
 
     lines = [line for line in _read(first).splitlines() if line.strip()]
     assert len(lines) == 1
+
+
+def test_stray_log_line_does_not_leak_to_root_when_file_creation_fails(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Находка финального ревью ветки: два источника истины о включённости.
+
+    `measure()` смотрит на `_enabled` (выставляется только успешным `setup()`),
+    а `maybe_start_heartbeat` (`ui/heartbeat.py`) и `_BasesTree.__init__`
+    (`ui/bases/view.py`) смотрят на `is_enabled(env)` напрямую — просто на
+    переменную окружения — и пишут в логгер `onecstarter.perf` сами, в обход
+    `measure()`. Если переменная включена, а `setup()` не смог создать файл
+    (каталог занят обычным файлом, как в этом тесте), `_enabled` остаётся
+    `False`, но heartbeat и события дерева продолжают писать. До правки
+    `propagate` в этом сценарии не трогался вовсе (выставлялся только в конце
+    успешного `setup()`) — строка поднималась бы к корневому логгеру и
+    попадала в `onecstarter.log`, стирая его историю ротацией.
+
+    `propagate`/уровень логгера выставлены явно, а не унаследованы от
+    предыдущего теста: `reset_for_tests()` до этой же находки не возвращал
+    ни то ни другое, и любой более ранний успешный `setup()` в сессии навсегда
+    оставлял `propagate = False` — тест был бы зелёным по случайности порядка
+    запуска, а не благодаря проверяемой правке.
+    """  # noqa: RUF002
+    log = logging.getLogger("onecstarter.perf")
+    log.propagate = True
+    log.setLevel(logging.INFO)
+
+    blocker = tmp_path / "APPDATA"
+    blocker.write_text("файл на месте каталога", encoding="utf-8")
+    assert perf.setup({"APPDATA": str(blocker), perf.ENV_NAME: "1"}) is None
+
+    with caplog.at_level(logging.INFO):
+        # Тот же вызов, что делают Heartbeat._tick и _BasesTree.event —
+        # напрямую в логгер `onecstarter.perf`, а не через `perf.measure()`.  # noqa: RUF003
+        log.info("главный поток стоял 999 мс")
+
+    assert caplog.records == []

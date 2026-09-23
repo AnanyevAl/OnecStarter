@@ -139,6 +139,26 @@ def test_access_denied_on_one_field_keeps_the_other(
     assert found.argv == ("ragent", "-port", "1540")
 
 
+def test_access_denied_on_cmdline_keeps_the_exe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Зеркало test_access_denied_on_one_field_keeps_the_other: там недоступен
+    # exe, здесь — cmdline. Общий try вокруг обоих чтений потерял бы доступный
+    # exe у процесса с недоступным cmdline — та же ловушка, с другой стороны.  # noqa: RUF003
+    process = _FakeProcess(
+        8,
+        "ragent.exe",
+        exe=r"C:\1cv8\bin\ragent.exe",
+        cmdline_error=psutil.AccessDenied,
+    )
+    _with_processes(monkeypatch, [process])
+
+    found = PsutilScanner().snapshot(frozenset({"ragent.exe"}))[0]
+
+    assert found.executable == Path(r"C:\1cv8\bin\ragent.exe")
+    assert found.argv is None
+
+
 def test_process_that_died_between_name_and_details_is_skipped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
