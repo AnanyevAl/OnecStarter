@@ -7,6 +7,7 @@ import sys
 # строка здесь, иначе протечка Qt в него прошла бы этот тест зелёной.
 CORE = (
     "onecstarter.diagnostics",
+    "onecstarter.perf",
     "onecstarter.services",
     "onecstarter.services.workspace",
     "onecstarter.services.display",

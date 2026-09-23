@@ -6,15 +6,17 @@
 живут в services/display.py, здесь — только отображение и события.
 """  # noqa: RUF002
 
+import logging
 import os
 import sys
+import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import cast
 
-from PySide6.QtCore import QModelIndex, QPoint, QStandardPaths, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QModelIndex, QPoint, QStandardPaths, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QDragEnterEvent,
     QDragMoveEvent,
@@ -34,6 +36,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from onecstarter import perf
 from onecstarter.config.atomic import atomic_write
 from onecstarter.config.shell_link import (
     LinkNameRejectedError,
@@ -155,6 +158,12 @@ class DropTarget(Enum):
     AFTER = "after"
 
 
+# Порог «событие было долгим». Ниже него в логе окажется шум от обычной
+# перерисовки; выше — потеряется то, ради чего замер и заведён.
+_SLOW_EVENT_MS = 100
+_perf_log = logging.getLogger("onecstarter.perf")
+
+
 class _BasesTree(QTreeView):
     """Дерево раздела «Базы» с перехватом drop (задача 14, §3.3 плана 4b).
 
@@ -203,6 +212,50 @@ class _BasesTree(QTreeView):
     def __init__(self, view: "BasesView", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._view = view
+        # Флаг читается ОДИН РАЗ и хранится атрибутом: `event` — самый  # noqa: RUF003
+        # горячий метод в проекте (каждое движение мыши, каждый таймер),
+        # и вызов функции проверки на каждое событие там неуместен.
+        self._perf = perf.is_enabled(os.environ)
+        # Часы инъекцией — тем же приёмом, что у Heartbeat: тест не должен  # noqa: RUF003
+        # воспроизводить настоящую паузу, чтобы проверить порог.
+        self._clock = time.monotonic
+
+    def event(self, event: QEvent) -> bool:
+        """Событие дольше порога — в perf-лог, с именем типа.
+
+        Локальный фильтр на одном виджете, а не `installEventFilter`
+        на `QApplication`: глобальный вызывался бы на каждое событие мыши
+        и таймера во всём приложении тысячи раз в секунду и на медленной
+        машине сам стал бы частью измеряемого (спека 3.2.1, §6).
+
+        Имя типа события содержимого пользователя не несёт — тот же
+        порог допустимого, что у мест кадров в `_log_failure`.
+        """  # noqa: RUF002
+        if not self._perf:
+            return super().event(event)
+        started = self._clock()
+        handled = super().event(event)
+        # round(), не int(): усечение вниз на представлении float уже
+        # однажды дало 429 мс вместо фактических 430 (см. Heartbeat).
+        elapsed = round((self._clock() - started) * 1000)
+        if elapsed >= _SLOW_EVENT_MS:
+            # Находка финального ревью ветки: `super().event(event)` выше — это
+            # синхронный вызов, и у части типов события внутри него крутится  # noqa: RUF003
+            # собственный вложенный цикл событий Qt: контекстное меню
+            # (`menu.exec` в `_show_menu`) и модальные диалоги по `Insert`/
+            # `Delete` (`_add_infobase_at_current`/`_remove_current`). Пока
+            # пользователь держит меню открытым или заполняет диалог, замер
+            # идёт — в лог уйдёт строка вида «дерево баз: событие ContextMenu
+            # 12000 мс», формально верная, но по смыслу это простой
+            # пользователя, а не тормоз дерева. Код намеренно не исключает эти  # noqa: RUF003
+            # типы событий из замера: тогда пропала бы настоящая диагностика
+            # навигации по дереву клавишами (`KeyPress`), на которую заказчик
+            # и жалуется, — читать такие строки нужно с этой поправкой,  # noqa: RUF003
+            # а не убирать её код (docs/tasks.md, T-22).  # noqa: RUF003
+            _perf_log.info(
+                "дерево баз: событие %s %d мс", QEvent.Type(event.type()).name, elapsed
+            )
+        return handled
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
         """`Insert`/`Delete` — операции над списком, но только при фокусе в дереве.
@@ -560,6 +613,16 @@ class BasesView(QWidget):
     # -- перестройка --------------------------------------------------------
 
     def rebuild(self) -> None:
+        """Пересобрать дерево, замерив пересборку при включённом perf-режиме.
+
+        Тело живёт в `_rebuild_now` отдельным методом, а не внутри `with`:
+        обёртка вокруг восьмидесяти строк существующего кода потребовала бы
+        переотступить их целиком — правка, где легко потерять строку молча.
+        """  # noqa: RUF002
+        with perf.measure("пересборка списка баз") as counters:
+            counters["строк"] = self._rebuild_now()
+
+    def _rebuild_now(self) -> int:
         """Пересобрать модель и вернуть дереву прежнюю развёрнутость и строку.
 
         Слепок развёрнутости снимается только с нефильтрованного дерева:
@@ -651,6 +714,7 @@ class BasesView(QWidget):
         if selection is not None:
             selection.currentChanged.connect(lambda *_: self._sync_panel())
         self._sync_panel()
+        return len(self._rows)
 
     def refresh_all(self) -> None:
         """`F5`: перечитать файл, пересобрать дерево, попросить новую пробу.

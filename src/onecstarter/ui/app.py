@@ -71,6 +71,7 @@ from onecstarter.ui.dialogs.buttons import ask_confirmation
 from onecstarter.ui.edt.cli_watch import CliWatcher
 from onecstarter.ui.edt.monitor import EdtMonitor
 from onecstarter.ui.edt.view import EdtView
+from onecstarter.ui.heartbeat import maybe_start_heartbeat
 from onecstarter.ui.hotkey import GlobalHotkey
 from onecstarter.ui.servers.card_state import CardState, card_state
 from onecstarter.ui.servers.dialog import ConsoleDialog
@@ -1041,7 +1042,8 @@ def _build_main_window(
         cli_watcher.setParent(window)  # время жизни — окно, как у мониторов  # noqa: RUF003
 
     monitor = ServerMonitor(
-        process_scanner if process_scanner is not None else PsutilScanner(), parent=window
+        process_scanner if process_scanner is not None else PsutilScanner("servers"),
+        parent=window,
     )
 
     def on_scan(snapshot: ScanSnapshot) -> None:
@@ -1058,7 +1060,7 @@ def _build_main_window(
     # не для кого, а `main()`/`run_smoke` получают `None` пятым элементом.  # noqa: RUF003
     if edt_workspace is not None and edt_view is not None:
         edt_monitor = EdtMonitor(
-            process_scanner if process_scanner is not None else PsutilScanner(),
+            process_scanner if process_scanner is not None else PsutilScanner("edt"),
             edt_workspace.projects,
             edt_discover,
             parent=window,
@@ -1381,6 +1383,9 @@ def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
         window.show()
         _log.info("окно показано")
     tasks.start()
+    # Время жизни — окно, как у мониторов: ссылка нужна, иначе объект  # noqa: RUF003
+    # соберёт сборщик мусора и тики прекратятся молча.
+    maybe_start_heartbeat(os.environ, window)
     # Проба доступности — там же, где остальной фон, и по той же причине:
     # обращения к сетевым шарам не должны начаться раньше, чем окно решило,
     # показываться ему или остаться скрытым в трее.

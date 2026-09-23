@@ -23,6 +23,7 @@ import sys
 from collections.abc import Sequence
 
 from onecstarter import diagnostics as diagnostics  # реэкспорт: entry.diagnostics в тестах
+from onecstarter import perf as perf  # реэкспорт: entry.perf в тестах
 
 IB_NAME_OPTION = "--ib-name"
 SMOKE_OPTION = "--smoke"
@@ -90,7 +91,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     log_path = diagnostics.setup_logging(os.environ)
     diagnostics.enable_faulthandler(os.environ)
+    perf.setup(os.environ)
     try:
+        # Внутри try и локальным импортом намеренно: `ui/__init__.py` пуст,
+        # а `ui/about.py` Qt не тянет, но если в битой сборке упадёт и он —  # noqa: RUF003
+        # отказ поймает тот же обработчик, что ловит отказ импорта `ui`
+        # (спека T-04.6 §4.2). Версию на сервере заказчика уже пришлось
+        # определять косвенно, по тому, в каком запуске в логе впервые
+        # появились строки новой вехи (спека 3.2.1, §7).
+        from onecstarter.ui import about
+
+        logging.getLogger("onecstarter").info(
+            "версия %s, процесс %d-бит", about.app_version(), 64 if sys.maxsize > 2**32 else 32
+        )
         return _dispatch(arguments)
     except Exception:
         logging.getLogger("onecstarter").exception("необработанная ошибка старта")
