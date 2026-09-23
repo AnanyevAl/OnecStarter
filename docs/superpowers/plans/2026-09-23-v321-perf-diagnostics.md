@@ -818,7 +818,7 @@ git commit -m "feat(perf): длительность скана процессо�
 
 **Interfaces:**
 - Consumes: `perf.measure`, `perf.setup`, `perf.reset_for_tests` из задачи 2.
-- Produces: строка `раздел «Базы»: rebuild N мс, строк=M`.
+- Produces: строка `пересборка списка баз: N мс, строк=M`. Метка без внутреннего двоеточия намеренно: `measure` дописывает своё `": N мс"`, и метка вида `раздел «Базы»: rebuild` дала бы в логе два двоеточия подряд (находка ревью задачи 4).
 
 - [ ] **Step 1: Написать падающий тест**
 
@@ -841,7 +841,7 @@ def test_rebuild_is_measured_with_row_count(
     finally:
         perf.reset_for_tests()
     assert len(lines) == 1
-    assert "раздел «Базы»: rebuild " in lines[0]
+    assert "пересборка списка баз: " in lines[0]
     assert " мс, строк=" in lines[0]
 
 
@@ -892,7 +892,7 @@ Expected: FAIL — файл пуст, `len(lines) == 1` не выполняет�
         обёртка вокруг восьмидесяти строк существующего кода потребовала бы
         переотступить их целиком — правка, где легко потерять строку молча.
         """  # noqa: RUF002
-        with perf.measure("раздел «Базы»: rebuild") as counters:
+        with perf.measure("пересборка списка баз") as counters:
             counters["строк"] = self._rebuild_now()
 ```
 
