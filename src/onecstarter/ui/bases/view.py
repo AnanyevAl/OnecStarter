@@ -6,15 +6,17 @@
 живут в services/display.py, здесь — только отображение и события.
 """  # noqa: RUF002
 
+import logging
 import os
 import sys
+import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import cast
 
-from PySide6.QtCore import QModelIndex, QPoint, QStandardPaths, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QModelIndex, QPoint, QStandardPaths, Qt, QTimer, Signal
 from PySide6.QtGui import (
     QDragEnterEvent,
     QDragMoveEvent,
@@ -156,6 +158,12 @@ class DropTarget(Enum):
     AFTER = "after"
 
 
+# Порог «событие было долгим». Ниже него в логе окажется шум от обычной
+# перерисовки; выше — потеряется то, ради чего замер и заведён.
+_SLOW_EVENT_MS = 100
+_perf_log = logging.getLogger("onecstarter.perf")
+
+
 class _BasesTree(QTreeView):
     """Дерево раздела «Базы» с перехватом drop (задача 14, §3.3 плана 4b).
 
@@ -204,6 +212,37 @@ class _BasesTree(QTreeView):
     def __init__(self, view: "BasesView", parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._view = view
+        # Флаг читается ОДИН РАЗ и хранится атрибутом: `event` — самый  # noqa: RUF003
+        # горячий метод в проекте (каждое движение мыши, каждый таймер),
+        # и вызов функции проверки на каждое событие там неуместен.
+        self._perf = perf.is_enabled(os.environ)
+        # Часы инъекцией — тем же приёмом, что у Heartbeat: тест не должен  # noqa: RUF003
+        # воспроизводить настоящую паузу, чтобы проверить порог.
+        self._clock = time.monotonic
+
+    def event(self, event: QEvent) -> bool:
+        """Событие дольше порога — в perf-лог, с именем типа.
+
+        Локальный фильтр на одном виджете, а не `installEventFilter`
+        на `QApplication`: глобальный вызывался бы на каждое событие мыши
+        и таймера во всём приложении тысячи раз в секунду и на медленной
+        машине сам стал бы частью измеряемого (спека 3.2.1, §6).
+
+        Имя типа события содержимого пользователя не несёт — тот же
+        порог допустимого, что у мест кадров в `_log_failure`.
+        """  # noqa: RUF002
+        if not self._perf:
+            return super().event(event)
+        started = self._clock()
+        handled = super().event(event)
+        # round(), не int(): усечение вниз на представлении float уже
+        # однажды дало 429 мс вместо фактических 430 (см. Heartbeat).
+        elapsed = round((self._clock() - started) * 1000)
+        if elapsed >= _SLOW_EVENT_MS:
+            _perf_log.info(
+                "дерево баз: событие %s %d мс", QEvent.Type(event.type()).name, elapsed
+            )
+        return handled
 
     def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802
         """`Insert`/`Delete` — операции над списком, но только при фокусе в дереве.
