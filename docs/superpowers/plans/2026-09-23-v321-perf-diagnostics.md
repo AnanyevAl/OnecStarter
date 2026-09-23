@@ -922,6 +922,14 @@ git commit -m "feat(perf): замер пересборки дерева баз �
 - Create: `tests/ui/test_heartbeat.py`
 - Modify: `src/onecstarter/ui/app.py` (в `main`, рядом с `tasks.start()`)
 
+**Предупреждение о тестах (находка ревью задачи 5, 23.09.2026).** Теста
+`test_each_tick_measures_from_the_previous_one` НЕДОСТАТОЧНО: его первый тик
+сам превышает порог, и на нём мутация «обновлять `_last` только в ветке
+отчёта» ведёт себя неотличимо от правильного кода. Дыру закрывает
+`test_consecutive_short_ticks_stay_silent` — несколько коротких тиков подряд,
+ни один из которых не запаздывал. Без него весь набор оставался зелёным на
+реализации, которая врёт о простое в обычной работе.
+
 **Interfaces:**
 - Consumes: `perf.measure` не используется — строка пишется напрямую через `perf`; нужны `perf.enabled()` из задачи 2.
 - Produces:
@@ -1010,6 +1018,27 @@ def test_each_tick_measures_from_the_previous_one(tmp_path: Path) -> None:
     assert len(lines) == 1
 
 
+def test_consecutive_short_ticks_stay_silent(tmp_path: Path) -> None:
+    # Мутация «обновлять `_last` только в ветке отчёта» на этом тесте не
+    # проходит: если ни один тик сам не превысил порог, отметка никогда
+    # не обновляется, и разрыв копится от старта — 4x50 мс дают 200 мс
+    # «простоя», которого не было. Правильная реализация обновляет
+    # `_last` на каждом тике и не даёт разрыву накопиться.
+    path = perf.setup({"APPDATA": str(tmp_path), perf.ENV_NAME: "1"})
+    assert path is not None
+    clock = _Clock()
+    try:
+        beat = Heartbeat(interval_ms=50, threshold_ms=150, clock=clock)
+        beat.start()
+        for _ in range(4):
+            clock.now += 0.050
+            beat._tick()
+        lines = _lines(path)
+    finally:
+        perf.reset_for_tests()
+    assert lines == []
+
+
 def test_not_started_when_perf_is_off(tmp_path: Path) -> None:
     perf.setup({"APPDATA": str(tmp_path)})
     parent = QObject()
@@ -1076,7 +1105,6 @@ class Heartbeat(QObject):
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         super().__init__(parent)
-        self._interval_ms = interval_ms
         self._threshold_ms = threshold_ms
         # Часы инъекцией: тест не обязан ждать настоящие 150 мс, чтобы
         # проверить порог, — тот же приём, что `now=` у Workspace.
@@ -1092,7 +1120,10 @@ class Heartbeat(QObject):
 
     def _tick(self) -> None:
         now = self._clock()
-        gap_ms = int((now - self._last) * 1000)
+        # round(), не int(): при накоплении дробных секунд (клок теста,
+        # монотонные часы) усечение вниз однажды уже дало 429 мс вместо
+        # фактических 430 — ошибка представления float, не логики.
+        gap_ms = round((now - self._last) * 1000)
         # Отметка обновляется ВСЕГДА, до всякого решения о записи: иначе
         # следующий тик считал бы паузу от предыдущего опоздания и
         # доложил бы о простое, которого не было.
