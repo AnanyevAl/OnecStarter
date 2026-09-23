@@ -26,6 +26,8 @@ from typing import Protocol
 
 import psutil as psutil  # реэкспорт: process_scan.psutil в тестах
 
+from onecstarter import perf
+
 __all__ = [
     "NullScanner",
     "ProcessInfo",
@@ -65,27 +67,38 @@ class PsutilScanner:
         self._label = label
 
     def snapshot(self, names: frozenset[str]) -> list[ProcessInfo]:
-        result: list[ProcessInfo] = []
-        for process in psutil.process_iter(attrs=["pid", "name"]):
-            try:
-                info = process.info
-            except (psutil.AccessDenied, psutil.NoSuchProcess):
-                continue
-            name = info.get("name")
-            if name is None or name.casefold() not in names:
-                continue
-            details = _details_of(process)
-            if details is None:
-                # Процесс умер между чтением имени и чтением деталей.
-                # Прежняя редакция теряла его тем же способом (`continue`  # noqa: RUF003
-                # на NoSuchProcess), и это правильное поведение: отдать
-                # запись с пустыми полями значило бы выдумать факт.  # noqa: RUF003
-                continue
-            executable, argv = details
-            result.append(
-                ProcessInfo(pid=info["pid"], name=name, executable=executable, argv=argv)
-            )
-        return result
+        # `stage` — литерал: метка приходит из кода проводки окна
+        # ("servers"/"edt", инвариант 5), не из файлов, окружения
+        # или самих процессов.
+        stage = f"скан процессов ({self._label})" if self._label else "скан процессов"
+        with perf.measure(stage) as counters:
+            result: list[ProcessInfo] = []
+            seen = 0
+            for process in psutil.process_iter(attrs=["pid", "name"]):
+                seen += 1
+                try:
+                    info = process.info
+                except (psutil.AccessDenied, psutil.NoSuchProcess):
+                    continue
+                name = info.get("name")
+                if name is None or name.casefold() not in names:
+                    continue
+                details = _details_of(process)
+                if details is None:
+                    # Процесс умер между чтением имени и чтением деталей.
+                    # Прежняя редакция теряла его тем же способом (`continue`  # noqa: RUF003
+                    # на NoSuchProcess), и это правильное поведение: отдать
+                    # запись с пустыми полями значило бы выдумать факт.  # noqa: RUF003
+                    continue
+                executable, argv = details
+                result.append(
+                    ProcessInfo(pid=info["pid"], name=name, executable=executable, argv=argv)
+                )
+            # Счётчики заполняются ДО выхода из блока — `measure` читает
+            # словарь в `finally`, и дописать в него после выхода поздно.
+            counters["просмотрено"] = seen
+            counters["совпало"] = len(result)
+            return result
 
 
 def _details_of(

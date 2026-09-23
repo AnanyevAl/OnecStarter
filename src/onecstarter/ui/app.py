@@ -1041,7 +1041,8 @@ def _build_main_window(
         cli_watcher.setParent(window)  # время жизни — окно, как у мониторов  # noqa: RUF003
 
     monitor = ServerMonitor(
-        process_scanner if process_scanner is not None else PsutilScanner(), parent=window
+        process_scanner if process_scanner is not None else PsutilScanner("servers"),
+        parent=window,
     )
 
     def on_scan(snapshot: ScanSnapshot) -> None:
@@ -1058,7 +1059,7 @@ def _build_main_window(
     # не для кого, а `main()`/`run_smoke` получают `None` пятым элементом.  # noqa: RUF003
     if edt_workspace is not None and edt_view is not None:
         edt_monitor = EdtMonitor(
-            process_scanner if process_scanner is not None else PsutilScanner(),
+            process_scanner if process_scanner is not None else PsutilScanner("edt"),
             edt_workspace.projects,
             edt_discover,
             parent=window,

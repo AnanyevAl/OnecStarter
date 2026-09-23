@@ -5,6 +5,7 @@
 хвостом argv (`-port 9999 -d <tmp_path>`) и сканирует именно его.
 """  # noqa: RUF002
 
+import logging
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -13,6 +14,7 @@ from pathlib import Path
 import psutil
 import pytest
 
+from onecstarter import perf
 from onecstarter.platform_1c import process_scan
 from onecstarter.platform_1c.process_scan import NullScanner, PsutilScanner
 
@@ -162,3 +164,53 @@ def test_label_is_accepted_and_does_not_change_the_result(
     plain = PsutilScanner().snapshot(frozenset({"ragent.exe"}))
 
     assert labelled == plain
+
+
+def test_scan_is_measured_with_counters(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _with_processes(
+        monkeypatch,
+        [_FakeProcess(1, "ragent.exe"), _FakeProcess(2, "chrome.exe")],
+    )
+    path = perf.setup({"APPDATA": str(tmp_path), perf.ENV_NAME: "1"})
+    assert path is not None
+    try:
+        PsutilScanner("servers").snapshot(frozenset({"ragent.exe"}))
+        for handler in logging.getLogger("onecstarter.perf").handlers:
+            handler.flush()
+        line = path.read_text(encoding="utf-8").strip()
+    finally:
+        perf.reset_for_tests()
+    assert "скан процессов (servers): " in line
+    assert "просмотрено=2" in line
+    assert "совпало=1" in line
+
+
+def test_scan_without_label_still_names_the_stage(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _with_processes(monkeypatch, [_FakeProcess(1, "ragent.exe")])
+    path = perf.setup({"APPDATA": str(tmp_path), perf.ENV_NAME: "1"})
+    assert path is not None
+    try:
+        PsutilScanner().snapshot(frozenset({"ragent.exe"}))
+        for handler in logging.getLogger("onecstarter.perf").handlers:
+            handler.flush()
+        line = path.read_text(encoding="utf-8").strip()
+    finally:
+        perf.reset_for_tests()
+    assert "скан процессов: " in line
+    assert "()" not in line
+
+
+def test_scan_writes_nothing_when_perf_is_off(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _with_processes(monkeypatch, [_FakeProcess(1, "ragent.exe")])
+    perf.setup({"APPDATA": str(tmp_path)})
+    try:
+        PsutilScanner("servers").snapshot(frozenset({"ragent.exe"}))
+    finally:
+        perf.reset_for_tests()
+    assert not (tmp_path / "OneCStarter" / "logs" / "perf.log").exists()
