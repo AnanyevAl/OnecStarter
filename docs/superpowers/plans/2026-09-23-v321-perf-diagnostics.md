@@ -1192,8 +1192,18 @@ git commit -m "feat(perf): heartbeat главного потока — опоз�
 - Modify: `src/onecstarter/ui/bases/view.py:203-206` (`_BasesTree.__init__`), плюс новый метод `event`
 - Test: `tests/ui/test_bases_view.py`
 
+**Ловушка pytest-qt (находка задачи 6, 23.09.2026).** Тесты обязаны сбрасывать
+`tree._perf = False` в `finally` ДО `perf.reset_for_tests()`. Без этого они падают
+стабильно, а не изредка: `_BasesTree` — живой видимый виджет, `pytest-qt` зовёт
+`QApplication.processEvents()` в хуке `pytest_runtest_call`, и отложенные события
+дерева проходят через `event()` уже исчерпанным тестовым итератором часов —
+`RuntimeError: generator raised StopIteration`. `monkeypatch.setattr` эту проблему
+НЕ решает, и это проверено экспериментом при ревью: его откат происходит в фазе
+teardown, то есть ПОЗЖЕ, чем `_process_events()` после фазы call. Помогает только
+сброс внутри тела теста.
+
 **Interfaces:**
-- Consumes: `perf.is_enabled`, `perf.enabled` из задачи 2.
+- Consumes: `perf.is_enabled` из задачи 2. `perf.enabled()` здесь НЕ нужен: флаг читается один раз в `__init__`, а не на каждом событии, — в этом и смысл атрибута.
 - Produces: строка `дерево баз: событие <ИмяТипа> N мс`.
 
 - [ ] **Step 1: Написать падающие тесты**
@@ -1304,7 +1314,9 @@ Expected: FAIL — у `_BasesTree` нет ни `_perf`, ни `_clock`, ни св
             return super().event(event)
         started = self._clock()
         handled = super().event(event)
-        elapsed = int((self._clock() - started) * 1000)
+        # round(), не int(): усечение вниз даёт 429 мс вместо 430
+        # (ошибка представления float, находка задачи 5).
+        elapsed = round((self._clock() - started) * 1000)
         if elapsed >= _SLOW_EVENT_MS:
             _perf_log.info(
                 "дерево баз: событие %s %d мс", QEvent.Type(event.type()).name, elapsed
