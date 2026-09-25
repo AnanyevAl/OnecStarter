@@ -31,6 +31,7 @@ from onecstarter.domain.edt import (
     resolve_editor,
     running_workspaces,
     split_vm_args,
+    version_from_config_ini,
     version_from_dir_name,
     workspace_key,
 )
@@ -78,6 +79,33 @@ class TestVersionFromDirName:
     )
     def test_table(self, name: str, expected: str | None) -> None:
         assert version_from_dir_name(name) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # Порядок ключей в файле произвольный [Ф]: в 2026.1.2+2 version раньше
+        # buildId, в 2026.2.1+3 — позже. Обе формы обязаны разбираться.  # noqa: RUF003
+        ("product.version=2026.1.2\neclipse.buildId=2026.1.2.2\n", "2026.1.2+2"),
+        ("eclipse.buildId=2026.2.1.3\nproduct.version=2026.2.1\n", "2026.2.1+3"),
+        # buildId нет, не разбирается или префикс чужой — отдаём голую версию.
+        # Приклеить к версии чужое число хуже, чем не приклеить своё.
+        ("product.version=2026.1.2\n", "2026.1.2"),
+        ("product.version=2026.1.2\neclipse.buildId=мусор\n", "2026.1.2"),
+        ("product.version=2026.1.2\neclipse.buildId=2025.9.9.7\n", "2026.1.2"),
+        # Лишний компонент должен быть ровно один.
+        ("product.version=2026.1.2\neclipse.buildId=2026.1.2.2.5\n", "2026.1.2"),
+        ("product.version=2026.1.2\neclipse.buildId=2026.1.2\n", "2026.1.2"),
+        # Без product.version говорить нечего.
+        ("eclipse.buildId=2026.1.2.2\n", None),
+        ("", None),
+        ("мусор без ключей\n", None),
+        # Прочие ключи игнорируются, как в parse_ini.
+        ("osgi.bundles=x\nproduct.version=2026.1.2\nfoo=bar\n", "2026.1.2"),
+    ],
+)
+def test_version_from_config_ini(text: str, expected: str | None) -> None:
+    assert version_from_config_ini(text) == expected
 
 
 INI_2025 = """-startup
