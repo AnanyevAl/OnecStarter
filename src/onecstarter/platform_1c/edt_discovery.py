@@ -14,14 +14,23 @@ from pathlib import Path
 from onecstarter.domain.edt import (
     EDT_EXE,
     EdtInstallation,
+    EdtStartProduct,
     parse_ini,
     parse_release,
     pick_jvm,
+    version_from_config_ini,
     version_from_dir_name,
 )
 from onecstarter.platform_1c.edtstart_registry import EdtStartRegistry
 
-__all__ = ["EdtRoot", "default_roots", "discover_edt", "find_installations", "read_jdk_version"]
+__all__ = [
+    "EdtDiscovery",
+    "EdtRoot",
+    "default_roots",
+    "discover_edt",
+    "find_installations",
+    "read_jdk_version",
+]
 
 
 @dataclass(frozen=True)
@@ -133,33 +142,84 @@ def _read_ini(folder: Path) -> str:
         return ""
 
 
+@dataclass(frozen=True)
+class EdtDiscovery:
+    """Что нашли и что отбросили.
+
+    `rejected` — не диагностика ради диагностики: раскладку каталога у
+    пользователя проверить нечем (спека §1.5), и лог остаётся единственным
+    способом узнать, угадали мы или нет.
+    """  # noqa: RUF002
+
+    installations: list[EdtInstallation]
+    rejected: list[tuple[Path, str]]
+
+
+def _version_of(folder: Path, product: EdtStartProduct | None) -> str | None:
+    """Версия установки по цепочке: реестр, `config.ini`, имя каталога.
+
+    Реестр первым: `installedVersion.label` — ровно та строка, которую
+    пользователь видит в 1C:EDT Start, и на снятых установках она совпадает
+    с именем каталога [Ф], так что порядок нынешнее поведение не меняет.
+    """  # noqa: RUF002
+    if product is not None and product.version:
+        return product.version
+    config = folder / "configuration" / "config.ini"
+    try:
+        text = config.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        text = ""
+    from_config = version_from_config_ini(text)
+    if from_config is not None:
+        return from_config
+    return version_from_dir_name(folder.name)
+
+
 def discover_edt(
-    roots: Sequence[Path],
+    roots: Sequence[EdtRoot],
     registry: EdtStartRegistry | None,
     settings_jvm: str,
-) -> list[EdtInstallation]:
-    """Каталоги `1c-edt-<версия>-x86_64` с `1cedt.exe` в корнях и по `location` продуктов."""  # noqa: RUF002
+) -> EdtDiscovery:
+    """Установки из обхода корней (`find_installations`) и по `location` продуктов.
+
+    JDK — из того же обхода, отдельного прохода по корням для них больше нет.
+    Кандидат без версии ни в одном звене цепочки (`_version_of`) не попадает
+    в установки — он уходит в `rejected` с причиной (решение заказчика,
+    спека §1.4): версия — ключ привязки записи проекта к установке, и
+    подставлять вместо неё имя каталога значило бы привязывать проекты
+    к тому, что пользователь волен переименовать.
+    """  # noqa: RUF002
     products = {
         os.path.normcase(str(product.exe)): product
         for product in (registry.products if registry is not None else ())
     }
     folders: dict[str, Path] = {}
+    auto: list[tuple[str, Path]] = []
     for root in roots:
-        for child in _children(root):
-            folders.setdefault(os.path.normcase(str(child / EDT_EXE)), child)
+        installations, jdks = find_installations(root)
+        for folder in installations:
+            folders.setdefault(os.path.normcase(str(folder / EDT_EXE)), folder)
+        # `find_installations` отдаёт корень JDK ([Ф] требует `_is_jdk`, каталог
+        # `bin` внутри существует всегда), а `pick_jvm` ждёт в `auto` уже каталог  # noqa: RUF003
+        # `bin` (спека §3, докстринг `pick_jvm`) — переход на общий обход не
+        # изменил этот контракт, поэтому досклеиваем `bin` здесь.
+        auto.extend((version, folder / "bin") for version, folder in jdks)
     for prod in products.values():
         folders.setdefault(os.path.normcase(str(prod.exe)), prod.exe.parent)
 
-    auto = _auto_jdks(roots)
     settings = _existing_dir(Path(settings_jvm)) if settings_jvm else None
     found: list[EdtInstallation] = []
+    rejected: list[tuple[Path, str]] = []
     for exe_key, folder in folders.items():
-        version = version_from_dir_name(folder.name)
         exe = folder / EDT_EXE
-        if version is None or not exe.is_file():
+        if not exe.is_file():
+            continue
+        product = products.get(exe_key)
+        version = _version_of(folder, product)
+        if version is None:
+            rejected.append((folder, "нет версии"))
             continue
         ini = parse_ini(_read_ini(folder))
-        product = products.get(exe_key)
         picked = pick_jvm(
             product=_existing_dir(product.jvm_dir) if product is not None else None,
             ini=_ini_vm(ini.vm),
@@ -177,4 +237,4 @@ def discover_edt(
                 jvm_source=picked[1] if picked else "",
             )
         )
-    return sorted(found, key=lambda item: item.version, reverse=True)
+    return EdtDiscovery(sorted(found, key=lambda item: item.version, reverse=True), rejected)

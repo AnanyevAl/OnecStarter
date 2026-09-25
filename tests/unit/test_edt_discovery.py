@@ -12,6 +12,8 @@ from onecstarter.platform_1c.edt_discovery import (
 )
 from onecstarter.platform_1c.edtstart_registry import EdtStartRegistry
 
+_ROOT_DEPTH = 3  # с запасом хватает для фикстур этого файла — не глубина продакшна  # noqa: RUF003
+
 INI_NO_VM = "-vmargs\n-Dosgi.requiredJavaVersion=17\n-Xmx4096m\n"
 
 
@@ -116,6 +118,19 @@ def test_missing_root_is_skipped(tmp_path: Path) -> None:
     assert find_installations(EdtRoot(tmp_path / "нет", max_depth=3)) == ([], [])
 
 
+def _root(path: Path) -> EdtRoot:
+    return EdtRoot(path, _ROOT_DEPTH)
+
+
+def _registry_with(exe: Path, label: str) -> EdtStartRegistry:
+    """Реестр с одним продуктом — по образцу инлайновых `EdtStartRegistry` этого файла."""  # noqa: RUF002
+    return EdtStartRegistry(
+        products=(EdtStartProduct(id="p", version=label, exe=exe, jvm_dir=None, args=()),),
+        projects=(),
+        skipped=0,
+    )
+
+
 class TestDiscover:
     def test_finds_installations_and_auto_jdk(self, tmp_path: Path) -> None:
         _edt(tmp_path, "2025.2.6+4")
@@ -123,7 +138,7 @@ class TestDiscover:
         jdk17 = _jdk(tmp_path, "17.0.16")
         jdk25 = _jdk(tmp_path, "25.0.2")
         (tmp_path / "1c-edt-start-0.10.0+448-x86_64").mkdir()  # лаунчер — не EDT
-        found = discover_edt([tmp_path], None, "")
+        found = discover_edt([_root(tmp_path)], None, "").installations
         assert [i.version for i in found] == ["2026.1.2+2", "2025.2.6+4"]
         assert found[0].exe == tmp_path / "1c-edt-2026.1.2+2-x86_64" / "1cedt.exe"
         assert found[0].jvm_dir == jdk25 / "bin"
@@ -148,7 +163,7 @@ class TestDiscover:
             projects=(),
             skipped=0,
         )
-        [found] = discover_edt([tmp_path], registry, "")
+        [found] = discover_edt([_root(tmp_path)], registry, "").installations
         assert found.jvm_dir == jdk17 / "bin"
         assert found.jvm_source == "products.json"
         assert found.vm_args == "-Xmx8192m -DnativeFormBufferedLayoutRender=true"
@@ -169,7 +184,7 @@ class TestDiscover:
             projects=(),
             skipped=0,
         )
-        [found] = discover_edt([tmp_path], registry, "")
+        [found] = discover_edt([_root(tmp_path)], registry, "").installations
         assert found.jvm_dir == jdk17 / "bin"
         assert found.jvm_source == "auto"
 
@@ -179,7 +194,7 @@ class TestDiscover:
         (zulu / "javaw.exe").write_bytes(b"")
         ini = f"-vm\n{zulu / 'javaw.exe'}\n-vmargs\n-Dosgi.requiredJavaVersion=17\n"
         _edt(tmp_path, "2024.2.6+7", ini)
-        [found] = discover_edt([tmp_path], None, "")
+        [found] = discover_edt([_root(tmp_path)], None, "").installations
         assert found.jvm_dir == zulu
         assert found.jvm_source == "1cedt.ini"
 
@@ -187,7 +202,7 @@ class TestDiscover:
         nonexistent = tmp_path / "nonexistent" / "jdk" / "bin" / "javaw.exe"
         ini = f"-vm\n{nonexistent}\n-vmargs\n"
         _edt(tmp_path, "2024.2.6+7", ini)
-        [found] = discover_edt([tmp_path], None, "")
+        [found] = discover_edt([_root(tmp_path)], None, "").installations
         assert found.jvm_dir is None
         assert found.jvm_source == ""
 
@@ -195,52 +210,80 @@ class TestDiscover:
         _edt(tmp_path, "2025.2.6+4")
         mine = tmp_path / "myjdk" / "bin"
         mine.mkdir(parents=True)
-        [found] = discover_edt([tmp_path], None, str(mine))
+        [found] = discover_edt([_root(tmp_path)], None, str(mine)).installations
         assert found.jvm_dir == mine
         assert found.jvm_source == "settings"
 
     def test_too_old_auto_jdk_not_picked(self, tmp_path: Path) -> None:
         _edt(tmp_path, "2025.2.6+4")
         _jdk(tmp_path, "11.0.2")
-        [found] = discover_edt([tmp_path], None, "")
+        [found] = discover_edt([_root(tmp_path)], None, "").installations
         assert found.jvm_dir is None
 
     def test_same_major_newest_full_version_wins(self, tmp_path: Path) -> None:
         _edt(tmp_path, "2025.2.6+4")
         _jdk(tmp_path, "17.0.9")
         newest = _jdk(tmp_path, "17.0.16")
-        [found] = discover_edt([tmp_path], None, "")
+        [found] = discover_edt([_root(tmp_path)], None, "").installations
         assert found.jvm_dir == newest / "bin"
 
     def test_product_location_outside_roots(self, tmp_path: Path) -> None:
         elsewhere = _edt(tmp_path / "elsewhere", "2025.2.6+4")
-        registry = EdtStartRegistry(
-            products=(
-                EdtStartProduct(
-                    id="p", version="2025.2.6+4", exe=elsewhere / "1cedt.exe", jvm_dir=None, args=()
-                ),
-            ),
-            projects=(),
-            skipped=0,
-        )
+        registry = _registry_with(elsewhere / "1cedt.exe", "2025.2.6+4")
         roots = tmp_path / "roots"
         roots.mkdir()
-        [found] = discover_edt([roots], registry, "")
+        [found] = discover_edt([_root(roots)], registry, "").installations
         assert found.exe == elsewhere / "1cedt.exe"
 
     def test_same_install_from_root_and_product_not_duplicated(self, tmp_path: Path) -> None:
         edt = _edt(tmp_path, "2025.2.6+4")
-        registry = EdtStartRegistry(
-            products=(
-                EdtStartProduct(
-                    id="p", version="2025.2.6+4", exe=edt / "1cedt.exe", jvm_dir=None, args=()
-                ),
-            ),
-            projects=(),
-            skipped=0,
-        )
-        assert len(discover_edt([tmp_path], registry, "")) == 1
+        registry = _registry_with(edt / "1cedt.exe", "2025.2.6+4")
+        result = discover_edt([_root(tmp_path)], registry, "")
+        assert len(result.installations) == 1
 
     def test_missing_root_and_dir_without_exe(self, tmp_path: Path) -> None:
         (tmp_path / "1c-edt-2025.2.6+4-x86_64").mkdir()  # без 1cedt.exe
-        assert discover_edt([tmp_path, tmp_path / "nope"], None, "") == []
+        result = discover_edt([_root(tmp_path), _root(tmp_path / "nope")], None, "")
+        assert result.installations == []
+        assert result.rejected == []
+
+
+def test_registry_version_wins_over_directory_name(tmp_path: Path) -> None:
+    # Худший из трёх дефектов: ответ есть в products.json, а мы его  # noqa: RUF003
+    # игнорируем.
+    folder = _make_installation(tmp_path / "root" / "1C_EDT 2026.1")
+    registry = _registry_with(folder / "1cedt.exe", "2026.1.2+2")
+    result = discover_edt([_root(tmp_path / "root")], registry, "")
+    assert [i.version for i in result.installations] == ["2026.1.2+2"]
+
+
+def test_config_ini_used_when_name_does_not_match_mask(tmp_path: Path) -> None:
+    folder = _make_installation(tmp_path / "root" / "1C_EDT 2026.1")
+    config = folder / "configuration"
+    config.mkdir()
+    (config / "config.ini").write_text(
+        "product.version=2026.1.2\neclipse.buildId=2026.1.2.2\n", encoding="utf-8"
+    )
+    result = discover_edt([_root(tmp_path / "root")], None, "")
+    assert [i.version for i in result.installations] == ["2026.1.2+2"]
+
+
+def test_directory_mask_still_works(tmp_path: Path) -> None:
+    _make_installation(tmp_path / "root" / "1c-edt-2025.2.6+4-x86_64")
+    result = discover_edt([_root(tmp_path / "root")], None, "")
+    assert [i.version for i in result.installations] == ["2025.2.6+4"]
+
+
+def test_installation_without_version_is_rejected(tmp_path: Path) -> None:
+    # Версия — ключ привязки проекта к установке (EdtProject.edt_version),
+    # и установка без версии эту привязку ломает. Решение заказчика 25.09.2026.
+    folder = _make_installation(tmp_path / "root" / "какой-то каталог")
+    result = discover_edt([_root(tmp_path / "root")], None, "")
+    assert result.installations == []
+    assert [path for path, _reason in result.rejected] == [folder]
+
+
+def test_rejected_carries_the_reason(tmp_path: Path) -> None:
+    _make_installation(tmp_path / "root" / "без версии")
+    result = discover_edt([_root(tmp_path / "root")], None, "")
+    assert "верси" in result.rejected[0][1].casefold()

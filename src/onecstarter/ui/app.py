@@ -836,7 +836,10 @@ def _build_main_window(
 
     def edt_discover() -> list[EdtInstallation]:
         registry = read_registry(default_edtstart_root(env))
-        return discover_edt(default_roots(env), registry, store.settings.edt_jvm_dir)
+        result = discover_edt(default_roots(env), registry, store.settings.edt_jvm_dir)
+        # `result.rejected` пока не используется здесь — его читает задача 7  # noqa: RUF003
+        # (логирование).
+        return result.installations
 
     # C2 финального ревью ветки: `load_registry` внутри конструктора отказывает
     # `EdtUnavailableError`, когда `edt.json` есть, но не читается (права,
