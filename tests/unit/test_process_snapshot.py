@@ -1,5 +1,6 @@
 """Снимок процессов через Toolhelp: список без открытия процессов."""
 
+import ctypes
 import subprocess
 import sys
 from collections.abc import Iterator
@@ -81,5 +82,43 @@ def test_snapshot_reports_failure(monkeypatch: pytest.MonkeyPatch) -> None:
             return process_snapshot.INVALID_HANDLE_VALUE
 
     monkeypatch.setattr(process_snapshot, "_kernel32", lambda: _Failing())
+    with pytest.raises(SnapshotError):
+        snapshot_all()
+
+
+def test_snapshot_reports_failure_when_process32first_breaks_mid_walk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Отказ обхода — не то же самое, что его штатный конец.
+
+    `Process32FirstW`/`Process32NextW` возвращают `FALSE` в обоих случаях:
+    и когда процессы кончились (`ERROR_NO_MORE_FILES`, [Д] MS Docs
+    `nf-tlhelp32-process32firstw`/`-process32nextw`, раздел Return value),
+    и когда обход сломался по любой другой причине. Раньше `snapshot_all`
+    не различал их и в обоих случаях просто отдавал то, что успел собрать —
+    молчаливое «процессов нет» вместо `SnapshotError`, ровно то, что бриф
+    прямо запрещает для отказа `CreateToolhelp32Snapshot`. Этот тест обязан
+    падать на прежней реализации — проверено вручную до правки: без неё
+    `snapshot_all()` тут просто возвращает `[]`, исключения нет.
+    """  # noqa: RUF002
+    from onecstarter.platform_1c import process_snapshot
+
+    # ERROR_ACCESS_DENIED = 5 ([Д] MS Docs, «System Error Codes (0-499)»:
+    # 5 (0x5) «Access is denied.»). Значение не принципиально — важно, что
+    # оно не совпадает с ERROR_NO_MORE_FILES (18).  # noqa: RUF003
+    error_access_denied = 5
+
+    class _FailingFirst:
+        def CreateToolhelp32Snapshot(self, flags: int, pid: int) -> int:  # noqa: N802
+            return 1  # валидный хендл-заглушка, не INVALID_HANDLE_VALUE
+
+        def Process32FirstW(self, handle: int, entry: object) -> int:  # noqa: N802
+            ctypes.set_last_error(error_access_denied)
+            return 0
+
+        def CloseHandle(self, handle: int) -> int:  # noqa: N802
+            return 1
+
+    monkeypatch.setattr(process_snapshot, "_kernel32", lambda: _FailingFirst())
     with pytest.raises(SnapshotError):
         snapshot_all()

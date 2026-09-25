@@ -14,6 +14,7 @@ import ctypes
 from ctypes import wintypes
 
 __all__ = [
+    "ERROR_NO_MORE_FILES",
     "INVALID_HANDLE_VALUE",
     "SnapshotError",
     "snapshot_all",
@@ -23,9 +24,31 @@ TH32CS_SNAPPROCESS = 0x00000002
 INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 MAX_PATH = 260
 
+# [Д] MS Docs, «Process32FirstW function», «Process32NextW function»,
+# раздел Return value (обе страницы дословно совпадают): GetLastError()  # noqa: RUF003
+# отдаёт именно этот код, когда процессов больше нет или снимок их не
+# содержал — это штатный конец обхода, а не отказ. Числовое значение —  # noqa: RUF003
+# [Д] MS Docs, «System Error Codes (0-499)» (WinError.h): 18 (0x12),
+# "There are no more files." Совпадает с системным сообщением на машине  # noqa: RUF003
+# разработчика, ru-RU ([Ф] проверено 25.09.2026 через
+# `ctypes.WinError(18).strerror`): «Больше файлов не осталось.»
+ERROR_NO_MORE_FILES = 18
+
 
 class SnapshotError(OSError):
     """Снимок не удался. Вызывающий решает, что показать пользователю."""
+
+
+def _snapshot_error(code: int, action: str) -> SnapshotError:
+    """`SnapshotError` с читаемым текстом ошибки, а не только кодом.
+
+    `ctypes.WinError(code).strerror` — то же сообщение, что дал бы системный
+    диалог для этого кода. Путей и имён процессов в нём нет и не может
+    быть (инвариант 5): это сообщение самой ОС про отказ снимка или
+    обхода, а не про конкретный файл или процесс.
+    """  # noqa: RUF002
+    detail = ctypes.WinError(code).strerror or "код без расшифровки в системной таблице"
+    return SnapshotError(code, f"{action}: {detail}")
 
 
 class PROCESSENTRY32W(ctypes.Structure):
@@ -63,11 +86,19 @@ def _kernel32() -> ctypes.WinDLL:
 
 
 def snapshot_all() -> list[tuple[int, str]]:
-    """PID и имя каждого процесса. `SnapshotError` — снимок не удался."""
+    """PID и имя каждого процесса. `SnapshotError` — снимок не удался.
+
+    `Process32FirstW`/`Process32NextW` возвращают `FALSE` в двух разных
+    случаях: список кончился (`ERROR_NO_MORE_FILES`) или обход сломался
+    по другой причине (право доступа, повреждённый снимок и т.п.). Первое —
+    штатный конец цикла, второе — отказ, и подменять его пустым или
+    обрезанным списком нельзя: снимок без процессов читался бы как
+    «серверы не запущены», хотя на деле снимок просто не смог обойтись.
+    """  # noqa: RUF002
     dll = _kernel32()
     snapshot = dll.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
     if snapshot == INVALID_HANDLE_VALUE:
-        raise SnapshotError(ctypes.get_last_error(), "снимок процессов не создан")
+        raise _snapshot_error(ctypes.get_last_error(), "снимок процессов не создан")
     try:
         entry = PROCESSENTRY32W()
         entry.dwSize = ctypes.sizeof(PROCESSENTRY32W)
@@ -76,6 +107,13 @@ def snapshot_all() -> list[tuple[int, str]]:
         while ok:
             found.append((entry.th32ProcessID, entry.szExeFile))
             ok = dll.Process32NextW(snapshot, ctypes.byref(entry))
+        # `ok` стал ложным — либо список кончился штатно, либо обход
+        # сломался. `ctypes.get_last_error()` тут ещё относится к тому
+        # самому вызову: между ним и этой строкой не было ни одного
+        # чужого обращения к WinAPI, которое могло бы код затереть.
+        code = ctypes.get_last_error()
+        if code != ERROR_NO_MORE_FILES:
+            raise _snapshot_error(code, "обход снимка процессов прерван")
         return found
     finally:
         dll.CloseHandle(snapshot)
