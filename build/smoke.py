@@ -81,7 +81,7 @@ def main() -> int:
                 "см. строку smoke: keyring= в логе"
             )
             return 1
-        if not re.search(r"^.*smoke: edt=\d+\s*$", log_text, re.MULTILINE):
+        if not re.search(r"^.*smoke: edt=\d+(?:, отброшено=\d+)?\s*$", log_text, re.MULTILINE):
             print(
                 "smoke: раздел EDT не поднялся или обнаружение установок не отработало — "
                 "см. строку smoke: edt= в логе"
