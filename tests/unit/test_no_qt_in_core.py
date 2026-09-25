@@ -41,6 +41,7 @@ CORE = (
     "onecstarter.platform_1c.job",
     "onecstarter.platform_1c.process",
     "onecstarter.platform_1c.process_scan",
+    "onecstarter.platform_1c.process_snapshot",
     "onecstarter.platform_1c.registry",
     "onecstarter.platform_1c.server_discovery",
     "onecstarter.platform_1c.server_spawn",
