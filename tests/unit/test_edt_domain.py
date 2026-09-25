@@ -93,6 +93,10 @@ class TestVersionFromDirName:
         ("product.version=2026.1.2\n", "2026.1.2"),
         ("product.version=2026.1.2\neclipse.buildId=мусор\n", "2026.1.2"),
         ("product.version=2026.1.2\neclipse.buildId=2025.9.9.7\n", "2026.1.2"),
+        # Префикс должен совпасть по точке-разделителю, а не по подстроке: buildId  # noqa: RUF003
+        # начинается с "2026.1.2", но без точки после версии — это другая сборка  # noqa: RUF003
+        # (2026.1.239), а не 2026.1.2 с компонентом "39".  # noqa: RUF003
+        ("product.version=2026.1.2\neclipse.buildId=2026.1.239\n", "2026.1.2"),
         # Лишний компонент должен быть ровно один.
         ("product.version=2026.1.2\neclipse.buildId=2026.1.2.2.5\n", "2026.1.2"),
         ("product.version=2026.1.2\neclipse.buildId=2026.1.2\n", "2026.1.2"),
