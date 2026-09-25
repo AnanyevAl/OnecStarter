@@ -39,7 +39,15 @@ from onecstarter.domain.version import Installation, VersionNumber
 from onecstarter.platform_1c import console
 from onecstarter.platform_1c.discovery import cfg_paths, find_installations
 from onecstarter.platform_1c.editors import EditorKind, find_editor
-from onecstarter.platform_1c.edt_discovery import default_roots, discover_edt, read_jdk_version
+from onecstarter.platform_1c.edt_discovery import (
+    EdtRoot,
+    default_roots,
+    discover_edt,
+    read_jdk_version,
+)
+from onecstarter.platform_1c.edt_discovery import (
+    find_installations as find_edt_installations,
+)
 from onecstarter.platform_1c.edtstart_registry import default_edtstart_root, read_registry
 from onecstarter.platform_1c.job import Job, NullJob, ServerJob
 from onecstarter.platform_1c.process_scan import NullScanner, ProcessScanner, WindowsProcessScanner
@@ -493,8 +501,14 @@ def run_smoke(
         if edt_workspace is None:
             _log.info("smoke: edt=unavailable")
         else:
-            installations = cast(EdtWorkspace, edt_workspace).refresh_installations()
-            _log.info("smoke: edt=%d", len(installations))
+            workspace = cast(EdtWorkspace, edt_workspace)
+            installations = workspace.refresh_installations()
+            # Отброшенные — тем же числом рядом, а не отдельной строкой (задача 7,  # noqa: RUF003
+            # спека §1.4): подробности (путь, причина) уже ушли в лог построчно
+            # изнутри `edt_discover` во время вызова `refresh_installations` выше.
+            _log.info(
+                "smoke: edt=%d, отброшено=%d", len(installations), workspace.last_rejected_count()
+            )
         return 0
     finally:
         # `run_smoke` не крутит `application.exec()` — `aboutToQuit` не
@@ -834,12 +848,52 @@ def _build_main_window(
         )
         return find_editor(kind, setting, env)
 
+    # Число отброшенных последнего обнаружения — для строки `smoke: edt=…`
+    # (задача 7, спека §1.4). Ячейка одного элемента, не просто `int`: обновляет
+    # её `edt_discover` по значению, `edt_rejected_count` — читает то же место.
+    edt_last_rejected = [0]
+
     def edt_discover() -> list[EdtInstallation]:
         registry = read_registry(default_edtstart_root(env))
-        result = discover_edt(default_roots(env), registry, store.settings.edt_jvm_dir)
-        # Причины отброшенных кандидатов вычисляет `discover_edt` (спека §1.4);
-        # здесь `result.rejected` пока не читается — логирование добавит задача 7.
+        roots = default_roots(env)
+        manual_root = store.settings.edt_installations_root
+        if manual_root:
+            # Ручной каталог — запасной выход вехи (спека §1.4): три
+            # автоматических способа найти установку могут промахнуться разом,
+            # раскладку у пользователя проверить нечем. Глубина 3 — как у  # noqa: RUF003
+            # `installations` в `default_roots`: уровень 0 обхода
+            # (`find_installations`) проверяет сам этот путь, поэтому годится
+            # и каталог с установками, и каталог с самим `1cedt.exe`.  # noqa: RUF003
+            roots = [*roots, EdtRoot(Path(manual_root), 3)]
+        for root in roots:
+            found, _jdks = find_edt_installations(root)
+            # Лог — единственный способ узнать раскладку у пользователя (спека  # noqa: RUF003
+            # §1.4): каждый корень со своей глубиной и числом найденного,  # noqa: RUF003
+            # включая корни, которых на диске нет вовсе — `find_installations`
+            # для них тихо отдаёт пустой список, а это надо отличать от  # noqa: RUF003
+            # «корень есть, установок в нём ноль».
+            _log.info(
+                "EDT: корень %s, глубина %d, установок: %d", root.path, root.max_depth, len(found)
+            )
+        result = discover_edt(roots, registry, store.settings.edt_jvm_dir)
+        edt_last_rejected[0] = len(result.rejected)
+        for folder, reason in result.rejected:
+            # Пути установок — не секрет (инвариант 5 требует внимания, но не
+            # запрещает их: без них диагностика бессмысленна), причина —
+            # ровно то, что вычислил `discover_edt` (спека §1.4).
+            _log.info("EDT: отброшен %s, причина: %s", folder, reason)
         return result.installations
+
+    def edt_installations_count(root: str) -> int:
+        """Число «сырых» установок в ручном каталоге — для подписи в Настройках.
+
+        Не через `discover_edt`: подписи важно число находок именно в этом
+        каталоге, а не итог слияния со всеми корнями и версией из реестра.
+        """  # noqa: RUF002
+        if not root:
+            return 0
+        found, _jdks = find_edt_installations(EdtRoot(Path(root), 3))
+        return len(found)
 
     # C2 финального ревью ветки: `load_registry` внутри конструктора отказывает
     # `EdtUnavailableError`, когда `edt.json` есть, но не читается (права,
@@ -855,6 +909,7 @@ def _build_main_window(
             discover=edt_discover,
             edtstart=lambda: read_registry(default_edtstart_root(env)),
             editors=edt_editor,
+            rejected_count=lambda: edt_last_rejected[0],
         )
     except EdtUnavailableError as error:
         _log.error("раздел EDT недоступен: %s", error)
@@ -868,7 +923,13 @@ def _build_main_window(
         ),
         frozen=bool(getattr(sys, "frozen", False)),
         executable=sys.executable,
-        edt_notes=lambda: settings_notes(store.settings.edt_jvm_dir, edt_editor, read_jdk_version),
+        edt_notes=lambda: settings_notes(
+            store.settings.edt_jvm_dir,
+            edt_editor,
+            read_jdk_version,
+            store.settings.edt_installations_root,
+            edt_installations_count(store.settings.edt_installations_root),
+        ),
     )
     # Раздел «Серверы» (T-08, задача 16). `servers_workspace`/`server_installed`
     # (холдер — сеттера у ServersView нет, тот же приём, что `recent_limit=  # noqa: RUF003

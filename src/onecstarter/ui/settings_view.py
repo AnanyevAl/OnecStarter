@@ -120,6 +120,7 @@ AUTOSTART_ROW_NOTE = (
 
 SERVERS_ROOT_ROW_NOTE = "Новые профили серверов предлагают каталог <корень>\\srv_<версия>"
 
+EDT_INSTALLATIONS_ROW = "Каталог установок EDT"
 EDT_JVM_ROW = "JDK по умолчанию"
 EDT_HEAP_ROW = "Память для новых записей, МБ"
 EDT_LANGUAGE_ROW = "Язык для новых записей"
@@ -200,6 +201,10 @@ class SettingsView(QWidget):
         self._row_controls: dict[str, QWidget] = {}
         self._groups: dict[str, CollapsibleGroup] = {}
         self._current_body: QVBoxLayout | None = None
+        # Порядок строк внутри группы — тестам поля «Каталог установок EDT»
+        # (задача 7, спека §1.4): он обязан стоять первым, до JDK.
+        self._current_group_title: str | None = None
+        self._group_row_titles: dict[str, list[str]] = {}
 
         header = QLabel("Настройки")
         header_font = header.font()
@@ -287,6 +292,21 @@ class SettingsView(QWidget):
 
         self._add_group("EDT")
         notes = self._edt_notes()
+        # Первой строкой группы (спека §1.4, задача 7) — запасной выход всей
+        # вехи: если три автоматических способа найти установку промахнулись,
+        # это поле бросается в глаза раньше JDK, а не теряется среди прочих.  # noqa: RUF003
+        (
+            self._edt_installations,
+            self._edt_installations_browse,
+            installations_row,
+        ) = self._path_control(
+            store.settings.edt_installations_root,
+            "edt_installations_root",
+            after_save=self._refresh_edt_notes,
+        )
+        self._add_row(
+            EDT_INSTALLATIONS_ROW, notes.installations, installations_row, wide_control=True
+        )
         self._edt_jvm, self._edt_jvm_browse, jvm_row = self._path_control(
             store.settings.edt_jvm_dir, "edt_jvm_dir", after_save=self._refresh_edt_notes
         )
@@ -454,6 +474,8 @@ class SettingsView(QWidget):
         self._groups[title] = group
         self._group_labels.append(title)
         self._current_body = group.body_layout()
+        self._current_group_title = title
+        self._group_row_titles[title] = []
 
     def _target_layout(self) -> QVBoxLayout:
         """Куда класть строку: тело текущей группы.
@@ -480,6 +502,8 @@ class SettingsView(QWidget):
         row_note.setWordWrap(True)
         self._row_notes[title] = row_note
         self._row_controls[title] = control
+        if self._current_group_title is not None:
+            self._group_row_titles[self._current_group_title].append(title)
 
         body = QVBoxLayout()
         body.setSpacing(1)
@@ -536,6 +560,8 @@ class SettingsView(QWidget):
         row_note.setWordWrap(True)
         self._row_notes[title] = row_note
         self._row_controls[title] = body
+        if self._current_group_title is not None:
+            self._group_row_titles[self._current_group_title].append(title)
 
         block = CollapsibleGroup(
             title,
@@ -670,6 +696,7 @@ class SettingsView(QWidget):
         их обработчики сюда не ходят.
         """  # noqa: RUF002
         notes = self._edt_notes()
+        self._row_notes[EDT_INSTALLATIONS_ROW].setText(notes.installations)
         self._row_notes[EDT_JVM_ROW].setText(notes.jvm)
         self._row_notes[EDT_VSCODE_ROW].setText(notes.vscode)
         self._row_notes[EDT_ANTIGRAVITY_ROW].setText(notes.antigravity)
@@ -716,6 +743,14 @@ class SettingsView(QWidget):
 
     def group_labels(self) -> list[str]:
         return list(self._group_labels)
+
+    def group_row_titles(self, group: str) -> list[str]:
+        """Заголовки строк группы в порядке добавления (задача 7, спека §1.4).
+
+        Тестам порядка полей — «Каталог установок EDT» обязан стоять первым
+        в группе «EDT», до «JDK по умолчанию».
+        """
+        return list(self._group_row_titles.get(group, []))
 
     def group_titles(self) -> list[str]:
         """Заголовки ВСЕХ сворачиваемых узлов — групп и вложенных блоков.
@@ -779,6 +814,12 @@ class SettingsView(QWidget):
 
     def servers_root_browse_button(self) -> QPushButton:
         return self._servers_root_browse
+
+    def edt_installations_edit(self) -> QLineEdit:
+        return self._edt_installations
+
+    def edt_installations_browse_button(self) -> QPushButton:
+        return self._edt_installations_browse
 
     def edt_jvm_edit(self) -> QLineEdit:
         return self._edt_jvm

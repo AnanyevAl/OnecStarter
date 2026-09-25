@@ -26,6 +26,7 @@ from onecstarter.ui.settings_view import (
     AUTOSTART_ROW_NOTE,
     EDT_ANTIGRAVITY_ROW,
     EDT_HEAP_ROW,
+    EDT_INSTALLATIONS_ROW,
     EDT_JVM_ROW,
     EDT_LANGUAGE_ROW,
     EDT_SCHEMES_ROW,
@@ -940,20 +941,28 @@ def test_only_the_path_row_gets_a_wide_control(
     view.close()
 
 
-# -- группа «EDT» (v3, задача 18) --------------------------------------------
+# -- группа «EDT» (v3, задача 18; каталог установок — v3.2, задача 7) --------
 #
-# Пять строк группы: JDK по умолчанию (путь + «Обзор…», подпись — версия Java
-# из `services.edt.settings_notes`), память для новых записей (спинбокс,
+# Шесть строк группы: каталог установок EDT (путь + «Обзор…», подпись — число
+# найденного или подсказка «не задан»/«не найдено», спека §1.4 — запасной выход
+# всей вехи, стоит ПЕРВЫМ), JDK по умолчанию (путь + «Обзор…», подпись — версия
+# Java из `services.edt.settings_notes`), память для новых записей (спинбокс,
 # `EDT_HEAP_MIN`), язык для новых записей (комбобокс по `domain.edt.LANGUAGES`),
 # пути к внешним редакторам VS Code и Antigravity (путь + «Обзор…» файла, а не  # noqa: RUF003
-# каталога). Подписи под полями JDK/VS Code/Antigravity приходят инъекцией
-# `edt_notes` (тот же приём, что и `choose_directory` у СЕРВЕРОВ) — раздел  # noqa: RUF003
-# не знает, как искать JDK и редакторы на диске.
+# каталога). Подписи под полями каталога установок/JDK/VS Code/Antigravity
+# приходят инъекцией `edt_notes` (тот же приём, что и `choose_directory` у  # noqa: RUF003
+# СЕРВЕРОВ) — раздел не знает, как искать установки, JDK и редакторы на диске.  # noqa: RUF003
 
 
 def test_edt_group_and_rows_registered(application: QApplication, tmp_path: Path) -> None:
     view, _ = _view(application, tmp_path)
     assert "EDT" in view.group_labels()
+    assert view.edt_installations_edit() in view.row_control(
+        EDT_INSTALLATIONS_ROW
+    ).findChildren(QLineEdit)
+    assert view.edt_installations_browse_button() in view.row_control(
+        EDT_INSTALLATIONS_ROW
+    ).findChildren(QPushButton)
     assert view.edt_jvm_edit() in view.row_control(EDT_JVM_ROW).findChildren(QLineEdit)
     assert view.edt_jvm_browse_button() in view.row_control(EDT_JVM_ROW).findChildren(QPushButton)
     assert isinstance(view.row_control(EDT_HEAP_ROW), QSpinBox)
@@ -966,6 +975,44 @@ def test_edt_group_and_rows_registered(application: QApplication, tmp_path: Path
     assert view.editor_antigravity_edit() in view.row_control(EDT_ANTIGRAVITY_ROW).findChildren(
         QLineEdit
     )
+
+
+def test_edt_installations_row_is_first_in_group(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Ручной каталог — первым полем группы (спека §1.4, задача 7), до JDK.
+
+    Он бросается в глаза раньше JDK не случайно: это запасной выход всей
+    вехи — три автоматических способа найти установку могут промахнуться
+    разом, и пользователь читает подсказку под самым первым полем группы.
+    """
+    view, _ = _view(application, tmp_path)
+    titles = view.group_row_titles("EDT")
+    assert titles[0] == EDT_INSTALLATIONS_ROW
+    assert titles.index(EDT_INSTALLATIONS_ROW) < titles.index(EDT_JVM_ROW)
+
+
+def test_edt_installations_browse_saves_directory_and_refreshes_note(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """По образцу `test_edt_schemes_browse_saves_directory` и обновления подписи JDK (I3):
+
+    сохранение каталога пишет его в store, а подпись под полем пересчитывается
+    через `_refresh_edt_notes` — тем же швом, что у JDK (бриф задачи 7).
+    """  # noqa: RUF002
+    calls = iter(["до сохранения", "после сохранения"])
+
+    def notes() -> EdtNotes:
+        return EdtNotes("jvm-note", "code-note", "ag-note", installations=next(calls))
+
+    view, store = _view(
+        application, tmp_path, edt_notes=notes, choose_directory=lambda: r"D:\EDT"
+    )
+    assert view.row_note(EDT_INSTALLATIONS_ROW).text() == "до сохранения"
+    view.edt_installations_browse_button().click()
+    assert view.edt_installations_edit().text() == r"D:\EDT"
+    assert store.settings.edt_installations_root == r"D:\EDT"
+    assert view.row_note(EDT_INSTALLATIONS_ROW).text() == "после сохранения"
 
 
 def test_edt_schemes_browse_saves_directory(application: QApplication, tmp_path: Path) -> None:
@@ -1032,6 +1079,7 @@ def test_edt_fields_show_saved_values(application: QApplication, tmp_path: Path)
     save_settings(
         tmp_path / "settings.json",
         Settings(
+            edt_installations_root=r"D:\EDT",
             edt_jvm_dir=r"D:\jdk\bin",
             edt_default_max_heap_mb=4096,
             edt_default_language="ru",
@@ -1040,6 +1088,7 @@ def test_edt_fields_show_saved_values(application: QApplication, tmp_path: Path)
         ),
     )
     view, _ = _view(application, tmp_path)
+    assert view.edt_installations_edit().text() == r"D:\EDT"
     assert view.edt_jvm_edit().text() == r"D:\jdk\bin"
     assert view.edt_heap_spin().value() == 4096
     assert view.edt_language_combo().currentData() == "ru"
@@ -1049,6 +1098,8 @@ def test_edt_fields_show_saved_values(application: QApplication, tmp_path: Path)
 
 def test_edt_edits_update_store(application: QApplication, tmp_path: Path) -> None:
     view, store = _view(application, tmp_path)
+    view.edt_installations_edit().setText(r"D:\EDT")
+    view.edt_installations_edit().editingFinished.emit()
     view.edt_jvm_edit().setText(r"D:\j\bin")
     view.edt_jvm_edit().editingFinished.emit()
     view.edt_heap_spin().setValue(12288)
@@ -1057,6 +1108,7 @@ def test_edt_edits_update_store(application: QApplication, tmp_path: Path) -> No
     view.editor_vscode_edit().editingFinished.emit()
     view.editor_antigravity_edit().setText(r"D:\a.cmd")
     view.editor_antigravity_edit().editingFinished.emit()
+    assert store.settings.edt_installations_root == r"D:\EDT"
     assert store.settings.edt_jvm_dir == r"D:\j\bin"
     assert store.settings.edt_default_max_heap_mb == 12288
     assert store.settings.edt_default_language == "en"
@@ -1065,7 +1117,10 @@ def test_edt_edits_update_store(application: QApplication, tmp_path: Path) -> No
 
 
 def test_edt_browse_fills_and_saves(application: QApplication, tmp_path: Path) -> None:
-    """Только JDK (каталог) — редакторы используют `choose_file`, не `choose_directory`."""
+    """JDK — каталог (`choose_directory`), как и каталог установок; редакторы
+
+    ниже используют `choose_file`, не `choose_directory` (соседний тест).
+    """
     view, store = _view(application, tmp_path, choose_directory=lambda: r"D:\picked\bin")
     view.edt_jvm_browse_button().click()
     assert view.edt_jvm_edit().text() == r"D:\picked\bin"

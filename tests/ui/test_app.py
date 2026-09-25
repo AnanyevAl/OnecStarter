@@ -3835,3 +3835,98 @@ def test_run_smoke_reports_edt_unavailable_when_edt_json_unreadable(
 
     assert "smoke: edt=unavailable" in caplog.text
     qtbot.addWidget(captured["window"])
+
+
+# -- задача 7 (v3.2): каталог установок в настройках и лог обнаружения ------
+#
+# Раскладку EDT у пользователя проверить нечем (спека §1.4) — лог обязан  # noqa: RUF003
+# восстановить её без новых вопросов к пользователю: каждый просканированный
+# корень со своей глубиной и числом найденного, включая корни, которых на  # noqa: RUF003
+# диске нет вовсе, и отброшенные кандидаты с причиной.  # noqa: RUF003
+
+
+def test_run_smoke_logs_every_root_including_missing_ones(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any, caplog: Any
+) -> None:
+    """Оба умолчательных корня отсутствуют на диске — лог обязан назвать их и «0», не молчать."""  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    appdata = tmp_path / "appdata"
+    program_files = tmp_path / "no-program-files"
+    localappdata = tmp_path / "no-localappdata"
+    target = tmp_path / "out"
+    target.mkdir()
+    env = {
+        "APPDATA": str(appdata),
+        "ProgramFiles": str(program_files),
+        "LOCALAPPDATA": str(localappdata),
+    }
+
+    with caplog.at_level(logging.INFO):
+        assert run_smoke(str(target), env) == 0
+
+    components = program_files / "1C" / "1CE" / "components"
+    installations = localappdata / "1C" / "1cedtstart" / "installations"
+    assert f"EDT: корень {components}, глубина 2, установок: 0" in caplog.text
+    assert f"EDT: корень {installations}, глубина 3, установок: 0" in caplog.text
+    assert "smoke: edt=0, отброшено=0" in caplog.text
+    qtbot.addWidget(captured["window"])
+
+
+def test_run_smoke_adds_manual_root_and_logs_rejected(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any, caplog: Any
+) -> None:
+    """Ручной каталог (спека §1.4) добавляется к обходу глубиной 3 и логируется
+
+    так же, как умолчательные: путь, глубина, число найденного. Кандидат без
+    версии ни в одном звене цепочки уходит в `rejected` с причиной «нет
+    версии» — и лог называет её, а строка `smoke: edt=…` — числом отброшенных.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    appdata = tmp_path / "appdata"
+    manual_root = tmp_path / "manual"
+    candidate = manual_root / "unknown"
+    candidate.mkdir(parents=True)
+    (candidate / "1cedt.exe").write_text("")
+    save_settings(
+        appdata / "OneCStarter" / "settings.json",
+        Settings(edt_installations_root=str(manual_root)),
+    )
+    target = tmp_path / "out"
+    target.mkdir()
+    env = {
+        "APPDATA": str(appdata),
+        "ProgramFiles": str(tmp_path / "no-program-files"),
+        "LOCALAPPDATA": str(tmp_path / "no-localappdata"),
+    }
+
+    with caplog.at_level(logging.INFO):
+        assert run_smoke(str(target), env) == 0
+
+    assert f"EDT: корень {manual_root}, глубина 3, установок: 1" in caplog.text
+    assert f"EDT: отброшен {candidate}, причина: нет версии" in caplog.text
+    assert "smoke: edt=0, отброшено=1" in caplog.text
+    qtbot.addWidget(captured["window"])
+
+
+def test_run_smoke_skips_manual_root_when_not_set(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any, caplog: Any
+) -> None:
+    """Настройка пуста по умолчанию — обход не трогает никакой третий каталог."""
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    appdata = tmp_path / "appdata"
+    target = tmp_path / "out"
+    target.mkdir()
+    env = {
+        "APPDATA": str(appdata),
+        "ProgramFiles": str(tmp_path / "no-program-files"),
+        "LOCALAPPDATA": str(tmp_path / "no-localappdata"),
+    }
+
+    with caplog.at_level(logging.INFO):
+        assert run_smoke(str(target), env) == 0
+
+    assert caplog.text.count("EDT: корень") == 2, "только два умолчательных корня, без третьего"
+    qtbot.addWidget(captured["window"])

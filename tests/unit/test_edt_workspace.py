@@ -23,6 +23,7 @@ from onecstarter.services.edt import (
     EdtScan,
     EdtWorkspace,
     LaunchOutcome,
+    installations_note,
     scan_edt,
     settings_notes,
 )
@@ -287,6 +288,37 @@ class TestScan:
         assert h.workspace.status(p.id).installed is False
 
 
+class TestRejectedCount:
+    """Число отброшенных последнего обнаружения — для строки `smoke: edt=…`
+
+    в `run_smoke` (задача 7, спека §1.4). Подробности (путь, причина) в
+    `EdtWorkspace` не копятся — их логирует `ui/app.py::edt_discover`.
+    """
+
+    def test_defaults_to_zero_without_injection(self, tmp_path: Path) -> None:
+        ws = EdtWorkspace(
+            tmp_path / "edt.json",
+            discover=lambda: [],
+            edtstart=lambda: None,
+            editors=lambda kind: EditorResolution(None, "", "x"),
+        )
+        assert ws.last_rejected_count() == 0
+        ws.refresh_installations()
+        assert ws.last_rejected_count() == 0
+
+    def test_reflects_the_injected_count_after_refresh(self, tmp_path: Path) -> None:
+        ws = EdtWorkspace(
+            tmp_path / "edt.json",
+            discover=lambda: [],
+            edtstart=lambda: None,
+            editors=lambda kind: EditorResolution(None, "", "x"),
+            rejected_count=lambda: 2,
+        )
+        assert ws.last_rejected_count() == 0, "до первого обнаружения — ноль, не догадка"
+        ws.refresh_installations()
+        assert ws.last_rejected_count() == 2
+
+
 class TestLaunch:
     def test_started_with_full_command(self, tmp_path: Path) -> None:
         h = _harness(tmp_path, installed=INSTALLED)
@@ -471,6 +503,42 @@ class TestSettingsNotes:
         notes = settings_notes("", editors, lambda p: None)
         assert notes.vscode == r"Найден: C:\code\code.cmd"
         assert notes.antigravity == "Не найден — укажите путь в Настройках"  # noqa: RUF001
+
+
+class TestInstallationsNote:
+    """Подпись под полем «Каталог установок EDT» (спека §1.4, задача 7)."""
+
+    @pytest.mark.parametrize(
+        ("root", "count", "expected_fragment"),
+        [
+            ("", 0, "Не задан"),  # noqa: RUF001
+            (r"D:\EDT", 2, "Найдено установок: 2"),
+            (r"D:\EDT", 0, "Установок не найдено"),
+        ],
+    )
+    def test_installations_note(self, root: str, count: int, expected_fragment: str) -> None:
+        assert expected_fragment in installations_note(root, count)
+
+    def test_note_for_empty_root_names_both_default_places(self) -> None:
+        note = installations_note("", 0)
+        assert "Program Files" in note
+        assert "1cedtstart" in note
+
+    def test_note_for_empty_result_names_the_way_out(self) -> None:
+        # Третья формулировка не просто сообщает о неудаче, а называет действие,  # noqa: RUF003
+        # которым пользователь выберется сам (спека §1.4).
+        assert "1cedt.exe" in installations_note(r"D:\EDT", 0)
+
+    def test_settings_notes_carries_installations_field(self) -> None:
+        """`settings_notes` собирает `EdtNotes.installations` из тех же двух чисел."""
+        notes = settings_notes(
+            "",
+            lambda kind: EditorResolution(None, "", "x"),
+            lambda p: None,
+            r"D:\EDT",
+            3,
+        )
+        assert notes.installations == "Найдено установок: 3"
 
 
 class TestCliBusy:

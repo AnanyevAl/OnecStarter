@@ -58,6 +58,7 @@ __all__ = [
     "EdtStatus",
     "EdtWorkspace",
     "LaunchOutcome",
+    "installations_note",
     "scan_edt",
     "settings_notes",
 ]
@@ -95,14 +96,40 @@ class EdtNotes:
     jvm: str
     vscode: str
     antigravity: str
+    installations: str = ""
+
+
+def installations_note(root: str, count: int) -> str:
+    """Подпись под полем «Каталог установок EDT» (спека §1.4, задача 7).
+
+    Третья формулировка (каталог не задан, установок ноль) не сообщает о
+    неудаче, а называет действие: обход (`find_installations`) проверяет
+    и сам указанный каталог, поэтому годится и каталог с установками, и
+    каталог, где сразу лежит `1cedt.exe` — раскладку у пользователя
+    проверить нечем, и это единственная подсказка, которой он может
+    воспользоваться сам.
+    """  # noqa: RUF002
+    if not root:
+        return (
+            "Не задан — ищем в Program Files и "  # noqa: RUF001
+            r"%LOCALAPPDATA%\1C\1cedtstart\installations"
+        )
+    if count:
+        return f"Найдено установок: {count}"
+    return (
+        "Установок не найдено. Подойдёт и каталог с установками, "  # noqa: RUF001
+        "и сам каталог, в котором лежит 1cedt.exe"
+    )
 
 
 def settings_notes(
     jvm_dir: str,
     editors: Callable[[EditorKind], EditorResolution],
     jdk_version: Callable[[Path], str | None],
+    installations_root: str = "",
+    installations_count: int = 0,
 ) -> EdtNotes:
-    """Подписи под полями группы «EDT» в Настройках (спека §7)."""
+    """Подписи под полями группы «EDT» в Настройках (спека §7, §1.4)."""
     if not jvm_dir:
         jvm = (
             "Не задан — JDK подбирается из products.json, 1cedt.ini или соседних JDK"  # noqa: RUF001
@@ -116,7 +143,10 @@ def settings_notes(
         return f"Найден: {resolution.path}" if resolution.path is not None else resolution.note
 
     return EdtNotes(
-        jvm=jvm, vscode=note(EditorKind.VSCODE), antigravity=note(EditorKind.ANTIGRAVITY)
+        jvm=jvm,
+        vscode=note(EditorKind.VSCODE),
+        antigravity=note(EditorKind.ANTIGRAVITY),
+        installations=installations_note(installations_root, installations_count),
     )
 
 
@@ -140,6 +170,7 @@ class EdtWorkspace:
         discover: Callable[[], list[EdtInstallation]],
         edtstart: Callable[[], EdtStartRegistry | None],
         editors: Callable[[EditorKind], EditorResolution],
+        rejected_count: Callable[[], int] = lambda: 0,
         spawn: Callable[[LaunchCommand], int] = process.spawn,
         activate: Callable[[int], bool] = window_activate.activate_window,
         open_file: Callable[[str], None] = os.startfile,
@@ -149,6 +180,12 @@ class EdtWorkspace:
         self._discover = discover
         self._edtstart = edtstart
         self._editors = editors
+        # Число отброшенных последнего обнаружения (задача 7, спека §1.4) — тем
+        # же приёмом, что `discover`: подсчёт остаётся на стороне вызывающего
+        # (`ui/app.py::edt_discover`), здесь только хранится последнее значение
+        # для строки `smoke: edt=…` в `run_smoke`, без второго обхода дисков.
+        self._rejected_count = rejected_count
+        self._last_rejected_count = 0
         self._spawn = spawn
         self._activate = activate
         self._open_file = open_file
@@ -279,10 +316,20 @@ class EdtWorkspace:
 
     def refresh_installations(self) -> list[EdtInstallation]:
         self.set_installations(self._discover())
+        self._last_rejected_count = self._rejected_count()
         return self.installations()
 
     def installations(self) -> list[EdtInstallation]:
         return list(self._installations)
+
+    def last_rejected_count(self) -> int:
+        """Число отброшенных кандидатов последнего обнаружения (спека §1.4, задача 7).
+
+        Подробности (путь и причина) — только в логе `ui/app.py::edt_discover`
+        (инвариант 5 не позволяет копить их здесь как данные раздела); это
+        число — для итоговой строки `smoke: edt=…`, а не для UI раздела.
+        """  # noqa: RUF002
+        return self._last_rejected_count
 
     def installations_ready(self) -> bool:
         return self._installations_ready
