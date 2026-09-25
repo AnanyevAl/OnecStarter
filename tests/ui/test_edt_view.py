@@ -858,7 +858,9 @@ def test_cli_finish_updates_console_and_menu(  # type: ignore[no-untyped-def]
     harness.exit_codes["code"] = 3
     view.cli_build(p.id)
     harness.pending[0]()  # поток-демон «дождался»
-    assert view.console().state_label().text() == "завершено, код 3"
+    # Неизвестный код команды больше не проходит молча (Task 9 спеки v3.2,
+    # domain.edt_cli.status_text): хвост «код команды или JVM» — намеренно.
+    assert view.console().state_label().text() == "завершено, код 3 (код команды или JVM)"
     assert view.console().interrupt_button().isHidden() is True
     assert view.console().result_button().isHidden() is True
     assert view.model().item(0, 0).icon().isNull()

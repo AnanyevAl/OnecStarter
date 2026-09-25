@@ -20,6 +20,7 @@ from onecstarter.domain.edt_cli import (
     mark_in_workspace,
     parse_project_location,
     quote_cli_arg,
+    status_text,
     workspace_projects,
     wrap_console_utf8,
 )
@@ -370,3 +371,30 @@ class TestParseProjectLocation:
 
     def test_blob_roundtrip_matches_real_layout(self) -> None:
         assert location_blob("file:/E:/tmp/edt-test/dev_tools") == DEV_TOOLS_LOCATION
+
+
+class TestStatusText:
+    @pytest.mark.parametrize(
+        ("code", "fragment"),
+        [
+            (0, ""),
+            (1, "не удалось запустить"),
+            (13, "разрядность"),
+            (200, "общая ошибка"),
+            (201, "файл скрипта"),
+            (202, "занята другим приложением"),
+            (203, "таймауту"),
+            (204, "исключением"),
+            (205, "таймаут"),
+            (137, "сигналом"),  # 137 - 128 = 9
+            (128, "код команды или JVM"),  # граница: не сигнал
+            (256, "код команды или JVM"),  # граница сверху
+            (42, "код команды или JVM"),  # неизвестный код — не молчим о нём  # noqa: RUF003
+        ],
+    )
+    def test_status_text(self, code: int, fragment: str) -> None:
+        assert fragment in status_text(code)
+
+    def test_signal_number_is_named(self) -> None:
+        # [Ф] Э7: «128 + сигнал» из `help --status-codes`, номер — код минус 128
+        assert "9" in status_text(137)

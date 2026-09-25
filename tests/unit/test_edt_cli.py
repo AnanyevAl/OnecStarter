@@ -424,6 +424,26 @@ class TestFinishAndInterrupt:
         assert "[12:00:00] ■ завершено, код 0" in journal
         assert h.jobs[0].closed is True
 
+    def test_finish_journal_carries_the_explanation(self, tmp_path: Path) -> None:
+        # Шапка консоли живёт до следующего запуска, журнал остаётся — и именно
+        # журнал пользователь присылает в поддержку (Task 9 спеки v3.2).
+        h = Harness(tmp_path)
+        p = h.project()
+        run = h.cli.start(p.id, "Проверить проекты", "validate …")
+        h.cli.finish(run, 204)
+        journal = h.cli.journal_path(p.id).read_text(encoding="utf-8")
+        assert "код 204" in journal
+        assert "исключением" in journal
+
+    def test_finish_unknown_code_none_omits_explanation(self, tmp_path: Path) -> None:
+        # Код None — процесс не дал кода вовсе; расшифровывать нечего (Task 9 спеки v3.2).
+        h = Harness(tmp_path)
+        p = h.project()
+        run = h.cli.start(p.id, "Проверить проекты", "validate …")
+        h.cli.finish(run, None)
+        journal = h.cli.journal_path(p.id).read_text(encoding="utf-8")
+        assert "■ завершено, код неизвестен" in journal
+
     def test_interrupt_closes_job_and_marks_interrupted(self, tmp_path: Path) -> None:
         h = Harness(tmp_path)
         p = h.project()

@@ -14,6 +14,11 @@ Workspace, открытый в EDT, для CLI занят ([Д] спека §0-�
 наблюдатель (`ui/edt/cli_watch.py`) через сигнал Qt, поэтому `_runs`/`_results`
 не нуждаются в блокировке.
 
+`finish()` пишет в журнал не голый код, а код с расшифровкой из
+`domain/edt_cli.py::status_text` (Task 9 спеки v3.2): журнал — файл, который
+пользователь присылает в поддержку, и живёт дольше шапки консоли (та расшифровку
+уже показывала, но только до следующего запуска).
+
 `OSError` журнала никогда не уходит наружу голым (правка I1 финального ревью
 плана 2; тот же принцип, что у `services/servers.py::start`/`log_event`): в `start`
 отказ ротации — best-effort событие и запуск продолжается, отказ записи событий
@@ -41,6 +46,7 @@ from onecstarter.domain.edt_cli import (
     build_cli_script_command,
     cli_ini_text,
     parse_project_location,
+    status_text,
     wrap_console_utf8,
 )
 from onecstarter.domain.launch import LaunchCommand
@@ -364,7 +370,11 @@ class EdtCli:
         if self._runs.get(project_id) is not run:
             return  # прервано раньше или уже идёт другой run — результат не наш
         del self._runs[project_id]
-        text = f"■ завершено, код {code}" if code is not None else "■ завершено, код неизвестен"
+        if code is None:
+            text = "■ завершено, код неизвестен"  # процесс не дал кода — расшифровывать нечего
+        else:
+            explanation = status_text(code)
+            text = f"■ завершено, код {code}" + (f" ({explanation})" if explanation else "")
         self._log_event(project_id, text)
         self._results[project_id] = CliResult(run.label, code, False, run.result_file)
         self._workspace.clear_cli_busy(project_id)
