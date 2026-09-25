@@ -1,4 +1,4 @@
-"""Тесты сканера процессов: `NullScanner` и `PsutilScanner`.
+"""Тесты сканера процессов: `NullScanner` и `WindowsProcessScanner`.
 
 Живой ragent/1С не участвует (правило проекта — не запускать процессы 1С):
 интеграционный тест поднимает подставной python-процесс с ragent-подобным
@@ -16,7 +16,8 @@ import pytest
 
 from onecstarter import perf
 from onecstarter.platform_1c import process_scan
-from onecstarter.platform_1c.process_scan import NullScanner, PsutilScanner
+from onecstarter.platform_1c.process_scan import NullScanner, WindowsProcessScanner
+from onecstarter.platform_1c.process_snapshot import SnapshotError
 
 
 class TestNullScanner:
@@ -24,7 +25,7 @@ class TestNullScanner:
         assert NullScanner().snapshot(frozenset({"ragent.exe", "rmngr.exe"})) == []
 
 
-class TestPsutilScanner:
+class TestWindowsProcessScanner:
     @pytest.fixture
     def fake_process(self, tmp_path: Path) -> Iterator[psutil.Process]:
         popen = subprocess.Popen(
@@ -48,7 +49,7 @@ class TestPsutilScanner:
         # Имя процесса python.exe/python3.13.exe зависит от машины — берём
         # фактическое имя у самого процесса, а не угадываем интерпретатор.  # noqa: RUF003
         name = fake_process.name().casefold()
-        result = PsutilScanner().snapshot(frozenset({name}))
+        result = WindowsProcessScanner().snapshot(frozenset({name}))
         found = next((p for p in result if p.pid == fake_process.pid), None)
         assert found is not None
         assert found.argv is not None
@@ -58,7 +59,7 @@ class TestPsutilScanner:
     def test_unrelated_name_does_not_match_fake_process(
         self, fake_process: psutil.Process
     ) -> None:
-        result = PsutilScanner().snapshot(frozenset({"нет-такого.exe"}))
+        result = WindowsProcessScanner().snapshot(frozenset({"нет-такого.exe"}))
         assert all(p.pid != fake_process.pid for p in result)
 
 
@@ -100,12 +101,27 @@ class _FakeProcess:
         return self._argv
 
 
+def _with_snapshot(
+    monkeypatch: pytest.MonkeyPatch, entries: list[tuple[int, str]]
+) -> None:
+    monkeypatch.setattr(process_scan, "snapshot_all", lambda: list(entries))
+
+
 def _with_processes(
     monkeypatch: pytest.MonkeyPatch, processes: list[_FakeProcess]
 ) -> None:
-    monkeypatch.setattr(
-        process_scan.psutil, "process_iter", lambda attrs: list(processes)
-    )
+    """Снимок и чтение деталей — оба из одного и того же списка фейков.
+
+    РАСХОЖДЕНИЕ С БРИФОМ: раньше эта подмена стояла на `psutil.process_iter` —
+    список процессов давал он же. Новый сканер список берёт из `snapshot_all()`,
+    а `psutil.Process(pid)` зовёт только у совпавших по имени, поэтому подмена
+    переехала на обе точки сразу. Тела тестов ниже не менялись — сместился
+    только сам механизм подмены в общем хелпере.
+    """  # noqa: RUF002
+    by_pid = {process.pid: process for process in processes}
+    entries = [(pid, str(proc.info["name"])) for pid, proc in by_pid.items()]
+    _with_snapshot(monkeypatch, entries)
+    monkeypatch.setattr(process_scan, "_process_by_pid", lambda pid: by_pid[pid])
 
 
 def test_details_are_read_only_for_matching_processes(
@@ -115,7 +131,7 @@ def test_details_are_read_only_for_matching_processes(
     others = [_FakeProcess(pid, f"chrome{pid}.exe") for pid in range(2, 40)]
     _with_processes(monkeypatch, [matching, *others])
 
-    result = PsutilScanner().snapshot(frozenset({"ragent.exe"}))
+    result = WindowsProcessScanner().snapshot(frozenset({"ragent.exe"}))
 
     assert [p.pid for p in result] == [1]
     assert matching.detail_calls == 2  # exe + cmdline
@@ -133,7 +149,7 @@ def test_access_denied_on_one_field_keeps_the_other(
     )
     _with_processes(monkeypatch, [process])
 
-    found = PsutilScanner().snapshot(frozenset({"ragent.exe"}))[0]
+    found = WindowsProcessScanner().snapshot(frozenset({"ragent.exe"}))[0]
 
     assert found.executable is None
     assert found.argv == ("ragent", "-port", "1540")
@@ -153,7 +169,7 @@ def test_access_denied_on_cmdline_keeps_the_exe(
     )
     _with_processes(monkeypatch, [process])
 
-    found = PsutilScanner().snapshot(frozenset({"ragent.exe"}))[0]
+    found = WindowsProcessScanner().snapshot(frozenset({"ragent.exe"}))[0]
 
     assert found.executable == Path(r"C:\1cv8\bin\ragent.exe")
     assert found.argv is None
@@ -172,7 +188,7 @@ def test_process_that_died_between_name_and_details_is_skipped(
         [_FakeProcess(9, "ragent.exe", exe_error=psutil.NoSuchProcess(9))],
     )
 
-    assert PsutilScanner().snapshot(frozenset({"ragent.exe"})) == []
+    assert WindowsProcessScanner().snapshot(frozenset({"ragent.exe"})) == []
 
 
 def test_label_is_accepted_and_does_not_change_the_result(
@@ -180,8 +196,8 @@ def test_label_is_accepted_and_does_not_change_the_result(
 ) -> None:
     _with_processes(monkeypatch, [_FakeProcess(3, "ragent.exe")])
 
-    labelled = PsutilScanner("servers").snapshot(frozenset({"ragent.exe"}))
-    plain = PsutilScanner().snapshot(frozenset({"ragent.exe"}))
+    labelled = WindowsProcessScanner("servers").snapshot(frozenset({"ragent.exe"}))
+    plain = WindowsProcessScanner().snapshot(frozenset({"ragent.exe"}))
 
     assert labelled == plain
 
@@ -196,7 +212,7 @@ def test_scan_is_measured_with_counters(
     path = perf.setup({"APPDATA": str(tmp_path), perf.ENV_NAME: "1"})
     assert path is not None
     try:
-        PsutilScanner("servers").snapshot(frozenset({"ragent.exe"}))
+        WindowsProcessScanner("servers").snapshot(frozenset({"ragent.exe"}))
         for handler in logging.getLogger("onecstarter.perf").handlers:
             handler.flush()
         line = path.read_text(encoding="utf-8").strip()
@@ -214,7 +230,7 @@ def test_scan_without_label_still_names_the_stage(
     path = perf.setup({"APPDATA": str(tmp_path), perf.ENV_NAME: "1"})
     assert path is not None
     try:
-        PsutilScanner().snapshot(frozenset({"ragent.exe"}))
+        WindowsProcessScanner().snapshot(frozenset({"ragent.exe"}))
         for handler in logging.getLogger("onecstarter.perf").handlers:
             handler.flush()
         line = path.read_text(encoding="utf-8").strip()
@@ -230,7 +246,85 @@ def test_scan_writes_nothing_when_perf_is_off(
     _with_processes(monkeypatch, [_FakeProcess(1, "ragent.exe")])
     perf.setup({"APPDATA": str(tmp_path)})
     try:
-        PsutilScanner("servers").snapshot(frozenset({"ragent.exe"}))
+        WindowsProcessScanner("servers").snapshot(frozenset({"ragent.exe"}))
     finally:
         perf.reset_for_tests()
     assert not (tmp_path / "OneCStarter" / "logs" / "perf.log").exists()
+
+
+def test_details_are_read_once_per_process(monkeypatch: pytest.MonkeyPatch) -> None:
+    process = _FakeProcess(1, "ragent.exe")
+    _with_snapshot(monkeypatch, [(1, "ragent.exe"), (2, "chrome.exe")])
+    monkeypatch.setattr(process_scan, "_process_by_pid", lambda pid: process)
+
+    scanner = WindowsProcessScanner()
+    first = scanner.snapshot(frozenset({"ragent.exe"}))
+    second = scanner.snapshot(frozenset({"ragent.exe"}))
+
+    assert first == second
+    assert process.detail_calls == 2  # exe + cmdline, ОДИН раз на оба скана  # noqa: RUF003
+
+
+def test_same_pid_with_new_name_is_read_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Windows переиспользует PID. Без сверки имени кэш подставил бы данные
+    # умершего процесса живому — и мы отрапортовали бы о работающем сервере,  # noqa: RUF003
+    # которого нет.
+    first_process = _FakeProcess(7, "ragent.exe", argv=["ragent", "-port", "1540"])
+    second_process = _FakeProcess(7, "rmngr.exe", argv=["rmngr", "-port", "1541"])
+    holder = {"current": first_process}
+    monkeypatch.setattr(process_scan, "_process_by_pid", lambda pid: holder["current"])
+
+    scanner = WindowsProcessScanner()
+    _with_snapshot(monkeypatch, [(7, "ragent.exe")])
+    assert scanner.snapshot(frozenset({"ragent.exe", "rmngr.exe"}))[0].name == "ragent.exe"
+
+    holder["current"] = second_process
+    _with_snapshot(monkeypatch, [(7, "rmngr.exe")])
+    result = scanner.snapshot(frozenset({"ragent.exe", "rmngr.exe"}))[0]
+
+    assert result.name == "rmngr.exe"
+    assert result.argv == ("rmngr", "-port", "1541")
+    assert second_process.detail_calls == 2
+
+
+def test_cache_drops_processes_missing_from_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Без удаления кэш рос бы на каждом умершем процессе: 17 тысяч сканов  # noqa: RUF003
+    # в сутки — тысячи мёртвых записей.
+    monkeypatch.setattr(
+        process_scan, "_process_by_pid", lambda pid: _FakeProcess(pid, "ragent.exe")
+    )
+    scanner = WindowsProcessScanner()
+    _with_snapshot(monkeypatch, [(1, "ragent.exe"), (2, "ragent.exe")])
+    scanner.snapshot(frozenset({"ragent.exe"}))
+    assert scanner.cached_pids() == {1, 2}
+
+    _with_snapshot(monkeypatch, [(2, "ragent.exe")])
+    scanner.snapshot(frozenset({"ragent.exe"}))
+    assert scanner.cached_pids() == {2}
+
+
+def test_access_denied_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Недоступный чужой процесс — именно тот, кто дорог: без кэша он платил бы
+    # пошлину на каждом скане вечно.
+    process = _FakeProcess(
+        3, "ragent.exe", exe_error=psutil.AccessDenied, cmdline_error=psutil.AccessDenied
+    )
+    _with_snapshot(monkeypatch, [(3, "ragent.exe")])
+    monkeypatch.setattr(process_scan, "_process_by_pid", lambda pid: process)
+
+    scanner = WindowsProcessScanner()
+    scanner.snapshot(frozenset({"ragent.exe"}))
+    scanner.snapshot(frozenset({"ragent.exe"}))
+
+    assert process.detail_calls == 2  # один раз на оба скана  # noqa: RUF003
+    assert scanner.snapshot(frozenset({"ragent.exe"}))[0].executable is None
+
+
+def test_snapshot_failure_gives_empty_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    def boom() -> list[tuple[int, str]]:
+        raise SnapshotError(5, "нет доступа")
+
+    monkeypatch.setattr(process_scan, "snapshot_all", boom)
+    assert WindowsProcessScanner().snapshot(frozenset({"ragent.exe"})) == []

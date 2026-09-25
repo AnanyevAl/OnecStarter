@@ -42,7 +42,7 @@ from onecstarter.platform_1c.editors import EditorKind, find_editor
 from onecstarter.platform_1c.edt_discovery import default_roots, discover_edt, read_jdk_version
 from onecstarter.platform_1c.edtstart_registry import default_edtstart_root, read_registry
 from onecstarter.platform_1c.job import Job, NullJob, ServerJob
-from onecstarter.platform_1c.process_scan import NullScanner, ProcessScanner, PsutilScanner
+from onecstarter.platform_1c.process_scan import NullScanner, ProcessScanner, WindowsProcessScanner
 from onecstarter.platform_1c.registry import load_conventions, load_server_conventions
 from onecstarter.platform_1c.server_discovery import ServerInstallation, server_installations
 from onecstarter.platform_1c.server_spawn import spawn_logged, spawn_server
@@ -752,7 +752,7 @@ def _build_main_window(
     `start_probe`, которую зовёт `main()` рядом с `tasks.start()`.
 
     `process_scanner` — та же инъекция для `run_smoke`, что и
-    `autostart_registry`: `None` собирает настоящий `PsutilScanner`,
+    `autostart_registry`: `None` собирает настоящий `WindowsProcessScanner`,
     а самопроверка сборки подставляет `NullScanner` — она поднимает
     настоящее окно и не должна сканировать процессы машины сборщика
     (тот же довод, что у долга №8 T-04.7).
@@ -1042,7 +1042,7 @@ def _build_main_window(
         cli_watcher.setParent(window)  # время жизни — окно, как у мониторов  # noqa: RUF003
 
     monitor = ServerMonitor(
-        process_scanner if process_scanner is not None else PsutilScanner("servers"),
+        process_scanner if process_scanner is not None else WindowsProcessScanner("servers"),
         parent=window,
     )
 
@@ -1060,7 +1060,7 @@ def _build_main_window(
     # не для кого, а `main()`/`run_smoke` получают `None` пятым элементом.  # noqa: RUF003
     if edt_workspace is not None and edt_view is not None:
         edt_monitor = EdtMonitor(
-            process_scanner if process_scanner is not None else PsutilScanner("edt"),
+            process_scanner if process_scanner is not None else WindowsProcessScanner("edt"),
             edt_workspace.projects,
             edt_discover,
             parent=window,

@@ -1683,19 +1683,22 @@ def test_build_main_window_creates_servers_view_with_journal_panel(
 
 
 def test_run_smoke_uses_null_scanner(tmp_path: Any, monkeypatch: Any, qtbot: Any) -> None:
-    """ЗАЩИТНЫЙ ТЕСТ: smoke не создаёт `PsutilScanner` — не сканирует машину
+    """ЗАЩИТНЫЙ ТЕСТ: smoke не создаёт `WindowsProcessScanner` — не сканирует
 
-    сборщика (долг №8, T-04.7, тот же довод, что у `NullRegistry`). Мутация
-    «`run_smoke` берёт настоящий `PsutilScanner()` вместо инъекции» обязана
-    уронить этот тест (Task 17, мутационная стадия, пункт 10).
+    машину сборщика (долг №8, T-04.7, тот же довод, что у `NullRegistry`).
+    Мутация «`run_smoke` берёт настоящий `WindowsProcessScanner()` вместо
+    инъекции» обязана уронить этот тест (Task 17, мутационная стадия, пункт 10).
+    Класс переименован из `PsutilScanner` в задаче 2 вехи 3.2.2 — имя здесь
+    обновлено следом, иначе подмена атрибута молча перестала бы что-либо
+    проверять.
     """  # noqa: RUF002
     monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
     captured = _capture_window(monkeypatch)
 
     def bomb(*_args: Any, **_kwargs: Any) -> Any:
-        raise AssertionError("smoke не должен создавать PsutilScanner")
+        raise AssertionError("smoke не должен создавать WindowsProcessScanner")
 
-    monkeypatch.setattr(app_module, "PsutilScanner", bomb)
+    monkeypatch.setattr(app_module, "WindowsProcessScanner", bomb)
     appdata = tmp_path / "appdata"
     target = tmp_path / "out"
     target.mkdir()

@@ -1,25 +1,24 @@
-"""Снимок процессов серверов 1С: `psutil` и его пустая заглушка.
+"""Список процессов — снимок Toolhelp, детали (`exe`/`cmdline`) — `psutil`.
 
-Механизм скана выбран экспериментом, не догадкой ([Ф] 26.08.2026, замер В3,
-`docs/research/t07-protocol.md`): тёплый снимок `psutil` 7.x на 659 процессах
-берёт ~90 мс против ~0,8 с у WMI (`Get-CimInstance Win32_Process`) — в 9 раз
-дешевле, что важно при периодическом скане (§4.4 спеки). Тот же замер:
-`psutil` отдаёт путь `exe` SYSTEM-процессов без повышения прав (107/107
-в замере) — WMI не отдаёт вовсе (0/107), а значит без `psutil` версия
-непрозрачного чужого сервера была бы не видна.
+Список процессов даёт не `psutil`, а `process_snapshot.snapshot_all()` (задача 1,
+спека 3.2.2 «снимок процессов» §0): `Process.name()`/`process_iter` на Windows
+читают путь образа, а это обращение к процессу — на сервере заказчика такое
+обращение проходит через агент безопасности и стоит ~15 мс ([Ф] замер
+25.09.2026), тогда как снимок Toolhelp не открывает ни одного процесса.
+`psutil` остаётся здесь только для `exe`/`cmdline` у процессов, чьё имя из
+снимка совпало с одним из искомых, — таких на сервере заказчика два-три
+из восьмисот, и их детали кэшируются по PID (см. `WindowsProcessScanner`).
 
-Командная строка (`cmdline`) чужого процесса всё равно недоступна без
-повышения ([Ф] В1) — это ограничение уровня ОС, а не выбора библиотеки:
-других пользователей и служб SYSTEM `cmdline`/`exe`-ограничение накрывает
-одинаково что WMI, что `psutil`, что `CommandLineToArgvW`. Поэтому
-недоступные поля `ProcessInfo` — честный `None`, а не выдумка, и снимок не
-падает целиком из-за одного недоступного или исчезнувшего процесса:
-`AccessDenied` на отдельном поле `psutil` сам превращает в `None`
-(`Process.as_dict`), `NoSuchProcess` на процессе `psutil` сам глотает внутри
-`process_iter` — здесь это подстраховано ещё раз на случай гонки между
-проверкой имени и чтением полей.
+`exe()`/`cmdline()` читаются ПООТДЕЛЬНОСТИ, и `AccessDenied` на одном не
+отменяет другое — так вело себя старое `Process.as_dict` (переводил
+недоступное поле в `None` сам): общий `try` вокруг обоих чтений потерял бы
+доступный `argv` у процесса с недоступным `exe` ([Ф] В1: чужой процесс или
+служба SYSTEM). `NoSuchProcess` на любом из полей — процесс исчез между
+снимком и чтением деталей, запись в результат не попадает вовсе (поведение
+3.2.1 §4, не меняется).
 """  # noqa: RUF002
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -27,13 +26,16 @@ from typing import Protocol
 import psutil as psutil  # реэкспорт: process_scan.psutil в тестах
 
 from onecstarter import perf
+from onecstarter.platform_1c.process_snapshot import SnapshotError, snapshot_all
 
 __all__ = [
     "NullScanner",
     "ProcessInfo",
     "ProcessScanner",
-    "PsutilScanner",
+    "WindowsProcessScanner",
 ]
+
+_log = logging.getLogger("onecstarter.process_scan")
 
 
 @dataclass(frozen=True)
@@ -48,107 +50,101 @@ class ProcessScanner(Protocol):
     def snapshot(self, names: frozenset[str]) -> list[ProcessInfo]: ...
 
 
-class PsutilScanner:
-    """Настоящий снимок процессов. Единственное место в проекте с `psutil`.
+def _process_by_pid(pid: int) -> psutil.Process:
+    """Отдельной функцией — тест подменяет её, не трогая psutil целиком."""
+    return psutil.Process(pid)
 
-    Имя берётся у всех процессов, `exe`/`cmdline` — только у совпавших.
 
-    **[Ф] проверено по исходникам psutil 7.2.2** (`psutil/__init__.py`,
-    `psutil/_pswindows.py`, `psutil/arch/windows/proc.c` — тот дистрибутив,
-    что стоит в `.venv` проекта): имя процесса на Windows — НЕ один системный
-    вызов на весь список. `Process.name()` вызывает `self.exe()`, а тот на
-    каждый ещё не виденный процесс делает пару вызовов ядра: `OpenProcess`
-    (проверка, что процесс жив) и `NtQuerySystemInformation` с классом
-    `SystemProcessIdInformation` (путь исполняемого файла, из которого берётся
-    basename). Прежняя редакция запрашивала это поле у всех процессов системы
-    ради семи — расточительность была настоящей, но не по той причине,
-    которую называла первая редакция этого докстринга.
+class WindowsProcessScanner:
+    """Снимок Toolhelp для списка, `psutil` — только для деталей совпавших.
 
-    Экономия правки реальна по другой причине: `Process.name()` (публичный
-    класс, `psutil/__init__.py`) кэширует результат в `self._name`
-    БЕЗУСЛОВНО, с первого успешного вызова, а `process_iter()` держит сами
-    объекты `Process` между вызовами в собственном глобальном кэше — так что
-    для процесса, уже встреченного на предыдущем скане, имя отдаётся без
-    обращения к ОС вообще. `cmdline()` кэшируется точно так же скудно, как
-    описано изначально: у него нет ни этого кэша, ни `memoize_when_activated`
-    на уровне `_pswindows` — каждый вызов идёт в ОС заново. Поэтому старая
-    редакция платила за `cmdline()` у всех процессов на КАЖДОМ скане (перечитывая
-    его каждые 5 с), а не только на первом — именно это и есть настоящая
-    дороговизна, которую правка снимает.
+    Прежнее имя (`PsutilScanner`) стало бы ложным указателем: список процессов
+    даёт теперь Windows одним снимком, а `psutil` остаётся только там, где нужны
+    `exe` и `argv`, — у двух-трёх процессов вместо восьмисот.
 
-    Следствие, важное для чтения `perf.log`: раз кэш имени пуст до первого
-    скана, ПЕРВЫЙ скан после запуска остаётся дорогим и после этой правки —
-    он платит за имя всех процессов так же, как платил раньше. Дешевеют
-    только повторные сканы (спека 3.2.1, §2, §8, §9). Замер 22.09.2026 на
-    651 процессе: 81–128 мс против 4,7–5,7 мс при том же результате — то
-    сравнение снято на ТЁПЛОМ повторном скане (спека 3.2.1, §4).
+    Детали кэшируются по PID: на сервере заказчика они стоят ~54 мс на пару
+    процессов, больше самого снимка ([Ф], спека 3.2.2 «снимок процессов» §3).
     """  # noqa: RUF002
 
     def __init__(self, label: str = "") -> None:
-        # Метка попадает в perf-строку (задача 3) и отличает скан серверов
-        # от скана EDT: оба монитора держат свой экземпляр сканера.  # noqa: RUF003
-        # На результат не влияет.  # noqa: RUF003
         self._label = label
+        # pid -> (имя на момент чтения, exe, argv). Имя хранится, чтобы отличить
+        # переиспользованный PID: Windows выдаёт номера умерших процессов новым,
+        # и без сверки мы отдали бы данные покойника живому процессу.
+        self._details: dict[int, tuple[str, Path | None, tuple[str, ...] | None]] = {}
+
+    def cached_pids(self) -> set[int]:
+        """Для тестов: какие PID сейчас в кэше деталей."""
+        return set(self._details)
 
     def snapshot(self, names: frozenset[str]) -> list[ProcessInfo]:
-        # `stage` — литерал: метка приходит из кода проводки окна
-        # ("servers"/"edt", инвариант 5), не из файлов, окружения
-        # или самих процессов.
         stage = f"скан процессов ({self._label})" if self._label else "скан процессов"
         with perf.measure(stage) as counters:
+            try:
+                entries = snapshot_all()
+            except SnapshotError as error:
+                # Тот же исход, что у прежнего отказа скана: пустой список,  # noqa: RUF003
+                # карточки покажут «не работает», причина — в логе.
+                _log.warning("снимок процессов не удался: %s", error.strerror)
+                counters["просмотрено"] = 0
+                counters["совпало"] = 0
+                return []
+
+            alive = {pid for pid, _name in entries}
+            # Записи умерших процессов уходят вместе с ними, иначе кэш растёт  # noqa: RUF003
+            # на каждом завершившемся процессе до конца сессии.
+            for pid in list(self._details):
+                if pid not in alive:
+                    del self._details[pid]
+
             result: list[ProcessInfo] = []
-            seen = 0
-            for process in psutil.process_iter(attrs=["pid", "name"]):
-                seen += 1
-                try:
-                    info = process.info
-                except (psutil.AccessDenied, psutil.NoSuchProcess):
+            for pid, name in entries:
+                if name.casefold() not in names:
                     continue
-                name = info.get("name")
-                if name is None or name.casefold() not in names:
-                    continue
-                details = _details_of(process)
+                details = self._details_of(pid, name)
                 if details is None:
-                    # Процесс умер между чтением имени и чтением деталей.
-                    # Прежняя редакция теряла его тем же способом (`continue`  # noqa: RUF003
-                    # на NoSuchProcess), и это правильное поведение: отдать
-                    # запись с пустыми полями значило бы выдумать факт.  # noqa: RUF003
                     continue
                 executable, argv = details
                 result.append(
-                    ProcessInfo(pid=info["pid"], name=name, executable=executable, argv=argv)
+                    ProcessInfo(pid=pid, name=name, executable=executable, argv=argv)
                 )
-            # Счётчики заполняются ДО выхода из блока — `measure` читает
-            # словарь в `finally`, и дописать в него после выхода поздно.
-            counters["просмотрено"] = seen
+            counters["просмотрено"] = len(entries)
             counters["совпало"] = len(result)
             return result
 
+    def _details_of(
+        self, pid: int, name: str
+    ) -> tuple[Path | None, tuple[str, ...] | None] | None:
+        """`exe` и `argv` процесса; `None` — процесса уже нет.
 
-def _details_of(
-    process: psutil.Process,
-) -> tuple[Path | None, tuple[str, ...] | None] | None:
-    """`exe` и `cmdline` совпавшего процесса. `None` — процесса уже нет.
-
-    Поля читаются ПООТДЕЛЬНОСТИ, и `AccessDenied` на одном не отменяет
-    другое: ровно так вёл себя `Process.as_dict` в прежней редакции —
-    он переводил каждое недоступное поле в `None` сам. Общий `try`
-    вокруг обоих чтений молча потерял бы доступный `argv` у процесса
-    с недоступным `exe` ([Ф] В1: чужой процесс или служба SYSTEM).
-    """  # noqa: RUF002
-    try:
-        exe = process.exe()
-    except psutil.NoSuchProcess:
-        return None
-    except psutil.AccessDenied:
-        exe = None
-    try:
-        cmdline = process.cmdline()
-    except psutil.NoSuchProcess:
-        return None
-    except psutil.AccessDenied:
-        cmdline = None
-    return (Path(exe) if exe else None, tuple(cmdline) if cmdline else None)
+        `AccessDenied` кэшируется как `None` наравне с успехом: недоступный
+        чужой процесс (служба SYSTEM) — именно тот, кто дорог, и повторять
+        отказ на каждом скане значило бы сохранить половину прежней цены.
+        `NoSuchProcess` не кэшируется: процесса нет, записи о нём не нужно.
+        """  # noqa: RUF002
+        cached = self._details.get(pid)
+        if cached is not None and cached[0] == name:
+            return cached[1], cached[2]
+        try:
+            process = _process_by_pid(pid)
+        except psutil.NoSuchProcess:
+            return None
+        try:
+            exe = process.exe()
+        except psutil.NoSuchProcess:
+            return None
+        except psutil.AccessDenied:
+            exe = None
+        try:
+            cmdline = process.cmdline()
+        except psutil.NoSuchProcess:
+            return None
+        except psutil.AccessDenied:
+            cmdline = None
+        executable = Path(exe) if exe else None
+        argv = tuple(cmdline) if cmdline else None
+        self._details[pid] = (name, executable, argv)
+        return executable, argv
 
 
 class NullScanner:
