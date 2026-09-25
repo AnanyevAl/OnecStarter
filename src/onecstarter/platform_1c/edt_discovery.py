@@ -26,6 +26,7 @@ from onecstarter.platform_1c.edtstart_registry import EdtStartRegistry
 __all__ = [
     "EdtDiscovery",
     "EdtRoot",
+    "EdtRootScan",
     "default_roots",
     "discover_edt",
     "find_installations",
@@ -143,16 +144,38 @@ def _read_ini(folder: Path) -> str:
 
 
 @dataclass(frozen=True)
+class EdtRootScan:
+    """Итог обхода одного корня — для лога обнаружения (спека §1.4, задача 7).
+
+    `exists` отделяет «каталог существует и в нём `found` установок»
+    от «каталога нет вовсе»: обе картины дают `found == 0`, а ведут к
+    противоположным следующим шагам (искали не там / искали там, где надо, но
+    пусто). Раскладку у пользователя проверить нечем, лог — единственный
+    канал, и без `exists` он отвечает на этот вопрос только наполовину.
+    """  # noqa: RUF002
+
+    path: Path
+    max_depth: int
+    exists: bool
+    found: int
+
+
+@dataclass(frozen=True)
 class EdtDiscovery:
-    """Что нашли и что отбросили.
+    """Что нашли, что отбросили и какие корни обошли.
 
     `rejected` — не диагностика ради диагностики: раскладку каталога у
     пользователя проверить нечем (спека §1.5), и лог остаётся единственным
-    способом узнать, угадали мы или нет.
+    способом узнать, угадали мы или нет. `roots` — по той же причине: без
+    него логированию обнаружения (`ui/app.py::edt_discover`) пришлось бы
+    обходить корни ещё раз ради одних только чисел для лога — тот же путь
+    диска дважды за вызов. Здесь обход один, а итог по каждому корню
+    достаётся тому, кто уже идёт по дискам (`discover_edt`).
     """  # noqa: RUF002
 
     installations: list[EdtInstallation]
     rejected: list[tuple[Path, str]]
+    roots: list[EdtRootScan]
 
 
 def _version_of(folder: Path, product: EdtStartProduct | None) -> str | None:
@@ -195,8 +218,15 @@ def discover_edt(
     }
     folders: dict[str, Path] = {}
     auto: list[tuple[str, Path]] = []
+    scanned: list[EdtRootScan] = []
     for root in roots:
+        # `is_dir()` — один дешёвый вызов stat, не обход: сам обход
+        # (`find_installations`, рекурсивный) по-прежнему ровно один на корень.
+        # Досчитывать существование отдельным проходом значило бы возвращать
+        # тот самый двойной обход, которого эта раздача чисел и избегает.
+        exists = root.path.is_dir()
         installations, jdks = find_installations(root)
+        scanned.append(EdtRootScan(root.path, root.max_depth, exists, len(installations)))
         for folder in installations:
             folders.setdefault(os.path.normcase(str(folder / EDT_EXE)), folder)
         # `find_installations` отдаёт корень JDK ([Ф] требует `_is_jdk`, каталог
@@ -241,4 +271,6 @@ def discover_edt(
                 jvm_source=picked[1] if picked else "",
             )
         )
-    return EdtDiscovery(sorted(found, key=lambda item: item.version, reverse=True), rejected)
+    return EdtDiscovery(
+        sorted(found, key=lambda item: item.version, reverse=True), rejected, scanned
+    )

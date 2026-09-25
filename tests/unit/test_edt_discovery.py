@@ -2,9 +2,13 @@
 
 from pathlib import Path
 
+import pytest
+
+import onecstarter.platform_1c.edt_discovery as edt_discovery_module
 from onecstarter.domain.edt import EdtStartProduct
 from onecstarter.platform_1c.edt_discovery import (
     EdtRoot,
+    EdtRootScan,
     default_roots,
     discover_edt,
     find_installations,
@@ -246,6 +250,44 @@ class TestDiscover:
         result = discover_edt([_root(tmp_path), _root(tmp_path / "nope")], None, "")
         assert result.installations == []
         assert result.rejected == []
+        # Ревью, круг 1 (Important + сомнение исполнителя): существующий, но
+        # пустой корень и вовсе отсутствующий — разные картины, обе с  # noqa: RUF003
+        # found=0. `roots` обязан различать их через `exists`, иначе лог,
+        # построенный поверх этого поля, не может сказать больше числа.
+        assert result.roots == [
+            EdtRootScan(tmp_path, _ROOT_DEPTH, True, 0),
+            EdtRootScan(tmp_path / "nope", _ROOT_DEPTH, False, 0),
+        ]
+
+    def test_scanned_roots_report_found_count_per_root(self, tmp_path: Path) -> None:
+        _edt(tmp_path, "2025.2.6+4")
+        _edt(tmp_path, "2026.1.2+2")
+        result = discover_edt([_root(tmp_path)], None, "")
+        assert result.roots == [EdtRootScan(tmp_path, _ROOT_DEPTH, True, 2)]
+
+
+def test_discover_edt_walks_each_root_exactly_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Important ревью, круг 1: обход каждого корня — один раз за вызов `discover_edt`,
+
+    не дважды (было — цикл логирования в `ui/app.py` плюс этот обход). Здесь
+    проверяется низкоуровневая часть гарантии: `discover_edt` сама не зовёт
+    `find_installations` больше одного раза на корень.
+    """
+    root_a = tmp_path / "a"
+    root_a.mkdir()
+    root_b = tmp_path / "b"  # не существует
+    calls: list[EdtRoot] = []
+    real = edt_discovery_module.find_installations
+
+    def counting(root: EdtRoot) -> tuple[list[Path], list[tuple[str, Path]]]:
+        calls.append(root)
+        return real(root)
+
+    monkeypatch.setattr(edt_discovery_module, "find_installations", counting)
+    discover_edt([_root(root_a), _root(root_b)], None, "")
+    assert calls == [_root(root_a), _root(root_b)], "по одному вызову на корень, не по два"
 
 
 def test_registry_version_wins_over_directory_name(tmp_path: Path) -> None:

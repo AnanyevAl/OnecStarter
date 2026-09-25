@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
 from onecstarter.domain.launch import LaunchCommand
 from onecstarter.domain.server import ServerConvention, ServerProfile
 from onecstarter.domain.version import Arch, Installation, VersionNumber, parse_version
+from onecstarter.platform_1c import edt_discovery
 from onecstarter.platform_1c.job import JobError, NullJob
 from onecstarter.platform_1c.process_scan import NullScanner, ProcessInfo
 from onecstarter.platform_1c.server_discovery import ServerInstallation
@@ -3848,7 +3849,7 @@ def test_run_smoke_reports_edt_unavailable_when_edt_json_unreadable(
 def test_run_smoke_logs_every_root_including_missing_ones(
     tmp_path: Any, monkeypatch: Any, qtbot: Any, caplog: Any
 ) -> None:
-    """Оба умолчательных корня отсутствуют на диске — лог обязан назвать их и «0», не молчать."""  # noqa: RUF002
+    """Оба умолчательных корня отсутствуют на диске — лог обязан назвать их, не молчать."""  # noqa: RUF002
     monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
     captured = _capture_window(monkeypatch)
     appdata = tmp_path / "appdata"
@@ -3867,9 +3868,85 @@ def test_run_smoke_logs_every_root_including_missing_ones(
 
     components = program_files / "1C" / "1CE" / "components"
     installations = localappdata / "1C" / "1cedtstart" / "installations"
-    assert f"EDT: корень {components}, глубина 2, установок: 0" in caplog.text
-    assert f"EDT: корень {installations}, глубина 3, установок: 0" in caplog.text
+    assert f"EDT: корень {components}, глубина 2, каталога нет" in caplog.text
+    assert f"EDT: корень {installations}, глубина 3, каталога нет" in caplog.text
     assert "smoke: edt=0, отброшено=0" in caplog.text
+    qtbot.addWidget(captured["window"])
+
+
+def test_run_smoke_distinguishes_an_empty_existing_root_from_a_missing_one(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any, caplog: Any
+) -> None:
+    """Ревью, круг 1 (Important): «ноль установок в существующем корне» и «корня
+
+    нет вовсе» — разные картины с противоположными следующими шагами, лог
+    обязан различать их не сверяясь с диском. `components` здесь существует
+    и пуст, `installations` не существует вовсе — строки лога различны.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    appdata = tmp_path / "appdata"
+    program_files = tmp_path / "existing-program-files"
+    components = program_files / "1C" / "1CE" / "components"
+    components.mkdir(parents=True)
+    localappdata = tmp_path / "no-localappdata"
+    target = tmp_path / "out"
+    target.mkdir()
+    env = {
+        "APPDATA": str(appdata),
+        "ProgramFiles": str(program_files),
+        "LOCALAPPDATA": str(localappdata),
+    }
+
+    with caplog.at_level(logging.INFO):
+        assert run_smoke(str(target), env) == 0
+
+    installations = localappdata / "1C" / "1cedtstart" / "installations"
+    assert f"EDT: корень {components}, глубина 2, установок: 0" in caplog.text
+    assert f"EDT: корень {installations}, глубина 3, каталога нет" in caplog.text
+    qtbot.addWidget(captured["window"])
+
+
+def test_edt_discover_walks_each_root_exactly_once(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any
+) -> None:
+    """Important ревью, круг 1: было два обхода каждого корня за вызов `edt_discover`
+
+    (цикл логирования в `ui/app.py` плюс обход внутри `discover_edt`) — теперь
+    один: логирование печатает готовый `EdtDiscovery.roots`, не ходит по
+    дискам само. Патчатся оба имени, под которыми может звучать
+    `find_installations` (голое имя внутри `edt_discovery.discover_edt` и алиас
+    `find_edt_installations` в `ui/app.py`, используемый ТОЛЬКО подписью
+    настроек, не этим путём) — вернувшийся двойной обход был бы пойман
+    независимо от того, через какое имя он прошёл бы.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    appdata = tmp_path / "appdata"
+    target = tmp_path / "out"
+    target.mkdir()
+    env = {
+        "APPDATA": str(appdata),
+        "ProgramFiles": str(tmp_path / "no-program-files"),
+        "LOCALAPPDATA": str(tmp_path / "no-localappdata"),
+    }
+
+    calls: list[Any] = []
+    real = edt_discovery.find_installations
+
+    def counting(root: Any) -> Any:
+        calls.append(root)
+        return real(root)
+
+    monkeypatch.setattr(edt_discovery, "find_installations", counting)
+    monkeypatch.setattr(app_module, "find_edt_installations", counting)
+
+    assert run_smoke(str(target), env) == 0
+
+    # Настройка `edt_installations_root` пуста (дефолт) — подпись настроек
+    # (`edt_installations_count`) возвращает 0 без обхода, счёт ниже целиком
+    # про два умолчательных корня из `edt_discover`.
+    assert len(calls) == 2, "по одному обходу на умолчательный корень, не по два"
     qtbot.addWidget(captured["window"])
 
 

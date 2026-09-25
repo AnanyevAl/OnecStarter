@@ -865,18 +865,29 @@ def _build_main_window(
             # (`find_installations`) проверяет сам этот путь, поэтому годится
             # и каталог с установками, и каталог с самим `1cedt.exe`.  # noqa: RUF003
             roots = [*roots, EdtRoot(Path(manual_root), 3)]
-        for root in roots:
-            found, _jdks = find_edt_installations(root)
-            # Лог — единственный способ узнать раскладку у пользователя (спека  # noqa: RUF003
-            # §1.4): каждый корень со своей глубиной и числом найденного,  # noqa: RUF003
-            # включая корни, которых на диске нет вовсе — `find_installations`
-            # для них тихо отдаёт пустой список, а это надо отличать от  # noqa: RUF003
-            # «корень есть, установок в нём ноль».
-            _log.info(
-                "EDT: корень %s, глубина %d, установок: %d", root.path, root.max_depth, len(found)
-            )
+        # Обход корней — только внутри `discover_edt` (Important ревью задачи 7,
+        # круг 1): раньше этот цикл ходил по дискам сам через
+        # `find_edt_installations`, и `discover_edt` тут же обходила те же
+        # корни заново — двойной обход на каждый вызов. Теперь `discover_edt`
+        # отдаёт готовый `EdtDiscovery.roots` — здесь только печать.
         result = discover_edt(roots, registry, store.settings.edt_jvm_dir)
         edt_last_rejected[0] = len(result.rejected)
+        for scan in result.roots:
+            # Лог — единственный способ узнать раскладку у пользователя (спека  # noqa: RUF003
+            # §1.4): путь, глубина и число найденного для каждого корня, но
+            # «каталога нет» — отдельным словом, не числом: «ноль установок
+            # в существующем корне» и «корня нет вовсе» — разные картины,
+            # и подменять вторую нулём значило бы отвечать на вопрос лога
+            # только наполовину (находка ревью, круг 1).
+            if scan.exists:
+                _log.info(
+                    "EDT: корень %s, глубина %d, установок: %d",
+                    scan.path,
+                    scan.max_depth,
+                    scan.found,
+                )
+            else:
+                _log.info("EDT: корень %s, глубина %d, каталога нет", scan.path, scan.max_depth)
         for folder, reason in result.rejected:
             # Пути установок — не секрет (инвариант 5 требует внимания, но не
             # запрещает их: без них диагностика бессмысленна), причина —
