@@ -20,6 +20,23 @@ from onecstarter.platform_1c.process_scan import NullScanner, WindowsProcessScan
 from onecstarter.platform_1c.process_snapshot import SnapshotError
 
 
+@pytest.fixture(autouse=True)
+def _reset_snapshot_cache() -> Iterator[None]:
+    """Кэш снимка — состояние модуля, общее на весь процесс `pytest`.
+
+    Сброс только в хелпере `_with_snapshot` защищал бы лишь тех, кто через
+    него проходит: живые тесты `TestWindowsProcessScanner` зовут настоящий
+    `snapshot_all()` напрямую и кэш не трогают вовсе, поэтому мокнутый снимок
+    соседнего теста (с настоящей отметкой времени) в пределах окна в 2 с
+    достался бы им бесплатно и без всякого отношения к правде. Автоприменяемая
+    фикстура сбрасывает кэш и до, и после каждого теста файла — изоляция не
+    зависит от того, какой тест был перед этим и через какой хелпер он шёл.
+    """  # noqa: RUF002
+    process_scan.reset_snapshot_cache()
+    yield
+    process_scan.reset_snapshot_cache()
+
+
 class TestNullScanner:
     def test_snapshot_is_always_empty(self) -> None:
         assert NullScanner().snapshot(frozenset({"ragent.exe", "rmngr.exe"})) == []
@@ -104,9 +121,12 @@ class _FakeProcess:
 def _with_snapshot(
     monkeypatch: pytest.MonkeyPatch, entries: list[tuple[int, str]]
 ) -> None:
-    # Сброс общего кэша снимка (задача 3): без него тест унаследовал бы снимок,  # noqa: RUF003
-    # оставленный предыдущим тестом файла, и подмена `snapshot_all` ниже
-    # осталась бы незамеченной — вплоть до `KeyError` на чужом PID.
+    # Сброс здесь — не про изоляцию между тестами (её теперь даёт файловая  # noqa: RUF003
+    # автофикстура `_reset_snapshot_cache`), а про повторный вызов ВНУТРИ  # noqa: RUF003
+    # одного теста: `test_same_pid_with_new_name_is_read_again` и
+    # `test_cache_drops_processes_missing_from_snapshot` зовут `_with_snapshot`
+    # дважды, чтобы подменить снимок на лету, — без сброса второй вызов  # noqa: RUF003
+    # получил бы кэш первого (оба в пределах TTL) и не заметил бы подмену.  # noqa: RUF003
     process_scan.reset_snapshot_cache()
     monkeypatch.setattr(process_scan, "snapshot_all", lambda: list(entries))
 
@@ -325,8 +345,6 @@ def test_access_denied_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_snapshot_failure_gives_empty_list(monkeypatch: pytest.MonkeyPatch) -> None:
-    process_scan.reset_snapshot_cache()
-
     def boom() -> list[tuple[int, str]]:
         raise SnapshotError(5, "нет доступа")
 
