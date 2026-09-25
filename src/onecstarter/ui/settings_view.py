@@ -81,6 +81,7 @@ from onecstarter.ui.shortcuts import (
     EDT_SHORTCUTS,
     WINDOW_SHORTCUTS,
     ShortcutSpec,
+    window_shortcut_label,
 )
 from onecstarter.ui.theme_controller import ThemeController
 
@@ -379,6 +380,7 @@ class SettingsView(QWidget):
         self._shortcut_rows: list[tuple[str, str]] = []
         self._edt_shortcut_rows: list[tuple[str, str]] = []
         self._window_shortcut_rows: list[tuple[str, str]] = []
+        self._window_shortcut_label_widgets: list[QLabel] = []
         self._add_block(
             "Сочетания раздела «Базы»",
             "Зашиты в программу и не меняются (решение заказчика 29.08.2026)",
@@ -391,12 +393,17 @@ class SettingsView(QWidget):
         )
         # Не «раздела»: сочетание общее для рельсы целиком, а не для одной  # noqa: RUF003
         # вьюхи — единственный из трёх блоков, что работает из любого раздела
-        # (задача 8, спека §2.2). Имена разделов сюда не идут — только
-        # диапазон, посчитанный `window_shortcut_label`.
+        # (задача 8, спека §2.2). Диапазон в подписи строится из потолка
+        # механизма (девять) только как значение по умолчанию: живое число
+        # разделов приходит позже, через set_window_section_count() —
+        # на момент конструктора вьюхи список разделов ещё не собран
+        # (см. докстринг метода и проводку в ui/app.py).
         self._add_block(
             "Сочетания окна",
             "Работает в любом разделе; список разделов — кнопки рельсы слева",
-            self._build_shortcut_reference(WINDOW_SHORTCUTS, self._window_shortcut_rows),
+            self._build_shortcut_reference(
+                WINDOW_SHORTCUTS, self._window_shortcut_rows, self._window_shortcut_label_widgets
+            ),
         )
 
         self._add_group("СПИСОК БАЗ")
@@ -591,14 +598,20 @@ class SettingsView(QWidget):
         self._target_layout().addWidget(block)
 
     def _build_shortcut_reference(
-        self, specs: Sequence[ShortcutSpec], rows: list[tuple[str, str]]
+        self,
+        specs: Sequence[ShortcutSpec],
+        rows: list[tuple[str, str]],
+        label_widgets: list[QLabel] | None = None,
     ) -> QWidget:
         """Таблица «сочетание — действие» по переданным сочетаниям (T-11, п. 3, только чтение).
 
-        Один билдер на оба справочника (задача 7 вехи v3.1.1: `BASES_SHORTCUTS` и
-        `EDT_SHORTCUTS`) — `rows` копит строки в накопитель своего раздела,
-        чтобы `shortcut_reference_rows()`/`edt_shortcut_reference_rows()` отдавали
-        каждый свой список.
+        Один билдер на все три справочника (задача 7 вехи v3.1.1: `BASES_SHORTCUTS` и
+        `EDT_SHORTCUTS`; задача 8 добавила `WINDOW_SHORTCUTS`) — `rows` копит строки
+        в накопитель своего раздела, чтобы `shortcut_reference_rows()`/
+        `edt_shortcut_reference_rows()`/`window_shortcut_reference_rows()` отдавали
+        каждый свой список. `label_widgets` — необязательный: только справочнику окна
+        нужно ПЕРЕПИСАТЬ подпись сочетания позже, `set_window_section_count()`
+        достаёт готовую `QLabel` из него, а не ищет её обходом раскладки.
         """  # noqa: RUF002
         table = QWidget()
         grid = QGridLayout(table)
@@ -613,6 +626,8 @@ class SettingsView(QWidget):
             grid.addWidget(keys, row, 0)
             grid.addWidget(QLabel(spec.title), row, 1)
             rows.append((spec.label, spec.title))
+            if label_widgets is not None:
+                label_widgets.append(keys)
         grid.setColumnStretch(1, 1)
         return table
 
@@ -827,6 +842,24 @@ class SettingsView(QWidget):
     def window_shortcut_reference_rows(self) -> list[tuple[str, str]]:
         """Строки справочника сочетаний окна — что реально попало в таблицу."""
         return list(self._window_shortcut_rows)
+
+    def set_window_section_count(self, count: int) -> None:
+        """Пересобрать диапазон «Alt+1 … Alt+N» блока «Сочетания окна» по числу разделов.
+
+        На момент конструктора вьюхи список разделов ещё не собран: `SettingsView`
+        сама входит в этот список, а `ui/app.py` строит его только после того, как
+        все вьюхи разделов уже созданы (находка ревью задачи 8). Поэтому диапазон
+        сначала ставится потолком механизма (`WINDOW_SHORTCUTS`, девять) как честное
+        значение по умолчанию, а настоящее число разделов приходит этим методом —
+        тем же приёмом отложенной инъекции, что `set_hotkey_handler` (обработчик
+        хоткея) и `MainWindow.set_section_icon` (значки разделов) в `ui/app.py`:
+        оба тоже вызываются уже после того, как окно и разделы собраны, а не
+        передаются в конструктор.
+        """  # noqa: RUF002
+        label = window_shortcut_label(count)
+        title = self._window_shortcut_rows[0][1]
+        self._window_shortcut_rows[0] = (label, title)
+        self._window_shortcut_label_widgets[0].setText(label)
 
     def servers_root_edit(self) -> QLineEdit:
         return self._servers_root

@@ -79,6 +79,7 @@ from onecstarter.ui.servers.view import ServersView
 from onecstarter.ui.settings_store import SettingsStore
 from onecstarter.ui.settings_view import SettingsView
 from onecstarter.ui.shell import MainWindow
+from onecstarter.ui.shortcuts import WINDOW_SHORTCUTS
 from onecstarter.ui.theme_controller import ThemeController
 from onecstarter.ui.watcher import FileWatcher
 
@@ -2592,6 +2593,51 @@ def test_settings_view_reads_the_registry_when_frozen(
     )
 
 
+def test_settings_view_window_shortcut_range_matches_real_section_count(
+    tmp_path: Any, monkeypatch: Any, workspace_factory: Any
+) -> None:
+    """Фикс раунд 1 (находка ревью, задача 8): справочник обязан показывать
+    ЖИВОЕ число разделов собранного окна, а не потолок механизма.
+
+    До находки `_build_main_window` собирала `SettingsView`, но никогда не звала
+    `set_window_section_count` — блок «Сочетания окна» показывал «Alt+1 … Alt+9»
+    всегда, даже когда разделов в приложении ровно четыре (Базы, Серверы, EDT,
+    Настройки), и обещал несуществующие Alt+5…Alt+9. Этот тест идёт через
+    настоящую сборку `_build_main_window`, а не через вьюху в изоляции: только
+    так ловится именно пропущенный вызов в проводке (`ui/app.py`), а не
+    правильность самого метода `SettingsView.set_window_section_count`
+    (её проверяет `test_set_window_section_count_rebuilds_the_window_shortcut_
+    range` в `tests/ui/test_settings_view.py`).
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    workspace, _calls, _opened = workspace_factory()
+    runtime = app_module.Runtime(
+        workspace=workspace,
+        cfg_rules=[],
+        conventions=[],
+        settings=tmp_path / "settings.json",
+        servers=tmp_path / "servers.json",
+        edt=tmp_path / "edt.json",
+    )
+    application = QApplication.instance()
+    assert isinstance(application, QApplication)
+    window, _tasks, _monitor, _start_probe, _edt_monitor = app_module._build_main_window(
+        application, runtime, {"APPDATA": str(tmp_path / "appdata")}
+    )
+
+    # Раздел «Настройки» — индекс 3 (см. test_clearing_a_busy_hotkey_resets_
+    # the_tooltip_to_plain выше): «Серверы» и «EDT» встали между «Базами»
+    # и «Настройками» с v3.  # noqa: RUF003
+    window.show_section(3)
+    settings_view = window.current_section()
+    assert isinstance(settings_view, SettingsView)
+    assert settings_view.window_shortcut_reference_rows() == [
+        ("Alt+1 … Alt+4", WINDOW_SHORTCUTS[0].title)
+    ]
+
+    window.close()
+
+
 def test_run_smoke_times_out_without_background(
     tmp_path: Any, monkeypatch: Any, qtbot: Any
 ) -> None:
@@ -3739,7 +3785,10 @@ def test_build_main_window_has_edt_section(
         qapp, runtime, env, process_scanner=NullScanner()
     )
     qtbot.addWidget(window)
-    labels = [button.toolTip() or button.text() for button in window.section_buttons()]
+    # button.text() — не toolTip(): задача 8 дала первым девяти кнопкам рельсы
+    # непустую подсказку вида «EDT (Alt+3)», и прежний `toolTip() or text()`
+    # начал бы искать точную строку «EDT» там, где её больше нет.
+    labels = [button.text() for button in window.section_buttons()]
     assert "EDT" in labels
     window.show_section(labels.index("EDT"))
     assert isinstance(window.current_section(), EdtView)
@@ -3789,7 +3838,9 @@ def test_build_main_window_replaces_edt_section_when_edt_json_unreadable(
 
     assert edt_monitor is None
     assert window.edt_workspace is None
-    labels = [button.toolTip() or button.text() for button in window.section_buttons()]
+    # button.text() — не toolTip(), той же причиной, что test_build_main_
+    # window_has_edt_section выше (задача 8: подсказка теперь непустая).
+    labels = [button.text() for button in window.section_buttons()]
     window.show_section(labels.index("EDT"))
     placeholder = window.current_section()
     assert isinstance(placeholder, QLabel)

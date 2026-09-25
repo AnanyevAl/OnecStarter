@@ -1113,6 +1113,12 @@ def _build_main_window(
     window.set_section_icon(servers_section, rail_icons.servers_icon)
     window.set_section_icon(edt_section, rail_icons.edt_icon)
     window.set_section_icon(settings_section, rail_icons.settings_icon)
+    # Живое число разделов — только теперь, когда `sections` уже собран: на
+    # момент конструктора `SettingsView` он ещё не существует (`SettingsView`
+    # сама один из его элементов). Тот же приём отложенной инъекции, что  # noqa: RUF003
+    # `set_hotkey_handler`/`set_section_icon` выше (задача 8, находка ревью —
+    # справочник без этого вызова обещал бы Alt+5…Alt+9 при четырёх разделах).
+    settings_view.set_window_section_count(len(sections))
     if cli_watcher is not None:
         cli_watcher.setParent(window)  # время жизни — окно, как у мониторов  # noqa: RUF003
 

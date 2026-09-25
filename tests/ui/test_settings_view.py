@@ -519,6 +519,31 @@ def test_shortcut_reference_lists_window_shortcut(
     assert view.row_control("Сочетания окна").isHidden() is False
 
 
+def test_set_window_section_count_rebuilds_the_window_shortcut_range(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Фикс раунд 1 (находка ревью): диапазон обязан звать `window_shortcut_label`
+    ЖИВЫМ числом разделов через вьюху, а не оставаться потолком механизма (девять).
+
+    `test_reference_range_is_built_from_section_count` ниже бьёт по чистой функции
+    напрямую и остаётся зелёным, даже если её никто не зовёт из вьюхи с реальным
+    числом разделов — сам факт вызова проверяет только этот тест, через
+    `set_window_section_count`, метод вьюхи, а не функцию.
+    """  # noqa: RUF002
+    view, _ = _view(application, tmp_path)
+    # До вызова — потолок механизма по умолчанию (см. test_shortcut_reference_
+    # lists_window_shortcut выше): на момент конструктора вьюхи `ui/app.py` ещё
+    # не собрал список разделов.
+    assert view.window_shortcut_reference_rows() == [
+        (spec.label, spec.title) for spec in WINDOW_SHORTCUTS
+    ]
+
+    view.set_window_section_count(4)
+
+    title = WINDOW_SHORTCUTS[0].title
+    assert view.window_shortcut_reference_rows() == [("Alt+1 … Alt+4", title)]
+
+
 def test_reference_range_is_built_from_section_count() -> None:
     """Диапазон в справочнике — из числа разделов, а не литералом (спека §2.2).
 
