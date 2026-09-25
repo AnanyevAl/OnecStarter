@@ -76,7 +76,12 @@ from onecstarter.ui import about
 from onecstarter.ui.hotkey_edit import HotkeyEdit
 from onecstarter.ui.settings_group import CollapsibleGroup
 from onecstarter.ui.settings_store import SettingsStore
-from onecstarter.ui.shortcuts import BASES_SHORTCUTS, EDT_SHORTCUTS, ShortcutSpec
+from onecstarter.ui.shortcuts import (
+    BASES_SHORTCUTS,
+    EDT_SHORTCUTS,
+    WINDOW_SHORTCUTS,
+    ShortcutSpec,
+)
 from onecstarter.ui.theme_controller import ThemeController
 
 CHOICES = (
@@ -373,6 +378,7 @@ class SettingsView(QWidget):
 
         self._shortcut_rows: list[tuple[str, str]] = []
         self._edt_shortcut_rows: list[tuple[str, str]] = []
+        self._window_shortcut_rows: list[tuple[str, str]] = []
         self._add_block(
             "Сочетания раздела «Базы»",
             "Зашиты в программу и не меняются (решение заказчика 29.08.2026)",
@@ -382,6 +388,15 @@ class SettingsView(QWidget):
             "Сочетания раздела «EDT»",
             "Зашиты в программу и не меняются; Ctrl+F общий с «Базами»",  # noqa: RUF001
             self._build_shortcut_reference(EDT_SHORTCUTS, self._edt_shortcut_rows),
+        )
+        # Не «раздела»: сочетание общее для рельсы целиком, а не для одной  # noqa: RUF003
+        # вьюхи — единственный из трёх блоков, что работает из любого раздела
+        # (задача 8, спека §2.2). Имена разделов сюда не идут — только
+        # диапазон, посчитанный `window_shortcut_label`.
+        self._add_block(
+            "Сочетания окна",
+            "Работает в любом разделе; список разделов — кнопки рельсы слева",
+            self._build_shortcut_reference(WINDOW_SHORTCUTS, self._window_shortcut_rows),
         )
 
         self._add_group("СПИСОК БАЗ")
@@ -808,6 +823,10 @@ class SettingsView(QWidget):
     def edt_shortcut_reference_rows(self) -> list[tuple[str, str]]:
         """Строки справочника сочетаний раздела «EDT» — что реально попало в таблицу."""
         return list(self._edt_shortcut_rows)
+
+    def window_shortcut_reference_rows(self) -> list[tuple[str, str]]:
+        """Строки справочника сочетаний окна — что реально попало в таблицу."""
+        return list(self._window_shortcut_rows)
 
     def servers_root_edit(self) -> QLineEdit:
         return self._servers_root

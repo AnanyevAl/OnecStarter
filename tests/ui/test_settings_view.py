@@ -34,7 +34,12 @@ from onecstarter.ui.settings_view import (
     SettingsView,
     browse_for_servers_root,
 )
-from onecstarter.ui.shortcuts import BASES_SHORTCUTS, EDT_SHORTCUTS
+from onecstarter.ui.shortcuts import (
+    BASES_SHORTCUTS,
+    EDT_SHORTCUTS,
+    WINDOW_SHORTCUTS,
+    window_shortcut_label,
+)
 from onecstarter.ui.theme import DARK, LIGHT, Palette
 from onecstarter.ui.theme_controller import ThemeController
 
@@ -501,6 +506,27 @@ def test_shortcut_reference_lists_every_edt_shortcut(
     assert view.row_control("Сочетания раздела «EDT»").isHidden() is False
     view.expand_group("ГОРЯЧИЕ КЛАВИШИ")
     assert view.is_group_expanded("Сочетания раздела «EDT»") is False
+
+
+def test_shortcut_reference_lists_window_shortcut(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """Блок «Сочетания окна» — по `WINDOW_SHORTCUTS`, отдельно от «Базы»/«EDT» (задача 8)."""
+    view, _ = _view(application, tmp_path)
+    assert view.window_shortcut_reference_rows() == [
+        (spec.label, spec.title) for spec in WINDOW_SHORTCUTS
+    ]
+    assert view.row_control("Сочетания окна").isHidden() is False
+
+
+def test_reference_range_is_built_from_section_count() -> None:
+    """Диапазон в справочнике — из числа разделов, а не литералом (спека §2.2).
+
+    Имена разделов живут в ui/app.py; копия в справочнике стала бы второй
+    правдой, расходящейся при первом же переименовании.
+    """  # noqa: RUF002
+    assert window_shortcut_label(4) == "Alt+1 … Alt+4"
+    assert window_shortcut_label(11) == "Alt+1 … Alt+9"
 
 
 def test_recent_spinbox_bounds_and_persistence(
