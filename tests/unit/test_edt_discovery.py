@@ -12,6 +12,7 @@ from onecstarter.platform_1c.edt_discovery import (
     default_roots,
     discover_edt,
     find_installations,
+    manual_root_counts,
     read_jdk_version,
 )
 from onecstarter.platform_1c.edtstart_registry import EdtStartRegistry
@@ -264,6 +265,74 @@ class TestDiscover:
         _edt(tmp_path, "2026.1.2+2")
         result = discover_edt([_root(tmp_path)], None, "")
         assert result.roots == [EdtRootScan(tmp_path, _ROOT_DEPTH, True, 2)]
+
+
+class TestManualRootCounts:
+    """`manual_root_counts` — то же число, что покажет раздел, для ОДНОГО корня.
+
+    Important 1 финального ревью ветки 3.2.2: подпись под «Каталог установок EDT»
+    в Настройках считала находки СВОИМ сырым обходом и не различала «отброшено без
+    версии» — теперь она читает готовый `EdtDiscovery`, и функция обязана резать его
+    именно по одному корню, а не по сумме всех корней разом (`discover_edt` мешает
+    находки со всех корней в один список ещё до того, как этот срез вообще нужен).
+    """  # noqa: RUF002
+
+    def test_empty_root_is_unknown(self, tmp_path: Path) -> None:
+        result = discover_edt([_root(tmp_path)], None, "")
+        assert manual_root_counts(result, "") is None
+
+    def test_root_never_scanned_is_unknown_not_zero(self, tmp_path: Path) -> None:
+        """Текст поля не совпадает ни с одним обойдённым корнем — окно только что
+
+        собрано, либо путь только что сменили, а фоновое обнаружение с новым
+        текстом ещё не завершилось. Подставить здесь `0` значило бы соврать
+        «ничего не нашли» вместо честного «ещё не знаем».
+        """  # noqa: RUF002
+        result = discover_edt([_root(tmp_path)], None, "")
+        assert manual_root_counts(result, str(tmp_path / "другой-корень")) is None
+
+    def test_counts_belong_only_to_the_named_root(self, tmp_path: Path) -> None:
+        """Установка в ДРУГОМ корне не должна попасть в счёт этого корня —
+
+        ровно тот класс ошибки, который дал неверную подпись до находки:
+        `discover_edt` сливает находки со всех корней в один список.
+        """  # noqa: RUF002
+        _edt(tmp_path / "default", "2025.2.6+4")
+        manual = tmp_path / "manual"
+        _edt(manual, "2026.1.2+2")
+        result = discover_edt(
+            [EdtRoot(tmp_path / "default", _ROOT_DEPTH), EdtRoot(manual, _ROOT_DEPTH)],
+            None,
+            "",
+        )
+        assert manual_root_counts(result, str(manual)) == (1, 0)
+        assert manual_root_counts(result, str(tmp_path / "default")) == (1, 0)
+
+    def test_rejected_counted_separately_from_found(self, tmp_path: Path) -> None:
+        """Раздел «EDT» покажет только `installations` — сценарий финальной находки:
+
+        «нашли каталог с 1cedt.exe, но не смогли определить версию» отличим от
+        «нашли и определили» и от «ничего не нашли».
+        """  # noqa: RUF002
+        manual = tmp_path / "manual"
+        _edt(manual, "2026.1.2+2")
+        _make_installation(manual / "какой-то каталог")  # без версии → «нет версии»
+        result = discover_edt([_root(manual)], None, "")
+        assert manual_root_counts(result, str(manual)) == (1, 1)
+
+    def test_installation_at_root_level_is_counted(self, tmp_path: Path) -> None:
+        """Уровень 0 — путь, указанный прямо на каталог установки (спека §1.5,
+
+        запасной выход вехи): не только подкаталоги корня.
+        """
+        folder = _edt(tmp_path, "2026.1.2+2")
+        result = discover_edt([_root(folder)], None, "")
+        assert manual_root_counts(result, str(folder)) == (1, 0)
+
+    def test_none_when_nothing_scanned_yet(self) -> None:
+        """Обнаружение ни разу не выполнялось (сборка окна, до первого discover_now)."""
+        empty = discover_edt([], None, "")
+        assert manual_root_counts(empty, r"D:\EDT") is None
 
 
 def test_discover_edt_walks_each_root_exactly_once(

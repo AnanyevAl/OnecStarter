@@ -99,7 +99,7 @@ class EdtNotes:
     installations: str = ""
 
 
-def installations_note(root: str, count: int) -> str:
+def installations_note(root: str, count: int | None, rejected: int = 0) -> str:
     """Подпись под полем «Каталог установок EDT» (спека §1.4, задача 7).
 
     Третья формулировка (каталог не задан, установок ноль) не сообщает о
@@ -108,14 +108,37 @@ def installations_note(root: str, count: int) -> str:
     каталог, где сразу лежит `1cedt.exe` — раскладку у пользователя
     проверить нечем, и это единственная подсказка, которой он может
     воспользоваться сам.
+
+    Important 1 финального ревью ветки 3.2.2: `count` — то же число, что покажет
+    раздел «EDT» (после отбраковки кандидатов без версии), не сырой обход диска.
+    `count is None` — обнаружение этого текста пути ещё не проводилось (см.
+    `platform_1c.edt_discovery.manual_root_counts`): подставить здесь ноль значило
+    бы соврать «ничего не нашли» вместо честного «ещё не знаем». `rejected` —
+    сколько каталогов с `1cedt.exe` под этим корнем нашлось, но версия не
+    определилась ни одним из трёх звеньев цепочки (спека §1.1): пользователю
+    важно отличить «ничего не нашли» от «нашли, но не смогли определить версию» —
+    это разные следующие шаги (первое — искать в другом месте, второе — смотреть
+    лог обнаружения или указать путь точнее).
     """  # noqa: RUF002
     if not root:
         return (
             "Не задан — ищем в Program Files и "  # noqa: RUF001
             r"%LOCALAPPDATA%\1C\1cedtstart\installations"
         )
+    if count is None:
+        return "Обнаружение ещё не выполнялось — подождите или откройте раздел «EDT»"
+    if count and rejected:
+        return (
+            f"Найдено установок: {count}; ещё {rejected} без определённой версии "
+            "(подробности — в логе обнаружения)"
+        )
     if count:
         return f"Найдено установок: {count}"
+    if rejected:
+        return (
+            f"Найдено каталогов с 1cedt.exe: {rejected}, но версия не определилась "  # noqa: RUF001
+            "ни у одного — подробности в логе обнаружения"  # noqa: RUF001
+        )
     return (
         "Установок не найдено. Подойдёт и каталог с установками, "  # noqa: RUF001
         "и сам каталог, в котором лежит 1cedt.exe"
@@ -127,7 +150,8 @@ def settings_notes(
     editors: Callable[[EditorKind], EditorResolution],
     jdk_version: Callable[[Path], str | None],
     installations_root: str = "",
-    installations_count: int = 0,
+    installations_count: int | None = 0,
+    installations_rejected: int = 0,
 ) -> EdtNotes:
     """Подписи под полями группы «EDT» в Настройках (спека §7, §1.4)."""
     if not jvm_dir:
@@ -146,7 +170,9 @@ def settings_notes(
         jvm=jvm,
         vscode=note(EditorKind.VSCODE),
         antigravity=note(EditorKind.ANTIGRAVITY),
-        installations=installations_note(installations_root, installations_count),
+        installations=installations_note(
+            installations_root, installations_count, installations_rejected
+        ),
     )
 
 

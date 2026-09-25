@@ -30,6 +30,7 @@ __all__ = [
     "default_roots",
     "discover_edt",
     "find_installations",
+    "manual_root_counts",
     "read_jdk_version",
 ]
 
@@ -274,3 +275,46 @@ def discover_edt(
     return EdtDiscovery(
         sorted(found, key=lambda item: item.version, reverse=True), rejected, scanned
     )
+
+
+def _under_root(path: Path, root: Path) -> bool:
+    """`path` — сам `root` либо его потомок. Без обращения к диску: `is_relative_to`
+    сравнивает только части пути, не читает ФС ни разу.
+    """  # noqa: RUF002
+    return path == root or path.is_relative_to(root)
+
+
+def manual_root_counts(discovery: EdtDiscovery, root: str) -> tuple[int, int] | None:
+    """(установки, отброшенные) ОДНОГО корня — не суммы по всем корням разом.
+
+    Important 1 финального ревью ветки 3.2.2: подпись под полем «Каталог установок
+    EDT» в Настройках считала находки СВОИМ сырым обходом (`find_installations`
+    напрямую), а раздел «EDT» показывает результат `discover_edt`, который
+    дополнительно отбрасывает кандидата без версии, — подпись обещала установки,
+    которых в разделе не будет. `discover_edt` мешает все корни в один список
+    (`installations`/`rejected` дедуплицированы по нормализованному пути exe уже
+    ПОСЛЕ обхода), поэтому посчитать «то же число, что покажет раздел» для ОДНОГО
+    конкретно корня — отдельная задача: срез уже готового `EdtDiscovery`, а не
+    новый обход диска (Important 2 того же ревью — единственный обход ФС в главном
+    потоке программы жил именно в этой подписи).
+
+    `None` — обнаружение ЭТОГО ИМЕННО текста пути ещё не проводилось: пустой корень,
+    либо в `discovery.roots` нет записи с совпадающим путём (окно только что собрано
+    и обнаружение не запускалось ни разу, либо пользователь только что сменил текст
+    поля, а фоновое переобнаружение с новым путём ещё не завершилось). Подставить
+    здесь `0` значило бы соврать «ничего не нашли» вместо честного «ещё не знаем» —
+    ровно та путаница, из-за которой подпись была придумана (спека §1.4): пользователю
+    важно отличать пустой результат от неизвестного.
+    """  # noqa: RUF002
+    if not root:
+        return None
+    target = Path(root)
+    if not any(scan.path == target for scan in discovery.roots):
+        return None
+    found = sum(
+        1
+        for installation in discovery.installations
+        if _under_root(installation.exe.parent, target)
+    )
+    rejected = sum(1 for folder, _reason in discovery.rejected if _under_root(folder, target))
+    return found, rejected

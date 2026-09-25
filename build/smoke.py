@@ -24,6 +24,18 @@ import tempfile
 import tomllib
 from pathlib import Path
 
+# Строка `smoke: edt=<число установок>[, отброшено=<число>]`, которую пишет
+# `run_smoke` (`src/onecstarter/ui/app.py`). Именованная константа, а не  # noqa: RUF003
+# регэксп внутри `if` (регрессия задачи 12 вехи 3.2.2, `docs/tasks.md`, T-23):
+# задача 7 той же вехи дополнила строку числом отброшенных, гейт сборки
+# проверял её литеральным регэкспом, никто не сверил формат с ним, и первая  # noqa: RUF003
+# же настоящая сборка отказала, хотя обнаружение отработало верно. Тест
+# `tests/ui/test_app.py::test_smoke_edt_line_format_matches_the_build_gate`
+# берёт этот же паттерн и прикладывает его к строке, которую `run_smoke`  # noqa: RUF003
+# реально пишет, — расхождение форматов ловится прогоном тестов, а не  # noqa: RUF003
+# только настоящей упаковкой PyInstaller.
+EDT_LINE_PATTERN = r"^.*smoke: edt=\d+(?:, отброшено=\d+)?\s*$"
+
 
 def shortcut_target(lnk: Path) -> str:
     """Цель ярлыка штатным читателем Windows — не нашим кодом."""
@@ -81,7 +93,7 @@ def main() -> int:
                 "см. строку smoke: keyring= в логе"
             )
             return 1
-        if not re.search(r"^.*smoke: edt=\d+(?:, отброшено=\d+)?\s*$", log_text, re.MULTILINE):
+        if not re.search(EDT_LINE_PATTERN, log_text, re.MULTILINE):
             print(
                 "smoke: раздел EDT не поднялся или обнаружение установок не отработало — "
                 "см. строку smoke: edt= в логе"

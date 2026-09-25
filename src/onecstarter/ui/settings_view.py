@@ -308,13 +308,13 @@ class SettingsView(QWidget):
         ) = self._path_control(
             store.settings.edt_installations_root,
             "edt_installations_root",
-            after_save=self._refresh_edt_notes,
+            after_save=self.refresh_edt_notes,
         )
         self._add_row(
             EDT_INSTALLATIONS_ROW, notes.installations, installations_row, wide_control=True
         )
         self._edt_jvm, self._edt_jvm_browse, jvm_row = self._path_control(
-            store.settings.edt_jvm_dir, "edt_jvm_dir", after_save=self._refresh_edt_notes
+            store.settings.edt_jvm_dir, "edt_jvm_dir", after_save=self.refresh_edt_notes
         )
         self._add_row(EDT_JVM_ROW, notes.jvm, jvm_row, wide_control=True)
         self._edt_heap = QSpinBox()
@@ -348,7 +348,7 @@ class SettingsView(QWidget):
             store.settings.editor_vscode,
             "editor_vscode",
             pick_file=True,
-            after_save=self._refresh_edt_notes,
+            after_save=self.refresh_edt_notes,
         )
         self._add_row(EDT_VSCODE_ROW, notes.vscode, vscode_row, wide_control=True)
         (
@@ -359,7 +359,7 @@ class SettingsView(QWidget):
             store.settings.editor_antigravity,
             "editor_antigravity",
             pick_file=True,
-            after_save=self._refresh_edt_notes,
+            after_save=self.refresh_edt_notes,
         )
         self._add_row(EDT_ANTIGRAVITY_ROW, notes.antigravity, ag_row, wide_control=True)
 
@@ -716,14 +716,25 @@ class SettingsView(QWidget):
             f'<a href="{about.REPOSITORY_URL}" style="color:{accent}">{about.REPOSITORY_URL}</a>'
         )
 
-    def _refresh_edt_notes(self) -> None:
-        """Пересчитать подписи группы «EDT» после правки пути (I3 финального ревью).
+    def refresh_edt_notes(self) -> None:
+        """Пересчитать подписи группы «EDT» — после правки пути (I3 финального ревью)
+        или когда фоновое обнаружение установок завершилось (Important 1+2
+        финального ревью ветки 3.2.2).
 
         Подписи — живой результат автопоиска над текущими настройками
         (`services/edt.py::settings_notes`); посчитанные один раз в конструкторе
         они врали бы до перезапуска: сменил пользователь JDK — а под полем
         по-прежнему старая версия. Память и язык на подписи не влияют,
         их обработчики сюда не ходят.
+
+        Публичный метод, не приватный (был `_refresh_edt_notes`): помимо
+        `after_save` четырёх полей группы EDT его теперь зовёт и проводка окна
+        (`ui/app.py::_build_main_window`) по сигналу `EdtMonitor.installations_ready` —
+        тем же приёмом отложенной передачи, что `set_window_section_count`
+        и `set_hotkey_handler` ниже. Подпись «Каталог установок EDT» до первого
+        обнаружения не может честно назвать число (`services/edt.py::installations_note`
+        отличает «ещё не знаем» от «ничего не нашли» через `count is None`), и без
+        этого вызова оставалась бы неверной до следующей правки поля.
         """  # noqa: RUF002
         notes = self._edt_notes()
         self._row_notes[EDT_INSTALLATIONS_ROW].setText(notes.installations)

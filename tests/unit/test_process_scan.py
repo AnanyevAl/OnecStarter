@@ -411,6 +411,55 @@ def test_snapshot_is_taken_again_after_the_window(
     assert calls["n"] == 2
 
 
+def test_details_are_reread_after_the_details_ttl_even_with_the_same_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Important 3 финального ревью ветки 3.2.2: тот же PID, то же имя — но другой процесс.
+
+    Windows выдаёт номер только что умершего процесса новому сразу, и разрыва
+    между двумя снимками может не быть вовсе. Если новый процесс называется
+    так же, как старый (пользователь остановил один профиль сервера и тут же
+    запустил другой `ragent.exe` с тем же PID), сверка имени этот случай не
+    видит — имя не изменилось. Без срока годности кэш подставлял бы командную
+    строку остановленного профиля работающему вечно, до смерти самого нового
+    процесса. Часы — той же инъекцией, что у кэша снимка (`_Clock`).
+    """  # noqa: RUF002
+    process = _FakeProcess(7, "ragent.exe", argv=["ragent", "-port", "1540"])
+    _with_snapshot(monkeypatch, [(7, "ragent.exe")])
+    monkeypatch.setattr(process_scan, "_process_by_pid", lambda pid: process)
+    clock = _Clock()
+
+    scanner = WindowsProcessScanner(clock=clock)
+    scanner.snapshot(frozenset({"ragent.exe"}))
+    assert process.detail_calls == 2  # exe + cmdline
+
+    clock.now += 61.0
+    scanner.snapshot(frozenset({"ragent.exe"}))
+
+    assert process.detail_calls == 4, "запись старше срока годности обязана перечитаться"
+
+
+def test_details_are_not_reread_within_the_details_ttl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Позитивный контроль к тесту выше: без него он доказывал бы не то, что кажется.
+
+    Если бы кэш деталей вовсе не работал, число обращений выросло бы и здесь,
+    в пределах срока годности — а не только после 61-й секунды.
+    """  # noqa: RUF002
+    process = _FakeProcess(7, "ragent.exe")
+    _with_snapshot(monkeypatch, [(7, "ragent.exe")])
+    monkeypatch.setattr(process_scan, "_process_by_pid", lambda pid: process)
+    clock = _Clock()
+
+    scanner = WindowsProcessScanner(clock=clock)
+    scanner.snapshot(frozenset({"ragent.exe"}))
+    clock.now += 59.0
+    scanner.snapshot(frozenset({"ragent.exe"}))
+
+    assert process.detail_calls == 2, "в пределах срока годности запись не должна перечитываться"
+
+
 def test_snapshot_is_taken_once_when_two_monitors_race(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

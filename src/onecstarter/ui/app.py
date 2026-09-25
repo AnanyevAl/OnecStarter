@@ -40,13 +40,12 @@ from onecstarter.platform_1c import console
 from onecstarter.platform_1c.discovery import cfg_paths, find_installations
 from onecstarter.platform_1c.editors import EditorKind, find_editor
 from onecstarter.platform_1c.edt_discovery import (
+    EdtDiscovery,
     EdtRoot,
     default_roots,
     discover_edt,
+    manual_root_counts,
     read_jdk_version,
-)
-from onecstarter.platform_1c.edt_discovery import (
-    find_installations as find_edt_installations,
 )
 from onecstarter.platform_1c.edtstart_registry import default_edtstart_root, read_registry
 from onecstarter.platform_1c.job import Job, NullJob, ServerJob
@@ -58,7 +57,7 @@ from onecstarter.security.credentials import KeyringStore
 from onecstarter.services import autostart
 from onecstarter.services.availability import probe_targets
 from onecstarter.services.catalog import CommonListData, read_common_lists
-from onecstarter.services.edt import EdtWorkspace, settings_notes
+from onecstarter.services.edt import EdtNotes, EdtWorkspace, settings_notes
 from onecstarter.services.edt_cli import EdtCli
 from onecstarter.services.errors import (
     ConsoleRegistrationDeclinedError,
@@ -852,19 +851,32 @@ def _build_main_window(
     # (задача 7, спека §1.4). Ячейка одного элемента, не просто `int`: обновляет
     # её `edt_discover` по значению, `edt_rejected_count` — читает то же место.
     edt_last_rejected = [0]
+    # Последний результат `discover_edt` целиком — для подписи «Каталог установок
+    # EDT» в Настройках (Important 1+2 финального ревью ветки 3.2.2, `edt_notes`
+    # ниже). `None`, пока обнаружение ни разу не выполнялось. Ячейка одного
+    # элемента — тем же приёмом, что `edt_last_rejected` выше.
+    edt_last_discovery: list[EdtDiscovery | None] = [None]
 
     def edt_discover() -> list[EdtInstallation]:
         registry = read_registry(default_edtstart_root(env))
         roots = default_roots(env)
         manual_root = store.settings.edt_installations_root
         if manual_root:
+            manual_path = Path(manual_root)
             # Ручной каталог — запасной выход вехи (спека §1.4): три
             # автоматических способа найти установку могут промахнуться разом,
             # раскладку у пользователя проверить нечем. Глубина 3 — как у  # noqa: RUF003
             # `installations` в `default_roots`: уровень 0 обхода
             # (`find_installations`) проверяет сам этот путь, поэтому годится
             # и каталог с установками, и каталог с самим `1cedt.exe`.  # noqa: RUF003
-            roots = [*roots, EdtRoot(Path(manual_root), 3)]
+            #
+            # Не добавляем второй `EdtRoot`, если ручной путь СОВПАЛ с одним  # noqa: RUF003
+            # из умолчательных (Minor финального ревью ветки): без этой
+            # проверки один и тот же каталог обходился и логировался дважды —
+            # находки и без того схлопываются по нормализованному пути exe
+            # (`discover_edt`), а лог до этой правки не схлопывался.  # noqa: RUF003
+            if not any(root.path == manual_path for root in roots):
+                roots = [*roots, EdtRoot(manual_path, 3)]
         # Обход корней — только внутри `discover_edt` (Important ревью задачи 7,
         # круг 1): раньше этот цикл ходил по дискам сам через
         # `find_edt_installations`, и `discover_edt` тут же обходила те же
@@ -872,6 +884,7 @@ def _build_main_window(
         # отдаёт готовый `EdtDiscovery.roots` — здесь только печать.
         result = discover_edt(roots, registry, store.settings.edt_jvm_dir)
         edt_last_rejected[0] = len(result.rejected)
+        edt_last_discovery[0] = result
         for scan in result.roots:
             # Лог — единственный способ узнать раскладку у пользователя (спека  # noqa: RUF003
             # §1.4): путь, глубина и число найденного для каждого корня, но
@@ -895,16 +908,46 @@ def _build_main_window(
             _log.info("EDT: отброшен %s, причина: %s", folder, reason)
         return result.installations
 
-    def edt_installations_count(root: str) -> int:
-        """Число «сырых» установок в ручном каталоге — для подписи в Настройках.
+    def edt_notes() -> EdtNotes:
+        """Подписи группы «EDT» в Настройках — из последнего обнаружения, не с нового обхода.
 
-        Не через `discover_edt`: подписи важно число находок именно в этом
-        каталоге, а не итог слияния со всеми корнями и версией из реестра.
+        Important 1 + Important 2 финального ревью ветки 3.2.2. Раньше здесь стоял
+        `edt_installations_count` — отдельный сырой обход ручного каталога
+        (`find_installations` напрямую), и он завышал число: раздел «EDT» показывает
+        результат `discover_edt`, который дополнительно отбрасывает кандидата без
+        версии, а подпись про это не знала и обещала установки, которых в разделе
+        не будет (Important 1). Этот обход к тому же шёл в главном потоке — на
+        КАЖДОЕ сохранение любого из четырёх полей группы EDT и уже при сборке окна,
+        единственный такой обход во всей программе, без ограничения ширины
+        пользователем (Important 2).
+
+        `manual_root_counts` — чистая функция над уже посчитанным `edt_last_discovery`
+        (побочный эффект `edt_discover` выше, тот же обход, что видит раздел), поэтому
+        здесь нет ни одного обращения к диску. Пока обнаружение ни разу не завершилось
+        для ТЕКУЩЕГО текста поля, `manual_root_counts` отдаёт `None`, а не `0` — иначе
+        подпись соврала бы «ничего не нашли» вместо честного «ещё не знаем» сразу
+        после сборки окна или смены пути (см. докстринг `manual_root_counts`).
+
+        Вызывается сразу при сборке `SettingsView` (обнаружения ещё не было — считать
+        нечем) и повторно — `settings_view.refresh_edt_notes()`, тем же приёмом
+        отложенной передачи, каким уже переданы число разделов
+        (`set_window_section_count`) и обработчик горячей клавиши
+        (`set_hotkey_handler`): подписка на `edt_monitor.installations_ready` ниже
+        зовёт его снова, когда обнаружение действительно завершилось.
         """  # noqa: RUF002
-        if not root:
-            return 0
-        found, _jdks = find_edt_installations(EdtRoot(Path(root), 3))
-        return len(found)
+        root = store.settings.edt_installations_root
+        result = edt_last_discovery[0]
+        counts = manual_root_counts(result, root) if result is not None else None
+        count = counts[0] if counts is not None else None
+        rejected = counts[1] if counts is not None else 0
+        return settings_notes(
+            store.settings.edt_jvm_dir,
+            edt_editor,
+            read_jdk_version,
+            root,
+            count,
+            rejected,
+        )
 
     # C2 финального ревью ветки: `load_registry` внутри конструктора отказывает
     # `EdtUnavailableError`, когда `edt.json` есть, но не читается (права,
@@ -934,13 +977,7 @@ def _build_main_window(
         ),
         frozen=bool(getattr(sys, "frozen", False)),
         executable=sys.executable,
-        edt_notes=lambda: settings_notes(
-            store.settings.edt_jvm_dir,
-            edt_editor,
-            read_jdk_version,
-            store.settings.edt_installations_root,
-            edt_installations_count(store.settings.edt_installations_root),
-        ),
+        edt_notes=edt_notes,
     )
     # Раздел «Серверы» (T-08, задача 16). `servers_workspace`/`server_installed`
     # (холдер — сеттера у ServersView нет, тот же приём, что `recent_limit=  # noqa: RUF003
@@ -1148,6 +1185,14 @@ def _build_main_window(
         )
         edt_monitor.scan_ready.connect(edt_view.on_scan)
         edt_monitor.installations_ready.connect(edt_view.on_installations)
+        # Отложенная передача подписи «Каталог установок EDT» (Important 1+2
+        # финального ревью ветки 3.2.2, докстринг `edt_notes` выше): на момент
+        # сборки `SettingsView` обнаружение ещё не выполнялось, и подпись честно
+        # говорит «ещё не знаем». Как только фоновое обнаружение действительно
+        # завершается — здесь ли, по `discover_now()` ниже, или по «Каталог
+        # установок EDT»/JDK/редакторам в Настройках, — подпись пересчитывается
+        # заново уже из готового результата, без нового обхода диска.
+        edt_monitor.installations_ready.connect(lambda _found: settings_view.refresh_edt_notes())
         # Смена JDK по умолчанию в Настройках — повод переобнаружить установки.
         store.changed.connect(edt_monitor.discover_now)
 

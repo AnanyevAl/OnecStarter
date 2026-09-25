@@ -540,6 +540,46 @@ class TestInstallationsNote:
         )
         assert notes.installations == "Найдено установок: 3"
 
+    def test_unknown_count_does_not_claim_nothing_found(self) -> None:
+        """Important 1 финального ревью ветки 3.2.2: `count is None` — обнаружение
+
+        этого пути ещё не проводилось (окно только что собрано либо путь только
+        что сменили), а не «ничего не нашли». Текст обязан не совпадать ни с одной
+        из трёх прежних формулировок и не утверждать число установок.
+        """  # noqa: RUF002
+        note = installations_note(r"D:\EDT", None)
+        assert "Найдено установок" not in note
+        assert "Установок не найдено" not in note
+
+    def test_rejected_without_found_is_distinct_from_nothing_found(self) -> None:
+        """Сценарий финальной находки: каталоги с `1cedt.exe` есть, версия не
+
+        определилась ни у одного — раздел «EDT» их не покажет, и подпись не
+        вправе сказать «Найдено установок». Формулировка обязана отличаться
+        от «Установок не найдено» — это разные следующие шаги пользователя.
+        """  # noqa: RUF002
+        note = installations_note(r"D:\EDT", 0, rejected=2)
+        assert "Найдено установок" not in note
+        assert note != installations_note(r"D:\EDT", 0)
+        assert "верси" in note.casefold()
+
+    def test_found_and_rejected_both_named(self) -> None:
+        note = installations_note(r"D:\EDT", 2, rejected=1)
+        assert "2" in note
+        assert "1" in note
+        assert "верси" in note.casefold()
+
+    def test_settings_notes_passes_rejected_through(self) -> None:
+        notes = settings_notes(
+            "",
+            lambda kind: EditorResolution(None, "", "x"),
+            lambda p: None,
+            r"D:\EDT",
+            0,
+            2,
+        )
+        assert notes.installations == installations_note(r"D:\EDT", 0, 2)
+
 
 class TestCliBusy:
     def test_status_reflects_busy(self, tmp_path: Path) -> None:
