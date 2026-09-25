@@ -837,8 +837,8 @@ def _build_main_window(
     def edt_discover() -> list[EdtInstallation]:
         registry = read_registry(default_edtstart_root(env))
         result = discover_edt(default_roots(env), registry, store.settings.edt_jvm_dir)
-        # `result.rejected` пока не используется здесь — его читает задача 7  # noqa: RUF003
-        # (логирование).
+        # Причины отброшенных кандидатов вычисляет `discover_edt` (спека §1.4);
+        # здесь `result.rejected` пока не читается — логирование добавит задача 7.
         return result.installations
 
     # C2 финального ревью ветки: `load_registry` внутри конструктора отказывает

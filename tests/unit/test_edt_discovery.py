@@ -287,3 +287,17 @@ def test_rejected_carries_the_reason(tmp_path: Path) -> None:
     _make_installation(tmp_path / "root" / "без версии")
     result = discover_edt([_root(tmp_path / "root")], None, "")
     assert "верси" in result.rejected[0][1].casefold()
+
+
+def test_registry_entry_without_exe_on_disk_is_rejected(tmp_path: Path) -> None:
+    # Запись пережила перенос/переустановку EDT: exe, на который она указывает,
+    # больше не существует. Кандидат не должен просто исчезнуть — лог
+    # обнаружения (спека §1.4) обязан увидеть и его, отдельно от «нет  # noqa: RUF003
+    # версии».
+    exe = tmp_path / "root" / "1c-edt-2025.2.6+4-x86_64" / "1cedt.exe"
+    registry = _registry_with(exe, "2025.2.6+4")
+    result = discover_edt([_root(tmp_path / "root")], registry, "")
+    assert result.installations == []
+    assert [path for path, _reason in result.rejected] == [exe.parent]
+    assert "1cedt.exe" in result.rejected[0][1]
+    assert "верси" not in result.rejected[0][1].casefold()

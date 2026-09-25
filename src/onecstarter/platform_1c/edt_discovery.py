@@ -213,6 +213,10 @@ def discover_edt(
     for exe_key, folder in folders.items():
         exe = folder / EDT_EXE
         if not exe.is_file():
+            # Запись реестра пережила перенос/переустановку EDT (спека §1.4,
+            # вторая из двух причин `rejected`): кандидат не пропадает молча,
+            # лог обнаружения — единственный способ узнать, что случилось.
+            rejected.append((folder, f"нет {EDT_EXE}"))
             continue
         product = products.get(exe_key)
         version = _version_of(folder, product)
