@@ -104,6 +104,10 @@ class _FakeProcess:
 def _with_snapshot(
     monkeypatch: pytest.MonkeyPatch, entries: list[tuple[int, str]]
 ) -> None:
+    # Сброс общего кэша снимка (задача 3): без него тест унаследовал бы снимок,  # noqa: RUF003
+    # оставленный предыдущим тестом файла, и подмена `snapshot_all` ниже
+    # осталась бы незамеченной — вплоть до `KeyError` на чужом PID.
+    process_scan.reset_snapshot_cache()
     monkeypatch.setattr(process_scan, "snapshot_all", lambda: list(entries))
 
 
@@ -112,11 +116,9 @@ def _with_processes(
 ) -> None:
     """Снимок и чтение деталей — оба из одного и того же списка фейков.
 
-    РАСХОЖДЕНИЕ С БРИФОМ: раньше эта подмена стояла на `psutil.process_iter` —
-    список процессов давал он же. Новый сканер список берёт из `snapshot_all()`,
-    а `psutil.Process(pid)` зовёт только у совпавших по имени, поэтому подмена
-    переехала на обе точки сразу. Тела тестов ниже не менялись — сместился
-    только сам механизм подмены в общем хелпере.
+    Список процессов даёт `snapshot_all()`, а `psutil.Process(pid)` зовёт только
+    у совпавших по имени (задача 2, спека 3.2.2 «снимок процессов» §3) — поэтому
+    подмена стоит на обеих точках сразу.
     """  # noqa: RUF002
     by_pid = {process.pid: process for process in processes}
     entries = [(pid, str(proc.info["name"])) for pid, proc in by_pid.items()]
@@ -323,8 +325,67 @@ def test_access_denied_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_snapshot_failure_gives_empty_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    process_scan.reset_snapshot_cache()
+
     def boom() -> list[tuple[int, str]]:
         raise SnapshotError(5, "нет доступа")
 
     monkeypatch.setattr(process_scan, "snapshot_all", boom)
     assert WindowsProcessScanner().snapshot(frozenset({"ragent.exe"})) == []
+
+
+class _Clock:
+    """Часы под управлением теста: ждать настоящие секунды незачем."""
+
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_snapshot_is_shared_between_scanners_within_the_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Два монитора тикают почти одновременно (по логам сервера — 22-80 мс),
+    # и второй обязан получить снимок бесплатно.
+    calls = {"n": 0}
+
+    def counting() -> list[tuple[int, str]]:
+        calls["n"] += 1
+        return [(1, "ragent.exe")]
+
+    monkeypatch.setattr(process_scan, "snapshot_all", counting)
+    monkeypatch.setattr(process_scan, "_process_by_pid", lambda pid: _FakeProcess(1, "ragent.exe"))
+    clock = _Clock()
+    process_scan.reset_snapshot_cache()
+
+    servers = WindowsProcessScanner("servers", clock=clock)
+    edt = WindowsProcessScanner("edt", clock=clock)
+    servers.snapshot(frozenset({"ragent.exe"}))
+    clock.now += 0.05
+    edt.snapshot(frozenset({"1cedt.exe"}))
+
+    assert calls["n"] == 1
+
+
+def test_snapshot_is_taken_again_after_the_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = {"n": 0}
+
+    def counting() -> list[tuple[int, str]]:
+        calls["n"] += 1
+        return [(1, "ragent.exe")]
+
+    monkeypatch.setattr(process_scan, "snapshot_all", counting)
+    monkeypatch.setattr(process_scan, "_process_by_pid", lambda pid: _FakeProcess(1, "ragent.exe"))
+    clock = _Clock()
+    process_scan.reset_snapshot_cache()
+
+    scanner = WindowsProcessScanner("servers", clock=clock)
+    scanner.snapshot(frozenset({"ragent.exe"}))
+    clock.now += 3.0
+    scanner.snapshot(frozenset({"ragent.exe"}))
+
+    assert calls["n"] == 2

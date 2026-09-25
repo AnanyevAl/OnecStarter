@@ -19,6 +19,8 @@
 """  # noqa: RUF002
 
 import logging
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -55,6 +57,31 @@ def _process_by_pid(pid: int) -> psutil.Process:
     return psutil.Process(pid)
 
 
+# Снимок общий на процесс, а не на экземпляр сканера: мониторы серверов и EDT  # noqa: RUF003
+# тикают почти одновременно (по логам сервера — расхождение 22-80 мс), и второй
+# обязан получить готовый снимок бесплатно. Порог в 2 с выбран между разбросом  # noqa: RUF003
+# тиков и интервалом монитора (5 с) с запасом в обе стороны; при разъезде  # noqa: RUF003
+# таймеров деградация мягкая — два снимка вместо одного.
+_SNAPSHOT_TTL_S = 2.0
+_snapshot_cache: tuple[float, list[tuple[int, str]]] | None = None
+
+
+def reset_snapshot_cache() -> None:
+    """Сбросить общий снимок. Для тестов."""
+    global _snapshot_cache
+    _snapshot_cache = None
+
+
+def _shared_snapshot(clock: Callable[[], float]) -> list[tuple[int, str]]:
+    global _snapshot_cache
+    now = clock()
+    if _snapshot_cache is not None and now - _snapshot_cache[0] < _SNAPSHOT_TTL_S:
+        return _snapshot_cache[1]
+    entries = snapshot_all()
+    _snapshot_cache = (now, entries)
+    return entries
+
+
 class WindowsProcessScanner:
     """Снимок Toolhelp для списка, `psutil` — только для деталей совпавших.
 
@@ -66,8 +93,9 @@ class WindowsProcessScanner:
     процессов, больше самого снимка ([Ф], спека 3.2.2 «снимок процессов» §3).
     """  # noqa: RUF002
 
-    def __init__(self, label: str = "") -> None:
+    def __init__(self, label: str = "", *, clock: Callable[[], float] = time.monotonic) -> None:
         self._label = label
+        self._clock = clock
         # pid -> (имя на момент чтения, exe, argv). Имя хранится, чтобы отличить
         # переиспользованный PID: Windows выдаёт номера умерших процессов новым,
         # и без сверки мы отдали бы данные покойника живому процессу.
@@ -81,7 +109,7 @@ class WindowsProcessScanner:
         stage = f"скан процессов ({self._label})" if self._label else "скан процессов"
         with perf.measure(stage) as counters:
             try:
-                entries = snapshot_all()
+                entries = _shared_snapshot(self._clock)
             except SnapshotError as error:
                 # Тот же исход, что у прежнего отказа скана: пустой список,  # noqa: RUF003
                 # карточки покажут «не работает», причина — в логе.
