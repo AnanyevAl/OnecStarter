@@ -3,7 +3,13 @@
 from pathlib import Path
 
 from onecstarter.domain.edt import EdtStartProduct
-from onecstarter.platform_1c.edt_discovery import default_roots, discover_edt, read_jdk_version
+from onecstarter.platform_1c.edt_discovery import (
+    EdtRoot,
+    default_roots,
+    discover_edt,
+    find_installations,
+    read_jdk_version,
+)
 from onecstarter.platform_1c.edtstart_registry import EdtStartRegistry
 
 INI_NO_VM = "-vmargs\n-Dosgi.requiredJavaVersion=17\n-Xmx4096m\n"
@@ -25,16 +31,89 @@ def _jdk(root: Path, version: str) -> Path:
 
 
 def test_default_roots() -> None:
+    # Тип изменился с задачей 5 (спека §1.3): вместо списка путей — список пар  # noqa: RUF003
+    # «путь, глубина». Сами пути не менялись — только обёртка.
     env = {"ProgramFiles": r"C:\Program Files", "LOCALAPPDATA": r"C:\Users\u\AppData\Local"}
     assert default_roots(env) == [
-        Path(r"C:\Program Files\1C\1CE\components"),
-        Path(r"C:\Users\u\AppData\Local\1C\1cedtstart\installations"),
+        EdtRoot(Path(r"C:\Program Files\1C\1CE\components"), 2),
+        EdtRoot(Path(r"C:\Users\u\AppData\Local\1C\1cedtstart\installations"), 3),
     ]
+
+
+def test_default_roots_carry_their_own_depth() -> None:
+    env = {"ProgramFiles": r"C:\PF", "LOCALAPPDATA": r"C:\LA"}
+    roots = {root.path.name: root.max_depth for root in default_roots(env)}
+    assert roots["components"] == 2
+    assert roots["installations"] == 3
 
 
 def test_read_jdk_version(tmp_path: Path) -> None:
     assert read_jdk_version(_jdk(tmp_path, "17.0.16")) == "17.0.16"
     assert read_jdk_version(tmp_path / "nope") is None
+
+
+def _make_installation(folder: Path) -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "1cedt.exe").write_text("", encoding="utf-8")
+    return folder
+
+
+def _make_jdk(folder: Path) -> Path:
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "release").write_text('JAVA_VERSION="21"\n', encoding="utf-8")
+    (folder / "bin").mkdir()
+    return folder
+
+
+def test_installation_found_at_each_level_within_depth(tmp_path: Path) -> None:
+    # Уровень 0 — сам корень: это запасной выход вехи (спека §1.5), путь прямо
+    # на каталог установки обязан работать независимо от угаданной глубины.
+    for level, parts in enumerate(([], ["a"], ["b", "c"], ["d", "e", "f"])):
+        root = tmp_path / f"root{level}"
+        _make_installation(root.joinpath(*parts))
+        found, _jdks = find_installations(EdtRoot(root, max_depth=3))
+        assert len(found) == 1, f"уровень {level} не найден"
+
+
+def test_depth_is_a_hard_limit(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    _make_installation(root / "a" / "b" / "c")
+    assert find_installations(EdtRoot(root, max_depth=2))[0] == []
+    assert len(find_installations(EdtRoot(root, max_depth=3))[0]) == 1
+
+
+def test_walk_does_not_enter_a_found_installation(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    installation = _make_installation(root / "edt")
+    _make_installation(installation / "plugins" / "nested")
+    found, _jdks = find_installations(EdtRoot(root, max_depth=3))
+    assert found == [installation]
+
+
+def test_jdk_is_a_leaf(tmp_path: Path) -> None:
+    # Без отсечения глубина 3 на components стоит 48,6 мс против 23,1 [Ф].
+    root = tmp_path / "root"
+    jdk = _make_jdk(root / "jdk")
+    (jdk / "legal" / "java.base").mkdir(parents=True)
+    _make_installation(jdk / "legal" / "edt")
+    found, jdks = find_installations(EdtRoot(root, max_depth=3))
+    assert [path for _version, path in jdks] == [jdk]
+    assert found == []
+
+
+def test_release_without_bin_is_not_a_jdk(tmp_path: Path) -> None:
+    root = tmp_path / "root"
+    folder = root / "notjdk"
+    folder.mkdir(parents=True)
+    (folder / "release").write_text("", encoding="utf-8")
+    _make_installation(folder / "inner")
+    found, jdks = find_installations(EdtRoot(root, max_depth=3))
+    assert jdks == []
+    assert len(found) == 1
+
+
+def test_missing_root_is_skipped(tmp_path: Path) -> None:
+    assert find_installations(EdtRoot(tmp_path / "нет", max_depth=3)) == ([], [])
 
 
 class TestDiscover:
