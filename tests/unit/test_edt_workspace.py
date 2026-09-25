@@ -552,22 +552,38 @@ class TestInstallationsNote:
         assert "Установок не найдено" not in note
 
     def test_rejected_without_found_is_distinct_from_nothing_found(self) -> None:
-        """Сценарий финальной находки: каталоги с `1cedt.exe` есть, версия не
+        """Сценарий финальной находки: обход что-то нашёл, но не принял —
 
-        определилась ни у одного — раздел «EDT» их не покажет, и подпись не
-        вправе сказать «Найдено установок». Формулировка обязана отличаться
-        от «Установок не найдено» — это разные следующие шаги пользователя.
-        """  # noqa: RUF002
+        раздел «EDT» их не покажет, и подпись не вправе сказать «Найдено
+        установок». Формулировка обязана отличаться от «Установок не найдено»
+        (без отброшенных) — это разные следующие шаги пользователя.
+        """
         note = installations_note(r"D:\EDT", 0, rejected=2)
         assert "Найдено установок" not in note
         assert note != installations_note(r"D:\EDT", 0)
-        assert "верси" in note.casefold()
+        assert "2" in note
 
     def test_found_and_rejected_both_named(self) -> None:
         note = installations_note(r"D:\EDT", 2, rejected=1)
         assert "2" in note
         assert "1" in note
-        assert "верси" in note.casefold()
+
+    def test_rejected_text_names_neither_reason_nor_the_executable(self) -> None:
+        """Находка второго круга финального ревью: `rejected` считает ОБЕ причины
+
+        отбраковки (`discover_edt` — «нет версии» и «нет 1cedt.exe», спека
+        §1.4), а первая редакция текста жёстко называла причину («версия не
+        определилась») и утверждала наличие `1cedt.exe`. Для устаревшей записи
+        реестра, указывающей на удалённый каталог (вторая причина), оба
+        утверждения ложны: файла нет, и дело не в версии. Текст обязан не
+        называть ни одну из причин и не утверждать существование `1cedt.exe` —
+        оба случая (только отброшенные и найдено+отброшено) равно нейтральны.
+        """  # noqa: RUF002
+        only_rejected = installations_note(r"D:\EDT", 0, rejected=1)
+        found_and_rejected = installations_note(r"D:\EDT", 2, rejected=1)
+        for note in (only_rejected, found_and_rejected):
+            assert "верси" not in note.casefold(), note
+            assert "1cedt.exe" not in note, note
 
     def test_settings_notes_passes_rejected_through(self) -> None:
         notes = settings_notes(

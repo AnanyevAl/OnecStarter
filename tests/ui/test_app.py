@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import logging
 import re
 import shutil
@@ -41,6 +42,7 @@ from onecstarter.platform_1c.server_discovery import ServerInstallation
 from onecstarter.security.credentials import MemoryStore
 from onecstarter.services.availability import Availability, path_key
 from onecstarter.services.catalog import EMPTY_COMMON_DATA, CommonListData
+from onecstarter.services.edt import installations_note
 from onecstarter.services.edt_cli import EdtCli
 from onecstarter.services.errors import (
     ConsoleRegistrationDeclinedError,
@@ -4212,9 +4214,87 @@ def test_settings_note_distinguishes_missing_version_from_nothing_found(
 
     after = settings_view.row_note(EDT_INSTALLATIONS_ROW).text()
     assert "Найдено установок" not in after, "раздел «EDT» это не покажет — версия не найдена"
-    assert "верси" in after.casefold(), (
+    assert after != installations_note(str(manual_root), 0), (
         "подпись обязана отличить находку без версии от полностью пустого результата"
     )
+    # Ревью круга 2: текст не вправе называть причину («версия») — второй
+    # сценарий (test_settings_note_stays_neutral_when_rejection_reason_is_not_
+    # missing_version, ниже) отбраковывает по ДРУГОЙ причине, и текст для обоих
+    # случаев обязан быть одним и тем же нейтральным шаблоном.
+    assert "верси" not in after.casefold()
+
+
+def test_settings_note_stays_neutral_when_rejection_reason_is_not_missing_version(
+    qapp: Any, tmp_path: Any, monkeypatch: Any, qtbot: Any
+) -> None:
+    """Ревью круга 2: `manual_root_counts` считает ОБЕ причины отбраковки
+
+    (`discover_edt` — «нет версии» и «нет 1cedt.exe», спека §1.4), не различая
+    их, а прежний текст `installations_note` жёстко называл причину («версия
+    не определилась») и заодно утверждал, что `1cedt.exe` существует. Здесь
+    причина другая: запись реестра пережила перенос/переустановку EDT
+    (докстринг `discover_edt`) — `1cedt.exe`, на который она указывает, уже
+    удалён. Прежний текст соврал бы дважды: и про существование файла,
+    и про причину. Воспроизведено ревьюером на своём скрипте — сценарий не
+    экзотический, у заявителя исходного отчёта установка лежит именно так.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+
+    def inline_edt_monitor(*args: Any, **kwargs: Any) -> Any:
+        return EdtMonitor(*args, spawn=lambda task: task(), **kwargs)
+
+    monkeypatch.setattr(app_module, "EdtMonitor", inline_edt_monitor)
+
+    appdata = tmp_path / "appdata"
+    localappdata = tmp_path / "localappdata"
+    manual_root = tmp_path / "manual"
+    # Каталог установки, на который указывает запись реестра, не существует —
+    # переезд/переустановка EDT его удалили, а запись EDT Start пережила это.  # noqa: RUF003
+    stale_exe = manual_root / "1c-edt-2025.2.6-x86_64" / "1cedt.exe"
+    edtstart_root = localappdata / "1C" / "1cedtstart"
+    edtstart_root.mkdir(parents=True)
+    (edtstart_root / "products.json").write_text(
+        json.dumps(
+            {
+                "data": [
+                    {
+                        "id": "p1",
+                        "location": str(stale_exe),
+                        "installedVersion": {"label": "2025.2.6+4"},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    save_settings(
+        appdata / "OneCStarter" / "settings.json",
+        Settings(edt_installations_root=str(manual_root)),
+    )
+    env = {
+        "APPDATA": str(appdata),
+        "ProgramFiles": str(tmp_path / "no-program-files"),
+        "LOCALAPPDATA": str(localappdata),
+    }
+    runtime = app_module.build_runtime(env)
+    window, _tasks, _monitor, _start_probe, edt_monitor = app_module._build_main_window(
+        qapp, runtime, env
+    )
+    qtbot.addWidget(window)
+    assert edt_monitor is not None
+
+    window.show_section(3)
+    settings_view = window.current_section()
+    assert isinstance(settings_view, SettingsView)
+
+    edt_monitor.discover_now()  # spawn подменён на синхронный — уже выполнено
+
+    note = settings_view.row_note(EDT_INSTALLATIONS_ROW).text()
+    assert "Найдено установок" not in note, "раздел «EDT» установку не покажет — exe удалён"
+    assert "верси" not in note.casefold(), (
+        "причина здесь не «нет версии» — текст не вправе её назвать"
+    )
+    assert "1cedt.exe" not in note, "исполняемого файла нет — текст не вправе утверждать обратное"
 
 
 def _load_build_smoke_module() -> Any:
