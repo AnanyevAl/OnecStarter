@@ -19,6 +19,7 @@
 """  # noqa: RUF002
 
 import logging
+import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -64,22 +65,41 @@ def _process_by_pid(pid: int) -> psutil.Process:
 # таймеров деградация мягкая — два снимка вместо одного.
 _SNAPSHOT_TTL_S = 2.0
 _snapshot_cache: tuple[float, list[tuple[int, str]]] | None = None
+# Мониторы серверов и EDT — не последовательные тики одного потока, а два  # noqa: RUF003
+# отдельных `threading.Thread` (ServerMonitor/EdtMonitor), стартующих подряд
+# из ui/app.py: оба входят в _shared_snapshot почти одновременно и без  # noqa: RUF003
+# блокировки оба видят пустой/протухший кэш — проверка кэша без синхронизации  # noqa: RUF003
+# гонку не устраняет, а гарантирует её на каждом сдвоенном тике ([Ф] лог  # noqa: RUF003
+# заказчика 25.09.2026: два скана по 49 мс с разницей в 1 мс).  # noqa: RUF003
+_snapshot_cache_lock = threading.Lock()
 
 
 def reset_snapshot_cache() -> None:
     """Сбросить общий снимок. Для тестов."""
     global _snapshot_cache
-    _snapshot_cache = None
+    with _snapshot_cache_lock:
+        _snapshot_cache = None
 
 
 def _shared_snapshot(clock: Callable[[], float]) -> list[tuple[int, str]]:
     global _snapshot_cache
     now = clock()
-    if _snapshot_cache is not None and now - _snapshot_cache[0] < _SNAPSHOT_TTL_S:
-        return _snapshot_cache[1]
-    entries = snapshot_all()
-    _snapshot_cache = (now, entries)
-    return entries
+    cached = _snapshot_cache
+    if cached is not None and now - cached[0] < _SNAPSHOT_TTL_S:
+        return cached[1]
+    # Снимок под блокировкой: CreateToolhelp32Snapshot — быстрый локальный
+    # вызов без сети и без открытия процессов, поэтому держать блокировку на
+    # время самого снимка безопасно. Повторная проверка кэша ПОСЛЕ захвата —
+    # пока этот поток ждал, снимок мог уже сделать другой: тогда снимок
+    # берётся один раз на двоих, а не по разу на каждый вызов.  # noqa: RUF003
+    with _snapshot_cache_lock:
+        now = clock()
+        cached = _snapshot_cache
+        if cached is not None and now - cached[0] < _SNAPSHOT_TTL_S:
+            return cached[1]
+        entries = snapshot_all()
+        _snapshot_cache = (now, entries)
+        return entries
 
 
 class WindowsProcessScanner:

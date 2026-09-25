@@ -8,6 +8,8 @@
 import logging
 import subprocess
 import sys
+import threading
+import time
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -407,3 +409,49 @@ def test_snapshot_is_taken_again_after_the_window(
     scanner.snapshot(frozenset({"ragent.exe"}))
 
     assert calls["n"] == 2
+
+
+def test_snapshot_is_taken_once_when_two_monitors_race(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Мониторы серверов и EDT стартуют параллельными потоками (`ui/app.py`,
+    `ServerMonitor`/`EdtMonitor` спавнят `threading.Thread`), а не тикают по
+    очереди в одном потоке. Проверка на реальном clock=time.monotonic (не на
+    `_Clock`) — предмет проверки именно гонка потоков, а не срок годности TTL.
+
+    `threading.Barrier(2)` сводит оба потока к вызову `.snapshot()` почти
+    одновременно; `time.sleep` внутри мока `snapshot_all` держит первый поток
+    внутри блокировки достаточно долго, чтобы второй гарантированно застал
+    ещё не заполненный кэш и уткнулся в блокировку, а не проскочил мимо неё —
+    без этого окна гонка стала бы недетерминированной (иногда 1, иногда 2).
+    """  # noqa: RUF002
+    calls_lock = threading.Lock()
+    calls = {"n": 0}
+
+    def counting() -> list[tuple[int, str]]:
+        with calls_lock:
+            calls["n"] += 1
+        time.sleep(0.05)
+        return [(1, "ragent.exe")]
+
+    monkeypatch.setattr(process_scan, "snapshot_all", counting)
+    monkeypatch.setattr(process_scan, "_process_by_pid", lambda pid: _FakeProcess(1, "ragent.exe"))
+
+    barrier = threading.Barrier(2)
+
+    def run(scanner: WindowsProcessScanner, names: frozenset[str]) -> None:
+        barrier.wait()
+        scanner.snapshot(names)
+
+    servers = WindowsProcessScanner("servers")
+    edt = WindowsProcessScanner("edt")
+    threads = [
+        threading.Thread(target=run, args=(servers, frozenset({"ragent.exe"}))),
+        threading.Thread(target=run, args=(edt, frozenset({"1cedt.exe"}))),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert calls["n"] == 1
