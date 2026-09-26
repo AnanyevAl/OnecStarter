@@ -76,7 +76,13 @@ from onecstarter.ui import about
 from onecstarter.ui.hotkey_edit import HotkeyEdit
 from onecstarter.ui.settings_group import CollapsibleGroup
 from onecstarter.ui.settings_store import SettingsStore
-from onecstarter.ui.shortcuts import BASES_SHORTCUTS, EDT_SHORTCUTS, ShortcutSpec
+from onecstarter.ui.shortcuts import (
+    BASES_SHORTCUTS,
+    EDT_SHORTCUTS,
+    WINDOW_SHORTCUTS,
+    ShortcutSpec,
+    window_shortcut_label,
+)
 from onecstarter.ui.theme_controller import ThemeController
 
 CHOICES = (
@@ -120,9 +126,15 @@ AUTOSTART_ROW_NOTE = (
 
 SERVERS_ROOT_ROW_NOTE = "Новые профили серверов предлагают каталог <корень>\\srv_<версия>"
 
+EDT_INSTALLATIONS_ROW = "Каталог установок EDT"
 EDT_JVM_ROW = "JDK по умолчанию"
 EDT_HEAP_ROW = "Память для новых записей, МБ"
 EDT_LANGUAGE_ROW = "Язык для новых записей"
+EDT_SCHEMES_ROW = "Каталог цветовых схем"
+EDT_SCHEMES_NOTE = (
+    "Темы IntelliJ IDEA (.xml, .icls, .jar), TextMate (.tmTheme) и файлы .csi; "
+    "подкаталоги на один уровень"
+)
 EDT_VSCODE_ROW = "VS Code"
 EDT_ANTIGRAVITY_ROW = "Antigravity"
 
@@ -195,6 +207,10 @@ class SettingsView(QWidget):
         self._row_controls: dict[str, QWidget] = {}
         self._groups: dict[str, CollapsibleGroup] = {}
         self._current_body: QVBoxLayout | None = None
+        # Порядок строк внутри группы — тестам поля «Каталог установок EDT»
+        # (задача 7, спека §1.4): он обязан стоять первым, до JDK.
+        self._current_group_title: str | None = None
+        self._group_row_titles: dict[str, list[str]] = {}
 
         header = QLabel("Настройки")
         header_font = header.font()
@@ -282,8 +298,23 @@ class SettingsView(QWidget):
 
         self._add_group("EDT")
         notes = self._edt_notes()
+        # Первой строкой группы (спека §1.4, задача 7) — запасной выход всей
+        # вехи: если три автоматических способа найти установку промахнулись,
+        # это поле бросается в глаза раньше JDK, а не теряется среди прочих.  # noqa: RUF003
+        (
+            self._edt_installations,
+            self._edt_installations_browse,
+            installations_row,
+        ) = self._path_control(
+            store.settings.edt_installations_root,
+            "edt_installations_root",
+            after_save=self.refresh_edt_notes,
+        )
+        self._add_row(
+            EDT_INSTALLATIONS_ROW, notes.installations, installations_row, wide_control=True
+        )
         self._edt_jvm, self._edt_jvm_browse, jvm_row = self._path_control(
-            store.settings.edt_jvm_dir, "edt_jvm_dir", after_save=self._refresh_edt_notes
+            store.settings.edt_jvm_dir, "edt_jvm_dir", after_save=self.refresh_edt_notes
         )
         self._add_row(EDT_JVM_ROW, notes.jvm, jvm_row, wide_control=True)
         self._edt_heap = QSpinBox()
@@ -309,11 +340,15 @@ class SettingsView(QWidget):
             "Подставляется в -Duser.language новой записи",
             self._edt_language,
         )
+        self._edt_schemes, self._edt_schemes_browse, schemes_row = self._path_control(
+            store.settings.edt_schemes_dir, "edt_schemes_dir"
+        )
+        self._add_row(EDT_SCHEMES_ROW, EDT_SCHEMES_NOTE, schemes_row, wide_control=True)
         self._editor_vscode, self._editor_vscode_browse, vscode_row = self._path_control(
             store.settings.editor_vscode,
             "editor_vscode",
             pick_file=True,
-            after_save=self._refresh_edt_notes,
+            after_save=self.refresh_edt_notes,
         )
         self._add_row(EDT_VSCODE_ROW, notes.vscode, vscode_row, wide_control=True)
         (
@@ -324,7 +359,7 @@ class SettingsView(QWidget):
             store.settings.editor_antigravity,
             "editor_antigravity",
             pick_file=True,
-            after_save=self._refresh_edt_notes,
+            after_save=self.refresh_edt_notes,
         )
         self._add_row(EDT_ANTIGRAVITY_ROW, notes.antigravity, ag_row, wide_control=True)
 
@@ -344,6 +379,8 @@ class SettingsView(QWidget):
 
         self._shortcut_rows: list[tuple[str, str]] = []
         self._edt_shortcut_rows: list[tuple[str, str]] = []
+        self._window_shortcut_rows: list[tuple[str, str]] = []
+        self._window_shortcut_label_widgets: list[QLabel] = []
         self._add_block(
             "Сочетания раздела «Базы»",
             "Зашиты в программу и не меняются (решение заказчика 29.08.2026)",
@@ -353,6 +390,20 @@ class SettingsView(QWidget):
             "Сочетания раздела «EDT»",
             "Зашиты в программу и не меняются; Ctrl+F общий с «Базами»",  # noqa: RUF001
             self._build_shortcut_reference(EDT_SHORTCUTS, self._edt_shortcut_rows),
+        )
+        # Не «раздела»: сочетание общее для рельсы целиком, а не для одной  # noqa: RUF003
+        # вьюхи — единственный из трёх блоков, что работает из любого раздела
+        # (задача 8, спека §2.2). Диапазон в подписи строится из потолка
+        # механизма (девять) только как значение по умолчанию: живое число
+        # разделов приходит позже, через set_window_section_count() —
+        # на момент конструктора вьюхи список разделов ещё не собран
+        # (см. докстринг метода и проводку в ui/app.py).
+        self._add_block(
+            "Сочетания окна",
+            "Работает в любом разделе; список разделов — кнопки рельсы слева",
+            self._build_shortcut_reference(
+                WINDOW_SHORTCUTS, self._window_shortcut_rows, self._window_shortcut_label_widgets
+            ),
         )
 
         self._add_group("СПИСОК БАЗ")
@@ -445,6 +496,8 @@ class SettingsView(QWidget):
         self._groups[title] = group
         self._group_labels.append(title)
         self._current_body = group.body_layout()
+        self._current_group_title = title
+        self._group_row_titles[title] = []
 
     def _target_layout(self) -> QVBoxLayout:
         """Куда класть строку: тело текущей группы.
@@ -471,6 +524,8 @@ class SettingsView(QWidget):
         row_note.setWordWrap(True)
         self._row_notes[title] = row_note
         self._row_controls[title] = control
+        if self._current_group_title is not None:
+            self._group_row_titles[self._current_group_title].append(title)
 
         body = QVBoxLayout()
         body.setSpacing(1)
@@ -527,6 +582,8 @@ class SettingsView(QWidget):
         row_note.setWordWrap(True)
         self._row_notes[title] = row_note
         self._row_controls[title] = body
+        if self._current_group_title is not None:
+            self._group_row_titles[self._current_group_title].append(title)
 
         block = CollapsibleGroup(
             title,
@@ -541,14 +598,20 @@ class SettingsView(QWidget):
         self._target_layout().addWidget(block)
 
     def _build_shortcut_reference(
-        self, specs: Sequence[ShortcutSpec], rows: list[tuple[str, str]]
+        self,
+        specs: Sequence[ShortcutSpec],
+        rows: list[tuple[str, str]],
+        label_widgets: list[QLabel] | None = None,
     ) -> QWidget:
         """Таблица «сочетание — действие» по переданным сочетаниям (T-11, п. 3, только чтение).
 
-        Один билдер на оба справочника (задача 7 вехи v3.1.1: `BASES_SHORTCUTS` и
-        `EDT_SHORTCUTS`) — `rows` копит строки в накопитель своего раздела,
-        чтобы `shortcut_reference_rows()`/`edt_shortcut_reference_rows()` отдавали
-        каждый свой список.
+        Один билдер на все три справочника (задача 7 вехи v3.1.1: `BASES_SHORTCUTS` и
+        `EDT_SHORTCUTS`; задача 8 добавила `WINDOW_SHORTCUTS`) — `rows` копит строки
+        в накопитель своего раздела, чтобы `shortcut_reference_rows()`/
+        `edt_shortcut_reference_rows()`/`window_shortcut_reference_rows()` отдавали
+        каждый свой список. `label_widgets` — необязательный: только справочнику окна
+        нужно ПЕРЕПИСАТЬ подпись сочетания позже, `set_window_section_count()`
+        достаёт готовую `QLabel` из него, а не ищет её обходом раскладки.
         """  # noqa: RUF002
         table = QWidget()
         grid = QGridLayout(table)
@@ -563,6 +626,8 @@ class SettingsView(QWidget):
             grid.addWidget(keys, row, 0)
             grid.addWidget(QLabel(spec.title), row, 1)
             rows.append((spec.label, spec.title))
+            if label_widgets is not None:
+                label_widgets.append(keys)
         grid.setColumnStretch(1, 1)
         return table
 
@@ -651,16 +716,28 @@ class SettingsView(QWidget):
             f'<a href="{about.REPOSITORY_URL}" style="color:{accent}">{about.REPOSITORY_URL}</a>'
         )
 
-    def _refresh_edt_notes(self) -> None:
-        """Пересчитать подписи группы «EDT» после правки пути (I3 финального ревью).
+    def refresh_edt_notes(self) -> None:
+        """Пересчитать подписи группы «EDT» — после правки пути (I3 финального ревью)
+        или когда фоновое обнаружение установок завершилось (Important 1+2
+        финального ревью ветки 3.2.2).
 
         Подписи — живой результат автопоиска над текущими настройками
         (`services/edt.py::settings_notes`); посчитанные один раз в конструкторе
         они врали бы до перезапуска: сменил пользователь JDK — а под полем
         по-прежнему старая версия. Память и язык на подписи не влияют,
         их обработчики сюда не ходят.
+
+        Публичный метод, не приватный (был `_refresh_edt_notes`): помимо
+        `after_save` четырёх полей группы EDT его теперь зовёт и проводка окна
+        (`ui/app.py::_build_main_window`) по сигналу `EdtMonitor.installations_ready` —
+        тем же приёмом отложенной передачи, что `set_window_section_count`
+        и `set_hotkey_handler` ниже. Подпись «Каталог установок EDT» до первого
+        обнаружения не может честно назвать число (`services/edt.py::installations_note`
+        отличает «ещё не знаем» от «ничего не нашли» через `count is None`), и без
+        этого вызова оставалась бы неверной до следующей правки поля.
         """  # noqa: RUF002
         notes = self._edt_notes()
+        self._row_notes[EDT_INSTALLATIONS_ROW].setText(notes.installations)
         self._row_notes[EDT_JVM_ROW].setText(notes.jvm)
         self._row_notes[EDT_VSCODE_ROW].setText(notes.vscode)
         self._row_notes[EDT_ANTIGRAVITY_ROW].setText(notes.antigravity)
@@ -707,6 +784,14 @@ class SettingsView(QWidget):
 
     def group_labels(self) -> list[str]:
         return list(self._group_labels)
+
+    def group_row_titles(self, group: str) -> list[str]:
+        """Заголовки строк группы в порядке добавления (задача 7, спека §1.4).
+
+        Тестам порядка полей — «Каталог установок EDT» обязан стоять первым
+        в группе «EDT», до «JDK по умолчанию».
+        """
+        return list(self._group_row_titles.get(group, []))
 
     def group_titles(self) -> list[str]:
         """Заголовки ВСЕХ сворачиваемых узлов — групп и вложенных блоков.
@@ -765,11 +850,39 @@ class SettingsView(QWidget):
         """Строки справочника сочетаний раздела «EDT» — что реально попало в таблицу."""
         return list(self._edt_shortcut_rows)
 
+    def window_shortcut_reference_rows(self) -> list[tuple[str, str]]:
+        """Строки справочника сочетаний окна — что реально попало в таблицу."""
+        return list(self._window_shortcut_rows)
+
+    def set_window_section_count(self, count: int) -> None:
+        """Пересобрать диапазон «Alt+1 … Alt+N» блока «Сочетания окна» по числу разделов.
+
+        На момент конструктора вьюхи список разделов ещё не собран: `SettingsView`
+        сама входит в этот список, а `ui/app.py` строит его только после того, как
+        все вьюхи разделов уже созданы (находка ревью задачи 8). Поэтому диапазон
+        сначала ставится потолком механизма (`WINDOW_SHORTCUTS`, девять) как честное
+        значение по умолчанию, а настоящее число разделов приходит этим методом —
+        тем же приёмом отложенной инъекции, что `set_hotkey_handler` (обработчик
+        хоткея) и `MainWindow.set_section_icon` (значки разделов) в `ui/app.py`:
+        оба тоже вызываются уже после того, как окно и разделы собраны, а не
+        передаются в конструктор.
+        """  # noqa: RUF002
+        label = window_shortcut_label(count)
+        title = self._window_shortcut_rows[0][1]
+        self._window_shortcut_rows[0] = (label, title)
+        self._window_shortcut_label_widgets[0].setText(label)
+
     def servers_root_edit(self) -> QLineEdit:
         return self._servers_root
 
     def servers_root_browse_button(self) -> QPushButton:
         return self._servers_root_browse
+
+    def edt_installations_edit(self) -> QLineEdit:
+        return self._edt_installations
+
+    def edt_installations_browse_button(self) -> QPushButton:
+        return self._edt_installations_browse
 
     def edt_jvm_edit(self) -> QLineEdit:
         return self._edt_jvm
@@ -782,6 +895,12 @@ class SettingsView(QWidget):
 
     def edt_language_combo(self) -> QComboBox:
         return self._edt_language
+
+    def edt_schemes_edit(self) -> QLineEdit:
+        return self._edt_schemes
+
+    def edt_schemes_browse_button(self) -> QPushButton:
+        return self._edt_schemes_browse
 
     def editor_vscode_edit(self) -> QLineEdit:
         return self._editor_vscode

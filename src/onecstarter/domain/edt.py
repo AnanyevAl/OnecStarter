@@ -150,6 +150,42 @@ def version_from_dir_name(name: str) -> str | None:
     return match.group("version") if match else None
 
 
+def version_from_config_ini(text: str) -> str | None:
+    """Метка версии EDT из `configuration/config.ini`; `None` — сказать нечего.
+
+    `product.version=2026.1.2` плюс `eclipse.buildId=2026.1.2.2` дают `2026.1.2+2` —
+    ровно ту строку, которую показывает 1C:EDT Start и которой назван каталог
+    установки ([Ф] три установки, 25.09.2026).
+
+    Склейка осторожная: лишний компонент приклеивается, только если префикс
+    `buildId` совпал с версией и компонент ровно один. `+B` — часть метки,
+    которой пользователь различает сборки, и приклеить к версии чужое число
+    хуже, чем не приклеить своё. Расхождения префикса на снятых установках
+    не наблюдалось — ветка существует как страховка.
+
+    Формат — Java properties; читаются два ключа, остальное игнорируется,
+    как в `parse_ini`. Порядок ключей в файле произвольный [Ф].
+    """  # noqa: RUF002
+    version: str | None = None
+    build_id: str | None = None
+    for line in text.splitlines():
+        key, separator, value = line.partition("=")
+        if not separator:
+            continue
+        name = key.strip()
+        if name == "product.version":
+            version = value.strip() or None
+        elif name == "eclipse.buildId":
+            build_id = value.strip() or None
+    if version is None:
+        return None
+    if build_id is not None and build_id.startswith(f"{version}."):
+        tail = build_id[len(version) + 1 :]
+        if tail and "." not in tail:
+            return f"{version}+{tail}"
+    return version
+
+
 def parse_ini(text: str) -> IniInfo:
     """`-vm` — строка после него (если есть), `-Dosgi.requiredJavaVersion=N` — порог JDK."""
     lines = [line.strip() for line in text.splitlines()]

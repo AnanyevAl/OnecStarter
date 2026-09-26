@@ -10,6 +10,7 @@ from pathlib import Path
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QToolButton, QVBoxLayout, QWidget
 
+from onecstarter.domain.edt_cli import status_text
 from onecstarter.ui.servers.journal_panel import JournalPanel
 from onecstarter.ui.theme import Palette
 
@@ -18,23 +19,13 @@ STATE_RUNNING = "выполняется"
 STATE_INTERRUPTED = "прервано"
 STATE_NOT_STARTED = "не запущен"
 
-# Таблица `1cedtcli.exe -command "help --status-codes"` EDT 2026.1.2+2 ([Ф] Э7,
-# 13.09.2026, docs/research/t17-edt-experiments.md). Код 0 — без пояснения;
-# прочие коды (результат команды, 128 + сигнал, код JVM) — только число.
-CLI_STATUS_TEXTS: dict[int, str] = {
-    1: "CLI не запустился (1cedt.ini, права на временные файлы) или отказ cmd.exe — см. журнал",
-    200: "общая ошибка, см. журналы рабочей области",
-    201: "файл скрипта не найден",
-    202: "рабочая область занята другим приложением",
-    203: "команда прервана, скорее всего по таймауту",
-    204: "команда прервана исключением, см. журналы рабочей области",
-    205: "таймаут, процесс убит",
-}
-
 
 def state_finished(code: int) -> str:
-    text = CLI_STATUS_TEXTS.get(code)
-    return f"завершено, код {code}" + (f" ({text})" if text else "")
+    """Строка шапки консоли; расшифровка — из `domain.edt_cli.status_text` (Task 9):
+    та же таблица нужна и журналу (`services/edt_cli.py::finish`), которому импорт
+    из `ui/` запрещён инвариантом 1 — поэтому таблица живёт в домене, а не здесь."""  # noqa: RUF002
+    explanation = status_text(code)
+    return f"завершено, код {code}" + (f" ({explanation})" if explanation else "")
 
 
 class EdtConsole(QWidget):

@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scheme name="Шесть атрибутов" version="142" parent_scheme="Darcula">
+  <option name="LINE_SPACING" value="1.0" />
+  <colors>
+    <option name="CARET_ROW_COLOR" value="323232" />
+    <option name="LINE_NUMBERS_COLOR" value="606366" />
+    <option name="SELECTION_BACKGROUND" value="214283" />
+    <option name="SELECTION_FOREGROUND" value="" />
+    <option name="RIGHT_MARGIN_COLOR" value="#2f2f2f" />
+  </colors>
+  <attributes>
+    <option name="TEXT">
+      <value>
+        <option name="FOREGROUND" value="a9b7c6" />
+        <option name="BACKGROUND" value="2b2b2b" />
+      </value>
+    </option>
+    <option name="DEFAULT_KEYWORD">
+      <value>
+        <option name="FOREGROUND" value="cc7832" />
+      </value>
+    </option>
+    <option name="DEFAULT_STRING">
+      <value>
+        <option name="FOREGROUND" value="6a8759" />
+      </value>
+    </option>
+    <option name="DEFAULT_NUMBER">
+      <value>
+        <option name="FOREGROUND" value="6897bb" />
+      </value>
+    </option>
+    <option name="DEFAULT_LINE_COMMENT">
+      <value>
+        <option name="FOREGROUND" value="808080" />
+        <option name="FONT_TYPE" value="2" />
+      </value>
+    </option>
+    <option name="DEFAULT_FUNCTION_CALL">
+      <value>
+        <option name="FOREGROUND" value="ff" />
+      </value>
+    </option>
+    <option name="DEFAULT_LABEL" baseAttributes="DEFAULT_IDENTIFIER" />
+  </attributes>
+</scheme>

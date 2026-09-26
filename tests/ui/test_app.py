@@ -1,4 +1,7 @@
+import importlib.util
+import json
 import logging
+import re
 import shutil
 import sys
 import winreg
@@ -32,12 +35,14 @@ from PySide6.QtWidgets import (
 from onecstarter.domain.launch import LaunchCommand
 from onecstarter.domain.server import ServerConvention, ServerProfile
 from onecstarter.domain.version import Arch, Installation, VersionNumber, parse_version
+from onecstarter.platform_1c import edt_discovery
 from onecstarter.platform_1c.job import JobError, NullJob
 from onecstarter.platform_1c.process_scan import NullScanner, ProcessInfo
 from onecstarter.platform_1c.server_discovery import ServerInstallation
 from onecstarter.security.credentials import MemoryStore
 from onecstarter.services.availability import Availability, path_key
 from onecstarter.services.catalog import EMPTY_COMMON_DATA, CommonListData
+from onecstarter.services.edt import installations_note
 from onecstarter.services.edt_cli import EdtCli
 from onecstarter.services.errors import (
     ConsoleRegistrationDeclinedError,
@@ -76,8 +81,9 @@ from onecstarter.ui.servers.journal_panel import JournalPanel
 from onecstarter.ui.servers.monitor import ServerMonitor
 from onecstarter.ui.servers.view import ServersView
 from onecstarter.ui.settings_store import SettingsStore
-from onecstarter.ui.settings_view import SettingsView
+from onecstarter.ui.settings_view import EDT_INSTALLATIONS_ROW, SettingsView
 from onecstarter.ui.shell import MainWindow
+from onecstarter.ui.shortcuts import WINDOW_SHORTCUTS
 from onecstarter.ui.theme_controller import ThemeController
 from onecstarter.ui.watcher import FileWatcher
 
@@ -1683,19 +1689,22 @@ def test_build_main_window_creates_servers_view_with_journal_panel(
 
 
 def test_run_smoke_uses_null_scanner(tmp_path: Any, monkeypatch: Any, qtbot: Any) -> None:
-    """ЗАЩИТНЫЙ ТЕСТ: smoke не создаёт `PsutilScanner` — не сканирует машину
+    """ЗАЩИТНЫЙ ТЕСТ: smoke не создаёт `WindowsProcessScanner` — не сканирует
 
-    сборщика (долг №8, T-04.7, тот же довод, что у `NullRegistry`). Мутация
-    «`run_smoke` берёт настоящий `PsutilScanner()` вместо инъекции» обязана
-    уронить этот тест (Task 17, мутационная стадия, пункт 10).
+    машину сборщика (долг №8, T-04.7, тот же довод, что у `NullRegistry`).
+    Мутация «`run_smoke` берёт настоящий `WindowsProcessScanner()` вместо
+    инъекции» обязана уронить этот тест (Task 17, мутационная стадия, пункт 10).
+    Класс переименован из `PsutilScanner` в задаче 2 вехи 3.2.2 — имя здесь
+    обновлено следом, иначе подмена атрибута молча перестала бы что-либо
+    проверять.
     """  # noqa: RUF002
     monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
     captured = _capture_window(monkeypatch)
 
     def bomb(*_args: Any, **_kwargs: Any) -> Any:
-        raise AssertionError("smoke не должен создавать PsutilScanner")
+        raise AssertionError("smoke не должен создавать WindowsProcessScanner")
 
-    monkeypatch.setattr(app_module, "PsutilScanner", bomb)
+    monkeypatch.setattr(app_module, "WindowsProcessScanner", bomb)
     appdata = tmp_path / "appdata"
     target = tmp_path / "out"
     target.mkdir()
@@ -2586,6 +2595,51 @@ def test_settings_view_reads_the_registry_when_frozen(
         "в сборке автозапуск и консоль администрирования обязаны читать "
         "настоящий реестр"
     )
+
+
+def test_settings_view_window_shortcut_range_matches_real_section_count(
+    tmp_path: Any, monkeypatch: Any, workspace_factory: Any
+) -> None:
+    """Фикс раунд 1 (находка ревью, задача 8): справочник обязан показывать
+    ЖИВОЕ число разделов собранного окна, а не потолок механизма.
+
+    До находки `_build_main_window` собирала `SettingsView`, но никогда не звала
+    `set_window_section_count` — блок «Сочетания окна» показывал «Alt+1 … Alt+9»
+    всегда, даже когда разделов в приложении ровно четыре (Базы, Серверы, EDT,
+    Настройки), и обещал несуществующие Alt+5…Alt+9. Этот тест идёт через
+    настоящую сборку `_build_main_window`, а не через вьюху в изоляции: только
+    так ловится именно пропущенный вызов в проводке (`ui/app.py`), а не
+    правильность самого метода `SettingsView.set_window_section_count`
+    (её проверяет `test_set_window_section_count_rebuilds_the_window_shortcut_
+    range` в `tests/ui/test_settings_view.py`).
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    workspace, _calls, _opened = workspace_factory()
+    runtime = app_module.Runtime(
+        workspace=workspace,
+        cfg_rules=[],
+        conventions=[],
+        settings=tmp_path / "settings.json",
+        servers=tmp_path / "servers.json",
+        edt=tmp_path / "edt.json",
+    )
+    application = QApplication.instance()
+    assert isinstance(application, QApplication)
+    window, _tasks, _monitor, _start_probe, _edt_monitor = app_module._build_main_window(
+        application, runtime, {"APPDATA": str(tmp_path / "appdata")}
+    )
+
+    # Раздел «Настройки» — индекс 3 (см. test_clearing_a_busy_hotkey_resets_
+    # the_tooltip_to_plain выше): «Серверы» и «EDT» встали между «Базами»
+    # и «Настройками» с v3.  # noqa: RUF003
+    window.show_section(3)
+    settings_view = window.current_section()
+    assert isinstance(settings_view, SettingsView)
+    assert settings_view.window_shortcut_reference_rows() == [
+        ("Alt+1 … Alt+4", WINDOW_SHORTCUTS[0].title)
+    ]
+
+    window.close()
 
 
 def test_run_smoke_times_out_without_background(
@@ -3735,7 +3789,10 @@ def test_build_main_window_has_edt_section(
         qapp, runtime, env, process_scanner=NullScanner()
     )
     qtbot.addWidget(window)
-    labels = [button.toolTip() or button.text() for button in window.section_buttons()]
+    # button.text() — не toolTip(): задача 8 дала первым девяти кнопкам рельсы
+    # непустую подсказку вида «EDT (Alt+3)», и прежний `toolTip() or text()`
+    # начал бы искать точную строку «EDT» там, где её больше нет.
+    labels = [button.text() for button in window.section_buttons()]
     assert "EDT" in labels
     window.show_section(labels.index("EDT"))
     assert isinstance(window.current_section(), EdtView)
@@ -3785,7 +3842,9 @@ def test_build_main_window_replaces_edt_section_when_edt_json_unreadable(
 
     assert edt_monitor is None
     assert window.edt_workspace is None
-    labels = [button.toolTip() or button.text() for button in window.section_buttons()]
+    # button.text() — не toolTip(), той же причиной, что test_build_main_
+    # window_has_edt_section выше (задача 8: подсказка теперь непустая).
+    labels = [button.text() for button in window.section_buttons()]
     window.show_section(labels.index("EDT"))
     placeholder = window.current_section()
     assert isinstance(placeholder, QLabel)
@@ -3832,3 +3891,477 @@ def test_run_smoke_reports_edt_unavailable_when_edt_json_unreadable(
 
     assert "smoke: edt=unavailable" in caplog.text
     qtbot.addWidget(captured["window"])
+
+
+# -- задача 7 (v3.2): каталог установок в настройках и лог обнаружения ------
+#
+# Раскладку EDT у пользователя проверить нечем (спека §1.4) — лог обязан  # noqa: RUF003
+# восстановить её без новых вопросов к пользователю: каждый просканированный
+# корень со своей глубиной и числом найденного, включая корни, которых на  # noqa: RUF003
+# диске нет вовсе, и отброшенные кандидаты с причиной.  # noqa: RUF003
+
+
+def test_run_smoke_logs_every_root_including_missing_ones(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any, caplog: Any
+) -> None:
+    """Оба умолчательных корня отсутствуют на диске — лог обязан назвать их, не молчать."""  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    appdata = tmp_path / "appdata"
+    program_files = tmp_path / "no-program-files"
+    localappdata = tmp_path / "no-localappdata"
+    target = tmp_path / "out"
+    target.mkdir()
+    env = {
+        "APPDATA": str(appdata),
+        "ProgramFiles": str(program_files),
+        "LOCALAPPDATA": str(localappdata),
+    }
+
+    with caplog.at_level(logging.INFO):
+        assert run_smoke(str(target), env) == 0
+
+    components = program_files / "1C" / "1CE" / "components"
+    installations = localappdata / "1C" / "1cedtstart" / "installations"
+    assert f"EDT: корень {components}, глубина 2, каталога нет" in caplog.text
+    assert f"EDT: корень {installations}, глубина 3, каталога нет" in caplog.text
+    assert "smoke: edt=0, отброшено=0" in caplog.text
+    qtbot.addWidget(captured["window"])
+
+
+def test_run_smoke_distinguishes_an_empty_existing_root_from_a_missing_one(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any, caplog: Any
+) -> None:
+    """Ревью, круг 1 (Important): «ноль установок в существующем корне» и «корня
+
+    нет вовсе» — разные картины с противоположными следующими шагами, лог
+    обязан различать их не сверяясь с диском. `components` здесь существует
+    и пуст, `installations` не существует вовсе — строки лога различны.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    appdata = tmp_path / "appdata"
+    program_files = tmp_path / "existing-program-files"
+    components = program_files / "1C" / "1CE" / "components"
+    components.mkdir(parents=True)
+    localappdata = tmp_path / "no-localappdata"
+    target = tmp_path / "out"
+    target.mkdir()
+    env = {
+        "APPDATA": str(appdata),
+        "ProgramFiles": str(program_files),
+        "LOCALAPPDATA": str(localappdata),
+    }
+
+    with caplog.at_level(logging.INFO):
+        assert run_smoke(str(target), env) == 0
+
+    installations = localappdata / "1C" / "1cedtstart" / "installations"
+    assert f"EDT: корень {components}, глубина 2, установок: 0" in caplog.text
+    assert f"EDT: корень {installations}, глубина 3, каталога нет" in caplog.text
+    qtbot.addWidget(captured["window"])
+
+
+def test_edt_discover_walks_each_root_exactly_once(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any
+) -> None:
+    """Important ревью, круг 1: было два обхода каждого корня за вызов `edt_discover`
+
+    (цикл логирования в `ui/app.py` плюс обход внутри `discover_edt`) — теперь
+    один: логирование печатает готовый `EdtDiscovery.roots`, не ходит по
+    дискам само.
+
+    Патчается `edt_discovery.find_installations` — единственное место в `ui/app.py`,
+    которое до него ходило по дискам, `edt_installations_count`, больше не
+    существует (Important 1+2 финального ревью ветки 3.2.2): подпись настроек
+    читает уже посчитанный `discover_edt`, а не обходит каталог сама
+    (`manual_root_counts`, `platform_1c/edt_discovery.py`) — второго имени,
+    под которым мог бы звучать обход, в `ui/app.py` больше нет.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    appdata = tmp_path / "appdata"
+    target = tmp_path / "out"
+    target.mkdir()
+    env = {
+        "APPDATA": str(appdata),
+        "ProgramFiles": str(tmp_path / "no-program-files"),
+        "LOCALAPPDATA": str(tmp_path / "no-localappdata"),
+    }
+
+    calls: list[Any] = []
+    real = edt_discovery.find_installations
+
+    def counting(root: Any) -> Any:
+        calls.append(root)
+        return real(root)
+
+    monkeypatch.setattr(edt_discovery, "find_installations", counting)
+
+    assert run_smoke(str(target), env) == 0
+
+    # Настройка `edt_installations_root` пуста (дефолт) — счёт ниже целиком про
+    # два умолчательных корня из `edt_discover`, третьего (ручного) нет вовсе.
+    assert len(calls) == 2, "по одному обходу на умолчательный корень, не по два"
+    qtbot.addWidget(captured["window"])
+
+
+def test_run_smoke_adds_manual_root_and_logs_rejected(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any, caplog: Any
+) -> None:
+    """Ручной каталог (спека §1.4) добавляется к обходу глубиной 3 и логируется
+
+    так же, как умолчательные: путь, глубина, число найденного. Кандидат без
+    версии ни в одном звене цепочки уходит в `rejected` с причиной «нет
+    версии» — и лог называет её, а строка `smoke: edt=…` — числом отброшенных.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    appdata = tmp_path / "appdata"
+    manual_root = tmp_path / "manual"
+    candidate = manual_root / "unknown"
+    candidate.mkdir(parents=True)
+    (candidate / "1cedt.exe").write_text("")
+    save_settings(
+        appdata / "OneCStarter" / "settings.json",
+        Settings(edt_installations_root=str(manual_root)),
+    )
+    target = tmp_path / "out"
+    target.mkdir()
+    env = {
+        "APPDATA": str(appdata),
+        "ProgramFiles": str(tmp_path / "no-program-files"),
+        "LOCALAPPDATA": str(tmp_path / "no-localappdata"),
+    }
+
+    with caplog.at_level(logging.INFO):
+        assert run_smoke(str(target), env) == 0
+
+    assert f"EDT: корень {manual_root}, глубина 3, установок: 1" in caplog.text
+    assert f"EDT: отброшен {candidate}, причина: нет версии" in caplog.text
+    assert "smoke: edt=0, отброшено=1" in caplog.text
+    qtbot.addWidget(captured["window"])
+
+
+def test_run_smoke_skips_manual_root_when_not_set(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any, caplog: Any
+) -> None:
+    """Настройка пуста по умолчанию — обход не трогает никакой третий каталог."""
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    appdata = tmp_path / "appdata"
+    target = tmp_path / "out"
+    target.mkdir()
+    env = {
+        "APPDATA": str(appdata),
+        "ProgramFiles": str(tmp_path / "no-program-files"),
+        "LOCALAPPDATA": str(tmp_path / "no-localappdata"),
+    }
+
+    with caplog.at_level(logging.INFO):
+        assert run_smoke(str(target), env) == 0
+
+    assert caplog.text.count("EDT: корень") == 2, "только два умолчательных корня, без третьего"
+    qtbot.addWidget(captured["window"])
+
+
+def test_run_smoke_collapses_manual_root_duplicate_of_default(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any, caplog: Any
+) -> None:
+    """Minor финального ревью ветки 3.2.2: ручной корень, совпавший с умолчательным,
+
+    не должен давать в логе две одинаковые строки. Установки и без того
+    схлопываются по нормализованному пути exe (`discover_edt`), а до этой правки
+    лог не схлопывался: `edt_discover` добавлял ВТОРОЙ `EdtRoot` с тем же путём,
+    и обход, и его строка в логе повторялись.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    appdata = tmp_path / "appdata"
+    localappdata = tmp_path / "localappdata"
+    installations_root = localappdata / "1C" / "1cedtstart" / "installations"
+    save_settings(
+        appdata / "OneCStarter" / "settings.json",
+        Settings(edt_installations_root=str(installations_root)),
+    )
+    target = tmp_path / "out"
+    target.mkdir()
+    env = {
+        "APPDATA": str(appdata),
+        "ProgramFiles": str(tmp_path / "no-program-files"),
+        "LOCALAPPDATA": str(localappdata),
+    }
+
+    with caplog.at_level(logging.INFO):
+        assert run_smoke(str(target), env) == 0
+
+    assert caplog.text.count("EDT: корень") == 2, (
+        "ручной корень, совпавший с умолчательным, не должен удвоить строку лога"  # noqa: RUF001
+    )
+    qtbot.addWidget(captured["window"])
+
+
+def test_edt_installations_note_never_walks_disk_directly(
+    qapp: Any, tmp_path: Any, monkeypatch: Any, qtbot: Any
+) -> None:
+    """Important 2 финального ревью ветки 3.2.2: подпись «Каталог установок EDT»
+
+    раньше сама обходила ручной каталог (`find_installations` напрямую) —
+    единственный обход диска в главном потоке во всей программе, без
+    ограничения ширины пользователем, и на КАЖДОЕ сохранение любого из четырёх
+    полей группы EDT. Теперь она читает уже посчитанный `discover_edt`
+    (`manual_root_counts`) — ни конструктор `SettingsView`, ни пересчёт подписи
+    после сохранения поля (`refresh_edt_notes`, тот же метод, что `after_save`
+    у всех четырёх полей) не должны звать `find_installations`.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    calls: list[Any] = []
+    real = edt_discovery.find_installations
+
+    def counting(root: Any) -> Any:
+        calls.append(root)
+        return real(root)
+
+    monkeypatch.setattr(edt_discovery, "find_installations", counting)
+
+    appdata = tmp_path / "appdata"
+    manual_root = tmp_path / "manual"  # каталог даже не создан — если бы обход
+    # состоялся, это не спрятало бы факт вызова, `find_installations` сама
+    # проверяет `root.path.is_dir()` и просто вернула бы пустой список.
+    save_settings(
+        appdata / "OneCStarter" / "settings.json",
+        Settings(edt_installations_root=str(manual_root)),
+    )
+    env = {
+        "APPDATA": str(appdata),
+        "ProgramFiles": str(tmp_path / "no-program-files"),
+        "LOCALAPPDATA": str(tmp_path / "no-localappdata"),
+    }
+    runtime = app_module.build_runtime(env)
+    window, _tasks, _monitor, _start_probe, _edt_monitor = app_module._build_main_window(
+        qapp, runtime, env
+    )
+    qtbot.addWidget(window)
+    assert calls == [], "конструктор вьюхи настроек не должен обходить ручной каталог"
+
+    window.show_section(3)
+    settings_view = window.current_section()
+    assert isinstance(settings_view, SettingsView)
+    settings_view.refresh_edt_notes()
+
+    assert calls == [], "пересчёт подписи после сохранения поля тоже не должен обходить диск"
+
+
+def test_settings_note_distinguishes_missing_version_from_nothing_found(
+    qapp: Any, tmp_path: Any, monkeypatch: Any, qtbot: Any
+) -> None:
+    """Important 1 финального ревью ветки 3.2.2: подпись обязана считать то же,
+
+    что покажет раздел «EDT» (`discover_edt`), и обновиться сама, когда фоновое
+    обнаружение действительно завершилось — тем же приёмом отложенной передачи,
+    что `set_window_section_count`/`set_hotkey_handler` (докстринг `edt_notes`,
+    `ui/app.py`).
+
+    Каталог `manual_root/unknown` проходит `_is_installation` (в нём есть
+    `1cedt.exe`), но не даёт версии ни одним из трёх звеньев цепочки (реестра
+    нет, `config.ini` нет, имя каталога не по маске) — раздел «EDT» его не
+    покажет, и подпись не вправе сказать «Найдено установок: 1»: сценарий из
+    финальной находки — «нашли, но без версии» — не то же самое, что «ничего
+    не нашли», и ведёт к другому следующему шагу (смотреть лог, а не менять
+    путь).
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+
+    def inline_edt_monitor(*args: Any, **kwargs: Any) -> Any:
+        # Обнаружение выполняется тут же, синхронно — без настоящего потока-
+        # демона, которого тест не должен ни поднимать, ни дожидаться.
+        # `EdtMonitor` — прямой импорт этого файла (не `app_module.EdtMonitor`,
+        # который mypy отказывается считать явно экспортированным атрибутом).
+        return EdtMonitor(*args, spawn=lambda task: task(), **kwargs)
+
+    monkeypatch.setattr(app_module, "EdtMonitor", inline_edt_monitor)
+
+    manual_root = tmp_path / "manual"
+    candidate = manual_root / "unknown"
+    candidate.mkdir(parents=True)
+    (candidate / "1cedt.exe").write_text("")
+    appdata = tmp_path / "appdata"
+    save_settings(
+        appdata / "OneCStarter" / "settings.json",
+        Settings(edt_installations_root=str(manual_root)),
+    )
+    env = {
+        "APPDATA": str(appdata),
+        "ProgramFiles": str(tmp_path / "no-program-files"),
+        "LOCALAPPDATA": str(tmp_path / "no-localappdata"),
+    }
+    runtime = app_module.build_runtime(env)
+    window, _tasks, _monitor, _start_probe, edt_monitor = app_module._build_main_window(
+        qapp, runtime, env
+    )
+    qtbot.addWidget(window)
+    assert edt_monitor is not None
+
+    window.show_section(3)
+    settings_view = window.current_section()
+    assert isinstance(settings_view, SettingsView)
+    before = settings_view.row_note(EDT_INSTALLATIONS_ROW).text()
+    assert "Найдено установок" not in before, (
+        "до первого обнаружения подпись не вправе утверждать число установок"
+    )
+
+    edt_monitor.discover_now()  # spawn подменён на синхронный — уже выполнено
+
+    after = settings_view.row_note(EDT_INSTALLATIONS_ROW).text()
+    assert "Найдено установок" not in after, "раздел «EDT» это не покажет — версия не найдена"
+    assert after != installations_note(str(manual_root), 0), (
+        "подпись обязана отличить находку без версии от полностью пустого результата"
+    )
+    # Ревью круга 2: текст не вправе называть причину («версия») — второй
+    # сценарий (test_settings_note_stays_neutral_when_rejection_reason_is_not_
+    # missing_version, ниже) отбраковывает по ДРУГОЙ причине, и текст для обоих
+    # случаев обязан быть одним и тем же нейтральным шаблоном.
+    assert "верси" not in after.casefold()
+
+
+def test_settings_note_stays_neutral_when_rejection_reason_is_not_missing_version(
+    qapp: Any, tmp_path: Any, monkeypatch: Any, qtbot: Any
+) -> None:
+    """Ревью круга 2: `manual_root_counts` считает ОБЕ причины отбраковки
+
+    (`discover_edt` — «нет версии» и «нет 1cedt.exe», спека §1.4), не различая
+    их, а прежний текст `installations_note` жёстко называл причину («версия
+    не определилась») и заодно утверждал, что `1cedt.exe` существует. Здесь
+    причина другая: запись реестра пережила перенос/переустановку EDT
+    (докстринг `discover_edt`) — `1cedt.exe`, на который она указывает, уже
+    удалён. Прежний текст соврал бы дважды: и про существование файла,
+    и про причину. Воспроизведено ревьюером на своём скрипте — сценарий не
+    экзотический, у заявителя исходного отчёта установка лежит именно так.
+    """  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+
+    def inline_edt_monitor(*args: Any, **kwargs: Any) -> Any:
+        return EdtMonitor(*args, spawn=lambda task: task(), **kwargs)
+
+    monkeypatch.setattr(app_module, "EdtMonitor", inline_edt_monitor)
+
+    appdata = tmp_path / "appdata"
+    localappdata = tmp_path / "localappdata"
+    manual_root = tmp_path / "manual"
+    # Каталог установки, на который указывает запись реестра, не существует —
+    # переезд/переустановка EDT его удалили, а запись EDT Start пережила это.  # noqa: RUF003
+    stale_exe = manual_root / "1c-edt-2025.2.6-x86_64" / "1cedt.exe"
+    edtstart_root = localappdata / "1C" / "1cedtstart"
+    edtstart_root.mkdir(parents=True)
+    (edtstart_root / "products.json").write_text(
+        json.dumps(
+            {
+                "data": [
+                    {
+                        "id": "p1",
+                        "location": str(stale_exe),
+                        "installedVersion": {"label": "2025.2.6+4"},
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    save_settings(
+        appdata / "OneCStarter" / "settings.json",
+        Settings(edt_installations_root=str(manual_root)),
+    )
+    env = {
+        "APPDATA": str(appdata),
+        "ProgramFiles": str(tmp_path / "no-program-files"),
+        "LOCALAPPDATA": str(localappdata),
+    }
+    runtime = app_module.build_runtime(env)
+    window, _tasks, _monitor, _start_probe, edt_monitor = app_module._build_main_window(
+        qapp, runtime, env
+    )
+    qtbot.addWidget(window)
+    assert edt_monitor is not None
+
+    window.show_section(3)
+    settings_view = window.current_section()
+    assert isinstance(settings_view, SettingsView)
+
+    edt_monitor.discover_now()  # spawn подменён на синхронный — уже выполнено
+
+    note = settings_view.row_note(EDT_INSTALLATIONS_ROW).text()
+    assert "Найдено установок" not in note, "раздел «EDT» установку не покажет — exe удалён"
+    assert "верси" not in note.casefold(), (
+        "причина здесь не «нет версии» — текст не вправе её назвать"
+    )
+    assert "1cedt.exe" not in note, "исполняемого файла нет — текст не вправе утверждать обратное"
+
+
+def _load_build_smoke_module() -> Any:
+    """Загрузить `build/smoke.py` — не пакет, обычным импортом недоступен.
+
+    Отдельная функция ради читаемости теста ниже: `build/` не под `src/` и
+    не установлен как пакет, поэтому `spec_from_file_location` — единственный
+    штатный способ выполнить его как модуль и достать `EDT_LINE_PATTERN`.
+    """  # noqa: RUF002
+    path = Path(__file__).resolve().parents[2] / "build" / "smoke.py"
+    spec = importlib.util.spec_from_file_location("build_smoke", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_smoke_edt_line_format_matches_the_build_gate(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any, caplog: Any
+) -> None:
+    """Гейт сборки проверяет строку `smoke: edt=…` регэкспом, и в 3.2.2 он один раз
+
+    уже разошёлся с форматом, который реально пишет `run_smoke`: задача 7 дополнила
+    строку числом отброшенных установок, а `build/smoke.py` об этом узнал только
+    на настоящей сборке PyInstaller (`docs/tasks.md`, T-23, «Регрессия сборочного
+    гейта») — ни ревью, ни `pytest` поймать это не могли, `build/smoke.py`
+    тестами не импортировался и не выполнялся.
+
+    Тест берёт РЕГЭКСП ГЕЙТА (`EDT_LINE_PATTERN`, `build/smoke.py`) и прикладывает
+    его к строке, которую программа реально пишет (`caplog`, тот же `run_smoke`,
+    что вызывает и настоящий гейт) — две правды сверяются одним прогоном тестов,
+    а не только настоящей упаковкой. Проверены оба формата строки: без отброшенных
+    (`smoke: edt=N`) и с ними (`smoke: edt=N, отброшено=M`) — расхождение поймало
+    бы только второй, и покрытие одним первым было бы неполным доказательством.
+    """  # noqa: RUF002
+    smoke = _load_build_smoke_module()
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    appdata = tmp_path / "appdata"
+    target = tmp_path / "out"
+    target.mkdir()
+    env = {
+        "APPDATA": str(appdata),
+        "ProgramFiles": str(tmp_path / "no-program-files"),
+        "LOCALAPPDATA": str(tmp_path / "no-localappdata"),
+    }
+
+    with caplog.at_level(logging.INFO):
+        assert run_smoke(str(target), env) == 0
+
+    assert re.search(smoke.EDT_LINE_PATTERN, caplog.text, re.MULTILINE), (
+        "формат строки smoke: edt=… разошёлся с регэкспом гейта build/smoke.py"  # noqa: RUF001
+    )
+    qtbot.addWidget(captured["window"])
+
+
+def test_smoke_edt_line_pattern_also_matches_the_rejected_variant(tmp_path: Any) -> None:
+    """Позитивный контроль: паттерн гейта обязан узнавать и вариант с отброшенными.
+
+    Без этого теста регэксп, зауженный до варианта БЕЗ отброшенных (та самая
+    регрессия задачи 12), прошёл бы предыдущий тест ложно — ни один прогон
+    `run_smoke` в тестовом наборе не гарантированно даёт `отброшено > 0` сам
+    по себе (порядок тестов и содержимое `caplog` не тот контракт, на который
+    стоит полагаться), поэтому обе формы строки проверяются здесь явно, на
+    самих строках, без запуска приложения.
+    """  # noqa: RUF002
+    smoke = _load_build_smoke_module()
+    assert re.search(smoke.EDT_LINE_PATTERN, "smoke: edt=3", re.MULTILINE)
+    assert re.search(smoke.EDT_LINE_PATTERN, "smoke: edt=0, отброшено=1", re.MULTILINE)
+    assert not re.search(smoke.EDT_LINE_PATTERN, "smoke: edt=unavailable", re.MULTILINE)

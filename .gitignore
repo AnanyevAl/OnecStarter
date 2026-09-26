@@ -14,6 +14,7 @@ build/*
 !build/make_icon.py
 !build/onecstarter.ico
 !build/smoke.py
+!build/probe_process_scan.py
 !build/build.ps1
 !build/installer.iss
 

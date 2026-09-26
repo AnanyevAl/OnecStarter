@@ -30,12 +30,13 @@ def test_round_trip(tmp_path: Path) -> None:
 
 
 def test_schema_is_written(tmp_path: Path) -> None:
-    """Файл несёт все семь ключей, включая номер схемы.
+    """Файл несёт все ключи, включая номер схемы.
 
     Долг №3 вехи закрыт здесь: соседний `test_all_fields_are_written` проверял
     ровно то же самое на дефолтных настройках и удалён. Разница была
     в единственном поле темы, а утверждение — одно и то же: `save_settings`
-    пишет полный состав, а не только изменённое.
+    пишет полный состав, а не только изменённое. `edt_installations_root`
+    (задача 7 v3.2) дописан сюда же — тем же приёмом, что соседние ключи.
     """  # noqa: RUF002
     path = tmp_path / "settings.json"
     save_settings(path, Settings(theme=ThemeMode.DARK))
@@ -54,6 +55,8 @@ def test_schema_is_written(tmp_path: Path) -> None:
         "edt_jvm_dir": "",
         "edt_default_max_heap_mb": 8192,
         "edt_default_language": "",
+        "edt_schemes_dir": "",
+        "edt_installations_root": "",
         "editor_vscode": "",
         "editor_antigravity": "",
     }
@@ -376,11 +379,25 @@ def test_edt_fields_round_trip(tmp_path: Path) -> None:
         edt_jvm_dir=r"D:\jdk\bin",
         edt_default_max_heap_mb=4096,
         edt_default_language="ru",
+        edt_schemes_dir=r"D:\schemes",
         editor_vscode=r"D:\code\code.cmd",
         editor_antigravity=r"D:\ag\antigravity-ide.cmd",
     )
     save_settings(path, settings)
     assert load_settings(path) == settings
+
+
+def test_installations_root_survives_a_round_trip(tmp_path: Path) -> None:
+    """Ручной каталог установок EDT (спека §1.4, задача 7) — тем же приёмом, что соседние пути.
+
+    Бриф задачи 7 показывал этот тест через `ui.settings_store.SettingsStore` — тот
+    оборачивает `PySide6.QtCore.QObject` (сигнал `changed`), а `tests/unit/` — уровень
+    `services`, без Qt (инвариант 1). Здесь, как и в `test_edt_fields_round_trip` рядом,
+    используются `save_settings`/`load_settings` напрямую — расхождение с брифом.
+    """  # noqa: RUF002
+    path = tmp_path / "settings.json"
+    save_settings(path, Settings(edt_installations_root=r"D:\EDT"))
+    assert load_settings(path).edt_installations_root == r"D:\EDT"
 
 
 @pytest.mark.parametrize(
@@ -411,9 +428,17 @@ def test_edt_language_tolerance(tmp_path: Path, value: object, expected: str) ->
 def test_edt_path_fields_non_string_is_empty(tmp_path: Path) -> None:
     path = tmp_path / "settings.json"
     path.write_text(
-        json.dumps({"schema": SCHEMA_VERSION, "edt_jvm_dir": 1, "editor_vscode": None}),
+        json.dumps(
+            {
+                "schema": SCHEMA_VERSION,
+                "edt_jvm_dir": 1,
+                "editor_vscode": None,
+                "edt_schemes_dir": ["x"],
+            }
+        ),
         encoding="utf-8",
     )
     loaded = load_settings(path)
     assert loaded.edt_jvm_dir == ""
     assert loaded.editor_vscode == ""
+    assert loaded.edt_schemes_dir == ""

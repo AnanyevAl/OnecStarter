@@ -39,10 +39,17 @@ from onecstarter.domain.version import Installation, VersionNumber
 from onecstarter.platform_1c import console
 from onecstarter.platform_1c.discovery import cfg_paths, find_installations
 from onecstarter.platform_1c.editors import EditorKind, find_editor
-from onecstarter.platform_1c.edt_discovery import default_roots, discover_edt, read_jdk_version
+from onecstarter.platform_1c.edt_discovery import (
+    EdtDiscovery,
+    EdtRoot,
+    default_roots,
+    discover_edt,
+    manual_root_counts,
+    read_jdk_version,
+)
 from onecstarter.platform_1c.edtstart_registry import default_edtstart_root, read_registry
 from onecstarter.platform_1c.job import Job, NullJob, ServerJob
-from onecstarter.platform_1c.process_scan import NullScanner, ProcessScanner, PsutilScanner
+from onecstarter.platform_1c.process_scan import NullScanner, ProcessScanner, WindowsProcessScanner
 from onecstarter.platform_1c.registry import load_conventions, load_server_conventions
 from onecstarter.platform_1c.server_discovery import ServerInstallation, server_installations
 from onecstarter.platform_1c.server_spawn import spawn_logged, spawn_server
@@ -50,7 +57,7 @@ from onecstarter.security.credentials import KeyringStore
 from onecstarter.services import autostart
 from onecstarter.services.availability import probe_targets
 from onecstarter.services.catalog import CommonListData, read_common_lists
-from onecstarter.services.edt import EdtWorkspace, settings_notes
+from onecstarter.services.edt import EdtNotes, EdtWorkspace, settings_notes
 from onecstarter.services.edt_cli import EdtCli
 from onecstarter.services.errors import (
     ConsoleRegistrationDeclinedError,
@@ -71,6 +78,7 @@ from onecstarter.ui.dialogs.buttons import ask_confirmation
 from onecstarter.ui.edt.cli_watch import CliWatcher
 from onecstarter.ui.edt.monitor import EdtMonitor
 from onecstarter.ui.edt.view import EdtView
+from onecstarter.ui.heartbeat import maybe_start_heartbeat
 from onecstarter.ui.hotkey import GlobalHotkey
 from onecstarter.ui.servers.card_state import CardState, card_state
 from onecstarter.ui.servers.dialog import ConsoleDialog
@@ -492,8 +500,14 @@ def run_smoke(
         if edt_workspace is None:
             _log.info("smoke: edt=unavailable")
         else:
-            installations = cast(EdtWorkspace, edt_workspace).refresh_installations()
-            _log.info("smoke: edt=%d", len(installations))
+            workspace = cast(EdtWorkspace, edt_workspace)
+            installations = workspace.refresh_installations()
+            # Отброшенные — тем же числом рядом, а не отдельной строкой (задача 7,  # noqa: RUF003
+            # спека §1.4): подробности (путь, причина) уже ушли в лог построчно
+            # изнутри `edt_discover` во время вызова `refresh_installations` выше.
+            _log.info(
+                "smoke: edt=%d, отброшено=%d", len(installations), workspace.last_rejected_count()
+            )
         return 0
     finally:
         # `run_smoke` не крутит `application.exec()` — `aboutToQuit` не
@@ -751,7 +765,7 @@ def _build_main_window(
     `start_probe`, которую зовёт `main()` рядом с `tasks.start()`.
 
     `process_scanner` — та же инъекция для `run_smoke`, что и
-    `autostart_registry`: `None` собирает настоящий `PsutilScanner`,
+    `autostart_registry`: `None` собирает настоящий `WindowsProcessScanner`,
     а самопроверка сборки подставляет `NullScanner` — она поднимает
     настоящее окно и не должна сканировать процессы машины сборщика
     (тот же довод, что у долга №8 T-04.7).
@@ -833,9 +847,107 @@ def _build_main_window(
         )
         return find_editor(kind, setting, env)
 
+    # Число отброшенных последнего обнаружения — для строки `smoke: edt=…`
+    # (задача 7, спека §1.4). Ячейка одного элемента, не просто `int`: обновляет
+    # её `edt_discover` по значению, `edt_rejected_count` — читает то же место.
+    edt_last_rejected = [0]
+    # Последний результат `discover_edt` целиком — для подписи «Каталог установок
+    # EDT» в Настройках (Important 1+2 финального ревью ветки 3.2.2, `edt_notes`
+    # ниже). `None`, пока обнаружение ни разу не выполнялось. Ячейка одного
+    # элемента — тем же приёмом, что `edt_last_rejected` выше.
+    edt_last_discovery: list[EdtDiscovery | None] = [None]
+
     def edt_discover() -> list[EdtInstallation]:
         registry = read_registry(default_edtstart_root(env))
-        return discover_edt(default_roots(env), registry, store.settings.edt_jvm_dir)
+        roots = default_roots(env)
+        manual_root = store.settings.edt_installations_root
+        if manual_root:
+            manual_path = Path(manual_root)
+            # Ручной каталог — запасной выход вехи (спека §1.4): три
+            # автоматических способа найти установку могут промахнуться разом,
+            # раскладку у пользователя проверить нечем. Глубина 3 — как у  # noqa: RUF003
+            # `installations` в `default_roots`: уровень 0 обхода
+            # (`find_installations`) проверяет сам этот путь, поэтому годится
+            # и каталог с установками, и каталог с самим `1cedt.exe`.  # noqa: RUF003
+            #
+            # Не добавляем второй `EdtRoot`, если ручной путь СОВПАЛ с одним  # noqa: RUF003
+            # из умолчательных (Minor финального ревью ветки): без этой
+            # проверки один и тот же каталог обходился и логировался дважды —
+            # находки и без того схлопываются по нормализованному пути exe
+            # (`discover_edt`), а лог до этой правки не схлопывался.  # noqa: RUF003
+            if not any(root.path == manual_path for root in roots):
+                roots = [*roots, EdtRoot(manual_path, 3)]
+        # Обход корней — только внутри `discover_edt` (Important ревью задачи 7,
+        # круг 1): раньше этот цикл ходил по дискам сам через
+        # `find_edt_installations`, и `discover_edt` тут же обходила те же
+        # корни заново — двойной обход на каждый вызов. Теперь `discover_edt`
+        # отдаёт готовый `EdtDiscovery.roots` — здесь только печать.
+        result = discover_edt(roots, registry, store.settings.edt_jvm_dir)
+        edt_last_rejected[0] = len(result.rejected)
+        edt_last_discovery[0] = result
+        for scan in result.roots:
+            # Лог — единственный способ узнать раскладку у пользователя (спека  # noqa: RUF003
+            # §1.4): путь, глубина и число найденного для каждого корня, но
+            # «каталога нет» — отдельным словом, не числом: «ноль установок
+            # в существующем корне» и «корня нет вовсе» — разные картины,
+            # и подменять вторую нулём значило бы отвечать на вопрос лога
+            # только наполовину (находка ревью, круг 1).
+            if scan.exists:
+                _log.info(
+                    "EDT: корень %s, глубина %d, установок: %d",
+                    scan.path,
+                    scan.max_depth,
+                    scan.found,
+                )
+            else:
+                _log.info("EDT: корень %s, глубина %d, каталога нет", scan.path, scan.max_depth)
+        for folder, reason in result.rejected:
+            # Пути установок — не секрет (инвариант 5 требует внимания, но не
+            # запрещает их: без них диагностика бессмысленна), причина —
+            # ровно то, что вычислил `discover_edt` (спека §1.4).
+            _log.info("EDT: отброшен %s, причина: %s", folder, reason)
+        return result.installations
+
+    def edt_notes() -> EdtNotes:
+        """Подписи группы «EDT» в Настройках — из последнего обнаружения, не с нового обхода.
+
+        Important 1 + Important 2 финального ревью ветки 3.2.2. Раньше здесь стоял
+        `edt_installations_count` — отдельный сырой обход ручного каталога
+        (`find_installations` напрямую), и он завышал число: раздел «EDT» показывает
+        результат `discover_edt`, который дополнительно отбрасывает кандидата без
+        версии, а подпись про это не знала и обещала установки, которых в разделе
+        не будет (Important 1). Этот обход к тому же шёл в главном потоке — на
+        КАЖДОЕ сохранение любого из четырёх полей группы EDT и уже при сборке окна,
+        единственный такой обход во всей программе, без ограничения ширины
+        пользователем (Important 2).
+
+        `manual_root_counts` — чистая функция над уже посчитанным `edt_last_discovery`
+        (побочный эффект `edt_discover` выше, тот же обход, что видит раздел), поэтому
+        здесь нет ни одного обращения к диску. Пока обнаружение ни разу не завершилось
+        для ТЕКУЩЕГО текста поля, `manual_root_counts` отдаёт `None`, а не `0` — иначе
+        подпись соврала бы «ничего не нашли» вместо честного «ещё не знаем» сразу
+        после сборки окна или смены пути (см. докстринг `manual_root_counts`).
+
+        Вызывается сразу при сборке `SettingsView` (обнаружения ещё не было — считать
+        нечем) и повторно — `settings_view.refresh_edt_notes()`, тем же приёмом
+        отложенной передачи, каким уже переданы число разделов
+        (`set_window_section_count`) и обработчик горячей клавиши
+        (`set_hotkey_handler`): подписка на `edt_monitor.installations_ready` ниже
+        зовёт его снова, когда обнаружение действительно завершилось.
+        """  # noqa: RUF002
+        root = store.settings.edt_installations_root
+        result = edt_last_discovery[0]
+        counts = manual_root_counts(result, root) if result is not None else None
+        count = counts[0] if counts is not None else None
+        rejected = counts[1] if counts is not None else 0
+        return settings_notes(
+            store.settings.edt_jvm_dir,
+            edt_editor,
+            read_jdk_version,
+            root,
+            count,
+            rejected,
+        )
 
     # C2 финального ревью ветки: `load_registry` внутри конструктора отказывает
     # `EdtUnavailableError`, когда `edt.json` есть, но не читается (права,
@@ -851,6 +963,7 @@ def _build_main_window(
             discover=edt_discover,
             edtstart=lambda: read_registry(default_edtstart_root(env)),
             editors=edt_editor,
+            rejected_count=lambda: edt_last_rejected[0],
         )
     except EdtUnavailableError as error:
         _log.error("раздел EDT недоступен: %s", error)
@@ -864,7 +977,7 @@ def _build_main_window(
         ),
         frozen=bool(getattr(sys, "frozen", False)),
         executable=sys.executable,
-        edt_notes=lambda: settings_notes(store.settings.edt_jvm_dir, edt_editor, read_jdk_version),
+        edt_notes=edt_notes,
     )
     # Раздел «Серверы» (T-08, задача 16). `servers_workspace`/`server_installed`
     # (холдер — сеттера у ServersView нет, тот же приём, что `recent_limit=  # noqa: RUF003
@@ -1006,6 +1119,7 @@ def _build_main_window(
                 store.settings.edt_default_max_heap_mb,
                 store.settings.edt_default_language,
             ),
+            schemes_dir=lambda: store.settings.edt_schemes_dir,
             cli=edt_cli,
             watcher=cli_watcher,
             # M4 ревью: не `~/Documents` — при OneDrive KFM «Документы» живут
@@ -1036,11 +1150,18 @@ def _build_main_window(
     window.set_section_icon(servers_section, rail_icons.servers_icon)
     window.set_section_icon(edt_section, rail_icons.edt_icon)
     window.set_section_icon(settings_section, rail_icons.settings_icon)
+    # Живое число разделов — только теперь, когда `sections` уже собран: на
+    # момент конструктора `SettingsView` он ещё не существует (`SettingsView`
+    # сама один из его элементов). Тот же приём отложенной инъекции, что  # noqa: RUF003
+    # `set_hotkey_handler`/`set_section_icon` выше (задача 8, находка ревью —
+    # справочник без этого вызова обещал бы Alt+5…Alt+9 при четырёх разделах).
+    settings_view.set_window_section_count(len(sections))
     if cli_watcher is not None:
         cli_watcher.setParent(window)  # время жизни — окно, как у мониторов  # noqa: RUF003
 
     monitor = ServerMonitor(
-        process_scanner if process_scanner is not None else PsutilScanner(), parent=window
+        process_scanner if process_scanner is not None else WindowsProcessScanner("servers"),
+        parent=window,
     )
 
     def on_scan(snapshot: ScanSnapshot) -> None:
@@ -1057,13 +1178,21 @@ def _build_main_window(
     # не для кого, а `main()`/`run_smoke` получают `None` пятым элементом.  # noqa: RUF003
     if edt_workspace is not None and edt_view is not None:
         edt_monitor = EdtMonitor(
-            process_scanner if process_scanner is not None else PsutilScanner(),
+            process_scanner if process_scanner is not None else WindowsProcessScanner("edt"),
             edt_workspace.projects,
             edt_discover,
             parent=window,
         )
         edt_monitor.scan_ready.connect(edt_view.on_scan)
         edt_monitor.installations_ready.connect(edt_view.on_installations)
+        # Отложенная передача подписи «Каталог установок EDT» (Important 1+2
+        # финального ревью ветки 3.2.2, докстринг `edt_notes` выше): на момент
+        # сборки `SettingsView` обнаружение ещё не выполнялось, и подпись честно
+        # говорит «ещё не знаем». Как только фоновое обнаружение действительно
+        # завершается — здесь ли, по `discover_now()` ниже, или по «Каталог
+        # установок EDT»/JDK/редакторам в Настройках, — подпись пересчитывается
+        # заново уже из готового результата, без нового обхода диска.
+        edt_monitor.installations_ready.connect(lambda _found: settings_view.refresh_edt_notes())
         # Смена JDK по умолчанию в Настройках — повод переобнаружить установки.
         store.changed.connect(edt_monitor.discover_now)
 
@@ -1380,6 +1509,9 @@ def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
         window.show()
         _log.info("окно показано")
     tasks.start()
+    # Время жизни — окно, как у мониторов: ссылка нужна, иначе объект  # noqa: RUF003
+    # соберёт сборщик мусора и тики прекратятся молча.
+    maybe_start_heartbeat(os.environ, window)
     # Проба доступности — там же, где остальной фон, и по той же причине:
     # обращения к сетевым шарам не должны начаться раньше, чем окно решило,
     # показываться ему или остаться скрытым в трее.

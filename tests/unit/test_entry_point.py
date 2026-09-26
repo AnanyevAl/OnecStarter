@@ -255,3 +255,34 @@ def test_main_catches_dispatch_failure_and_reports(
         assert "бах" in log.read_text(encoding="utf-8")  # noqa: RUF001
     finally:
         _cleanup_root()
+
+
+# -- задача 7: версия программы в логе старта --------------------------------
+#
+# Версию на сервере заказчика пришлось определять косвенно — по тому, в каком
+# запуске в логе впервые появились строки новой функции. Строка со версией  # noqa: RUF003
+# и разрядностью процесса обязана появляться в обычном логе всегда, а не  # noqa: RUF003
+# под флагом режима замеров.
+
+
+def test_main_logs_version_at_start(
+    app_stub: _AppStub,
+    caplog: pytest.LogCaptureFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from onecstarter.ui import about
+
+    # APPDATA подменяется обязательно: `main` настраивает лог настоящим
+    # `diagnostics.setup_logging`, и без подмены тест писал бы в живой
+    # `%APPDATA%\OneCStarter\logs` машины, где идёт прогон. Тот же приём,
+    # что в test_main_catches_dispatch_failure_and_reports выше.
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    try:
+        with caplog.at_level(logging.INFO, logger="onecstarter"):
+            assert main([]) == 0
+
+        assert f"версия {about.app_version()}" in caplog.text
+        assert "процесс" in caplog.text
+    finally:
+        _cleanup_root()

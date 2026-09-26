@@ -138,6 +138,35 @@ def test_selected_tree_row_uses_the_selection_role() -> None:
         assert props["background"] == palette.selection
 
 
+def test_list_and_table_views_use_the_palette_background() -> None:
+    """Smoke заказчика 21.09.2026: без правила item view красится ролью Base системной
+
+    палитры — в тёмном режиме Windows тёмный фон под тёмным текстом светлой темы
+    (`QWidget { color: palette.text }`). `QListWidget`/`QTableWidget` в диалогах
+    («Цветовая схема», CLI-импорт, CLI-валидация, серверы) — те же `QListView`/
+    `QTableView` под капотом, правило по типу представления красит их все разом.
+    """
+    for palette in (theme.DARK, theme.LIGHT):
+        props = _rule_properties(theme.stylesheet(palette), "QListView, QTableView")
+        assert props["background"] == palette.background
+
+
+def test_selected_list_and_table_item_has_an_explicit_readable_colour() -> None:
+    """Та же причина, что у ``QTreeView::item:selected`` (замечание 1, 08.08.2026):
+
+    без явного ``color`` выделенную строку/ячейку красит хайлайт стиля ``windows11``,
+    рассчитанный на тёмный системный выбор — на светлом ``selection`` получилось бы
+    светлое по светлому.
+    """  # noqa: RUF002
+    for palette in (theme.DARK, theme.LIGHT):
+        props = _rule_properties(
+            theme.stylesheet(palette),
+            "QListView::item:selected, QTableView::item:selected",
+        )
+        assert props["color"] == palette.text
+        assert props["background"] == palette.selection
+
+
 def test_checked_rail_button_gets_stripe_fill_and_raised_ground() -> None:
     """Спека рестайла §3: активный раздел — жёлтая полоска, фон raised.
 

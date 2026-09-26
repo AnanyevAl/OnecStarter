@@ -1,4 +1,8 @@
+from typing import Any
+
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QShortcut
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QLabel, QWidget
 
 from onecstarter.ui import theme
@@ -194,6 +198,51 @@ def test_ctrl_f_focuses_search_of_current_section(qtbot):
     window.show_section(1)
     qtbot.keyClick(window, Qt.Key.Key_F, Qt.KeyboardModifier.ControlModifier)
     assert section.focus_calls == 1  # у «Серверов» поиска нет — ничего не произошло  # noqa: RUF003
+
+
+def _window_with_sections(qtbot: Any, labels: list[str]) -> tuple[MainWindow, list[QWidget]]:
+    widgets: list[QWidget] = [QLabel(label) for label in labels]
+    window = MainWindow(sections=list(zip(labels, widgets, strict=True)))
+    qtbot.addWidget(window)
+    return window, widgets
+
+
+def test_alt_number_switches_section(qtbot: Any) -> None:
+    """Alt+3 переключает на третий раздел рельсы — задача 8, спека §2.2.
+
+    У MainWindow нет геттера индекса — есть current_section() -> QWidget
+    (shell.py:116), поэтому сверяем сам виджет и отметку на кнопке:
+    show_section() сам проставляет checked нужной кнопке.
+
+    Контекст `WindowShortcut` (умолчание QShortcut) требует именно АКТИВНОГО
+    окна — тот же замер offscreen-платформы, что и у test_ctrl_f_focuses_
+    search_of_current_section: без show()+waitActive() клавиша до QShortcut
+    не доходит и раздел не переключается вовсе.
+    """  # noqa: RUF002
+    sections = ["Базы", "Серверы", "EDT", "Настройки"]
+    window, widgets = _window_with_sections(qtbot, sections)
+    window.show()
+    qtbot.waitExposed(window)
+    with qtbot.waitActive(window, timeout=2000):
+        window.activateWindow()
+    QTest.keyClick(window, Qt.Key.Key_3, Qt.KeyboardModifier.AltModifier)
+    assert window.current_section() is widgets[2]
+    assert window.section_buttons()[2].isChecked()
+
+
+def test_only_nine_sections_get_shortcuts(qtbot: Any) -> None:
+    """Alt+0 не занимаем, а после девятого раздела сочетаний уже не хватает."""  # noqa: RUF002
+    window, _widgets = _window_with_sections(qtbot, [f"Раздел {n}" for n in range(1, 12)])
+    sequences = {s.key().toString() for s in window.findChildren(QShortcut)}
+    assert "Alt+9" in sequences
+    assert "Alt+0" not in sequences
+    assert not any(f"Alt+{n}" in sequences for n in (10, 11))
+
+
+def test_button_tooltip_carries_the_shortcut(qtbot: Any) -> None:
+    """Подсказка кнопки называет своё сочетание — не только справочник в Настройках."""
+    window, _widgets = _window_with_sections(qtbot, ["Базы", "Серверы"])
+    assert "Alt+1" in window.section_buttons()[0].toolTip()
 
 
 def test_section_icon_follows_the_palette(qtbot):

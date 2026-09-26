@@ -1,7 +1,8 @@
+import logging
 import sys
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 from unittest import mock
 
 import pytest
@@ -19,6 +20,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QDragMoveEvent, QDropEvent, QKeyEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication, QDialog, QTreeView, QWidget
 
+from onecstarter import perf
 from onecstarter.config.shell_link import build_shell_link, safe_file_name, shortcut_command
 from onecstarter.domain.connect import ConnectKind
 from onecstarter.domain.launch import LaunchCommand, LaunchTarget
@@ -47,6 +49,7 @@ from onecstarter.ui.bases.view import (
     NO_CACHE_ROOT_NOTE,
     BasesView,
     DropTarget,
+    _BasesTree,
 )
 from onecstarter.ui.dialogs.confirm import ask_group_removal, confirm_removal
 from onecstarter.ui.dialogs.group import GroupDialog
@@ -173,6 +176,13 @@ def _column_texts(view: BasesView, column: int) -> list[str]:
         for index in _iter_tree(view.model())
         if index.data(KIND_ROLE) == RowKind.BASE.value
     ]
+
+
+def _lines_of(path: Path) -> list[str]:
+    """Непустые строки perf-лога, дождавшись сброса буфера обработчика."""  # noqa: RUF002
+    for handler in logging.getLogger("onecstarter.perf").handlers:
+        handler.flush()
+    return [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 def test_pending_installations_show_ellipsis_then_versions(qtbot, workspace_factory):
@@ -4572,3 +4582,124 @@ def test_search_hint_and_clear_button(qtbot, workspace_factory):
     view.search().setText("x")
     view.search().clear_action().trigger()
     assert view.search().text() == ""
+
+
+# -- Task 4 (v3.2.1): замер пересборки дерева баз ---------------------------
+
+
+def test_rebuild_is_measured_with_row_count(
+    qtbot: Any, workspace_factory: Any, tmp_path: Path
+) -> None:
+    view, _calls, _errors, _opened = _view(qtbot, workspace_factory)
+    path = perf.setup({"APPDATA": str(tmp_path), perf.ENV_NAME: "1"})
+    assert path is not None
+    try:
+        view.rebuild()
+        for handler in logging.getLogger("onecstarter.perf").handlers:
+            handler.flush()
+        lines = [
+            line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+        ]
+    finally:
+        perf.reset_for_tests()
+    assert len(lines) == 1
+    # Метка — по-русски и называет операцию, а не метод («пересборка списка  # noqa: RUF003
+    # баз», не «rebuild»): весь остальной лог такой же (`скан процессов
+    # (servers): …`, `обнаружение платформ: …`) — правка round 1 после ревью.
+    assert "пересборка списка баз: " in lines[0]
+    assert " мс, строк=" in lines[0]
+
+
+def test_rebuild_writes_nothing_when_perf_is_off(
+    qtbot: Any, workspace_factory: Any, tmp_path: Path
+) -> None:
+    view, _calls, _errors, _opened = _view(qtbot, workspace_factory)
+    perf.setup({"APPDATA": str(tmp_path)})
+    try:
+        view.rebuild()
+    finally:
+        perf.reset_for_tests()
+    assert not (tmp_path / "OneCStarter" / "logs" / "perf.log").exists()
+
+
+# -- Task 6 (v3.2.1): замер событий дерева баз -------------------------------
+
+
+def test_slow_tree_event_is_reported(
+    qtbot: Any, workspace_factory: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    view, _calls, _errors, _opened = _view(qtbot, workspace_factory)
+    path = perf.setup({"APPDATA": str(tmp_path), perf.ENV_NAME: "1"})
+    assert path is not None
+    # cast: `view.tree()` типизирован как публичный `QTreeView` — `_perf`/
+    # `_clock` есть только у приватного `_BasesTree`, который в разделе  # noqa: RUF003
+    # «Базы» стоит за ним фактически.
+    tree = cast(_BasesTree, view.tree())
+    # Дерево читает флаг в __init__, а perf включён уже после его создания:  # noqa: RUF003
+    # выставляем явно — так же, как это произойдёт в бою, где setup()
+    # отрабатывает в main() до сборки окна.
+    tree._perf = True
+    # Часы дерева под управлением теста: настоящую паузу в 100 мс
+    # воспроизводить незачем.
+    ticks = iter([0.0, 0.250])
+    monkeypatch.setattr(tree, "_clock", lambda: next(ticks))
+    try:
+        tree.event(QEvent(QEvent.Type.User))
+        lines = _lines_of(path)
+    finally:
+        # `_perf` выставлен напрямую атрибутом, а не через `monkeypatch` —  # noqa: RUF003
+        # значит, в отличие от `_clock`, сам он не откатится по завершении
+        # теста. pytest-qt зовёт `QApplication.processEvents()` после фазы
+        # `call` (и ещё дважды на teardown, до отката monkeypatch): дерево —
+        # живой видимый виджет, и в очереди почти всегда остаются свои
+        # Qt-события (перерисовка, LayoutRequest). Не сбрось мы флаг здесь —  # noqa: RUF003
+        # `event()` получил бы их с уже исчерпанным `ticks` и упал бы на  # noqa: RUF003
+        # `next()` StopIteration ещё до отката monkeypatch (проверено:
+        # тест падал именно так, стабильно, а не как известная  # noqa: RUF003
+        # интермиттентная зависимость offscreen-прогона).
+        tree._perf = False
+        perf.reset_for_tests()
+    assert len(lines) == 1
+    assert "дерево баз: событие User 250 мс" in lines[0]
+
+
+def test_fast_tree_event_is_silent(
+    qtbot: Any, workspace_factory: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    view, _calls, _errors, _opened = _view(qtbot, workspace_factory)
+    path = perf.setup({"APPDATA": str(tmp_path), perf.ENV_NAME: "1"})
+    assert path is not None
+    tree = cast(_BasesTree, view.tree())
+    tree._perf = True
+    ticks = iter([0.0, 0.010])
+    monkeypatch.setattr(tree, "_clock", lambda: next(ticks))
+    try:
+        tree.event(QEvent(QEvent.Type.User))
+        lines = _lines_of(path)
+    finally:
+        # См. комментарий в test_slow_tree_event_is_reported: `_perf` не
+        # управляется monkeypatch и обязан быть снят вручную до того, как
+        # pytest-qt прогонит очередь Qt-событий через тот же `event()`.
+        tree._perf = False
+        perf.reset_for_tests()
+    assert lines == []
+
+
+def test_tree_events_are_not_measured_when_perf_is_off(
+    qtbot: Any, workspace_factory: Any, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Находка финального ревью ветки: файла `perf.log` при выключенном режиме
+    # нет в любом случае — этой одной проверки было мало, тест зеленел бы и
+    # на поломанной реализации, которая пишет в логгер `onecstarter.perf`
+    # напрямую (тот же класс дефекта, что и утечка в корневой логгер при
+    # неудачном создании файла — perf.py, `setup`). Вторая проверка —
+    # что в корень ничего не ушло — закрывает и этот путь.
+    view, _calls, _errors, _opened = _view(qtbot, workspace_factory)
+    perf.setup({"APPDATA": str(tmp_path)})
+    try:
+        with caplog.at_level(logging.INFO):
+            view.tree().event(QEvent(QEvent.Type.User))
+    finally:
+        perf.reset_for_tests()
+    assert not (tmp_path / "OneCStarter" / "logs" / "perf.log").exists()
+    assert not any(record.name == "onecstarter.perf" for record in caplog.records)

@@ -92,6 +92,19 @@ class MainWindow(QMainWindow):
                 QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
             )
             button.clicked.connect(lambda _checked=False, i=index: self.show_section(i))
+            # Alt+0 не занимаем: нумерация разделов идёт с единицы, и ноль  # noqa: RUF003
+            # выглядел бы как «десятый» — сочетание без смысла. Раздел после
+            # девятого сочетания уже не получает (задача 8, спека §2.2) —
+            # нумерация идёт от списка разделов, а не от жёсткой таблицы,  # noqa: RUF003
+            # так что новый раздел получает следующий номер сам собой.
+            number = index + 1
+            if number <= 9:
+                QShortcut(
+                    QKeySequence(f"Alt+{number}"),
+                    self,
+                    lambda i=index: self.show_section(i),
+                )
+                button.setToolTip(f"{label} (Alt+{number})")
             group.addButton(button)
             rail_layout.addWidget(button)
             self._buttons.append(button)
