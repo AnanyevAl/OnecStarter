@@ -1297,3 +1297,27 @@ def test_scroll_area_styling_targets_named_widgets_only(
         if "#SettingsScroll" in line and "background: transparent" in line
     )
     assert "> QWidget" not in rule
+
+
+def test_update_check_checkbox_reflects_and_writes_the_setting(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """T-25: «Проверять обновления при запуске» — согласие из настроек."""
+    view, store = _view(application, tmp_path)
+    assert view.update_check_checkbox().isChecked() is False  # не спрашивали
+    view.update_check_checkbox().setChecked(True)
+    assert store.settings.check_updates is True
+    store.update(check_updates=False)
+    assert view.update_check_checkbox().isChecked() is False
+
+
+def test_update_button_requests_a_check_and_status_is_shown(
+    application: QApplication, tmp_path: Path
+) -> None:
+    view, _store = _view(application, tmp_path)
+    requested: list[bool] = []
+    view.check_updates_requested.connect(lambda: requested.append(True))
+    view.update_button().click()
+    assert requested == [True]
+    view.show_update_status("Установлена последняя версия")
+    assert view.update_status_label().text() == "Установлена последняя версия"

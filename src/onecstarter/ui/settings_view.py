@@ -41,7 +41,7 @@ v1, вставлена сразу ПОСЛЕ «ОКНО И ЗАПУСК» и п�
 from collections.abc import Callable, Sequence
 from typing import TypeVar
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QShowEvent
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -170,6 +170,8 @@ def browse_for_editor_file() -> str:
 
 
 class SettingsView(QWidget):
+    # Кнопка «Проверить обновления» (T-25): проверку делает контроллер в ui/app.py.
+    check_updates_requested = Signal()
     def __init__(
         self,
         controller: ThemeController,
@@ -439,6 +441,25 @@ class SettingsView(QWidget):
         )
         self._add_row("Репозиторий", "Исходники, выпуски, замечания", self._repository_label)
         self._render_repository_link()
+        # T-25: согласие на проверку при запуске и ручная проверка (§4 требований).
+        self._update_check = QCheckBox()
+        self._update_check.setChecked(store.settings.check_updates is True)
+        self._update_check.toggled.connect(self._choose_update_check)
+        self._add_row(
+            "Проверять обновления при запуске",
+            "Запрос к GitHub несёт только номер версии программы",
+            self._update_check,
+        )
+        self._update_button = QPushButton("Проверить обновления")
+        self._update_button.setAutoDefault(False)
+        self._update_button.clicked.connect(self.check_updates_requested)
+        self._update_status = QLabel("")
+        update_row = QWidget()
+        update_layout = QHBoxLayout(update_row)
+        update_layout.setContentsMargins(0, 0, 0, 0)
+        update_layout.addWidget(self._update_button)
+        update_layout.addWidget(self._update_status, 1)
+        self._add_row("Обновления", "Проверить сейчас, не вышла ли новая версия", update_row)
 
         layout.addWidget(self._status)
         layout.addStretch(1)
@@ -833,6 +854,19 @@ class SettingsView(QWidget):
     def hide_on_launch_checkbox(self) -> QCheckBox:
         return self._hide_on_launch
 
+    def update_check_checkbox(self) -> QCheckBox:
+        return self._update_check
+
+    def update_button(self) -> QPushButton:
+        return self._update_button
+
+    def update_status_label(self) -> QLabel:
+        return self._update_status
+
+    def show_update_status(self, text: str) -> None:
+        """Итог ручной проверки обновлений (T-25)."""
+        self._update_status.setText(text)
+
     def autostart_checkbox(self) -> QCheckBox:
         return self._autostart
 
@@ -1006,6 +1040,9 @@ class SettingsView(QWidget):
     def _choose_hide_on_launch(self, checked: bool) -> None:
         self._store.update(hide_on_launch=checked)
 
+    def _choose_update_check(self, checked: bool) -> None:
+        self._store.update(check_updates=checked)
+
     def _choose_recent(self, value: int) -> None:
         self._store.update(recent_limit=value)
 
@@ -1136,6 +1173,10 @@ class SettingsView(QWidget):
         blocked = self._hide_on_launch.blockSignals(True)
         self._hide_on_launch.setChecked(settings.hide_on_launch)
         self._hide_on_launch.blockSignals(blocked)
+
+        blocked = self._update_check.blockSignals(True)
+        self._update_check.setChecked(settings.check_updates is True)
+        self._update_check.blockSignals(blocked)
 
         blocked = self._recent.blockSignals(True)
         self._recent.setValue(settings.recent_limit)

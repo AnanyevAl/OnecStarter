@@ -4370,3 +4370,32 @@ def test_smoke_edt_line_pattern_also_matches_the_rejected_variant(tmp_path: Any)
     assert re.search(smoke.EDT_LINE_PATTERN, "smoke: edt=3", re.MULTILINE)
     assert re.search(smoke.EDT_LINE_PATTERN, "smoke: edt=0, отброшено=1", re.MULTILINE)
     assert not re.search(smoke.EDT_LINE_PATTERN, "smoke: edt=unavailable", re.MULTILINE)
+
+
+def test_main_window_builds_update_controller_without_checking(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """T-25: сборка окна заводит полосу и контроллер, но не спрашивает и не проверяет.
+
+    Вопрос о согласии и проверку запускает только `main()` после показа окна
+    (`start_on_launch`) — сеть до этого момента недопустима (§4 требований).
+    """  # noqa: RUF002
+    from onecstarter.ui.update import UpdateBanner, UpdateController
+
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    monkeypatch.setattr(app_module, "AvailabilityProbe", _FakeAvailabilityProbe)
+    asked: list[str] = []
+    def fake_get(url: str, **_kwargs: Any) -> bytes:
+        asked.append(url)
+        return b""
+
+    monkeypatch.setattr(app_module, "urllib_get", fake_get)
+    env = {"APPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+
+    window, _tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(qapp, runtime, env)
+    qtbot.addWidget(window)
+    assert isinstance(window.update_controller, UpdateController)
+    [banner] = window.findChildren(UpdateBanner)
+    assert banner.isHidden()
+    assert asked == []

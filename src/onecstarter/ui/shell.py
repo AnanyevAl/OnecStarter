@@ -57,6 +57,9 @@ class MainWindow(QMainWindow):
         # его через `window.edt_workspace` для настоящего (только диск)  # noqa: RUF003
         # обнаружения установок EDT в строке `smoke: edt=…`.
         self.edt_workspace: object | None = None
+        # Контроллер обновлений (T-25) — ссылка на время жизни окна; `main()`
+        # зовёт `start_on_launch` после того, как окно решило, показываться ли.
+        self.update_controller: object | None = None
         # Доступность трея САМА ПО СЕБЕ, в отличие от close_to_tray (которое  # noqa: RUF003
         # уже смешивает настройку И доступность трея через AND, спека §2).
         # Показ окна на тихом старте (ui/app.py::main) обязан зависеть от
@@ -116,7 +119,13 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(rail)
-        layout.addWidget(self._stack, stretch=1)
+        # Правая колонка: полоса уведомлений (T-25, `set_banner`) над разделами.
+        content = QWidget()
+        self._content_layout = QVBoxLayout(content)
+        self._content_layout.setContentsMargins(0, 0, 0, 0)
+        self._content_layout.setSpacing(0)
+        self._content_layout.addWidget(self._stack, stretch=1)
+        layout.addWidget(content, stretch=1)
         self.setCentralWidget(central)
 
         # Одна комбинация на окно: два QShortcut с Ctrl+F в разделах Qt счёл бы  # noqa: RUF003
@@ -125,6 +134,10 @@ class MainWindow(QMainWindow):
 
     def section_buttons(self) -> list[QToolButton]:
         return list(self._buttons)
+
+    def set_banner(self, banner: QWidget) -> None:
+        """Полоса над разделами (T-25): уведомление о новой версии."""  # noqa: RUF002
+        self._content_layout.insertWidget(0, banner)
 
     def current_section(self) -> QWidget:
         return self._stack.currentWidget()

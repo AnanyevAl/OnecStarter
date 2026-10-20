@@ -8,9 +8,11 @@
 тонкий клиент ([Ф] T-02.6).
 """
 
-import logging
+import logging  # noqa: I001
 import os
 import sys
+import tempfile
+from functools import partial
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -71,11 +73,18 @@ from onecstarter.services.hotkeys import parse_hotkey
 from onecstarter.services.model import InfobaseItem
 from onecstarter.services.servers import ScanSnapshot, ServersWorkspace
 from onecstarter.services.settings import load_settings
+from onecstarter.services.update import is_installed_copy, urllib_get
 from onecstarter.services.workspace import Workspace, WorkspacePaths
 from onecstarter.ui import about, app_icon, rail_icons, theme
 from onecstarter.ui.background import AvailabilityProbe, StartupTasks
 from onecstarter.ui.bases.view import BasesView
 from onecstarter.ui.dialogs.buttons import ask_confirmation
+from onecstarter.ui.update import (
+    UpdateBanner,
+    UpdateChecker,
+    UpdateController,
+    UpdateDownloader,
+)
 from onecstarter.ui.edt.cli_watch import CliWatcher
 from onecstarter.ui.edt.monitor import EdtMonitor
 from onecstarter.ui.edt.view import EdtView
@@ -1282,6 +1291,38 @@ def _build_main_window(
     confirm_quit = _build_confirm_quit(quit_dialog) if quit_dialog is not None else None
     window.confirm_quit = confirm_quit
 
+    # T-25: уведомление о новой версии. Собирается здесь, запускается в `main()`  # noqa: RUF003
+    # после показа окна (`start_on_launch`) — тот же довод «собрать, не запуская»,
+    # что у монитора и пробы. Установщик стартует только после того же  # noqa: RUF003
+    # подтверждения выхода, что у крестика и трея.  # noqa: RUF003
+    http_get = partial(urllib_get, version=about.app_version())
+    update_banner = UpdateBanner()
+    window.set_banner(update_banner)
+    update_controller = UpdateController(
+        store,
+        update_banner,
+        UpdateChecker(about.app_version(), http_get, parent=window),
+        UpdateDownloader(
+            Path(tempfile.gettempdir()) / "OneCStarter-update", http_get, parent=window
+        ),
+        installable=bool(getattr(sys, "frozen", False))
+        and is_installed_copy(Path(sys.executable).parent),
+        ask_consent=lambda: ask_confirmation(
+            window,
+            "Обновления",
+            "Проверять при запуске, не вышла ли новая версия OneCStarter?\n\n"
+            "Запрос уходит на GitHub и несёт только номер версии программы. "
+            "Решение можно поменять в Настройках → «О программе».",  # noqa: RUF001
+        ),
+        confirm_quit=confirm_quit if confirm_quit is not None else lambda: True,
+        launch=lambda path: os.startfile(path),  # noqa: RUF100, S606
+        quit_app=application.quit,
+        on_status=settings_view.show_update_status,
+        parent=window,
+    )
+    settings_view.check_updates_requested.connect(update_controller.check_now)
+    window.update_controller = update_controller
+
     def request_quit() -> None:
         """Пункт «Выход» трея — тот же гейт, что закрытие окна, плюс сам выход.
 
@@ -1513,6 +1554,10 @@ def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
     else:
         window.show()
         _log.info("окно показано")
+    # T-25: вопрос о согласии — только при показанном окне; тихий старт в трей  # noqa: RUF003
+    # ни спрашивает, ни проверяет.
+    if isinstance(window.update_controller, UpdateController):
+        window.update_controller.start_on_launch(window_shown=window.isVisible())
     tasks.start()
     # Время жизни — окно, как у мониторов: ссылка нужна, иначе объект  # noqa: RUF003
     # соберёт сборщик мусора и тики прекратятся молча.
