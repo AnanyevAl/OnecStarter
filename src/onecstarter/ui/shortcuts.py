@@ -9,7 +9,8 @@ shortcuts` в `tests/ui/test_bases_view.py`.
 
 `sequences` — строки `QKeySequence`, которыми вьюха регистрирует сочетание.
 Пустой кортеж — клавиша обрабатывается не `QShortcut`: Enter — сигналами
-`activated`/`returnPressed`, `Insert`/`Delete` — `keyPressEvent` дерева
+`activated`/`list_requested`, Tab — `list_requested` поля поиска (T-35),
+`Insert`/`Delete` — `keyPressEvent` дерева
 (только при фокусе в нём, T-11 пп. 7–8).
 """  # noqa: RUF002
 
@@ -30,7 +31,8 @@ BASES_SHORTCUTS: tuple[ShortcutSpec, ...] = (
     # чтобы test_shortcut_reference_matches_registered_shortcuts не ждал
     # от этой вьюхи собственного QShortcut на Ctrl+F.
     ShortcutSpec("Ctrl+F", "Поиск (Базы и EDT)", ()),
-    ShortcutSpec("Enter", "Запустить выбранную базу; в поиске — первую найденную", ()),
+    ShortcutSpec("Enter", "Запустить выбранную базу; в поиске — перейти к первой найденной", ()),
+    ShortcutSpec("Tab", "Из поиска — перейти к первой найденной", ()),
     ShortcutSpec("F3", "Запустить (1С:Предприятие)", ("F3",)),  # noqa: RUF001
     ShortcutSpec("F4", "Конфигуратор", ("F4",)),
     ShortcutSpec("F5", "Обновить список и перепроверить доступность каталогов", ("F5",)),

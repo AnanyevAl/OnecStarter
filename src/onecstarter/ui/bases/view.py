@@ -486,7 +486,9 @@ class BasesView(QWidget):
         self._expansion: set[str] = set()
         self._filtered = False
 
-        self._search = SearchField("Поиск: имя базы, * — любые символы", self._palette)
+        self._search = SearchField(
+            "Поиск: имя базы, * — любые символы", self._palette, list_navigation=True
+        )
         self._tree = _BasesTree(self)
         self._tree.setHeaderHidden(False)
         self._tree.setAlternatingRowColors(False)
@@ -524,7 +526,7 @@ class BasesView(QWidget):
         self._search.setAcceptDrops(False)
 
         self._search.textChanged.connect(lambda _text: self.rebuild())
-        self._search.returnPressed.connect(self._launch_first_visible)
+        self._search.list_requested.connect(self._focus_first_match)
         self._tree.activated.connect(self._launch_index)
         self._tree.customContextMenuRequested.connect(self._show_menu)
         QShortcut(QKeySequence("Ctrl+D"), self, self._toggle_current_favorite)
@@ -980,24 +982,46 @@ class BasesView(QWidget):
         if key:
             self.launch_key(key)
 
-    def _launch_first_visible(self) -> None:
-        # Пустой поиск (после strip) — ничего не запускаем: случайный Enter
-        # (например, сразу после хоткея, до первой буквы) не должен
-        # запустить первую базу леса — чужую реальную базу одним нажатием.
-        if not self._search.text().strip():
-            return
-        first = self._first_base(self._rows)
-        if first is not None:
-            self.launch_key(first)
+    def _focus_first_match(self) -> None:
+        """Enter или Tab в поиске (T-35): перейти в список, ничего не запуская.
 
-    def _first_base(self, rows: Sequence[Row]) -> str | None:
-        for row in rows:
-            if row.kind is RowKind.BASE and row.item is not None:
-                return row.item.key
-            nested = self._first_base(row.children)
+        Прежде Enter запускал первую найденную базу — не ту, что выделена,
+        и не видно какую (жалоба заказчика 20.10.2026). Теперь первая
+        найденная становится текущей, запуск — вторым Enter уже в списке.
+        Пустой поиск — просто фокус в список, текущая строка прежняя: прежняя
+        защита «случайный Enter до первой буквы не запускает чужую базу»
+        сохраняется сама собой — Enter из поиска не запускает ничего.
+        Ничего не найдено — фокус остаётся в поле.
+        """
+        if not self._search.text().strip():
+            self._tree.setFocus()
+            return
+        first = self._first_base_index()
+        if first is not None:
+            self._focus_index(first)
+
+    def _first_base_index(self, parent: QModelIndex | None = None) -> QModelIndex | None:
+        """Первая строка-база модели в порядке показа — группы и ветки ею не бывают."""
+        model = self._tree.model()
+        parent = QModelIndex() if parent is None else parent
+        for row in range(model.rowCount(parent)):
+            index = model.index(row, 0, parent)
+            if index.data(KIND_ROLE) == RowKind.BASE.value:
+                return index
+            nested = self._first_base_index(index)
             if nested is not None:
                 return nested
         return None
+
+    def _focus_index(self, index: QModelIndex) -> None:
+        """Сделать строку текущей и видимой: раскрыть предков, прокрутить, фокус в список."""
+        parent = index.parent()
+        while parent.isValid():
+            self._tree.expand(parent)
+            parent = parent.parent()
+        self._tree.setCurrentIndex(index)
+        self._tree.scrollTo(index)
+        self._tree.setFocus()
 
     def _sync_panel(self) -> None:
         """Панель получает карточку любой выделенной строки, не только базы.

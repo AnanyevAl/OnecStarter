@@ -331,14 +331,78 @@ def test_column_width_survives_search_that_shortens_visible_names(qtbot, workspa
     assert view._tree.columnWidth(0) == before
 
 
-def test_enter_in_search_launches_first_visible_base(qtbot, workspace_factory):
+def test_enter_in_search_moves_to_first_found_base_without_launch(
+    qtbot, workspace_factory, monkeypatch
+):
+    """T-35: первый Enter в поиске не запускает, а ставит фокус на первую найденную."""  # noqa: RUF002
+    view, calls, errors, _ = _view(qtbot, workspace_factory)
+    _show_exposed(qtbot, view)
+    launched: list[str] = []
+    monkeypatch.setattr(view, "launch_key", lambda key, *args, **kwargs: launched.append(key))
+    view.focus_search()
+    _type(view.search(), "демо бух")  # noqa: RUF001
+    qtbot.keyClick(view.search(), Qt.Key.Key_Return)
+    assert launched == []
+    assert calls == []
+    assert errors == []
+    assert view._current_base_key() == _DEMO_ACCOUNTING_KEY
+    assert view.focusWidget() is view.tree()
+
+
+def test_second_enter_in_list_launches_the_found_base(qtbot, workspace_factory):
     view, calls, errors, _ = _view(qtbot, workspace_factory)
     _type(view.search(), "демо бух")  # noqa: RUF001
     qtbot.keyClick(view.search(), Qt.Key.Key_Return)
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Return)
     assert errors == []
     assert len(calls) == 1
     assert '/IBName"Демо Бухгалтерия"' in calls[0].command_line
     assert "/AppAutoCheckVersion-" in calls[0].command_line
+
+
+def test_tab_in_search_moves_to_first_found_base(qtbot, workspace_factory):
+    view, calls, _, _ = _view(qtbot, workspace_factory)
+    _show_exposed(qtbot, view)
+    view.focus_search()
+    _type(view.search(), "демо бух")  # noqa: RUF001
+    qtbot.keyClick(view.search(), Qt.Key.Key_Tab)
+    assert calls == []
+    assert view._current_base_key() == _DEMO_ACCOUNTING_KEY
+    assert view.focusWidget() is view.tree()
+
+
+def test_enter_in_search_prefers_first_found_over_visible_selection(qtbot, workspace_factory):
+    """Решение заказчика 20.10.2026: всегда первая найденная, даже если выделенная видна."""
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    retail = next(i.key for i in view.workspace().items() if i.name == "Демо Розница")
+    _type(view.search(), "демо")
+    first = _first_base_index(view).data(KEY_ROLE)
+    other = retail if first == _DEMO_ACCOUNTING_KEY else _DEMO_ACCOUNTING_KEY
+    _select_key(view, other)
+    assert view._current_base_key() == other
+    qtbot.keyClick(view.search(), Qt.Key.Key_Return)
+    assert view._current_base_key() == first
+
+
+def test_enter_in_empty_search_moves_focus_and_keeps_current(qtbot, workspace_factory):
+    view, calls, _, _ = _view(qtbot, workspace_factory)
+    _show_exposed(qtbot, view)
+    _select_key(view, _DEMO_ACCOUNTING_KEY)
+    view.focus_search()
+    qtbot.keyClick(view.search(), Qt.Key.Key_Return)
+    assert calls == []
+    assert view._current_base_key() == _DEMO_ACCOUNTING_KEY
+    assert view.focusWidget() is view.tree()
+
+
+def test_enter_with_nothing_found_stays_in_search(qtbot, workspace_factory):
+    view, calls, _, _ = _view(qtbot, workspace_factory)
+    _show_exposed(qtbot, view)
+    view.focus_search()
+    _type(view.search(), "zzz-not-a-real-base")
+    qtbot.keyClick(view.search(), Qt.Key.Key_Return)
+    assert calls == []
+    assert view.focusWidget() is view.search()
 
 
 def test_activating_group_row_does_not_launch(qtbot, workspace_factory):
@@ -360,6 +424,7 @@ def test_launch_error_goes_to_handler_not_up(qtbot, workspace_factory):
     view, calls, errors, _ = _view(qtbot, workspace_factory, installations=[])
     _type(view.search(), "демо бух")  # noqa: RUF001
     qtbot.keyClick(view.search(), Qt.Key.Key_Return)
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Return)  # T-35: запуск — вторым Enter
     assert calls == []
     assert len(errors) == 1
     assert isinstance(errors[0], LaunchError)
@@ -415,6 +480,7 @@ def test_recent_branch_appears_after_launch(qtbot, workspace_factory):
     view, _, _, _ = _view(qtbot, workspace_factory)
     _type(view.search(), "демо бух")  # noqa: RUF001
     qtbot.keyClick(view.search(), Qt.Key.Key_Return)
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Return)  # T-35: запуск — вторым Enter
     view.search().clear()
     labels = [view.model().item(i, 0).text() for i in range(view.model().rowCount())]
     assert labels[0] == "Недавние"
