@@ -15,7 +15,7 @@
 — по-прежнему без Qt.
 """  # noqa: RUF002
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
 from onecstarter.domain.connect import ConnectKind, find_fragment, parse_connect
@@ -29,6 +29,7 @@ __all__ = [
     "ConnectionPath",
     "PanelCard",
     "connection_path",
+    "known_servers",
     "panel_card",
 ]
 
@@ -147,3 +148,22 @@ def panel_card(
     if kind is RowKind.IMPLICIT_GROUP:
         return PanelCard(label, "неявный узел", None, None, _IMPLICIT_HINT)
     return _EMPTY_CARD
+
+
+def known_servers(items: Sequence[InfobaseItem]) -> list[str]:
+    """Варианты поля «Сервер» (T-29): различающиеся `Srvr` серверных записей.
+
+    Источник — все записи раздела «Базы», общие списки тоже (решение заказчика
+    20.10.2026). Значение — строка целиком: список кластера через запятую
+    остаётся одним вариантом. Дубли — только точные: как платформа сравнивает
+    `Srvr` без учёта регистра, не измерено ([?]). Порядок — по алфавиту без
+    учёта регистра, при равенстве — по исходной строке.
+    """
+    found: set[str] = set()
+    for item in items:
+        if item.is_group or item.kind is not ConnectKind.SERVER or not item.connect:
+            continue
+        value = find_fragment(parse_connect(item.connect), "Srvr")
+        if value and value.strip():
+            found.add(value)
+    return sorted(found, key=lambda value: (value.casefold(), value))
