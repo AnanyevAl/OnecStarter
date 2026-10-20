@@ -6,8 +6,8 @@
 `ui/rail_icons.py` и перерисовывается при смене темы.
 """  # noqa: RUF002
 
-from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtCore import QEvent, QPointF, Qt, Signal
+from PySide6.QtGui import QAction, QColor, QIcon, QKeyEvent, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QLineEdit, QWidget
 
 from onecstarter.ui.theme import Palette
@@ -33,10 +33,28 @@ def clear_icon(palette: Palette) -> QIcon:
 
 
 class SearchField(QLineEdit):
-    """Поле поиска раздела: подсказка с хоткеем и свой крестик очистки."""  # noqa: RUF002
+    """Поле поиска раздела: подсказка с хоткеем и свой крестик очистки.
 
-    def __init__(self, hint: str, palette: Palette, parent: QWidget | None = None) -> None:
+    `list_navigation` (T-35): Enter и Tab подают `list_requested` — раздел
+    переводит фокус в свой список. Выключено по умолчанию: поле стоит и
+    в диалоге «Цветовая схема…», где Tab обязан работать как обычно.
+    """  # noqa: RUF002
+
+    list_requested = Signal()
+    # Атрибут класса, а не только экземпляра: `event()` может прийти во время  # noqa: RUF003
+    # `super().__init__`, раньше присваивания в конструкторе.
+    _list_navigation = False
+
+    def __init__(
+        self,
+        hint: str,
+        palette: Palette,
+        parent: QWidget | None = None,
+        *,
+        list_navigation: bool = False,
+    ) -> None:
         super().__init__(parent)
+        self._list_navigation = list_navigation
         self.setPlaceholderText(hint + HOTKEY_SUFFIX)
         self._clear = QAction("Очистить", self)
         self._clear.setIcon(clear_icon(palette))
@@ -44,6 +62,22 @@ class SearchField(QLineEdit):
         self._clear.triggered.connect(self.clear)
         self.addAction(self._clear, QLineEdit.ActionPosition.TrailingPosition)
         self.textChanged.connect(lambda text: self._clear.setVisible(bool(text)))
+        if list_navigation:
+            self.returnPressed.connect(self.list_requested.emit)
+
+    def event(self, event: QEvent) -> bool:
+        # Tab Qt разбирает в QWidget.event (смена фокуса) раньше keyPressEvent,
+        # поэтому перехват — здесь. Shift+Tab не трогаем.
+        if (
+            self._list_navigation
+            and event.type() == QEvent.Type.KeyPress
+            and isinstance(event, QKeyEvent)
+            and event.key() == Qt.Key.Key_Tab
+            and event.modifiers() == Qt.KeyboardModifier.NoModifier
+        ):
+            self.list_requested.emit()
+            return True
+        return super().event(event)
 
     def apply_palette(self, palette: Palette) -> None:
         """Перерисовать крестик под новую палитру — цвет запечён в пиксмап."""
