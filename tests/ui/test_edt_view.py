@@ -667,6 +667,38 @@ def test_add_project_via_dialog(harness: Harness, qtbot, monkeypatch) -> None:  
     assert project.vm_args == "-Xmx8192m"  # умолчание из dialog_defaults
 
 
+def _fill_new_project(dialog):  # type: ignore[no-untyped-def]
+    dialog.name_edit().setText("Новая")
+    dialog.workspace_edit().setText(r"D:\edt\new")
+    return True
+
+
+def test_added_project_becomes_current(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """T-36: проект, добавленный вручную, — текущий."""
+    g = harness.workspace.add_group("2025", None)
+    _add(harness, "Старый")
+    view = harness.view()
+    qtbot.addWidget(view)
+    monkeypatch.setattr(view, "_run_dialog", _fill_new_project)
+    view.add_project(g.id)
+    added = next(p for p in harness.workspace.projects() if p.name == "Новая")
+    assert view.tree().currentIndex().data(ID_ROLE) == added.id
+
+
+def test_added_project_hidden_by_search_is_not_selected(  # type: ignore[no-untyped-def]
+    harness: Harness, qtbot, monkeypatch
+) -> None:
+    old = _add(harness, "Старый")
+    view = harness.view()
+    qtbot.addWidget(view)
+    view.search().setText("стар")
+    _select(view, old.id)
+    monkeypatch.setattr(view, "_run_dialog", _fill_new_project)
+    view.add_project(None)
+    assert view.search().text() == "стар"
+    assert view.tree().currentIndex().data(ID_ROLE) == old.id
+
+
 def test_edit_and_remove_project(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
     p = _add(harness, "a")
     view = harness.view()
@@ -801,6 +833,7 @@ def test_import_adds_selected(harness: Harness, qtbot, monkeypatch) -> None:  # 
     assert project.workspace == r"D:\edt\a"
     assert project.edt_version == "2025.2.6+4"
     assert harness.infos == ["Импортировано записей: 1"]
+    assert not view.tree().currentIndex().isValid()  # импорт ничего не выделяет (T-36)
 
 
 def test_import_without_registry_shows_error(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]

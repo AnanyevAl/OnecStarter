@@ -518,8 +518,11 @@ class EdtView(QWidget):
     def _restore_current(self, current: tuple[str, str] | None) -> None:
         if current is None:
             return
-        kind, item_id = current
+        index = self._find_row(*current)
+        if index is not None:
+            self._tree.setCurrentIndex(index)
 
+    def _find_row(self, kind: str, item_id: str) -> QModelIndex | None:
         def find(parent: QModelIndex) -> QModelIndex | None:
             for row in range(self._model.rowCount(parent)):
                 index = self._model.index(row, 0, parent)
@@ -530,9 +533,13 @@ class EdtView(QWidget):
                     return found
             return None
 
-        index = find(QModelIndex())
+        return find(QModelIndex())
+
+    def _select_project(self, project_id: str) -> None:
+        """T-36: проект, добавленный вручную, — текущий; скрыт поиском — не трогаем."""
+        index = self._find_row(KIND_PROJECT, project_id)
         if index is not None:
-            self._tree.setCurrentIndex(index)
+            self._focus_index(index)
 
     def _restore_expansion(self, ids: set[str], *, expand_all: bool) -> None:
         def walk(parent: QModelIndex) -> None:
@@ -655,7 +662,12 @@ class EdtView(QWidget):
             dialog.name_edit().setText(Path(workspace).name)
         if not self._run_dialog(dialog):
             return
-        self._apply(lambda: self._workspace.add_project(dialog.result_project()))
+        # T-36: `_apply` результат операции не возвращает — сохранённую
+        # запись (с присвоенным id) забираем через список.  # noqa: RUF003
+        added: list[EdtProject] = []
+        self._apply(lambda: added.append(self._workspace.add_project(dialog.result_project())))
+        if added:
+            self._select_project(added[0].id)
 
     def add_project_from_directory(self, directory: str, target: tuple[str, str] | None) -> None:
         self.add_project(self._group_of(target), directory)
