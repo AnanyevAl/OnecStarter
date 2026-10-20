@@ -1554,10 +1554,6 @@ def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
     else:
         window.show()
         _log.info("окно показано")
-    # T-25: вопрос о согласии — только при показанном окне; тихий старт в трей  # noqa: RUF003
-    # ни спрашивает, ни проверяет.
-    if isinstance(window.update_controller, UpdateController):
-        window.update_controller.start_on_launch(window_shown=window.isVisible())
     tasks.start()
     # Время жизни — окно, как у мониторов: ссылка нужна, иначе объект  # noqa: RUF003
     # соберёт сборщик мусора и тики прекратятся молча.
@@ -1575,4 +1571,10 @@ def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
     # мониторить нечего, программа работает без него.
     if edt_monitor is not None:
         edt_monitor.start()
+    # T-25: вопрос о согласии и проверка — последними, когда весь фон уже  # noqa: RUF003
+    # запущен: модальный вопрос крутит свой цикл событий, и список баз
+    # получает версии и метки доступности, пока пользователь думает.
+    # Тихий старт в трей ни спрашивает, ни проверяет (окно не видно).
+    if isinstance(window.update_controller, UpdateController):
+        window.update_controller.start_on_launch(window_shown=window.isVisible())
     return application.exec()

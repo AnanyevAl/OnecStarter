@@ -85,6 +85,7 @@ from onecstarter.ui.settings_view import EDT_INSTALLATIONS_ROW, SettingsView
 from onecstarter.ui.shell import MainWindow
 from onecstarter.ui.shortcuts import WINDOW_SHORTCUTS
 from onecstarter.ui.theme_controller import ThemeController
+from onecstarter.ui.update import UpdateController
 from onecstarter.ui.watcher import FileWatcher
 
 from .conftest import CONVENTIONS, FIXTURE, INSTALLED
@@ -905,12 +906,22 @@ def _assemble(
 
     monkeypatch.setattr(QMessageBox, "exec", _forbidden_exec)
 
+    # T-25: `main()` в конце зовёт `start_on_launch` — при «не спрашивали»
+    # это модальный вопрос о согласии. Здесь только факт и аргумент вызова.  # noqa: RUF003
+    update_starts: list[bool] = []
+
+    def record_update_start(_self: Any, *, window_shown: bool) -> None:
+        update_starts.append(window_shown)
+
+    monkeypatch.setattr(UpdateController, "start_on_launch", record_update_start)
+
     name_before = qapp.applicationName()
     try:
         code = app_module.main([], start_hidden=start_hidden)
     finally:
         qapp.setApplicationName(name_before)
     assert exec_calls == [1], "main() обязан дойти до цикла событий"
+    assert len(update_starts) == 1, "main() обязан запустить проверку обновлений"
 
     window = captured["window"]
     controller = captured["controller"]
@@ -4380,7 +4391,7 @@ def test_main_window_builds_update_controller_without_checking(
     Вопрос о согласии и проверку запускает только `main()` после показа окна
     (`start_on_launch`) — сеть до этого момента недопустима (§4 требований).
     """  # noqa: RUF002
-    from onecstarter.ui.update import UpdateBanner, UpdateController
+    from onecstarter.ui.update import UpdateBanner
 
     monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
     monkeypatch.setattr(app_module, "AvailabilityProbe", _FakeAvailabilityProbe)
