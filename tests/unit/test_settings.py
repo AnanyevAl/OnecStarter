@@ -59,6 +59,7 @@ def test_schema_is_written(tmp_path: Path) -> None:
         "edt_installations_root": "",
         "editor_vscode": "",
         "editor_antigravity": "",
+        "check_updates": None,
     }
 
 
