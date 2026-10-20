@@ -1,6 +1,7 @@
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -692,3 +693,12 @@ def test_sort_rows_sorts_nested_children_recursively() -> None:
     assert [row.label for row in archive.children] == ["Бета", "база", "Портал"]
     beta = archive.children[0]
     assert [row.label for row in beta.children] == ["Апрель", "яблоко"]
+
+
+@pytest.mark.parametrize("make", [_server_item, _web_item])
+def test_version_hint_has_no_reliability_marks(make: Any) -> None:
+    """T-28: метка «[Ф] 08.09.2026» утекла в подсказку, которую видит пользователь."""
+    hint = version_cell(make(), INSTALLED, []).hint or ""
+    assert hint, "у серверной и веб-базы подсказка обязана быть"  # noqa: RUF001
+    for mark in ("[Ф]", "[Д]", "[?]"):
+        assert mark not in hint
