@@ -4832,3 +4832,12 @@ def test_infobase_dialogs_offer_servers_of_existing_records(qtbot, workspace_fac
         qtbot.addWidget(dialog)
         box = dialog._server_box
         assert "srv-1c" in [box.itemText(i) for i in range(box.count())]
+
+
+def test_probe_size_appears_in_the_size_column(qtbot, workspace_factory):
+    """T-33: размер из пробы попадает в колонку «Размер» строки базы."""
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    view.apply_size(path_key(_DEMO_ACCOUNTING_PATH), 2 * 1024**3)
+    view.rebuild()
+    index = _index_of_key(view, _DEMO_ACCOUNTING_KEY)
+    assert index.siblingAtColumn(3).data() == "2,0 ГБ"

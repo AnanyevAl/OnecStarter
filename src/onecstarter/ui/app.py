@@ -1447,6 +1447,7 @@ def _build_main_window(
 
     probe = AvailabilityProbe(parent=window)
     probe.probed.connect(view.apply_availability)
+    probe.sized.connect(view.apply_size)
 
     def start_probe() -> None:
         probe.start(list(probe_targets(runtime.workspace.items()).values()))

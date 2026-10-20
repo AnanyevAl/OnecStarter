@@ -18,14 +18,22 @@ from onecstarter.services.availability import (
     relative_path_note,
 )
 from onecstarter.services.connection import BADGE_LABELS
-from onecstarter.services.display import Row, RowKind, VersionCell, row_label
+from onecstarter.services.display import (
+    Row,
+    RowKind,
+    VersionCell,
+    format_bytes,
+    format_size,
+    row_label,
+)
 from onecstarter.ui.bases.icons import placement_icon
 from onecstarter.ui.theme import Palette
 
 KEY_ROLE = Qt.ItemDataRole.UserRole + 1
 KIND_ROLE = Qt.ItemDataRole.UserRole + 2
 
-COLUMNS = ("База", "Версия", "Последний запуск")
+# «Размер» (T-33) — последней: номера прежних колонок не меняются.
+COLUMNS = ("База", "Версия", "Последний запуск", "Размер")
 
 
 def build_model(
@@ -35,6 +43,7 @@ def build_model(
     palette: Palette,
     *,
     availability: Mapping[str, Availability] | None = None,
+    sizes: Mapping[str, int] | None = None,
 ) -> QStandardItemModel:
     """Собрать модель дерева целиком.
 
@@ -46,10 +55,11 @@ def build_model(
     не обязаны его знать.
     """  # noqa: RUF002
     states = availability or {}
+    known_sizes = sizes or {}
     model = QStandardItemModel(0, len(COLUMNS))
     model.setHorizontalHeaderLabels(list(COLUMNS))
     for row in rows:
-        model.appendRow(_items_for(row, cells, format_stamp, palette, states))
+        model.appendRow(_items_for(row, cells, format_stamp, palette, states, known_sizes))
     return model
 
 
@@ -59,6 +69,7 @@ def _items_for(
     format_stamp: Callable[[datetime], str],
     palette: Palette,
     states: Mapping[str, Availability],
+    sizes: Mapping[str, int],
 ) -> list[QStandardItem]:
     # Пометки считает витрина (services/display.row_label): «в общем списке» —
     # дубль «пользовательская + общая», штатное состояние после первого
@@ -73,7 +84,9 @@ def _items_for(
     name = QStandardItem(row_label(row, missing=missing))
     version = QStandardItem("")
     launched = QStandardItem("")
-    for item in (name, version, launched):
+    size = QStandardItem("")
+    size.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    for item in (name, version, launched, size):
         item.setEditable(False)
     name.setData(row.kind.value, KIND_ROLE)
     name.setData(None, KEY_ROLE)
@@ -116,6 +129,11 @@ def _items_for(
                 version.setForeground(QBrush(QColor(palette.problem)))
         if row.item.last_launched_at is not None:
             launched.setText(format_stamp(row.item.last_launched_at))
+        # T-33: размер 1Cv8.1CD; у групп, серверных и веб-баз его нет вовсе.  # noqa: RUF003
+        known = None if row.item.is_group else sizes.get(row.item.key)
+        if known is not None:
+            size.setText(format_size(known))
+            size.setToolTip(format_bytes(known))
     for child in row.children:
-        name.appendRow(_items_for(child, cells, format_stamp, palette, states))
-    return [name, version, launched]
+        name.appendRow(_items_for(child, cells, format_stamp, palette, states, sizes))
+    return [name, version, launched, size]

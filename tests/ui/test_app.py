@@ -702,6 +702,7 @@ class _FakeAvailabilityProbe(QObject):
     """  # noqa: RUF002
 
     probed = Signal(str, object)  # ключ пути, Availability
+    sized = Signal(str, object)  # ключ пути, размер 1Cv8.1CD (T-33)
 
     def __init__(self, *args: Any, parent: Any = None, **_kwargs: Any) -> None:
         super().__init__(parent)
@@ -1545,6 +1546,10 @@ def test_main_window_wires_the_availability_probe(
     key = path_key("C:\\Demo")
     probe.probed.emit(key, Availability.MISSING)
     assert view._availability[key] is Availability.MISSING
+
+    # Требование 2а (T-33): sized доходит до view.apply_size.  # noqa: RUF003
+    probe.sized.emit(key, 4096)
+    assert view._sizes[key] == 4096
 
     # Требование 3: start_probe запускает пробу с целями рабочего пространства.  # noqa: RUF003
     start_probe()

@@ -561,6 +561,8 @@ class BasesView(QWidget):
         # снимаются сами (две базы в одном каталоге), а правка имени записи  # noqa: RUF003
         # не теряет уже известный результат (спека §3.5).
         self._availability: dict[str, Availability] = {}
+        # Размер 1Cv8.1CD из той же пробы (T-33), тем же ключом пути.
+        self._sizes: dict[str, int] = {}
         # Коалесинг: проба на пятидесяти базах даёт пятьдесят сигналов подряд,
         # а пересборка модели целиком стоит дорого. Тот же приём и тот же  # noqa: RUF003
         # интервал, что гасят дребезг перезаписи файла в ui/watcher.py.
@@ -604,6 +606,20 @@ class BasesView(QWidget):
         """Обнаружение закончилось: показать версии вместо «…»."""
         self._installations = list(installations)
         self.rebuild()
+
+    def apply_size(self, key: str, size: object) -> None:
+        """Размер `1Cv8.1CD` из пробы (T-33): `key` — нормализованный путь.
+
+        `None` (база недоступна) убирает прежний размер. Перестройка — тем же
+        таймером, что у доступности: проба отдаёт результаты пачкой подряд.
+        """  # noqa: RUF002
+        if isinstance(size, int):
+            if self._sizes.get(key) == size:
+                return
+            self._sizes[key] = size
+        elif self._sizes.pop(key, None) is None:
+            return
+        self._availability_timer.start()
 
     def apply_availability(self, key: str, state: Availability) -> None:
         """Один результат пробы: `key` — нормализованный путь, не ключ записи."""
@@ -692,8 +708,18 @@ class BasesView(QWidget):
             key: self._availability.get(target.key, Availability.UNKNOWN)
             for key, target in targets.items()
         }
+        sizes = {
+            key: self._sizes[target.key]
+            for key, target in targets.items()
+            if target.key in self._sizes
+        }
         model = build_model(
-            self._rows, cells, _format_stamp, self._palette, availability=availability
+            self._rows,
+            cells,
+            _format_stamp,
+            self._palette,
+            availability=availability,
+            sizes=sizes,
         )
         self._tree.setModel(model)
         if column_widths is None:
