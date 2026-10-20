@@ -147,6 +147,30 @@ def filter_rows(rows: Sequence[Row], query: str) -> list[Row]:
     return kept
 
 
+_SIZE_UNITS = ("КБ", "МБ", "ГБ", "ТБ")
+
+
+def format_size(size: int) -> str:
+    """Размер файла для колонки «Размер» (T-33): «1,2 ГБ», двоичные единицы.
+
+    До 1024 байт — «N Б». Единица выбирается после округления до десятых,
+    поэтому граница не даёт «1024,0 КБ».
+    """
+    if size < 1024:
+        return f"{size} Б"
+    value = float(size)
+    for unit in _SIZE_UNITS:
+        value /= 1024
+        if round(value, 1) < 1024 or unit == _SIZE_UNITS[-1]:
+            return f"{value:.1f} {unit}".replace(".", ",")
+    raise AssertionError("недостижимо")
+
+
+def format_bytes(size: int) -> str:
+    """Точный размер для подсказки ячейки: «1 234 567 байт»."""
+    return f"{size:,}".replace(",", " ") + " байт"
+
+
 _DIGIT_RUN = re.compile(r"([0-9]+)")
 # Число в ключе — не `int`, а (длина без ведущих нулей, цифры без ведущих  # noqa: RUF003
 # нулей): при равной длине лексикографика совпадает с числовой, а лимит  # noqa: RUF003
