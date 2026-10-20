@@ -258,7 +258,7 @@ class EdtView(QWidget):
         if watcher is not None:
             watcher.finished.connect(self.on_cli_finished)
 
-        self._search = SearchField("Поиск: начните вводить имя проекта", self._palette)
+        self._search = SearchField("Поиск: имя проекта, * — любые символы", self._palette)
         self._search.textChanged.connect(lambda _text: self.rebuild())
         self._search.returnPressed.connect(self._launch_first_visible)
 

@@ -9,6 +9,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor, QStandardItem, QStandardItemModel
 
 from onecstarter.domain.edt import EdtInstallation, EdtProject, effective_heap_mb
+from onecstarter.domain.search import matches_pattern
 from onecstarter.services.edt import EdtStatus, EdtWorkspace
 from onecstarter.ui.edt.icons import cli_busy_icon, running_icon
 from onecstarter.ui.theme import Palette
@@ -27,10 +28,9 @@ HEAP_DEFAULT_HINT = "-Xmx не задан — действует значени�
 
 
 def matches(project: EdtProject, query: str) -> bool:
-    needle = query.casefold().strip()
-    if not needle:
-        return True
-    return needle in project.name.casefold() or needle in project.workspace.casefold()
+    # Шаблон проверяется по имени и по пути ОТДЕЛЬНО (спека T-26, §3): склейка
+    # дала бы совпадение `amad*UU` при `amad` в имени и `UU` в пути.
+    return matches_pattern(project.name, query) or matches_pattern(project.workspace, query)
 
 
 def build_edt_model(workspace: EdtWorkspace, query: str, palette: Palette) -> QStandardItemModel:

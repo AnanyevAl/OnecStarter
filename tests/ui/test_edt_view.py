@@ -1186,7 +1186,7 @@ def test_selecting_project_with_old_journal_shows_it(  # type: ignore[no-untyped
 def test_search_hint_and_clear_button(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
     view = harness.view()
     qtbot.addWidget(view)
-    assert view.search().placeholderText() == "Поиск: начните вводить имя проекта (Ctrl+F)"
+    assert view.search().placeholderText() == "Поиск: имя проекта, * — любые символы (Ctrl+F)"
     view.search().setText("x")
     view.search().clear_action().trigger()
     assert view.search().text() == ""

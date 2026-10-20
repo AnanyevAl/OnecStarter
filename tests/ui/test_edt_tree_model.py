@@ -118,6 +118,13 @@ def test_filter_matches_workspace_path_too(tmp_path: Path) -> None:
     assert matches(project, "") is True
 
 
+def test_filter_pattern_checks_name_and_path_separately(tmp_path: Path) -> None:
+    project = EdtProject("", "amad", r"D:\edt\UU")
+    assert matches(project, "amad") is True
+    assert matches(project, "edt*UU") is True  # обе части в пути  # noqa: RUF003
+    assert matches(project, "amad*UU") is False  # части разнесены между именем и путём
+
+
 def test_version_column_marks_not_installed(tmp_path: Path) -> None:
     ws = _workspace(tmp_path)
     ws.add_project(EdtProject("", "Старая", r"D:\a", edt_version="2024.2.6+7"))

@@ -12,6 +12,7 @@ from enum import Enum
 
 from onecstarter.domain.connect import ConnectKind
 from onecstarter.domain.default_version import DefaultVersionRule
+from onecstarter.domain.search import matches_pattern
 from onecstarter.domain.selection import ResolutionSource, resolve_version
 from onecstarter.domain.version import Arch, Installation
 from onecstarter.services.catalog import CommonListError, TreeNode, build_tree
@@ -125,19 +126,19 @@ def display_forest(
 
 
 def filter_rows(rows: Sequence[Row], query: str) -> list[Row]:
-    """Отфильтровать лес по подстроке имени без учёта регистра.
+    """Отфильтровать лес по имени: подстрока или шаблон со звёздочкой (T-26).
 
-    [Ф] T-05.3: платформа сравнивает имена баз регистронезависимо — поиск
-    ведёт себя так же (casefold). Совпавший узел остаётся со всем поддеревом;
-    предок совпавшего — с отфильтрованными потомками. NOTE-строки сами
-    не совпадают никогда и выживают только в поддереве совпавшего узла.
+    Правило совпадения — `domain.search.matches_pattern`: без учёта регистра
+    ([Ф] T-05.3: платформа сравнивает имена баз регистронезависимо), `*` —
+    любые символы. Совпавший узел остаётся со всем поддеревом; предок
+    совпавшего — с отфильтрованными потомками. NOTE-строки сами не совпадают
+    никогда и выживают только в поддереве совпавшего узла.
     """  # noqa: RUF002
-    needle = query.strip().casefold()
-    if not needle:
+    if not query.strip():
         return list(rows)
     kept: list[Row] = []
     for row in rows:
-        if row.kind is not RowKind.NOTE and needle in row.label.casefold():
+        if row.kind is not RowKind.NOTE and matches_pattern(row.label, query):
             kept.append(row)
             continue
         children = filter_rows(row.children, query)

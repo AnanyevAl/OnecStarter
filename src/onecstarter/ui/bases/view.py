@@ -486,7 +486,7 @@ class BasesView(QWidget):
         self._expansion: set[str] = set()
         self._filtered = False
 
-        self._search = SearchField("Поиск: начните вводить имя базы", self._palette)
+        self._search = SearchField("Поиск: имя базы, * — любые символы", self._palette)
         self._tree = _BasesTree(self)
         self._tree.setHeaderHidden(False)
         self._tree.setAlternatingRowColors(False)

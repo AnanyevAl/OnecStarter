@@ -253,6 +253,14 @@ def test_empty_filter_returns_everything() -> None:
     assert filter_rows(forest, "  ") == forest
 
 
+def test_filter_with_asterisk_keeps_match_and_its_group() -> None:
+    kept = filter_rows(_forest(), "демо*розн")
+    clients = next(row for row in kept if row.label == "Клиенты")
+    retail = next(row for row in clients.children if row.label == "Розница")
+    assert [row.label for row in retail.children] == ["Демо Розница"]
+    assert not any(row.label == "Демо Бухгалтерия" for row in clients.children)
+
+
 def _base(version: str | None, default: str | None = None) -> InfobaseItem:
     item = next(entry for entry in _items() if entry.name == "Демо Бухгалтерия")
     return replace(item, requested_version=version, section_default_version=default)

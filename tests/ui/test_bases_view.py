@@ -4578,7 +4578,7 @@ def test_search_hint_and_clear_button(qtbot, workspace_factory):
         list_order=lambda: ListOrder.FILE,
     )
     qtbot.addWidget(view)
-    assert view.search().placeholderText() == "Поиск: начните вводить имя базы (Ctrl+F)"
+    assert view.search().placeholderText() == "Поиск: имя базы, * — любые символы (Ctrl+F)"
     view.search().setText("x")
     view.search().clear_action().trigger()
     assert view.search().text() == ""
