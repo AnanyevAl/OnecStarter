@@ -1,0 +1,92 @@
+{
+  "EDTColors": [
+    {
+      "Name": "BSL_Keywords",
+      "Color": "#A16A94"
+    },
+    {
+      "Name": "BSL_Pragmas",
+      "Color": "#A16A94"
+    },
+    {
+      "Name": "Preprocessor",
+      "Color": "#E8BBD0"
+    },
+    {
+      "Name": "Builtinfunction",
+      "Color": "#01A0E4"
+    },
+    {
+      "Name": "Strings",
+      "Color": "#01A252"
+    },
+    {
+      "Name": "Numbers",
+      "Color": "#E8BBD0"
+    },
+    {
+      "Name": "Comment",
+      "Color": "#5C5855"
+    },
+    {
+      "Name": "Operators",
+      "Color": "#A5A2A2"
+    },
+    {
+      "Name": "Brackets",
+      "Color": "#A5A2A2"
+    },
+    {
+      "Name": "Label",
+      "Color": "#C3D3DE"
+    },
+    {
+      "Name": "Others",
+      "Color": "#DB2D20"
+    },
+    {
+      "Name": "Background",
+      "Color": "#090300"
+    },
+    {
+      "Name": "Foreground",
+      "Color": "#A5A2A2"
+    },
+    {
+      "Name": "SelectionBackground",
+      "Color": "#4A4543"
+    },
+    {
+      "Name": "SelectionForeground",
+      "Color": "#A5A2A2"
+    },
+    {
+      "Name": "currentLineColor",
+      "Color": "#3A3432"
+    },
+    {
+      "Name": "lineNumberColor",
+      "Color": "#5C5855"
+    },
+    {
+      "Name": "occurrenceIndicationColor",
+      "Color": "#32424A"
+    },
+    {
+      "Name": "hyperlinkColor",
+      "Color": "#89DDF7"
+    },
+    {
+      "Name": "FindScope",
+      "Color": "#32424A"
+    },
+    {
+      "Name": "currentIPColor",
+      "Color": "#597F5F"
+    },
+    {
+      "Name": "printMarginColor",
+      "Color": "#5C5855"
+    }
+  ]
+}
