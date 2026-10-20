@@ -232,7 +232,7 @@ def test_tree_shows_projects(harness: Harness, qtbot) -> None:  # type: ignore[n
     assert view.model().rowCount() == 2
 
 
-def test_search_filters_and_enter_launches_first(  # type: ignore[no-untyped-def]
+def test_search_enter_moves_to_first_project_then_enter_launches(  # type: ignore[no-untyped-def]
     harness: Harness, qtbot
 ) -> None:
     _add(harness, "Розница")
@@ -242,10 +242,73 @@ def test_search_filters_and_enter_launches_first(  # type: ignore[no-untyped-def
     view.search().setText("опт")
     assert view.model().rowCount() == 1
     qtbot.keyClick(view.search(), Qt.Key.Key_Return)
+    assert harness.spawned == []  # T-35: первый Enter не запускает
+    assert view.tree().currentIndex().data(ID_ROLE) == b.id
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Return)
     assert [c.arguments for c in harness.spawned] == [
         f'-data "{b.workspace}" -vm "C:\\j\\bin" --launcher.appendVmargs '
         "-vmargs -Djava.library.path="
     ]
+
+
+def test_first_enter_in_search_does_not_launch(  # type: ignore[no-untyped-def]
+    harness: Harness, qtbot, monkeypatch
+) -> None:
+    _add(harness, "Опт")
+    view = harness.view()
+    qtbot.addWidget(view)
+    launched: list[str] = []
+    monkeypatch.setattr(view, "launch_id", launched.append)
+    view.search().setText("опт")
+    qtbot.keyClick(view.search(), Qt.Key.Key_Return)
+    assert launched == []
+
+
+def test_tab_in_search_moves_focus_to_first_project(  # type: ignore[no-untyped-def]
+    harness: Harness, qtbot
+) -> None:
+    p = _add(harness, "Опт")
+    view = harness.view()
+    qtbot.addWidget(view)
+    with qtbot.waitExposed(view):
+        view.show()
+    view.focus_search()
+    view.search().setText("опт")
+    qtbot.keyClick(view.search(), Qt.Key.Key_Tab)
+    assert view.tree().currentIndex().data(ID_ROLE) == p.id
+    assert view.focusWidget() is view.tree()
+    assert harness.spawned == []
+
+
+def test_enter_in_empty_search_moves_focus_to_list(  # type: ignore[no-untyped-def]
+    harness: Harness, qtbot
+) -> None:
+    p = _add(harness, "Опт")
+    view = harness.view()
+    qtbot.addWidget(view)
+    with qtbot.waitExposed(view):
+        view.show()
+    _select(view, p.id)
+    view.focus_search()
+    qtbot.keyClick(view.search(), Qt.Key.Key_Return)
+    assert view.focusWidget() is view.tree()
+    assert view.tree().currentIndex().data(ID_ROLE) == p.id
+    assert harness.spawned == []
+
+
+def test_enter_with_nothing_found_stays_in_search_edt(  # type: ignore[no-untyped-def]
+    harness: Harness, qtbot
+) -> None:
+    _add(harness, "Опт")
+    view = harness.view()
+    qtbot.addWidget(view)
+    with qtbot.waitExposed(view):
+        view.show()
+    view.focus_search()
+    view.search().setText("zzz")
+    qtbot.keyClick(view.search(), Qt.Key.Key_Return)
+    assert view.focusWidget() is view.search()
+    assert harness.spawned == []
 
 
 def test_double_click_launches(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]

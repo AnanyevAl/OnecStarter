@@ -258,9 +258,11 @@ class EdtView(QWidget):
         if watcher is not None:
             watcher.finished.connect(self.on_cli_finished)
 
-        self._search = SearchField("Поиск: имя проекта, * — любые символы", self._palette)
+        self._search = SearchField(
+            "Поиск: имя проекта, * — любые символы", self._palette, list_navigation=True
+        )
         self._search.textChanged.connect(lambda _text: self.rebuild())
-        self._search.returnPressed.connect(self._launch_first_visible)
+        self._search.list_requested.connect(self._focus_first_match)
 
         self._banner = QWidget()
         banner_layout = QHBoxLayout(self._banner)
@@ -469,21 +471,34 @@ class EdtView(QWidget):
         if first.data(KIND_ROLE) == KIND_PROJECT:
             self.launch_id(first.data(ID_ROLE))
 
-    def _launch_first_visible(self) -> None:
+    def _focus_first_match(self) -> None:
+        """Enter или Tab в поиске (T-35): как в «Базах» — в список, без запуска."""
+        if not self._search.text().strip():
+            self._tree.setFocus()
+            return
         first = self._first_project(QModelIndex())
         if first is not None:
-            self.launch_id(first)
+            self._focus_index(first)
 
-    def _first_project(self, parent: QModelIndex) -> str | None:
+    def _first_project(self, parent: QModelIndex) -> QModelIndex | None:
         for row in range(self._model.rowCount(parent)):
             index = self._model.index(row, 0, parent)
             if index.data(KIND_ROLE) == KIND_PROJECT:
-                item_id = index.data(ID_ROLE)
-                return item_id if isinstance(item_id, str) else None
+                return index
             found = self._first_project(index)
             if found is not None:
                 return found
         return None
+
+    def _focus_index(self, index: QModelIndex) -> None:
+        """Сделать строку текущей и видимой: раскрыть предков, прокрутить, фокус в список."""
+        parent = index.parent()
+        while parent.isValid():
+            self._tree.expand(parent)
+            parent = parent.parent()
+        self._tree.setCurrentIndex(index)
+        self._tree.scrollTo(index)
+        self._tree.setFocus()
 
     # --- раскрытие --------------------------------------------------------
 

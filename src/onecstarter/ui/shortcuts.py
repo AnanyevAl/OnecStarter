@@ -57,7 +57,10 @@ EDT_SHORTCUTS: tuple[ShortcutSpec, ...] = (
     # Как у баз: Enter/Insert/Delete/F5 — keyPressEvent дерева (пустой sequences),  # noqa: RUF003
     # Ctrl+F — оболочка; QShortcut вьюхи регистрирует только Alt+Enter.
     ShortcutSpec("Ctrl+F", "Поиск (Базы и EDT)", ()),
-    ShortcutSpec("Enter", "Открыть в EDT выбранную запись; в поиске — первую найденную", ()),
+    ShortcutSpec(
+        "Enter", "Открыть в EDT выбранную запись; в поиске — перейти к первой найденной", ()
+    ),
+    ShortcutSpec("Tab", "Из поиска — перейти к первой найденной", ()),
     ShortcutSpec("Alt+Enter", "Изменить запись или группу", ("Alt+Return", "Alt+Enter")),
     ShortcutSpec("Insert", "Добавить запись в группу текущей строки", ()),
     ShortcutSpec("Delete", "Удалить запись или группу (с подтверждением)", ()),  # noqa: RUF001
