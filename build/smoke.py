@@ -110,6 +110,14 @@ def main() -> int:
                 "см. строку smoke: version= в логе"
             )
             return 1
+        # T-24.1: схемы поставки — данные пакета, попадают в сборку только через
+        # `datas` spec-файла. Ноль — значит набор потерян при упаковке.
+        if not re.search(r"^.*smoke: schemes=[1-9]\d*\s*$", log_text, re.MULTILINE):
+            print(
+                "smoke: схемы поставки не попали в сборку — "
+                "см. строку smoke: schemes= в логе"
+            )
+            return 1
         lnk = out / "smoke.lnk"
         target = shortcut_target(lnk)
         if Path(target).resolve() != console_exe.resolve():

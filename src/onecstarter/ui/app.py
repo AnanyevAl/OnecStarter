@@ -59,6 +59,7 @@ from onecstarter.services.availability import probe_targets
 from onecstarter.services.catalog import CommonListData, read_common_lists
 from onecstarter.services.edt import EdtNotes, EdtWorkspace, settings_notes
 from onecstarter.services.edt_cli import EdtCli
+from onecstarter.services.edt_scheme import SchemeCatalog, bundled_schemes_dir
 from onecstarter.services.errors import (
     ConsoleRegistrationDeclinedError,
     EdtUnavailableError,
@@ -490,6 +491,9 @@ def run_smoke(
         vault = credential_store if credential_store is not None else _KeyringSmokeVault()
         _log.info("smoke: keyring=%s", _keyring_round_trip(vault))
         _log.info("smoke: version=%s", about.app_version())
+        # Схемы поставки (T-24.1) — данные пакета, их легко потерять в `datas`
+        # spec-файла; build/smoke.py требует число больше нуля.
+        _log.info("smoke: schemes=%d", len(SchemeCatalog(str(bundled_schemes_dir())).entries()))
         # Настоящее (только чтение диска) обнаружение установок EDT — то же
         # обоснование не трогать процессы машины сборщика, что у NullScanner  # noqa: RUF003
         # выше, здесь неприменимо: discover_edt не сканирует процессы вовсе,
