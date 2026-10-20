@@ -442,3 +442,21 @@ def test_edt_path_fields_non_string_is_empty(tmp_path: Path) -> None:
     assert loaded.edt_jvm_dir == ""
     assert loaded.editor_vscode == ""
     assert loaded.edt_schemes_dir == ""
+
+
+@pytest.mark.parametrize("value", [None, True, False])
+def test_check_updates_survives_a_round_trip(tmp_path: Path, value: bool | None) -> None:
+    """T-25: три состояния — не спрашивали (None), согласие, отказ."""
+    path = tmp_path / "settings.json"
+    save_settings(path, Settings(check_updates=value))
+    assert load_settings(path).check_updates is value
+
+
+def test_check_updates_defaults_to_not_asked(tmp_path: Path) -> None:
+    assert Settings().check_updates is None
+    path = tmp_path / "settings.json"
+    save_settings(path, Settings())
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["check_updates"] = "yes"  # не булево — «не спрашивали»
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    assert load_settings(path).check_updates is None
