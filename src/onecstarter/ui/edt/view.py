@@ -52,7 +52,11 @@ from onecstarter.domain.edt_cli import (
 from onecstarter.platform_1c.editors import EDITOR_LABELS, EditorKind
 from onecstarter.services.edt import EdtScan, EdtWorkspace
 from onecstarter.services.edt_cli import CliRun, EdtCli, workspace_entries
-from onecstarter.services.edt_scheme import SchemeCatalog, WorkspaceSchemes
+from onecstarter.services.edt_scheme import (
+    SchemeCatalog,
+    WorkspaceSchemes,
+    bundled_schemes_dir,
+)
 from onecstarter.services.errors import ServicesError
 from onecstarter.ui.bases.panel import open_in_explorer
 from onecstarter.ui.dialogs.buttons import ask_confirmation
@@ -735,6 +739,7 @@ class EdtView(QWidget):
             show_error=self._show_error,
             default_dir=self._documents_dir,
             parent=self,
+            bundled=SchemeCatalog(str(bundled_schemes_dir())),
         )
         self._run_dialog(dialog)
 

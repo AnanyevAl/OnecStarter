@@ -577,7 +577,8 @@ def test_color_scheme_opens_dialog_for_record(  # type: ignore[no-untyped-def]
     view.color_scheme(p.id)
     assert captured[0].windowTitle() == "Цветовая схема — a"
     names = [captured[0].sources().item(i).text() for i in range(captured[0].sources().count())]
-    assert names[2:] == ["x"]
+    assert "x" in names[2:]  # свой каталог
+    assert "base16-3024" in names  # и схемы поставки рядом (T-24.2)
     assert captured[0].apply_button().isEnabled()
 
 
@@ -598,7 +599,8 @@ def test_color_scheme_dialog_sees_running_workspace_as_busy(  # type: ignore[no-
     monkeypatch.setattr(view, "_run_dialog", run_dialog)
     view.color_scheme(p.id)
     assert captured[0].apply_button().isEnabled() is False
-    assert captured[0].hint_label().text() == "Каталог схем не задан — Настройки → EDT"
+    # Своего каталога нет, но схемы поставки есть всегда — подсказка не нужна (T-24.2).
+    assert captured[0].hint_label().isHidden()
 
 
 def test_color_scheme_dialog_sees_cli_busy_workspace_as_busy(  # type: ignore[no-untyped-def]

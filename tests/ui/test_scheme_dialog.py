@@ -21,6 +21,7 @@ from onecstarter.domain.edt_scheme import (
     ThemeChoice,
     parse_csi,
     parse_prefs,
+    to_csi,
     to_hex,
 )
 from onecstarter.services.edt_scheme import BUSY_MESSAGE, SchemeCatalog, WorkspaceSchemes
@@ -60,6 +61,7 @@ class Harness:
         choose_save: Callable[[str], str] = lambda initial: "",
         choose_color: Callable[[RGB], RGB | None] = lambda rgb: None,
         default_dir: str | None = None,
+        bundled: SchemeCatalog | None = None,
     ) -> SchemeDialog:
         if catalog == "auto":
             catalog = SchemeCatalog(str(self.catalog_dir))
@@ -74,6 +76,7 @@ class Harness:
             choose_save=choose_save,
             choose_color=choose_color,
             default_dir=default_dir if default_dir is not None else str(Path.home()),
+            bundled=bundled,
         )
 
 
@@ -405,3 +408,56 @@ def test_unreadable_current_marks_row_and_table_has_defaults(  # type: ignore[no
     assert _cell(dialog, 0, 2).text() == to_hex(EDT_DEFAULTS["BSL_Keywords"])
     assert harness.errors == []
     dialog.set_color("Strings", (1, 2, 3))  # не должно упасть на `assert swatch is not None`
+
+
+# --- T-24.2: схемы поставки рядом со своим каталогом -------------------------  # noqa: RUF003
+
+
+def _bundled(tmp_path: Path) -> SchemeCatalog:
+    root = tmp_path / "bundled" / "base16"
+    root.mkdir(parents=True)
+    (root / "base16-zz.csi").write_text(to_csi(Scheme("zz", EDT_DEFAULTS)), "utf-8")
+    return SchemeCatalog(str(root.parent))
+
+
+def test_bundled_schemes_are_listed_next_to_own_catalog(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    dialog = harness.dialog(bundled=_bundled(harness.tmp_path))
+    qtbot.addWidget(dialog)
+    names = _rows(dialog.sources())
+    assert "base16-zz" in names
+    assert "Тёмная" in names  # из своего каталога
+
+
+def test_bundled_schemes_alone_need_no_catalog_hint(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    dialog = harness.dialog(catalog=None, bundled=_bundled(harness.tmp_path))
+    qtbot.addWidget(dialog)
+    assert dialog.hint_label().isHidden()
+    assert _rows(dialog.sources()) == [CURRENT_NAME, DEFAULT_NAME, "base16-zz"]
+
+
+def test_bundled_scheme_loads_without_own_catalog(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    dialog = harness.dialog(catalog=None, bundled=_bundled(harness.tmp_path))
+    qtbot.addWidget(dialog)
+    _select(dialog, "base16-zz")
+    assert dialog.scheme().colors == Scheme("zz", EDT_DEFAULTS).colors
+
+
+def test_save_never_targets_the_bundled_catalog(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    """Каталог поставки пересоздаётся при обновлении — сохранять туда нельзя (T-24.2)."""
+    offered: list[str] = []
+    bundled = _bundled(harness.tmp_path)
+
+    def choose(initial: str) -> str:
+        offered.append(initial)
+        return ""
+
+    dialog = harness.dialog(
+        catalog=None,
+        bundled=bundled,
+        choose_save=choose,
+        default_dir=str(harness.tmp_path / "docs"),
+    )
+    qtbot.addWidget(dialog)
+    dialog.save_button().click()
+    assert offered
+    assert not Path(offered[0]).is_relative_to(bundled.directory)
