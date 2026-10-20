@@ -667,7 +667,7 @@ def test_add_project_via_dialog(harness: Harness, qtbot, monkeypatch) -> None:  
     assert project.vm_args == "-Xmx8192m"  # умолчание из dialog_defaults
 
 
-def _fill_new_project(dialog):  # type: ignore[no-untyped-def]
+def _fill_new_project(dialog):
     dialog.name_edit().setText("Новая")
     dialog.workspace_edit().setText(r"D:\edt\new")
     return True
