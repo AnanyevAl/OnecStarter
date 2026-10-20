@@ -1013,6 +1013,34 @@ class BasesView(QWidget):
                 return nested
         return None
 
+    def _select_in_tree(self, key: str) -> bool:
+        """Сделать текущей строку записи в ветке файла (T-36); `False` — не видна.
+
+        Ветки верхнего уровня вида SECTION («Избранное», «Недавние», «Общие
+        списки») пропускаются: запись выделяется там, где она лежит в файле.
+        Не найдена — поиск её скрыл; текущая строка остаётся той, что вернул
+        `_restore_current`, поиск не очищается (решение заказчика 20.10.2026).
+        """  # noqa: RUF002
+        model = self._tree.model()
+
+        def walk(parent: QModelIndex) -> QModelIndex | None:
+            for row in range(model.rowCount(parent)):
+                index = model.index(row, 0, parent)
+                if not parent.isValid() and index.data(KIND_ROLE) == RowKind.SECTION.value:
+                    continue
+                if index.data(KIND_ROLE) == RowKind.BASE.value and index.data(KEY_ROLE) == key:
+                    return index
+                found = walk(index)
+                if found is not None:
+                    return found
+            return None
+
+        found = walk(QModelIndex())
+        if found is None:
+            return False
+        self._focus_index(found)
+        return True
+
     def _focus_index(self, index: QModelIndex) -> None:
         """Сделать строку текущей и видимой: раскрыть предков, прокрутить, фокус в список."""
         parent = index.parent()
@@ -1545,6 +1573,9 @@ class BasesView(QWidget):
                     )
                 )
         self.rebuild()
+        # T-36: новая запись — текущая, если её видно (решения заказчика 20.10.2026).
+        # Отказ сохранения пароля выше запись не отменяет — выделяем и тогда.
+        self._select_in_tree(key)
 
     def _build_properties_dialog(self, key: str) -> InfobaseDialog | None:
         """Собрать диалог свойств без показа (для тестов и show_properties).

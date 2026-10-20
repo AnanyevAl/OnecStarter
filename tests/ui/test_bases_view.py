@@ -1486,6 +1486,59 @@ def test_apply_new_infobase_adds_a_record(qtbot, workspace_factory):
     assert added.folder == "/"
 
 
+def _add_through_dialog(qtbot: Any, view: BasesView, name: str) -> None:
+    dialog = view._build_add_dialog()
+    qtbot.addWidget(dialog)
+    dialog.set_kind(ConnectKind.FILE)
+    dialog.set_file_path(r"D:\bases\new")
+    dialog.set_name(name)
+    view._apply_new_infobase(dialog)
+
+
+def _top_level(index: QModelIndex) -> QModelIndex:
+    while index.parent().isValid():
+        index = index.parent()
+    return index
+
+
+def test_added_record_becomes_current_in_the_file_tree(qtbot, workspace_factory):
+    """T-36: новая запись — текущая, в ветке файла, фокус в списке."""
+    view, _, errors, _ = _view(qtbot, workspace_factory)
+    _show_exposed(qtbot, view)
+    _select_key(view, _DEMO_ACCOUNTING_KEY)
+    _add_through_dialog(qtbot, view, "Новая база")
+    added = next(i for i in view.workspace().items() if i.name == "Новая база")
+    assert errors == []
+    assert view._current_base_key() == added.key
+    top = _top_level(view.tree().currentIndex().siblingAtColumn(0))
+    assert top.data(KIND_ROLE) != RowKind.SECTION.value
+    assert view.focusWidget() is view.tree()
+
+
+def test_added_record_hidden_by_search_is_not_selected(qtbot, workspace_factory):
+    """Решение заказчика 20.10.2026: поиск не очищается, текущая строка прежняя."""
+    view, _, errors, _ = _view(qtbot, workspace_factory)
+    _select_key(view, _DEMO_ACCOUNTING_KEY)
+    _type(view.search(), "демо бух")  # noqa: RUF001
+    _add_through_dialog(qtbot, view, "Новая база")
+    assert errors == []
+    assert view.search().text() == "демо бух"  # noqa: RUF001
+    assert view._current_base_key() == _DEMO_ACCOUNTING_KEY
+
+
+def test_failed_add_keeps_current_row(qtbot, workspace_factory, monkeypatch):
+    view, _, errors, _ = _view(qtbot, workspace_factory)
+    _select_key(view, _DEMO_ACCOUNTING_KEY)
+
+    def refuse(*args: Any, **kwargs: Any) -> str:
+        raise InvalidRequestError("отказ")
+
+    monkeypatch.setattr(view.workspace(), "add_infobase", refuse)
+    _add_through_dialog(qtbot, view, "Новая база")
+    assert len(errors) == 1
+    assert view._current_base_key() == _DEMO_ACCOUNTING_KEY
+
+
 def test_add_dialog_stores_credentials_after_the_record(qtbot: Any, workspace_factory: Any) -> None:
     store = MemoryStore()
     view, *_ = _view(qtbot, workspace_factory, store=store)
