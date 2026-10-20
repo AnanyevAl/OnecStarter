@@ -52,7 +52,7 @@ from onecstarter.domain.version import Installation
 from onecstarter.services import cache
 from onecstarter.services.availability import Availability, probe_targets
 from onecstarter.services.catalog import TreeNode
-from onecstarter.services.connection import panel_card
+from onecstarter.services.connection import known_servers, panel_card
 from onecstarter.services.display import (
     COMMON_NOTE,
     IMPLICIT_NOTE,
@@ -1422,6 +1422,7 @@ class BasesView(QWidget):
             installations=self._installations or [],
             cfg_rules=self._cfg_rules,
             parent=self,
+            servers=known_servers(self._workspace.items()),
         )
         dialog.set_folder(folder)
         return dialog
@@ -1608,6 +1609,7 @@ class BasesView(QWidget):
             parent=self,
             login=login,
             has_password=has_password,
+            servers=known_servers(self._workspace.items()),
         )
 
     def show_properties(self, key: str) -> None:

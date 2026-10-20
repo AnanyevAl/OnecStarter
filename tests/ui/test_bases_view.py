@@ -4822,3 +4822,13 @@ def test_tree_events_are_not_measured_when_perf_is_off(
         perf.reset_for_tests()
     assert not (tmp_path / "OneCStarter" / "logs" / "perf.log").exists()
     assert not any(record.name == "onecstarter.perf" for record in caplog.records)
+
+
+def test_infobase_dialogs_offer_servers_of_existing_records(qtbot, workspace_factory):
+    """T-29: `srv-1c` — `Srvr` записи «Учёт серверный» фикстуры anonymized.v8i."""
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    for dialog in (view._build_add_dialog(), view._build_properties_dialog(_DEMO_ACCOUNTING_KEY)):
+        assert dialog is not None
+        qtbot.addWidget(dialog)
+        box = dialog._server_box
+        assert "srv-1c" in [box.itemText(i) for i in range(box.count())]
