@@ -168,6 +168,9 @@ class Settings:
     edt_installations_root: str = ""
     editor_vscode: str = ""
     editor_antigravity: str = ""
+    # T-25: проверка новой версии при запуске — только с согласия (§4).  # noqa: RUF003
+    # None — ещё не спрашивали: первый запуск с показанным окном задаёт вопрос.  # noqa: RUF003
+    check_updates: bool | None = None
 
 
 def load_settings(path: Path) -> Settings:
@@ -204,6 +207,7 @@ def load_settings(path: Path) -> Settings:
         edt_installations_root=_text_of(payload.get("edt_installations_root")),
         editor_vscode=_text_of(payload.get("editor_vscode")),
         editor_antigravity=_text_of(payload.get("editor_antigravity")),
+        check_updates=_consent_of(payload.get("check_updates")),
     )
 
 
@@ -228,6 +232,7 @@ def save_settings(path: Path, settings: Settings) -> None:
         "edt_installations_root": settings.edt_installations_root,
         "editor_vscode": settings.editor_vscode,
         "editor_antigravity": settings.editor_antigravity,
+        "check_updates": settings.check_updates,
     }
     text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
     atomic_write(path, text.encode("utf-8"))
@@ -291,6 +296,11 @@ def _language_of(value: Any) -> str:
     """Незнакомый код — «по умолчанию», не порча."""
     codes = {code for code, _label in LANGUAGES}
     return value if isinstance(value, str) and value in codes else ""
+
+
+def _consent_of(value: Any) -> bool | None:
+    """Согласие на проверку обновлений: не булево — «не спрашивали», не порча (T-25)."""
+    return value if isinstance(value, bool) else None
 
 
 def _bool_of(value: Any, *, default: bool = True) -> bool:

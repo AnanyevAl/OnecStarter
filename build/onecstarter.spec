@@ -64,11 +64,15 @@ a = Analysis(
     # из метаданных пакета (importlib.metadata.version); без этой строки frozen-сборка
     # не несёт .dist-info и показала бы «неизвестна» — гейт `smoke: version=` в
     # build/smoke.py ловит регрессию.
+    # schemes — набор цветовых схем поставки (T-24.1): `.csi` и LICENSE base16,
+    # читаются через importlib.resources (services/edt_scheme.py::bundled_schemes_dir).
+    # Гейт — строка `smoke: schemes=` в самопроверке.
     datas=[
         (
             str(ROOT / "src" / "onecstarter" / "platform_1c" / "registry.toml"),
             "onecstarter/platform_1c",
-        )
+        ),
+        (str(ROOT / "src" / "onecstarter" / "schemes"), "onecstarter/schemes"),
     ]
     + copy_metadata("onecstarter"),
     # keyring находит бэкенды через entry points — анализ импортов PyInstaller

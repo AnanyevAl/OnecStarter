@@ -243,3 +243,34 @@ def test_embedded_null_byte_does_not_abort_the_rest_of_the_walk() -> None:
         bad.key: Availability.MISSING,
         good.key: Availability.PRESENT,
     }
+
+
+# --- размер 1Cv8.1CD из той же пробы (T-33) ---------------------------------
+
+
+def _sized(size: int) -> os.stat_result:
+    return os.stat_result((S_IFDIR | 0o755, 0, 0, 1, 0, 0, size, 0, 0, 0))
+
+
+def test_probe_reports_database_file_size() -> None:
+    target = ProbeTarget(path_key(r"D:\b"), r"D:\b")
+
+    def stat(path: str) -> os.stat_result:
+        return _sized(4096) if path.endswith("1Cv8.1CD") else _DIR
+
+    sizes: dict[str, int | None] = {}
+    probe_paths([target], stat, lambda _k, _s: None, sizes.__setitem__)
+    assert sizes == {target.key: 4096}
+
+
+def test_probe_reports_no_size_when_database_file_is_missing() -> None:
+    target = ProbeTarget(path_key(r"D:\b"), r"D:\b")
+
+    def stat(path: str) -> os.stat_result:
+        if path.endswith("1Cv8.1CD"):
+            raise FileNotFoundError
+        return _DIR
+
+    sizes: dict[str, int | None] = {}
+    probe_paths([target], stat, lambda _k, _s: None, sizes.__setitem__)
+    assert sizes == {target.key: None}

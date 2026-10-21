@@ -232,7 +232,7 @@ def test_tree_shows_projects(harness: Harness, qtbot) -> None:  # type: ignore[n
     assert view.model().rowCount() == 2
 
 
-def test_search_filters_and_enter_launches_first(  # type: ignore[no-untyped-def]
+def test_search_enter_moves_to_first_project_then_enter_launches(  # type: ignore[no-untyped-def]
     harness: Harness, qtbot
 ) -> None:
     _add(harness, "Розница")
@@ -242,10 +242,73 @@ def test_search_filters_and_enter_launches_first(  # type: ignore[no-untyped-def
     view.search().setText("опт")
     assert view.model().rowCount() == 1
     qtbot.keyClick(view.search(), Qt.Key.Key_Return)
+    assert harness.spawned == []  # T-35: первый Enter не запускает
+    assert view.tree().currentIndex().data(ID_ROLE) == b.id
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Return)
     assert [c.arguments for c in harness.spawned] == [
         f'-data "{b.workspace}" -vm "C:\\j\\bin" --launcher.appendVmargs '
         "-vmargs -Djava.library.path="
     ]
+
+
+def test_first_enter_in_search_does_not_launch(  # type: ignore[no-untyped-def]
+    harness: Harness, qtbot, monkeypatch
+) -> None:
+    _add(harness, "Опт")
+    view = harness.view()
+    qtbot.addWidget(view)
+    launched: list[str] = []
+    monkeypatch.setattr(view, "launch_id", launched.append)
+    view.search().setText("опт")
+    qtbot.keyClick(view.search(), Qt.Key.Key_Return)
+    assert launched == []
+
+
+def test_tab_in_search_moves_focus_to_first_project(  # type: ignore[no-untyped-def]
+    harness: Harness, qtbot
+) -> None:
+    p = _add(harness, "Опт")
+    view = harness.view()
+    qtbot.addWidget(view)
+    with qtbot.waitExposed(view):
+        view.show()
+    view.focus_search()
+    view.search().setText("опт")
+    qtbot.keyClick(view.search(), Qt.Key.Key_Tab)
+    assert view.tree().currentIndex().data(ID_ROLE) == p.id
+    assert view.focusWidget() is view.tree()
+    assert harness.spawned == []
+
+
+def test_enter_in_empty_search_moves_focus_to_list(  # type: ignore[no-untyped-def]
+    harness: Harness, qtbot
+) -> None:
+    p = _add(harness, "Опт")
+    view = harness.view()
+    qtbot.addWidget(view)
+    with qtbot.waitExposed(view):
+        view.show()
+    _select(view, p.id)
+    view.focus_search()
+    qtbot.keyClick(view.search(), Qt.Key.Key_Return)
+    assert view.focusWidget() is view.tree()
+    assert view.tree().currentIndex().data(ID_ROLE) == p.id
+    assert harness.spawned == []
+
+
+def test_enter_with_nothing_found_stays_in_search_edt(  # type: ignore[no-untyped-def]
+    harness: Harness, qtbot
+) -> None:
+    _add(harness, "Опт")
+    view = harness.view()
+    qtbot.addWidget(view)
+    with qtbot.waitExposed(view):
+        view.show()
+    view.focus_search()
+    view.search().setText("zzz")
+    qtbot.keyClick(view.search(), Qt.Key.Key_Return)
+    assert view.focusWidget() is view.search()
+    assert harness.spawned == []
 
 
 def test_double_click_launches(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
@@ -514,7 +577,8 @@ def test_color_scheme_opens_dialog_for_record(  # type: ignore[no-untyped-def]
     view.color_scheme(p.id)
     assert captured[0].windowTitle() == "Цветовая схема — a"
     names = [captured[0].sources().item(i).text() for i in range(captured[0].sources().count())]
-    assert names[2:] == ["x"]
+    assert "x" in names[2:]  # свой каталог
+    assert "base16-3024" in names  # и схемы поставки рядом (T-24.2)
     assert captured[0].apply_button().isEnabled()
 
 
@@ -535,7 +599,8 @@ def test_color_scheme_dialog_sees_running_workspace_as_busy(  # type: ignore[no-
     monkeypatch.setattr(view, "_run_dialog", run_dialog)
     view.color_scheme(p.id)
     assert captured[0].apply_button().isEnabled() is False
-    assert captured[0].hint_label().text() == "Каталог схем не задан — Настройки → EDT"
+    # Своего каталога нет, но схемы поставки есть всегда — подсказка не нужна (T-24.2).
+    assert captured[0].hint_label().isHidden()
 
 
 def test_color_scheme_dialog_sees_cli_busy_workspace_as_busy(  # type: ignore[no-untyped-def]
@@ -602,6 +667,38 @@ def test_add_project_via_dialog(harness: Harness, qtbot, monkeypatch) -> None:  
     assert project.name == "Новая"
     assert project.group_id == g.id
     assert project.vm_args == "-Xmx8192m"  # умолчание из dialog_defaults
+
+
+def _fill_new_project(dialog):
+    dialog.name_edit().setText("Новая")
+    dialog.workspace_edit().setText(r"D:\edt\new")
+    return True
+
+
+def test_added_project_becomes_current(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """T-36: проект, добавленный вручную, — текущий."""
+    g = harness.workspace.add_group("2025", None)
+    _add(harness, "Старый")
+    view = harness.view()
+    qtbot.addWidget(view)
+    monkeypatch.setattr(view, "_run_dialog", _fill_new_project)
+    view.add_project(g.id)
+    added = next(p for p in harness.workspace.projects() if p.name == "Новая")
+    assert view.tree().currentIndex().data(ID_ROLE) == added.id
+
+
+def test_added_project_hidden_by_search_is_not_selected(  # type: ignore[no-untyped-def]
+    harness: Harness, qtbot, monkeypatch
+) -> None:
+    old = _add(harness, "Старый")
+    view = harness.view()
+    qtbot.addWidget(view)
+    view.search().setText("стар")
+    _select(view, old.id)
+    monkeypatch.setattr(view, "_run_dialog", _fill_new_project)
+    view.add_project(None)
+    assert view.search().text() == "стар"
+    assert view.tree().currentIndex().data(ID_ROLE) == old.id
 
 
 def test_edit_and_remove_project(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -738,6 +835,7 @@ def test_import_adds_selected(harness: Harness, qtbot, monkeypatch) -> None:  # 
     assert project.workspace == r"D:\edt\a"
     assert project.edt_version == "2025.2.6+4"
     assert harness.infos == ["Импортировано записей: 1"]
+    assert not view.tree().currentIndex().isValid()  # импорт ничего не выделяет (T-36)
 
 
 def test_import_without_registry_shows_error(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
@@ -1186,7 +1284,7 @@ def test_selecting_project_with_old_journal_shows_it(  # type: ignore[no-untyped
 def test_search_hint_and_clear_button(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
     view = harness.view()
     qtbot.addWidget(view)
-    assert view.search().placeholderText() == "Поиск: начните вводить имя проекта (Ctrl+F)"
+    assert view.search().placeholderText() == "Поиск: имя проекта, * — любые символы (Ctrl+F)"
     view.search().setText("x")
     view.search().clear_action().trigger()
     assert view.search().text() == ""

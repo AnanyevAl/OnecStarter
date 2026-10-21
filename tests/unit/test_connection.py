@@ -1,5 +1,7 @@
 """Витрина размещения: подпись вида и путь подключения."""
 
+from dataclasses import replace
+
 import pytest
 
 from onecstarter.domain.connect import ConnectKind, classify_connect
@@ -8,6 +10,7 @@ from onecstarter.services.connection import (
     BADGE_LABELS,
     KIND_WORDS,
     connection_path,
+    known_servers,
     panel_card,
 )
 from onecstarter.services.display import RowKind
@@ -196,3 +199,20 @@ def test_kind_words_cover_every_connect_kind() -> None:
         ConnectKind.WEB: "веб",
         ConnectKind.UNKNOWN: "не разобрано",
     }
+
+
+def test_known_servers_collects_srvr_of_server_records() -> None:
+    """T-29: варианты поля «Сервер» — из всех записей, общие списки тоже."""
+    items = [
+        _base('Srvr="srv-b";Ref="a";'),
+        _base('Srvr="srv-a";Ref="b";'),
+        _base('Srvr="srv-b";Ref="c";'),  # точный дубль
+        _base('Srvr="SRV-A";Ref="d";'),  # регистр не сворачивается [?]
+        _base('Srvr="n1,n2,n3";Ref="e";'),  # список кластера — один вариант
+        _base('Srvr="";Ref="f";'),  # пустое отбрасывается
+        _base('File="C:\b";'),
+        _base('ws="http://h/b";'),
+        _base(None, is_group=True),
+        replace(_base('Srvr="shared";Ref="g";'), source=InfobaseSource.COMMON),
+    ]
+    assert known_servers(items) == ["n1,n2,n3", "shared", "SRV-A", "srv-a", "srv-b"]

@@ -1,6 +1,7 @@
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -20,6 +21,8 @@ from onecstarter.services.display import (
     collation_key,
     display_forest,
     filter_rows,
+    format_bytes,
+    format_size,
     group_contents,
     is_degraded_group,
     row_label,
@@ -250,6 +253,14 @@ def test_filter_on_group_name_keeps_whole_subtree() -> None:
 def test_empty_filter_returns_everything() -> None:
     forest = _forest()
     assert filter_rows(forest, "  ") == forest
+
+
+def test_filter_with_asterisk_keeps_match_and_its_group() -> None:
+    kept = filter_rows(_forest(), "демо*розн")
+    clients = next(row for row in kept if row.label == "Клиенты")
+    retail = next(row for row in clients.children if row.label == "Розница")
+    assert [row.label for row in retail.children] == ["Демо Розница"]
+    assert not any(row.label == "Демо Бухгалтерия" for row in clients.children)
 
 
 def _base(version: str | None, default: str | None = None) -> InfobaseItem:
@@ -692,3 +703,35 @@ def test_sort_rows_sorts_nested_children_recursively() -> None:
     assert [row.label for row in archive.children] == ["Бета", "база", "Портал"]
     beta = archive.children[0]
     assert [row.label for row in beta.children] == ["Апрель", "яблоко"]
+
+
+@pytest.mark.parametrize("make", [_server_item, _web_item])
+def test_version_hint_has_no_reliability_marks(make: Any) -> None:
+    """T-28: метка «[Ф] 08.09.2026» утекла в подсказку, которую видит пользователь."""
+    hint = version_cell(make(), INSTALLED, []).hint or ""
+    assert hint, "у серверной и веб-базы подсказка обязана быть"  # noqa: RUF001
+    for mark in ("[Ф]", "[Д]", "[?]"):
+        assert mark not in hint
+
+
+@pytest.mark.parametrize(
+    ("size", "text"),
+    [
+        (0, "0 Б"),
+        (1023, "1023 Б"),
+        (1024, "1,0 КБ"),
+        (1536, "1,5 КБ"),
+        (1024 * 1024 - 1, "1,0 МБ"),  # 1023,99… КБ не показывается как «1024,0 КБ»
+        (850 * 1024 * 1024, "850,0 МБ"),
+        (int(1.2 * 1024**3), "1,2 ГБ"),
+        (3 * 1024**4, "3,0 ТБ"),
+        (5000 * 1024**4, "5000,0 ТБ"),
+    ],
+)
+def test_format_size(size: int, text: str) -> None:
+    """T-33: размер 1Cv8.1CD в колонке — двоичные единицы, запятая."""
+    assert format_size(size) == text
+
+
+def test_format_bytes_groups_digits() -> None:
+    assert format_bytes(1234567) == "1 234 567 байт"

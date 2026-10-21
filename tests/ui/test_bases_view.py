@@ -331,14 +331,78 @@ def test_column_width_survives_search_that_shortens_visible_names(qtbot, workspa
     assert view._tree.columnWidth(0) == before
 
 
-def test_enter_in_search_launches_first_visible_base(qtbot, workspace_factory):
+def test_enter_in_search_moves_to_first_found_base_without_launch(
+    qtbot, workspace_factory, monkeypatch
+):
+    """T-35: первый Enter в поиске не запускает, а ставит фокус на первую найденную."""  # noqa: RUF002
+    view, calls, errors, _ = _view(qtbot, workspace_factory)
+    _show_exposed(qtbot, view)
+    launched: list[str] = []
+    monkeypatch.setattr(view, "launch_key", lambda key, *args, **kwargs: launched.append(key))
+    view.focus_search()
+    _type(view.search(), "демо бух")  # noqa: RUF001
+    qtbot.keyClick(view.search(), Qt.Key.Key_Return)
+    assert launched == []
+    assert calls == []
+    assert errors == []
+    assert view._current_base_key() == _DEMO_ACCOUNTING_KEY
+    assert view.focusWidget() is view.tree()
+
+
+def test_second_enter_in_list_launches_the_found_base(qtbot, workspace_factory):
     view, calls, errors, _ = _view(qtbot, workspace_factory)
     _type(view.search(), "демо бух")  # noqa: RUF001
     qtbot.keyClick(view.search(), Qt.Key.Key_Return)
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Return)
     assert errors == []
     assert len(calls) == 1
     assert '/IBName"Демо Бухгалтерия"' in calls[0].command_line
     assert "/AppAutoCheckVersion-" in calls[0].command_line
+
+
+def test_tab_in_search_moves_to_first_found_base(qtbot, workspace_factory):
+    view, calls, _, _ = _view(qtbot, workspace_factory)
+    _show_exposed(qtbot, view)
+    view.focus_search()
+    _type(view.search(), "демо бух")  # noqa: RUF001
+    qtbot.keyClick(view.search(), Qt.Key.Key_Tab)
+    assert calls == []
+    assert view._current_base_key() == _DEMO_ACCOUNTING_KEY
+    assert view.focusWidget() is view.tree()
+
+
+def test_enter_in_search_prefers_first_found_over_visible_selection(qtbot, workspace_factory):
+    """Решение заказчика 20.10.2026: всегда первая найденная, даже если выделенная видна."""
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    retail = next(i.key for i in view.workspace().items() if i.name == "Демо Розница")
+    _type(view.search(), "демо")
+    first = _first_base_index(view).data(KEY_ROLE)
+    other = retail if first == _DEMO_ACCOUNTING_KEY else _DEMO_ACCOUNTING_KEY
+    _select_key(view, other)
+    assert view._current_base_key() == other
+    qtbot.keyClick(view.search(), Qt.Key.Key_Return)
+    assert view._current_base_key() == first
+
+
+def test_enter_in_empty_search_moves_focus_and_keeps_current(qtbot, workspace_factory):
+    view, calls, _, _ = _view(qtbot, workspace_factory)
+    _show_exposed(qtbot, view)
+    _select_key(view, _DEMO_ACCOUNTING_KEY)
+    view.focus_search()
+    qtbot.keyClick(view.search(), Qt.Key.Key_Return)
+    assert calls == []
+    assert view._current_base_key() == _DEMO_ACCOUNTING_KEY
+    assert view.focusWidget() is view.tree()
+
+
+def test_enter_with_nothing_found_stays_in_search(qtbot, workspace_factory):
+    view, calls, _, _ = _view(qtbot, workspace_factory)
+    _show_exposed(qtbot, view)
+    view.focus_search()
+    _type(view.search(), "zzz-not-a-real-base")
+    qtbot.keyClick(view.search(), Qt.Key.Key_Return)
+    assert calls == []
+    assert view.focusWidget() is view.search()
 
 
 def test_activating_group_row_does_not_launch(qtbot, workspace_factory):
@@ -360,6 +424,7 @@ def test_launch_error_goes_to_handler_not_up(qtbot, workspace_factory):
     view, calls, errors, _ = _view(qtbot, workspace_factory, installations=[])
     _type(view.search(), "демо бух")  # noqa: RUF001
     qtbot.keyClick(view.search(), Qt.Key.Key_Return)
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Return)  # T-35: запуск — вторым Enter
     assert calls == []
     assert len(errors) == 1
     assert isinstance(errors[0], LaunchError)
@@ -415,6 +480,7 @@ def test_recent_branch_appears_after_launch(qtbot, workspace_factory):
     view, _, _, _ = _view(qtbot, workspace_factory)
     _type(view.search(), "демо бух")  # noqa: RUF001
     qtbot.keyClick(view.search(), Qt.Key.Key_Return)
+    qtbot.keyClick(view.tree(), Qt.Key.Key_Return)  # T-35: запуск — вторым Enter
     view.search().clear()
     labels = [view.model().item(i, 0).text() for i in range(view.model().rowCount())]
     assert labels[0] == "Недавние"
@@ -1418,6 +1484,59 @@ def test_apply_new_infobase_adds_a_record(qtbot, workspace_factory):
     added = next(i for i in items if i.name == "Новая база")
     assert added.connect == r'File="D:\bases\new";'
     assert added.folder == "/"
+
+
+def _add_through_dialog(qtbot: Any, view: BasesView, name: str) -> None:
+    dialog = view._build_add_dialog()
+    qtbot.addWidget(dialog)
+    dialog.set_kind(ConnectKind.FILE)
+    dialog.set_file_path(r"D:\bases\new")
+    dialog.set_name(name)
+    view._apply_new_infobase(dialog)
+
+
+def _top_level(index: QModelIndex) -> QModelIndex:
+    while index.parent().isValid():
+        index = index.parent()
+    return index
+
+
+def test_added_record_becomes_current_in_the_file_tree(qtbot, workspace_factory):
+    """T-36: новая запись — текущая, в ветке файла, фокус в списке."""
+    view, _, errors, _ = _view(qtbot, workspace_factory)
+    _show_exposed(qtbot, view)
+    _select_key(view, _DEMO_ACCOUNTING_KEY)
+    _add_through_dialog(qtbot, view, "Новая база")
+    added = next(i for i in view.workspace().items() if i.name == "Новая база")
+    assert errors == []
+    assert view._current_base_key() == added.key
+    top = _top_level(view.tree().currentIndex().siblingAtColumn(0))
+    assert top.data(KIND_ROLE) != RowKind.SECTION.value
+    assert view.focusWidget() is view.tree()
+
+
+def test_added_record_hidden_by_search_is_not_selected(qtbot, workspace_factory):
+    """Решение заказчика 20.10.2026: поиск не очищается, текущая строка прежняя."""
+    view, _, errors, _ = _view(qtbot, workspace_factory)
+    _select_key(view, _DEMO_ACCOUNTING_KEY)
+    _type(view.search(), "демо бух")  # noqa: RUF001
+    _add_through_dialog(qtbot, view, "Новая база")
+    assert errors == []
+    assert view.search().text() == "демо бух"  # noqa: RUF001
+    assert view._current_base_key() == _DEMO_ACCOUNTING_KEY
+
+
+def test_failed_add_keeps_current_row(qtbot, workspace_factory, monkeypatch):
+    view, _, errors, _ = _view(qtbot, workspace_factory)
+    _select_key(view, _DEMO_ACCOUNTING_KEY)
+
+    def refuse(*args: Any, **kwargs: Any) -> str:
+        raise InvalidRequestError("отказ")
+
+    monkeypatch.setattr(view.workspace(), "add_infobase", refuse)
+    _add_through_dialog(qtbot, view, "Новая база")
+    assert len(errors) == 1
+    assert view._current_base_key() == _DEMO_ACCOUNTING_KEY
 
 
 def test_add_dialog_stores_credentials_after_the_record(qtbot: Any, workspace_factory: Any) -> None:
@@ -4578,7 +4697,7 @@ def test_search_hint_and_clear_button(qtbot, workspace_factory):
         list_order=lambda: ListOrder.FILE,
     )
     qtbot.addWidget(view)
-    assert view.search().placeholderText() == "Поиск: начните вводить имя базы (Ctrl+F)"
+    assert view.search().placeholderText() == "Поиск: имя базы, * — любые символы (Ctrl+F)"
     view.search().setText("x")
     view.search().clear_action().trigger()
     assert view.search().text() == ""
@@ -4703,3 +4822,22 @@ def test_tree_events_are_not_measured_when_perf_is_off(
         perf.reset_for_tests()
     assert not (tmp_path / "OneCStarter" / "logs" / "perf.log").exists()
     assert not any(record.name == "onecstarter.perf" for record in caplog.records)
+
+
+def test_infobase_dialogs_offer_servers_of_existing_records(qtbot, workspace_factory):
+    """T-29: `srv-1c` — `Srvr` записи «Учёт серверный» фикстуры anonymized.v8i."""
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    for dialog in (view._build_add_dialog(), view._build_properties_dialog(_DEMO_ACCOUNTING_KEY)):
+        assert dialog is not None
+        qtbot.addWidget(dialog)
+        box = dialog._server_box
+        assert "srv-1c" in [box.itemText(i) for i in range(box.count())]
+
+
+def test_probe_size_appears_in_the_size_column(qtbot, workspace_factory):
+    """T-33: размер из пробы попадает в колонку «Размер» строки базы."""
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    view.apply_size(path_key(_DEMO_ACCOUNTING_PATH), 2 * 1024**3)
+    view.rebuild()
+    index = _index_of_key(view, _DEMO_ACCOUNTING_KEY)
+    assert index.siblingAtColumn(3).data() == "2,0 ГБ"

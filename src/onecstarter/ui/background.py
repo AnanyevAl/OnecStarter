@@ -130,6 +130,7 @@ class AvailabilityProbe(QObject):
     """  # noqa: RUF002
 
     probed = Signal(str, object)  # ключ пути, Availability
+    sized = Signal(str, object)  # ключ пути, размер 1Cv8.1CD или None (T-33)
 
     def __init__(
         self,
@@ -164,6 +165,11 @@ class AvailabilityProbe(QObject):
         _log.info("доступность каталогов: начато, целей %d", len(targets))
         missing = 0
 
+        def report_size(key: str, size: int | None) -> None:
+            # Та же защита поколений, что у `report` ниже.  # noqa: RUF003
+            if generation == self._generation:
+                self.sized.emit(key, size)
+
         def report(key: str, state: Availability) -> None:
             nonlocal missing
             if state is Availability.MISSING:
@@ -183,7 +189,7 @@ class AvailabilityProbe(QObject):
                 self.probed.emit(key, state)
 
         try:
-            probe_paths(targets, self._stat, report)
+            probe_paths(targets, self._stat, report, report_size)
         except Exception as exc:
             # Падение фона не должно оставлять список без меток молча:
             # причина уходит в лог теми же местами кадров, без сообщения

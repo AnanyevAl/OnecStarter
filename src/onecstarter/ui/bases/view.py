@@ -52,7 +52,7 @@ from onecstarter.domain.version import Installation
 from onecstarter.services import cache
 from onecstarter.services.availability import Availability, probe_targets
 from onecstarter.services.catalog import TreeNode
-from onecstarter.services.connection import panel_card
+from onecstarter.services.connection import known_servers, panel_card
 from onecstarter.services.display import (
     COMMON_NOTE,
     IMPLICIT_NOTE,
@@ -486,7 +486,9 @@ class BasesView(QWidget):
         self._expansion: set[str] = set()
         self._filtered = False
 
-        self._search = SearchField("Поиск: начните вводить имя базы", self._palette)
+        self._search = SearchField(
+            "Поиск: имя базы, * — любые символы", self._palette, list_navigation=True
+        )
         self._tree = _BasesTree(self)
         self._tree.setHeaderHidden(False)
         self._tree.setAlternatingRowColors(False)
@@ -524,7 +526,7 @@ class BasesView(QWidget):
         self._search.setAcceptDrops(False)
 
         self._search.textChanged.connect(lambda _text: self.rebuild())
-        self._search.returnPressed.connect(self._launch_first_visible)
+        self._search.list_requested.connect(self._focus_first_match)
         self._tree.activated.connect(self._launch_index)
         self._tree.customContextMenuRequested.connect(self._show_menu)
         QShortcut(QKeySequence("Ctrl+D"), self, self._toggle_current_favorite)
@@ -559,6 +561,8 @@ class BasesView(QWidget):
         # снимаются сами (две базы в одном каталоге), а правка имени записи  # noqa: RUF003
         # не теряет уже известный результат (спека §3.5).
         self._availability: dict[str, Availability] = {}
+        # Размер 1Cv8.1CD из той же пробы (T-33), тем же ключом пути.
+        self._sizes: dict[str, int] = {}
         # Коалесинг: проба на пятидесяти базах даёт пятьдесят сигналов подряд,
         # а пересборка модели целиком стоит дорого. Тот же приём и тот же  # noqa: RUF003
         # интервал, что гасят дребезг перезаписи файла в ui/watcher.py.
@@ -602,6 +606,20 @@ class BasesView(QWidget):
         """Обнаружение закончилось: показать версии вместо «…»."""
         self._installations = list(installations)
         self.rebuild()
+
+    def apply_size(self, key: str, size: object) -> None:
+        """Размер `1Cv8.1CD` из пробы (T-33): `key` — нормализованный путь.
+
+        `None` (база недоступна) убирает прежний размер. Перестройка — тем же
+        таймером, что у доступности: проба отдаёт результаты пачкой подряд.
+        """  # noqa: RUF002
+        if isinstance(size, int):
+            if self._sizes.get(key) == size:
+                return
+            self._sizes[key] = size
+        elif self._sizes.pop(key, None) is None:
+            return
+        self._availability_timer.start()
 
     def apply_availability(self, key: str, state: Availability) -> None:
         """Один результат пробы: `key` — нормализованный путь, не ключ записи."""
@@ -690,8 +708,18 @@ class BasesView(QWidget):
             key: self._availability.get(target.key, Availability.UNKNOWN)
             for key, target in targets.items()
         }
+        sizes = {
+            key: self._sizes[target.key]
+            for key, target in targets.items()
+            if target.key in self._sizes
+        }
         model = build_model(
-            self._rows, cells, _format_stamp, self._palette, availability=availability
+            self._rows,
+            cells,
+            _format_stamp,
+            self._palette,
+            availability=availability,
+            sizes=sizes,
         )
         self._tree.setModel(model)
         if column_widths is None:
@@ -980,24 +1008,74 @@ class BasesView(QWidget):
         if key:
             self.launch_key(key)
 
-    def _launch_first_visible(self) -> None:
-        # Пустой поиск (после strip) — ничего не запускаем: случайный Enter
-        # (например, сразу после хоткея, до первой буквы) не должен
-        # запустить первую базу леса — чужую реальную базу одним нажатием.
-        if not self._search.text().strip():
-            return
-        first = self._first_base(self._rows)
-        if first is not None:
-            self.launch_key(first)
+    def _focus_first_match(self) -> None:
+        """Enter или Tab в поиске (T-35): перейти в список, ничего не запуская.
 
-    def _first_base(self, rows: Sequence[Row]) -> str | None:
-        for row in rows:
-            if row.kind is RowKind.BASE and row.item is not None:
-                return row.item.key
-            nested = self._first_base(row.children)
+        Прежде Enter запускал первую найденную базу — не ту, что выделена,
+        и не видно какую (жалоба заказчика 20.10.2026). Теперь первая
+        найденная становится текущей, запуск — вторым Enter уже в списке.
+        Пустой поиск — просто фокус в список, текущая строка прежняя: прежняя
+        защита «случайный Enter до первой буквы не запускает чужую базу»
+        сохраняется сама собой — Enter из поиска не запускает ничего.
+        Ничего не найдено — фокус остаётся в поле.
+        """
+        if not self._search.text().strip():
+            self._tree.setFocus()
+            return
+        first = self._first_base_index()
+        if first is not None:
+            self._focus_index(first)
+
+    def _first_base_index(self, parent: QModelIndex | None = None) -> QModelIndex | None:
+        """Первая строка-база модели в порядке показа — группы и ветки ею не бывают."""
+        model = self._tree.model()
+        parent = QModelIndex() if parent is None else parent
+        for row in range(model.rowCount(parent)):
+            index = model.index(row, 0, parent)
+            if index.data(KIND_ROLE) == RowKind.BASE.value:
+                return index
+            nested = self._first_base_index(index)
             if nested is not None:
                 return nested
         return None
+
+    def _select_in_tree(self, key: str) -> bool:
+        """Сделать текущей строку записи в ветке файла (T-36); `False` — не видна.
+
+        Ветки верхнего уровня вида SECTION («Избранное», «Недавние», «Общие
+        списки») пропускаются: запись выделяется там, где она лежит в файле.
+        Не найдена — поиск её скрыл; текущая строка остаётся той, что вернул
+        `_restore_current`, поиск не очищается (решение заказчика 20.10.2026).
+        """  # noqa: RUF002
+        model = self._tree.model()
+
+        def walk(parent: QModelIndex) -> QModelIndex | None:
+            for row in range(model.rowCount(parent)):
+                index = model.index(row, 0, parent)
+                if not parent.isValid() and index.data(KIND_ROLE) == RowKind.SECTION.value:
+                    continue
+                if index.data(KIND_ROLE) == RowKind.BASE.value and index.data(KEY_ROLE) == key:
+                    return index
+                found = walk(index)
+                if found is not None:
+                    return found
+            return None
+
+        found = walk(QModelIndex())
+        if found is None:
+            return False
+        self._focus_index(found)
+        return True
+
+    def _focus_index(self, index: QModelIndex) -> None:
+        """Сделать строку текущей и видимой: раскрыть предков, прокрутить, фокус в список."""
+        parent = index.parent()
+        while parent.isValid():
+            self._tree.expand(parent)
+            parent = parent.parent()
+        self._tree.setCurrentIndex(index)
+        self._tree.scrollTo(index)
+        self._tree.setFocus()
 
     def _sync_panel(self) -> None:
         """Панель получает карточку любой выделенной строки, не только базы.
@@ -1370,6 +1448,7 @@ class BasesView(QWidget):
             installations=self._installations or [],
             cfg_rules=self._cfg_rules,
             parent=self,
+            servers=known_servers(self._workspace.items()),
         )
         dialog.set_folder(folder)
         return dialog
@@ -1521,6 +1600,9 @@ class BasesView(QWidget):
                     )
                 )
         self.rebuild()
+        # T-36: новая запись — текущая, если её видно (решения заказчика 20.10.2026).
+        # Отказ сохранения пароля выше запись не отменяет — выделяем и тогда.
+        self._select_in_tree(key)
 
     def _build_properties_dialog(self, key: str) -> InfobaseDialog | None:
         """Собрать диалог свойств без показа (для тестов и show_properties).
@@ -1553,6 +1635,7 @@ class BasesView(QWidget):
             parent=self,
             login=login,
             has_password=has_password,
+            servers=known_servers(self._workspace.items()),
         )
 
     def show_properties(self, key: str) -> None:

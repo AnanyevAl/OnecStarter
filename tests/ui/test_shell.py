@@ -257,3 +257,18 @@ def test_section_icon_follows_the_palette(qtbot):
     window.apply_palette(theme.LIGHT)
     light = button.icon().pixmap(16, 16).toImage().constBits().tobytes()  # type: ignore[union-attr]
     assert dark != light
+
+
+def test_banner_sits_above_the_sections(qtbot):
+    """T-25: полоса уведомления — над разделами, в той же колонке."""
+    section = QLabel("заглушка")
+    window = MainWindow([("Базы", section)])
+    qtbot.addWidget(window)
+    banner = QLabel("полоса")
+    window.set_banner(banner)
+    stack = section.parentWidget()
+    assert stack is not None
+    assert banner.parentWidget() is stack.parentWidget()
+    with qtbot.waitExposed(window):
+        window.show()
+    assert banner.geometry().bottom() <= stack.geometry().top()

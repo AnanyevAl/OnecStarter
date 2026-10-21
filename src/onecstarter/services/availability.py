@@ -114,6 +114,7 @@ def probe_paths(
     targets: Iterable[ProbeTarget],
     stat: Callable[[str], os.stat_result],
     report: Callable[[str, Availability], None],
+    report_size: Callable[[str, int | None], None] | None = None,
 ) -> None:
     """Обойти уникальные цели, отдавая результат по одной через `report`.
 
@@ -123,16 +124,25 @@ def probe_paths(
 
     Дубли снимаются по нормализованному ключу — две базы в одном каталоге
     стоят одного вызова `stat`.
+
+    `report_size` (T-33) — размер `1Cv8.1CD` из того же `stat`, `None`
+    у недоступной базы. Отдаётся раньше состояния: перестройка списка,
+    которую запускает состояние, уже видит размер.
     """  # noqa: RUF002
     seen: set[str] = set()
     for target in targets:
         if target.key in seen:
             continue
         seen.add(target.key)
-        report(target.key, _probe_one(target.path, stat))
+        state, size = _probe_one(target.path, stat)
+        if report_size is not None:
+            report_size(target.key, size)
+        report(target.key, state)
 
 
-def _probe_one(path: str, stat: Callable[[str], os.stat_result]) -> Availability:
+def _probe_one(
+    path: str, stat: Callable[[str], os.stat_result]
+) -> tuple[Availability, int | None]:
     """Одна проба: каталог есть и в нём есть файл базы — иначе `MISSING`.
 
     Любой отказ `stat` — `MISSING`, включая `PermissionError` и отказ сети:
@@ -150,14 +160,16 @@ def _probe_one(path: str, stat: Callable[[str], os.stat_result]) -> Availability
     «два состояния в исходе» распространяется и на этот случай: порченый
     путь — тот же `MISSING`, а не третье состояние и не падение обхода.
     """  # noqa: RUF002
+    # Вторым элементом — размер файла базы из того же вызова `stat` (T-33),
+    # только у PRESENT: новых обращений к диску и сети проба не делает.  # noqa: RUF003
     try:
         info = stat(path)
     except (OSError, ValueError):
-        return Availability.MISSING
+        return Availability.MISSING, None
     if not S_ISDIR(info.st_mode):
-        return Availability.MISSING
+        return Availability.MISSING, None
     try:
-        stat(str(Path(path) / DB_FILE_NAME))
+        database = stat(str(Path(path) / DB_FILE_NAME))
     except (OSError, ValueError):
-        return Availability.MISSING
-    return Availability.PRESENT
+        return Availability.MISSING, None
+    return Availability.PRESENT, database.st_size

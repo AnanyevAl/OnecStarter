@@ -116,3 +116,7 @@ class EdtUnavailableError(EdtError):
 
 class EdtLaunchError(EdtError):
     """Запуск EDT или редактора отказал до или при порождении процесса."""
+
+
+class UpdateError(ServicesError):
+    """Проверка новой версии или скачивание установщика не удались (T-25)."""

@@ -168,6 +168,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from pathlib import Path
+from typing import cast
 
 from PySide6.QtCore import QMimeData
 from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent
@@ -404,6 +405,7 @@ class InfobaseDialog(QDialog):
         choose_directory: Callable[[], str] = browse_for_directory,
         login: str | None = None,
         has_password: bool | None = False,
+        servers: Sequence[str] = (),
     ) -> None:
         super().__init__(parent)
         self._item = item
@@ -417,10 +419,24 @@ class InfobaseDialog(QDialog):
         self._name = QLineEdit(item.name if item is not None else "")
 
         self._file_path = QLineEdit()
-        self._server = QLineEdit()
+        # T-29: «Сервер» — редактируемый список ранее введённых серверов.
+        # Поле значения — встроенный QLineEdit комбобокса: чтение, запись,
+        # проверка и словарь полей по видам работают с ним, как с прежним  # noqa: RUF003
+        # отдельным полем; в строку формы идёт сам комбобокс (тот же приём,
+        # что у пути файловой базы с кнопкой «Обзор…»).  # noqa: RUF003
+        self._server_box = QComboBox()
+        self._server_box.setEditable(True)
+        self._server_box.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        # Без встроенного дополнения: оно дописывает выделенный хвост первого
+        # совпавшего варианта, и подтверждение диалога приняло бы чужой сервер
+        # вместо набранного.
+        # Qt принимает пустой указатель, заглушки PySide6 — нет.
+        self._server_box.setCompleter(None)  # type: ignore[arg-type]
+        self._server = cast(QLineEdit, self._server_box.lineEdit())
         self._ref = QLineEdit()
         self._url = QLineEdit()
         self._init_placement(item)
+        self._fill_server_choices(servers)
 
         # Кнопка «Обзор…» — пробел плана, найденный ревью задачи 10: спека
         # §3.1 требует «обзор каталога и drag&drop каталога», план заявил
@@ -438,7 +454,11 @@ class InfobaseDialog(QDialog):
         file_row_layout.addWidget(self._browse_button)
 
         placement_widgets = self._placement_widgets()
-        row_widgets: dict[str, QWidget] = {**placement_widgets, "File": file_row}
+        row_widgets: dict[str, QWidget] = {
+            **placement_widgets,
+            "File": file_row,
+            "Srvr": self._server_box,
+        }
         self._kind_rows: dict[ConnectKind, list[tuple[str, QLineEdit]]] = {
             kind: [(label, placement_widgets[name]) for label, name in spec]
             for kind, spec in _PLACEMENT_SPEC.items()
@@ -638,6 +658,7 @@ class InfobaseDialog(QDialog):
         choose_directory: Callable[[], str] = browse_for_directory,
         login: str | None = None,
         has_password: bool | None = False,
+        servers: Sequence[str] = (),
     ) -> "InfobaseDialog":
         """Диалог добавления записи: то же окно, без исходной записи.
 
@@ -655,10 +676,27 @@ class InfobaseDialog(QDialog):
             choose_directory=choose_directory,
             login=login,
             has_password=has_password,
+            servers=servers,
         )
 
     def _placement_widgets(self) -> dict[str, QLineEdit]:
         return {"File": self._file_path, "Srvr": self._server, "Ref": self._ref, "ws": self._url}
+
+    def _fill_server_choices(self, servers: Sequence[str]) -> None:
+        """Варианты «Сервера» (T-29) — без подмены значения записи.
+
+        Первый добавленный пункт редактируемый QComboBox делает текущим и пишет
+        в поле — значение записи затёрлось бы первым вариантом. Поэтому текст
+        сохраняется до заполнения и возвращается после. Поле только для чтения
+        (фрагмент `Srvr` не разобран, `_init_placement`) вариантов не получает:
+        выбор из списка обошёл бы запрет правки.
+        """
+        if self._server.isReadOnly() or not servers:
+            return
+        text = self._server.text()
+        self._server_box.addItems(list(servers))
+        self._server_box.setCurrentIndex(-1)
+        self._server.setText(text)
 
     def _browse_for_directory(self) -> None:
         """Обработчик «Обзор…» — то же самое, что и drag&drop одного каталога.

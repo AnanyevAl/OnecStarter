@@ -238,3 +238,18 @@ def test_relative_path_gets_an_honest_note(qapp: QApplication) -> None:
     model = build_model([row], {}, _stamp, theme.DARK, availability={})
     assert "Путь относительный" in model.item(0, 0).toolTip()
     assert model.item(0, 0).text() == "Относительная"
+
+
+def test_size_column_shows_database_file_size(qtbot):
+    """T-33: размер 1Cv8.1CD — в колонке «Размер», точное число — в подсказке."""
+    rows = [_base_row(key="id:aaa"), Row(RowKind.GROUP, "Клиенты", _group_item(), ())]
+    model = build_model(rows, {}, _stamp, theme.DARK, sizes={"id:aaa": 1536})
+    size = model.item(0, COLUMNS.index("Размер"))
+    assert size.text() == "1,5 КБ"
+    assert size.toolTip() == "1 536 байт"
+    assert model.item(1, COLUMNS.index("Размер")).text() == ""
+
+
+def test_size_column_is_empty_without_size(qtbot):
+    model = build_model([_base_row()], {}, _stamp, theme.DARK)
+    assert model.item(0, COLUMNS.index("Размер")).text() == ""

@@ -1376,3 +1376,75 @@ def test_unchecking_remember_with_a_stored_password_warns(qtbot: Any) -> None:
     dialog.remember_checkbox().setChecked(False)
 
     assert dialog.credentials_note().text() == STORED_PASSWORD_REMOVAL_NOTE
+
+
+# -- T-29: «Сервер» — выпадающий список серверов существующих записей ----------
+
+
+def _choices(dialog: InfobaseDialog) -> list[str]:
+    box = dialog._server_box
+    return [box.itemText(i) for i in range(box.count())]
+
+
+def test_server_field_offers_known_servers(qtbot: Any) -> None:
+    dialog = InfobaseDialog.for_new(
+        groups=["/"], installations=INSTALLED, cfg_rules=[], servers=["srv-a", "srv-b"]
+    )
+    qtbot.addWidget(dialog)
+    assert _choices(dialog) == ["srv-a", "srv-b"]
+    assert dialog._server.text() == ""  # первый вариант не подставился сам
+
+
+def test_server_field_keeps_record_value_absent_from_choices(qtbot: Any) -> None:
+    item = _item('Srvr="own";Ref="r";', ())
+    dialog = InfobaseDialog(
+        item, groups=["/"], installations=INSTALLED, cfg_rules=[], servers=["srv-a"]
+    )
+    qtbot.addWidget(dialog)
+    assert dialog._server.text() == "own"
+    assert dialog.changes() == ({}, None)
+
+
+def test_server_chosen_from_the_list_reaches_connect(qtbot: Any) -> None:
+    dialog = InfobaseDialog.for_new(
+        groups=["/"], installations=INSTALLED, cfg_rules=[], servers=["srv-a", "srv-b"]
+    )
+    qtbot.addWidget(dialog)
+    dialog.set_kind(ConnectKind.SERVER)
+    dialog._server_box.setCurrentIndex(1)
+    dialog.set_ref("ACC")
+    dialog.set_name("Учёт")
+    assert dialog.new_record() == NewInfobase(
+        name="Учёт", connect='Srvr="srv-b";Ref="ACC";', folder="/"
+    )
+
+
+def test_typed_server_wins_over_choices(qtbot: Any) -> None:
+    dialog = InfobaseDialog.for_new(
+        groups=["/"], installations=INSTALLED, cfg_rules=[], servers=["srv-a"]
+    )
+    qtbot.addWidget(dialog)
+    dialog.set_kind(ConnectKind.SERVER)
+    dialog.set_server("typed")
+    dialog.set_ref("ACC")
+    dialog.set_name("Учёт")
+    assert dialog.new_record().connect == 'Srvr="typed";Ref="ACC";'
+
+
+def test_unparsed_server_field_gets_no_choices(qtbot: Any) -> None:
+    """Поле только для чтения (`Srvr` не разобран) — выбор из списка обошёл бы запрет."""
+    item = _item('Ref="only";', ())
+    dialog = InfobaseDialog(
+        item, groups=["/"], installations=INSTALLED, cfg_rules=[], servers=["srv-a"]
+    )
+    qtbot.addWidget(dialog)
+    assert _choices(dialog) == []
+
+
+def test_server_field_has_no_inline_completion(qtbot: Any) -> None:
+    """Дописанный хвост чужого варианта при подтверждении ушёл бы в строку соединения."""
+    dialog = InfobaseDialog.for_new(
+        groups=["/"], installations=INSTALLED, cfg_rules=[], servers=["srv-a"]
+    )
+    qtbot.addWidget(dialog)
+    assert dialog._server_box.completer() is None

@@ -12,6 +12,7 @@ from enum import Enum
 
 from onecstarter.domain.connect import ConnectKind
 from onecstarter.domain.default_version import DefaultVersionRule
+from onecstarter.domain.search import matches_pattern
 from onecstarter.domain.selection import ResolutionSource, resolve_version
 from onecstarter.domain.version import Arch, Installation
 from onecstarter.services.catalog import CommonListError, TreeNode, build_tree
@@ -125,25 +126,49 @@ def display_forest(
 
 
 def filter_rows(rows: Sequence[Row], query: str) -> list[Row]:
-    """Отфильтровать лес по подстроке имени без учёта регистра.
+    """Отфильтровать лес по имени: подстрока или шаблон со звёздочкой (T-26).
 
-    [Ф] T-05.3: платформа сравнивает имена баз регистронезависимо — поиск
-    ведёт себя так же (casefold). Совпавший узел остаётся со всем поддеревом;
-    предок совпавшего — с отфильтрованными потомками. NOTE-строки сами
-    не совпадают никогда и выживают только в поддереве совпавшего узла.
+    Правило совпадения — `domain.search.matches_pattern`: без учёта регистра
+    ([Ф] T-05.3: платформа сравнивает имена баз регистронезависимо), `*` —
+    любые символы. Совпавший узел остаётся со всем поддеревом; предок
+    совпавшего — с отфильтрованными потомками. NOTE-строки сами не совпадают
+    никогда и выживают только в поддереве совпавшего узла.
     """  # noqa: RUF002
-    needle = query.strip().casefold()
-    if not needle:
+    if not query.strip():
         return list(rows)
     kept: list[Row] = []
     for row in rows:
-        if row.kind is not RowKind.NOTE and needle in row.label.casefold():
+        if row.kind is not RowKind.NOTE and matches_pattern(row.label, query):
             kept.append(row)
             continue
         children = filter_rows(row.children, query)
         if children:
             kept.append(replace(row, children=tuple(children)))
     return kept
+
+
+_SIZE_UNITS = ("КБ", "МБ", "ГБ", "ТБ")
+
+
+def format_size(size: int) -> str:
+    """Размер файла для колонки «Размер» (T-33): «1,2 ГБ», двоичные единицы.
+
+    До 1024 байт — «N Б». Единица выбирается после округления до десятых,
+    поэтому граница не даёт «1024,0 КБ».
+    """
+    if size < 1024:
+        return f"{size} Б"
+    value = float(size)
+    for unit in _SIZE_UNITS:
+        value /= 1024
+        if round(value, 1) < 1024 or unit == _SIZE_UNITS[-1]:
+            return f"{value:.1f} {unit}".replace(".", ",")
+    raise AssertionError("недостижимо")
+
+
+def format_bytes(size: int) -> str:
+    """Точный размер для подсказки ячейки: «1 234 567 байт»."""
+    return f"{size:,}".replace(",", " ") + " байт"
 
 
 _DIGIT_RUN = re.compile(r"([0-9]+)")
@@ -309,15 +334,13 @@ _ARCH_LABEL = {Arch.X64: "x64", Arch.X86: "x86", Arch.UNKNOWN: ""}
 
 # Спека v2.3, §4: выбор версии у этих баз остаётся и продолжает писать  # noqa: RUF003
 # `Version` в `.v8i` (ключ читает штатный стартер), но на НАШ запуск он
-# не влияет — и молчать об этом нельзя.  # noqa: RUF003
+# не влияет — и молчать об этом нельзя. Факт измерен 08.09.2026 ([Ф]);  # noqa: RUF003
+# метка живёт здесь, а не в тексте подсказки: пользователю она ничего  # noqa: RUF003
+# не говорит (T-28).
 _PUBLICATION_HINT = (
-    "Версию определяет публикация на веб-сервере — ключ Version "
-    "на запуск не влияет ([Ф] 08.09.2026)"
+    "Версию определяет публикация на веб-сервере — ключ Version на запуск не влияет"
 )
-_CLUSTER_HINT = (
-    "Версию определяет кластер — ключ Version на запуск не влияет "
-    "([Ф] 08.09.2026)"
-)
+_CLUSTER_HINT = "Версию определяет кластер — ключ Version на запуск не влияет"
 
 
 def version_options(

@@ -8,9 +8,11 @@
 тонкий клиент ([Ф] T-02.6).
 """
 
-import logging
+import logging  # noqa: I001
 import os
 import sys
+import tempfile
+from functools import partial
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -59,6 +61,7 @@ from onecstarter.services.availability import probe_targets
 from onecstarter.services.catalog import CommonListData, read_common_lists
 from onecstarter.services.edt import EdtNotes, EdtWorkspace, settings_notes
 from onecstarter.services.edt_cli import EdtCli
+from onecstarter.services.edt_scheme import SchemeCatalog, bundled_schemes_dir
 from onecstarter.services.errors import (
     ConsoleRegistrationDeclinedError,
     EdtUnavailableError,
@@ -70,11 +73,18 @@ from onecstarter.services.hotkeys import parse_hotkey
 from onecstarter.services.model import InfobaseItem
 from onecstarter.services.servers import ScanSnapshot, ServersWorkspace
 from onecstarter.services.settings import load_settings
+from onecstarter.services.update import is_installed_copy, urllib_get
 from onecstarter.services.workspace import Workspace, WorkspacePaths
 from onecstarter.ui import about, app_icon, rail_icons, theme
 from onecstarter.ui.background import AvailabilityProbe, StartupTasks
 from onecstarter.ui.bases.view import BasesView
 from onecstarter.ui.dialogs.buttons import ask_confirmation
+from onecstarter.ui.update import (
+    UpdateBanner,
+    UpdateChecker,
+    UpdateController,
+    UpdateDownloader,
+)
 from onecstarter.ui.edt.cli_watch import CliWatcher
 from onecstarter.ui.edt.monitor import EdtMonitor
 from onecstarter.ui.edt.view import EdtView
@@ -490,6 +500,9 @@ def run_smoke(
         vault = credential_store if credential_store is not None else _KeyringSmokeVault()
         _log.info("smoke: keyring=%s", _keyring_round_trip(vault))
         _log.info("smoke: version=%s", about.app_version())
+        # Схемы поставки (T-24.1) — данные пакета, их легко потерять в `datas`
+        # spec-файла; build/smoke.py требует число больше нуля.
+        _log.info("smoke: schemes=%d", len(SchemeCatalog(str(bundled_schemes_dir())).entries()))
         # Настоящее (только чтение диска) обнаружение установок EDT — то же
         # обоснование не трогать процессы машины сборщика, что у NullScanner  # noqa: RUF003
         # выше, здесь неприменимо: discover_edt не сканирует процессы вовсе,
@@ -1278,6 +1291,38 @@ def _build_main_window(
     confirm_quit = _build_confirm_quit(quit_dialog) if quit_dialog is not None else None
     window.confirm_quit = confirm_quit
 
+    # T-25: уведомление о новой версии. Собирается здесь, запускается в `main()`  # noqa: RUF003
+    # после показа окна (`start_on_launch`) — тот же довод «собрать, не запуская»,
+    # что у монитора и пробы. Установщик стартует только после того же  # noqa: RUF003
+    # подтверждения выхода, что у крестика и трея.  # noqa: RUF003
+    http_get = partial(urllib_get, version=about.app_version())
+    update_banner = UpdateBanner()
+    window.set_banner(update_banner)
+    update_controller = UpdateController(
+        store,
+        update_banner,
+        UpdateChecker(about.app_version(), http_get, parent=window),
+        UpdateDownloader(
+            Path(tempfile.gettempdir()) / "OneCStarter-update", http_get, parent=window
+        ),
+        installable=bool(getattr(sys, "frozen", False))
+        and is_installed_copy(Path(sys.executable).parent),
+        ask_consent=lambda: ask_confirmation(
+            window,
+            "Обновления",
+            "Проверять при запуске, не вышла ли новая версия OneCStarter?\n\n"
+            "Запрос уходит на GitHub и несёт только номер версии программы. "
+            "Решение можно поменять в Настройках → «О программе».",  # noqa: RUF001
+        ),
+        confirm_quit=confirm_quit if confirm_quit is not None else lambda: True,
+        launch=lambda path: os.startfile(path),  # noqa: RUF100, S606
+        quit_app=application.quit,
+        on_status=settings_view.show_update_status,
+        parent=window,
+    )
+    settings_view.check_updates_requested.connect(update_controller.check_now)
+    window.update_controller = update_controller
+
     def request_quit() -> None:
         """Пункт «Выход» трея — тот же гейт, что закрытие окна, плюс сам выход.
 
@@ -1447,6 +1492,7 @@ def _build_main_window(
 
     probe = AvailabilityProbe(parent=window)
     probe.probed.connect(view.apply_availability)
+    probe.sized.connect(view.apply_size)
 
     def start_probe() -> None:
         probe.start(list(probe_targets(runtime.workspace.items()).values()))
@@ -1525,4 +1571,10 @@ def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
     # мониторить нечего, программа работает без него.
     if edt_monitor is not None:
         edt_monitor.start()
+    # T-25: вопрос о согласии и проверка — последними, когда весь фон уже  # noqa: RUF003
+    # запущен: модальный вопрос крутит свой цикл событий, и список баз
+    # получает версии и метки доступности, пока пользователь думает.
+    # Тихий старт в трей ни спрашивает, ни проверяет (окно не видно).
+    if isinstance(window.update_controller, UpdateController):
+        window.update_controller.start_on_launch(window_shown=window.isVisible())
     return application.exec()

@@ -52,7 +52,11 @@ from onecstarter.domain.edt_cli import (
 from onecstarter.platform_1c.editors import EDITOR_LABELS, EditorKind
 from onecstarter.services.edt import EdtScan, EdtWorkspace
 from onecstarter.services.edt_cli import CliRun, EdtCli, workspace_entries
-from onecstarter.services.edt_scheme import SchemeCatalog, WorkspaceSchemes
+from onecstarter.services.edt_scheme import (
+    SchemeCatalog,
+    WorkspaceSchemes,
+    bundled_schemes_dir,
+)
 from onecstarter.services.errors import ServicesError
 from onecstarter.ui.bases.panel import open_in_explorer
 from onecstarter.ui.dialogs.buttons import ask_confirmation
@@ -258,9 +262,11 @@ class EdtView(QWidget):
         if watcher is not None:
             watcher.finished.connect(self.on_cli_finished)
 
-        self._search = SearchField("Поиск: начните вводить имя проекта", self._palette)
+        self._search = SearchField(
+            "Поиск: имя проекта, * — любые символы", self._palette, list_navigation=True
+        )
         self._search.textChanged.connect(lambda _text: self.rebuild())
-        self._search.returnPressed.connect(self._launch_first_visible)
+        self._search.list_requested.connect(self._focus_first_match)
 
         self._banner = QWidget()
         banner_layout = QHBoxLayout(self._banner)
@@ -469,21 +475,34 @@ class EdtView(QWidget):
         if first.data(KIND_ROLE) == KIND_PROJECT:
             self.launch_id(first.data(ID_ROLE))
 
-    def _launch_first_visible(self) -> None:
+    def _focus_first_match(self) -> None:
+        """Enter или Tab в поиске (T-35): как в «Базах» — в список, без запуска."""
+        if not self._search.text().strip():
+            self._tree.setFocus()
+            return
         first = self._first_project(QModelIndex())
         if first is not None:
-            self.launch_id(first)
+            self._focus_index(first)
 
-    def _first_project(self, parent: QModelIndex) -> str | None:
+    def _first_project(self, parent: QModelIndex) -> QModelIndex | None:
         for row in range(self._model.rowCount(parent)):
             index = self._model.index(row, 0, parent)
             if index.data(KIND_ROLE) == KIND_PROJECT:
-                item_id = index.data(ID_ROLE)
-                return item_id if isinstance(item_id, str) else None
+                return index
             found = self._first_project(index)
             if found is not None:
                 return found
         return None
+
+    def _focus_index(self, index: QModelIndex) -> None:
+        """Сделать строку текущей и видимой: раскрыть предков, прокрутить, фокус в список."""
+        parent = index.parent()
+        while parent.isValid():
+            self._tree.expand(parent)
+            parent = parent.parent()
+        self._tree.setCurrentIndex(index)
+        self._tree.scrollTo(index)
+        self._tree.setFocus()
 
     # --- раскрытие --------------------------------------------------------
 
@@ -503,8 +522,11 @@ class EdtView(QWidget):
     def _restore_current(self, current: tuple[str, str] | None) -> None:
         if current is None:
             return
-        kind, item_id = current
+        index = self._find_row(*current)
+        if index is not None:
+            self._tree.setCurrentIndex(index)
 
+    def _find_row(self, kind: str, item_id: str) -> QModelIndex | None:
         def find(parent: QModelIndex) -> QModelIndex | None:
             for row in range(self._model.rowCount(parent)):
                 index = self._model.index(row, 0, parent)
@@ -515,9 +537,13 @@ class EdtView(QWidget):
                     return found
             return None
 
-        index = find(QModelIndex())
+        return find(QModelIndex())
+
+    def _select_project(self, project_id: str) -> None:
+        """T-36: проект, добавленный вручную, — текущий; скрыт поиском — не трогаем."""
+        index = self._find_row(KIND_PROJECT, project_id)
         if index is not None:
-            self._tree.setCurrentIndex(index)
+            self._focus_index(index)
 
     def _restore_expansion(self, ids: set[str], *, expand_all: bool) -> None:
         def walk(parent: QModelIndex) -> None:
@@ -640,7 +666,12 @@ class EdtView(QWidget):
             dialog.name_edit().setText(Path(workspace).name)
         if not self._run_dialog(dialog):
             return
-        self._apply(lambda: self._workspace.add_project(dialog.result_project()))
+        # T-36: `_apply` результат операции не возвращает — сохранённую
+        # запись (с присвоенным id) забираем через список.  # noqa: RUF003
+        added: list[EdtProject] = []
+        self._apply(lambda: added.append(self._workspace.add_project(dialog.result_project())))
+        if added:
+            self._select_project(added[0].id)
 
     def add_project_from_directory(self, directory: str, target: tuple[str, str] | None) -> None:
         self.add_project(self._group_of(target), directory)
@@ -708,6 +739,7 @@ class EdtView(QWidget):
             show_error=self._show_error,
             default_dir=self._documents_dir,
             parent=self,
+            bundled=SchemeCatalog(str(bundled_schemes_dir())),
         )
         self._run_dialog(dialog)
 

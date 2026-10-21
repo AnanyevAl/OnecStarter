@@ -52,6 +52,7 @@ from onecstarter.services.edt_scheme import (
     CatalogEntry,
     SchemeCatalog,
     WorkspaceSchemes,
+    load_entry,
     save_csi,
 )
 from onecstarter.services.errors import EdtError
@@ -131,11 +132,15 @@ class SchemeDialog(QDialog):
         choose_color: Callable[[RGB], RGB | None] = pick_color,
         default_dir: str = str(Path.home()),
         parent: QWidget | None = None,
+        bundled: SchemeCatalog | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle(TITLE.format(name=project_name))
         self._workspace = workspace
         self._catalog = catalog
+        # Схемы поставки (T-24.2) — только для чтения: в списке рядом со своим  # noqa: RUF003
+        # каталогом, но «Сохранить…» сюда не пишет никогда (_on_save).
+        self._bundled = bundled
         self._palette = palette
         self._is_busy = is_busy
         self._show_info = show_info
@@ -253,18 +258,32 @@ class SchemeDialog(QDialog):
         default_item = QListWidgetItem(DEFAULT_NAME)
         default_item.setIcon(blank_icon())
         self._sources.addItem(default_item)
+        own = (
+            self._catalog.entries()
+            if self._catalog is not None and self._catalog.exists()
+            else []
+        )
+        shipped = (
+            self._bundled.entries()
+            if self._bundled is not None and self._bundled.exists()
+            else []
+        )
         hint = ""
-        if self._catalog is None:
+        if self._catalog is None and not shipped:
             hint = HINT_NO_DIR
-        elif not self._catalog.exists():
+        elif self._catalog is not None and not self._catalog.exists():
             hint = HINT_MISSING_DIR.format(path=self._catalog.directory)
-        else:
-            for entry in self._catalog.entries():
-                self._rows.append((KIND_CATALOG, entry))
-                item = QListWidgetItem(entry.name)
-                item.setIcon(blank_icon())
-                item.setToolTip(str(entry.path))
-                self._sources.addItem(item)
+        # Один список из обоих каталогов, порядок — как у `SchemeCatalog.entries`.  # noqa: RUF003
+        entries = sorted(
+            own + shipped,
+            key=lambda entry: (entry.name.casefold(), str(entry.path).casefold()),
+        )
+        for entry in entries:
+            self._rows.append((KIND_CATALOG, entry))
+            item = QListWidgetItem(entry.name)
+            item.setIcon(blank_icon())
+            item.setToolTip(str(entry.path))
+            self._sources.addItem(item)
         self._hint.setText(hint)
         self._hint.setVisible(bool(hint))
         self._sources.blockSignals(False)
@@ -296,8 +315,8 @@ class SchemeDialog(QDialog):
             elif kind == KIND_DEFAULT:
                 scheme = Scheme(DEFAULT_NAME, EDT_DEFAULTS)
             else:
-                assert self._catalog is not None and entry is not None  # инвариант _rows
-                scheme = self._catalog.load(entry)
+                assert entry is not None  # инвариант _rows
+                scheme = load_entry(entry)
         except EdtError as error:
             problem = from_hex(self._palette.problem) or _PROBLEM_FALLBACK
             item.setIcon(swatch_icon(problem, self._palette.problem))

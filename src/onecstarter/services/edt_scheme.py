@@ -14,6 +14,7 @@
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from importlib import resources
 from pathlib import Path
 
 from onecstarter.config.atomic import atomic_write
@@ -44,6 +45,8 @@ __all__ = [
     "CatalogEntry",
     "SchemeCatalog",
     "WorkspaceSchemes",
+    "bundled_schemes_dir",
+    "load_entry",
     "save_csi",
 ]
 
@@ -108,25 +111,43 @@ class SchemeCatalog:
         return found
 
     def load(self, entry: CatalogEntry) -> Scheme:
-        try:
-            data = entry.path.read_bytes()
-        except OSError as error:
-            raise EdtError(READ_FAILED.format(reason=_reason(error))) from error
-        try:
-            if entry.kind == "csi":
-                name, colors = "", parse_csi(data.decode("utf-8-sig"))
-            elif entry.kind == "idea":
-                name, colors = parse_idea_xml(data.decode("utf-8-sig"))
-            elif entry.kind == "jar":
-                name, colors = parse_idea_jar(data)
-            else:
-                name, colors = parse_tmtheme(data.decode("utf-8-sig"))
-        except (ValueError, UnicodeDecodeError, NotImplementedError, RuntimeError) as error:
-            # NotImplementedError/RuntimeError — `zipfile` внутри `parse_idea_jar`: неподдерживаемое
-            # сжатие / зашифрованная запись архива. Наружу из сервиса должна выходить только
-            # `EdtError` (§7).
-            raise EdtError(READ_FAILED.format(reason=_reason(error))) from error
-        return complete(name or entry.name, colors, str(entry.path))
+        return load_entry(entry)
+
+
+def bundled_schemes_dir() -> Path:
+    """Каталог схем поставки (T-24.1): `onecstarter/schemes`; в сборке — внутри `_internal`.
+
+    Только для чтения: установщик пересоздаёт `_internal` при обновлении (T-21),
+    поэтому сохранять сюда пользовательские схемы нельзя.
+    """
+    return Path(str(resources.files("onecstarter") / "schemes"))
+
+
+def load_entry(entry: CatalogEntry) -> Scheme:
+    """Прочитать схему записи каталога.
+
+    От каталога не зависит: записи поставки и своего каталога пользователя
+    грузятся одинаково (T-24.2).
+    """
+    try:
+        data = entry.path.read_bytes()
+    except OSError as error:
+        raise EdtError(READ_FAILED.format(reason=_reason(error))) from error
+    try:
+        if entry.kind == "csi":
+            name, colors = "", parse_csi(data.decode("utf-8-sig"))
+        elif entry.kind == "idea":
+            name, colors = parse_idea_xml(data.decode("utf-8-sig"))
+        elif entry.kind == "jar":
+            name, colors = parse_idea_jar(data)
+        else:
+            name, colors = parse_tmtheme(data.decode("utf-8-sig"))
+    except (ValueError, UnicodeDecodeError, NotImplementedError, RuntimeError) as error:
+        # NotImplementedError/RuntimeError — `zipfile` внутри `parse_idea_jar`: неподдерживаемое
+        # сжатие / зашифрованная запись архива. Наружу из сервиса должна выходить только
+        # `EdtError` (§7).
+        raise EdtError(READ_FAILED.format(reason=_reason(error))) from error
+    return complete(name or entry.name, colors, str(entry.path))
 
 
 def save_csi(path: Path, scheme: Scheme) -> None:

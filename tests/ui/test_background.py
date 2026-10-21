@@ -203,3 +203,25 @@ def test_probe_failure_is_logged_without_the_path(qtbot, caplog):
     assert "секретная-шара" not in caplog.text
     assert "доступность каталогов: отказ" in caplog.text
     assert "RuntimeError" in caplog.text
+
+
+def test_probe_emits_size_alongside_state(qtbot):
+    """T-33: размер 1Cv8.1CD приходит из того же stat, что и доступность."""
+    sized = os.stat_result((S_IFDIR | 0o755, 0, 0, 1, 0, 0, 2048, 0, 0, 0))
+    got: list[tuple[str, object]] = []
+    probe = AvailabilityProbe(lambda _p: sized, spawn=_SYNC)
+    probe.sized.connect(lambda key, size: got.append((key, size)))
+    probe.start([ProbeTarget("a", r"D:\a")])
+    assert got == [("a", 2048)]
+
+
+def test_stale_probe_generation_does_not_emit_size(qtbot):
+    tasks: list[Callable[[], None]] = []
+    got: list[str] = []
+    probe = AvailabilityProbe(lambda _p: _DIR, spawn=tasks.append)
+    probe.sized.connect(lambda key, _size: got.append(key))
+    probe.start([ProbeTarget("old", r"D:\old")])
+    probe.start([ProbeTarget("new", r"D:\new")])
+    tasks[0]()  # устаревшее поколение
+    tasks[1]()
+    assert got == ["new"]
