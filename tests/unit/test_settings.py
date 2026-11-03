@@ -60,6 +60,7 @@ def test_schema_is_written(tmp_path: Path) -> None:
         "editor_vscode": "",
         "editor_antigravity": "",
         "check_updates": None,
+        "column_widths": {},
     }
 
 
@@ -461,3 +462,50 @@ def test_check_updates_defaults_to_not_asked(tmp_path: Path) -> None:
     payload["check_updates"] = "yes"  # не булево — «не спрашивали»
     path.write_text(json.dumps(payload), encoding="utf-8")
     assert load_settings(path).check_updates is None
+
+
+def test_column_widths_round_trip(tmp_path: Path) -> None:
+    path = tmp_path / "settings.json"
+    widths = {"bases": {"version": 90, "size": 80}, "edt": {"memory": 70}}
+    save_settings(path, Settings(column_widths=widths))
+    assert load_settings(path).column_widths == widths
+
+
+def test_column_widths_default_is_empty(tmp_path: Path) -> None:
+    assert load_settings(tmp_path / "missing.json").column_widths == {}
+
+
+def test_column_widths_drop_garbage_piecewise(tmp_path: Path) -> None:
+    """T-38: мусор в ширинах — не порча файла; годное читается, негодное отбрасывается."""
+    path = tmp_path / "settings.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": 1,
+                "recent_limit": 7,
+                "column_widths": {
+                    "bases": {
+                        "version": 90,
+                        "size": 0,
+                        "last_launch": 2001,
+                        "x": "wide",
+                        "y": True,
+                        "z": 2000,
+                    },
+                    "edt": "не объект",
+                    "empty": {"a": -5},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    settings = load_settings(path)
+    assert settings.column_widths == {"bases": {"version": 90, "z": 2000}}
+    assert settings.recent_limit == 7
+    assert not (tmp_path / "settings.json.bad").exists()
+
+
+def test_column_widths_not_an_object_reads_empty(tmp_path: Path) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text(json.dumps({"schema": 1, "column_widths": [1, 2]}), encoding="utf-8")
+    assert load_settings(path).column_widths == {}

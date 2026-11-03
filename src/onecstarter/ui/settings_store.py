@@ -55,3 +55,22 @@ class SettingsStore(QObject):
         except OSError as error:
             self.last_save_error = f"Не удалось сохранить {self._path}: {error}"  # noqa: RUF001
         self.changed.emit()
+
+    def store_quietly(self, **changes: Any) -> str | None:
+        """Изменить поля и записать файл, НЕ испуская `changed` (T-38).
+
+        Для того, что меняется часто и ни на что вокруг не влияет, — ширин
+        колонок. На `changed` подписано переобнаружение установок EDT
+        (`ui/app.py`, `edt_monitor.discover_now`): `update` на каждое
+        перетаскивание колонки запускал бы обход дисков.
+
+        Отказ записи возвращается текстом, а не кладётся в `last_save_error`:
+        его показывает слой представления, а модальное окно в ответ на
+        перетаскивание колонки хуже потерянной ширины (спека §2.2).
+        """  # noqa: RUF002
+        self._settings = replace(self._settings, **changes)
+        try:
+            save_settings(self._path, self._settings)
+        except OSError as error:
+            return f"Не удалось сохранить {self._path}: {error}"  # noqa: RUF001
+        return None

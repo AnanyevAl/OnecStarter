@@ -1,6 +1,7 @@
 """Координатор раздела EDT: записи, группы, порядок (спека §2), сохранение после каждой правки."""
 
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from itertools import count
 from pathlib import Path
 
@@ -31,6 +32,7 @@ from onecstarter.services.edt_store import load_registry
 from onecstarter.services.errors import (
     EdtError,
     EdtLaunchError,
+    EdtLaunchRecordError,
     InvalidRequestError,
     UnknownItemError,
 )
@@ -61,6 +63,7 @@ EXE_2025 = Path(r"C:\edt\1c-edt-2025.2.6+4-x86_64\1cedt.exe")
 INSTALLED = [
     EdtInstallation("2025.2.6+4", EXE_2025, JDK, "-Xmx8192m -Dx=1", 17, "products.json"),
 ]
+LAUNCH_STAMP = datetime(2026, 10, 31, 9, 30, tzinfo=UTC)
 
 
 @dataclass
@@ -103,6 +106,7 @@ def _harness(
         activate=activate,
         open_file=harness.opened.append,
         new_id=lambda: f"id-{next(ids)}",
+        now=lambda: LAUNCH_STAMP,
     )
     return harness
 
@@ -381,6 +385,94 @@ class TestLaunch:
         p = h.workspace.add_project(_project("a", edt_version="2025.2.6+4"))
         with pytest.raises(EdtLaunchError):
             h.workspace.launch(p.id)
+
+
+class TestLaunchTime:
+    """T-37: время пишется только при порождении EDT (решение заказчика 31.10.2026)."""
+
+    def _ready(self, tmp_path: Path, **options: object) -> tuple[Harness, EdtProject]:
+        h = _harness(tmp_path, installed=INSTALLED, **options)  # type: ignore[arg-type]
+        h.workspace.refresh_installations()
+        return h, h.workspace.add_project(_project("a", edt_version="2025.2.6+4"))
+
+    def test_started_records_time_and_persists(self, tmp_path: Path) -> None:
+        h, p = self._ready(tmp_path)
+        assert h.workspace.launch(p.id) is LaunchOutcome.STARTED
+        assert h.workspace.last_launched(p.id) == LAUNCH_STAMP
+        assert load_registry(tmp_path / "edt.json").launches == {p.id: LAUNCH_STAMP}
+        assert _harness(tmp_path).workspace.last_launched(p.id) == LAUNCH_STAMP
+
+    def test_activation_does_not_record(self, tmp_path: Path) -> None:
+        h, p = self._ready(tmp_path)
+        h.workspace.apply_scan(EdtScan(running={p.id: 9}, present={}))
+        assert h.workspace.launch(p.id) is LaunchOutcome.ACTIVATED
+        assert h.workspace.last_launched(p.id) is None
+
+    def test_missed_activation_does_not_record(self, tmp_path: Path) -> None:
+        h, p = self._ready(tmp_path, activate_result=False)
+        h.workspace.apply_scan(EdtScan(running={p.id: 9}, present={}))
+        assert h.workspace.launch(p.id) is LaunchOutcome.ACTIVATION_MISSED
+        assert h.workspace.last_launched(p.id) is None
+
+    def test_spawn_failure_does_not_record(self, tmp_path: Path) -> None:
+        h, p = self._ready(tmp_path, spawn_error=True)
+        with pytest.raises(EdtLaunchError):
+            h.workspace.launch(p.id)
+        assert h.workspace.last_launched(p.id) is None
+
+    def test_missing_installation_does_not_record(self, tmp_path: Path) -> None:
+        h = _harness(tmp_path, installed=INSTALLED)
+        h.workspace.refresh_installations()
+        p = h.workspace.add_project(_project("a", edt_version="2024.2.6+7"))
+        with pytest.raises(EdtLaunchError):
+            h.workspace.launch(p.id)
+        assert h.workspace.last_launched(p.id) is None
+
+    def test_busy_workspace_does_not_record(self, tmp_path: Path) -> None:
+        h, p = self._ready(tmp_path)
+        h.workspace.mark_cli_busy(p.id)
+        with pytest.raises(EdtLaunchError):
+            h.workspace.launch(p.id)
+        assert h.workspace.last_launched(p.id) is None
+
+    def test_editor_does_not_record(self, tmp_path: Path) -> None:
+        code = Path(r"C:\code\code.cmd")
+        h = _harness(tmp_path, editor=EditorResolution(code, "PATH", ""))
+        p = h.workspace.add_project(_project("a"))
+        h.workspace.open_in_editor(p.id, EditorKind.VSCODE)
+        assert h.workspace.last_launched(p.id) is None
+
+    def test_edit_rebuilt_like_dialog_keeps_time(self, tmp_path: Path) -> None:
+        """Мутационная проверка обязательна: диалог собирает запись заново (dialog.py::result_project)."""  # noqa: E501
+        h, p = self._ready(tmp_path)
+        h.workspace.launch(p.id)
+        rebuilt = EdtProject(
+            id=p.id, name="переименована", workspace=p.workspace, edt_version=p.edt_version
+        )
+        h.workspace.update_project(rebuilt)
+        assert h.workspace.last_launched(p.id) == LAUNCH_STAMP
+        assert load_registry(tmp_path / "edt.json").launches == {p.id: LAUNCH_STAMP}
+
+    def test_remove_drops_time(self, tmp_path: Path) -> None:
+        h, p = self._ready(tmp_path)
+        h.workspace.launch(p.id)
+        h.workspace.remove_project(p.id)
+        assert h.workspace.last_launched(p.id) is None
+        assert load_registry(tmp_path / "edt.json").launches == {}
+
+    def test_save_failure_after_start_says_edt_started(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        h, p = self._ready(tmp_path)
+
+        def refuse(_path: Path, _registry: object) -> None:
+            raise OSError("диск занят")
+
+        monkeypatch.setattr("onecstarter.services.edt.save_registry", refuse)
+        with pytest.raises(EdtLaunchRecordError, match="EDT запущен"):
+            h.workspace.launch(p.id)
+        assert len(h.spawned) == 1
+        assert h.workspace.last_launched(p.id) == LAUNCH_STAMP
 
 
 class TestEditorsAndExplorer:

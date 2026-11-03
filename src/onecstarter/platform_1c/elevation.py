@@ -1,4 +1,5 @@
-"""Повышение прав для регистрации консоли администрирования кластера.
+"""Повышение прав: регистрация консоли кластера (`run_elevated`, ждёт `regsvr32`)
+и запуск клиента 1С от имени администратора (`spawn_elevated`, T-31, не ждёт).
 
 `ShellExecuteExW` с `lpVerb="runas"` — штатный способ Windows поднять
 UAC-диалог без собственного окна и без обхода политики системы.
@@ -24,7 +25,9 @@ import ctypes
 from collections.abc import Callable
 from ctypes import wintypes
 
-__all__ = ["ElevationDeclinedError", "run_elevated"]
+from onecstarter.domain.launch import LaunchCommand
+
+__all__ = ["ElevationDeclinedError", "run_elevated", "spawn_elevated"]
 
 _SEE_MASK_NOCLOSEPROCESS = 0x00000040
 _SW_SHOWNORMAL = 1
@@ -56,9 +59,9 @@ class _ShellExecuteInfoW(ctypes.Structure):
     )
 
 
-def _default_shell_execute(executable: str, arguments: str) -> int:
+def _start(executable: str, arguments: str) -> int:
+    """`ShellExecuteExW` с `runas`; вернуть хендл процесса (0 — хендла нет)."""  # noqa: RUF002
     shell32 = ctypes.WinDLL("shell32", use_last_error=True)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
     info = _ShellExecuteInfoW()
     info.cbSize = ctypes.sizeof(_ShellExecuteInfoW)
@@ -85,12 +88,32 @@ def _default_shell_execute(executable: str, arguments: str) -> int:
                 f"пользователь отказал в повышении прав для {executable}"
             )
         raise OSError(error, f"ShellExecuteExW не смог запустить {executable}")
+    return int(info.hProcess or 0)
 
-    kernel32.WaitForSingleObject(info.hProcess, _INFINITE)
+
+def _default_shell_execute(executable: str, arguments: str) -> int:
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    process = _start(executable, arguments)
+    kernel32.WaitForSingleObject(process, _INFINITE)
     exit_code = wintypes.DWORD()
-    kernel32.GetExitCodeProcess(info.hProcess, ctypes.byref(exit_code))
-    kernel32.CloseHandle(info.hProcess)
+    kernel32.GetExitCodeProcess(process, ctypes.byref(exit_code))
+    kernel32.CloseHandle(process)
     return exit_code.value
+
+
+def _default_spawn(executable: str, arguments: str) -> int:
+    """Порождение без ожидания (T-31): PID из хендла, хендл закрывается сразу."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetProcessId.argtypes = (wintypes.HANDLE,)
+    kernel32.GetProcessId.restype = wintypes.DWORD
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    process = _start(executable, arguments)
+    if not process:
+        return 0
+    try:
+        return int(kernel32.GetProcessId(process))
+    finally:
+        kernel32.CloseHandle(process)
 
 
 def run_elevated(
@@ -106,3 +129,18 @@ def run_elevated(
     """  # noqa: RUF002
     execute = shell_execute if shell_execute is not None else _default_shell_execute
     return execute(executable, arguments)
+
+
+def spawn_elevated(
+    command: LaunchCommand,
+    *,
+    shell_execute: Callable[[str, str], int] | None = None,
+) -> int:
+    """Запустить клиента 1С с повышением прав и вернуть PID, не дожидаясь (T-31).
+
+    Та же подпись, что `platform_1c/process.py::spawn`, — `Workspace` подставляет
+    одну функцию вместо другой. `shell_execute` — инъекция для тестов
+    (`(executable, arguments) -> PID`), как у `run_elevated`.
+    """  # noqa: RUF002
+    execute = shell_execute if shell_execute is not None else _default_spawn
+    return execute(str(command.executable), command.arguments)

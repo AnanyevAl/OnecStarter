@@ -35,6 +35,8 @@ BASES_SHORTCUTS: tuple[ShortcutSpec, ...] = (
     ShortcutSpec("Tab", "Из поиска — перейти к первой найденной", ()),
     ShortcutSpec("F3", "Запустить (1С:Предприятие)", ("F3",)),  # noqa: RUF001
     ShortcutSpec("F4", "Конфигуратор", ("F4",)),
+    ShortcutSpec("Alt+Shift+F3", "Запустить от имени администратора Windows", ("Alt+Shift+F3",)),
+    ShortcutSpec("Alt+Shift+F4", "Конфигуратор от имени администратора Windows", ("Alt+Shift+F4",)),
     ShortcutSpec("F5", "Обновить список и перепроверить доступность каталогов", ("F5",)),
     ShortcutSpec("Ctrl+1", "Тонкий клиент", ("Ctrl+1",)),
     ShortcutSpec("Ctrl+2", "Толстый клиент", ("Ctrl+2",)),

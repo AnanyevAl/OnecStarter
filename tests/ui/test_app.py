@@ -65,6 +65,7 @@ from onecstarter.ui import about, rail_icons, theme
 from onecstarter.ui import app as app_module
 from onecstarter.ui.app import (
     _build_main_window,
+    _column_widths_saver,
     _confirm_quit_with_cli,
     build_runtime,
     run_launch,
@@ -306,6 +307,9 @@ def _pending_workspace(tmp_path: Any) -> tuple[Workspace, list[LaunchCommand]]:
         calls.append(command)
         return 7
 
+    def no_elevation(command: LaunchCommand) -> int:
+        raise AssertionError(f"повышение прав не ожидалось: {command.command_line}")
+
     workspace = Workspace(
         WorkspacePaths(ibases=ibases, user_data=tmp_path / "bases.json", cfg_paths=()),
         installations=None,
@@ -313,6 +317,7 @@ def _pending_workspace(tmp_path: Any) -> tuple[Workspace, list[LaunchCommand]]:
         cfg_rules=[],
         default_app=None,
         spawn=fake_spawn,
+        spawn_elevated=no_elevation,
         now=lambda: datetime.fromisoformat("2026-08-07T10:00:00+00:00"),
         new_id=lambda: "99999999-9999-9999-9999-999999999999",
         credentials=MemoryStore(),
@@ -4410,3 +4415,22 @@ def test_main_window_builds_update_controller_without_checking(
     [banner] = window.findChildren(UpdateBanner)
     assert banner.isHidden()
     assert asked == []
+
+
+def test_column_widths_saver_merges_lists_quietly(qtbot, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    store = SettingsStore(tmp_path / "settings.json")
+    assert store.store_quietly(column_widths={"edt": {"edt": 100}}) is None
+    seen: list[bool] = []
+    store.changed.connect(lambda: seen.append(True))
+    _column_widths_saver(store, "bases")({"size": 80})
+    assert store.settings.column_widths == {"edt": {"edt": 100}, "bases": {"size": 80}}
+    assert seen == []
+
+
+def test_column_widths_saver_logs_write_failure(qtbot, tmp_path: Path, caplog) -> None:  # type: ignore[no-untyped-def]
+    target = tmp_path / "settings.json"
+    target.mkdir()
+    store = SettingsStore(target)
+    with caplog.at_level("WARNING", logger="onecstarter.startup"):
+        _column_widths_saver(store, "bases")({"size": 80})
+    assert "ширины колонок не сохранены" in caplog.text

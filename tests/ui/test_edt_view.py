@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from PySide6.QtCore import QModelIndex, Qt
 from PySide6.QtGui import QAction, QKeySequence, QShortcut
-from PySide6.QtWidgets import QDialog, QMenu, QWidget
+from PySide6.QtWidgets import QDialog, QHeaderView, QMenu, QWidget
 
 from onecstarter.domain.edt import (
     EditorResolution,
@@ -160,6 +160,8 @@ class Harness:
         self,
         open_directory: Callable[[str], bool] = lambda p: True,
         schemes_dir: Callable[[], str] = lambda: "",
+        column_widths: dict[str, int] | None = None,
+        save_column_widths: Callable[[dict[str, int]], None] = lambda _widths: None,
     ) -> EdtView:
         return EdtView(
             self.workspace,
@@ -173,6 +175,8 @@ class Harness:
             watcher=self.watcher,
             documents_dir=str(self.tmp_path / "Documents"),
             schemes_dir=schemes_dir,
+            column_widths=column_widths,
+            save_column_widths=save_column_widths,
         )
 
 
@@ -456,24 +460,32 @@ def test_unchanged_scan_does_not_rebuild(harness: Harness, qtbot) -> None:  # ty
 def test_current_row_and_widths_survive_rebuild(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
     """I2 финального ревью: перестройка возвращает текущую строку и ширины колонок.
 
-    Третья колонка («Память») дополнена по M-2 финального ревью ветки v3.1:
-    докстринг `rebuild()` обещает сохранность ширин ВСЕХ колонок, а не только
-    первых двух — тест обязан это перечень покрывать.
+    С T-38 колонка 0 растягивается — её ширину задаёт окно; сохраняются остальные.
     """  # noqa: RUF002
     _add(harness, "a")
     b = _add(harness, "b")
     view = harness.view()
     qtbot.addWidget(view)
-    widths = (view.tree().columnWidth(0), view.tree().columnWidth(1), view.tree().columnWidth(2))
-    assert widths == (320, 110, 90)  # умолчания
+    assert view.tree().header().sectionResizeMode(0) == QHeaderView.ResizeMode.Stretch
     _select(view, b.id)
-    view.tree().setColumnWidth(0, 200)
     view.tree().setColumnWidth(1, 90)
     view.tree().setColumnWidth(2, 55)
     view.rebuild()
     assert view.current() == ("project", b.id)
-    widths = (view.tree().columnWidth(0), view.tree().columnWidth(1), view.tree().columnWidth(2))
-    assert widths == (200, 90, 55)
+    assert (view.tree().columnWidth(1), view.tree().columnWidth(2)) == (90, 55)
+
+
+def test_saved_column_widths_reach_edt_view(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    """T-38: сохранённая ширина применяется, перетаскивание уходит в save."""
+    _add(harness, "a")
+    saves: list[dict[str, int]] = []
+    view = harness.view(column_widths={"edt": 101}, save_column_widths=saves.append)
+    qtbot.addWidget(view)
+    assert view.tree().columnWidth(1) == 101
+    view.tree().setColumnWidth(1, 120)
+    qtbot.waitUntil(lambda: bool(saves), timeout=3000)
+    assert saves[-1]["edt"] == 120
+    assert "name" not in saves[-1]
 
 
 def test_version_column_keeps_width_in_shown_window(harness: Harness, qtbot, qapp) -> None:  # type: ignore[no-untyped-def]
@@ -490,7 +502,6 @@ def test_version_column_keeps_width_in_shown_window(harness: Harness, qtbot, qap
     view.show()
     view.resize(1000, 600)
     qapp.processEvents()
-    assert view.tree().columnWidth(1) == 110
     view.tree().setColumnWidth(1, 90)
     view.rebuild()
     qapp.processEvents()
@@ -1365,3 +1376,31 @@ def test_edt_shortcut_reference_matches_registered_shortcuts(harness: Harness, q
         QKeySequence(sequence).toString() for spec in EDT_SHORTCUTS for sequence in spec.sequences
     }
     assert expected == registered, (expected - registered, registered - expected)
+
+
+def test_launch_shows_time_after_start(harness: Harness, qtbot) -> None:  # type: ignore[no-untyped-def]
+    """T-37: после запуска строка перестраивается — время видно сразу, не со снимком."""  # noqa: RUF002
+    p = _add(harness, "a")
+    view = harness.view()
+    qtbot.addWidget(view)
+    view.launch_id(p.id)
+    assert harness.spawned
+    assert view.model().item(0, 2).text() != ""
+
+
+def test_record_failure_reports_and_still_requests_scan(  # type: ignore[no-untyped-def]
+    harness: Harness, qtbot, monkeypatch
+) -> None:
+    """T-37: EDT запущен, время не сохранено — сообщение и снимок процессов."""
+    p = _add(harness, "a")
+    view = harness.view()
+    qtbot.addWidget(view)
+
+    def refuse(_path: object, _registry: object) -> None:
+        raise OSError("диск занят")
+
+    monkeypatch.setattr("onecstarter.services.edt.save_registry", refuse)
+    view.launch_id(p.id)
+    assert len(harness.errors) == 1
+    assert harness.errors[0].startswith("EDT запущен")
+    assert harness.scans_requested == 1

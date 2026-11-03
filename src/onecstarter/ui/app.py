@@ -753,6 +753,23 @@ def _edt_unavailable_placeholder(reason: str) -> QLabel:
     return label
 
 
+def _column_widths_saver(store: SettingsStore, list_id: str) -> Callable[[dict[str, int]], None]:
+    """Запись ширин колонок одного списка (T-38) — тихая, без `store.changed`.
+
+    На `changed` подписано переобнаружение установок EDT; обычный `update`
+    на каждое перетаскивание колонки запускал бы обход дисков. Отказ записи —
+    строка в журнале, не окно (спека 3.2.4 ч. 1, §2.2).
+    """  # noqa: RUF002
+
+    def save(widths: dict[str, int]) -> None:
+        merged = {**store.settings.column_widths, list_id: widths}
+        error = store.store_quietly(column_widths=merged)
+        if error is not None:
+            _log.warning("ширины колонок не сохранены: %s", error)
+
+    return save
+
+
 def _build_main_window(
     application: QApplication,
     runtime: Runtime,
@@ -848,6 +865,8 @@ def _build_main_window(
         list_order=lambda: store.settings.list_order,
         palette=controller.palette,
         cache_env=env,
+        column_widths=store.settings.column_widths.get("bases", {}),
+        save_column_widths=_column_widths_saver(store, "bases"),
     )
     # Раздел «EDT» (спека v3). Всё, что ходит по диску, — лямбды над
     # текущими настройками: смена JDK или пути редактора в Настройках
@@ -1140,6 +1159,8 @@ def _build_main_window(
             documents_dir=QStandardPaths.writableLocation(
                 QStandardPaths.StandardLocation.DocumentsLocation
             ),
+            column_widths=store.settings.column_widths.get("edt", {}),
+            save_column_widths=_column_widths_saver(store, "edt"),
         )
         edt_section_widget = edt_view
     else:

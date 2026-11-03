@@ -23,6 +23,7 @@ import os
 import uuid
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from enum import Enum
 from pathlib import Path
 
@@ -47,6 +48,7 @@ from onecstarter.services.edt_store import EdtRegistry, load_registry, save_regi
 from onecstarter.services.errors import (
     EdtError,
     EdtLaunchError,
+    EdtLaunchRecordError,
     InvalidRequestError,
     UnknownItemError,
 )
@@ -216,6 +218,7 @@ class EdtWorkspace:
         activate: Callable[[int], bool] = window_activate.activate_window,
         open_file: Callable[[str], None] = os.startfile,
         new_id: Callable[[], str] = _new_id,
+        now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         self._path = path
         self._discover = discover
@@ -231,9 +234,14 @@ class EdtWorkspace:
         self._activate = activate
         self._open_file = open_file
         self._new_id = new_id
+        self._now = now
         registry = load_registry(path)
         self._groups: list[EdtGroup] = list(registry.groups)
         self._projects: list[EdtProject] = list(registry.projects)
+        # T-37: время открытия EDT по id записи — отдельно от `EdtProject`
+        # (диалог свойств пересобирает запись целиком, `update_project`
+        # подставляет её как есть).
+        self._launches: dict[str, datetime] = dict(registry.launches)
         self._installations: list[EdtInstallation] = []
         self._installations_ready = False
         self._running: dict[str, int] = {}
@@ -281,6 +289,7 @@ class EdtWorkspace:
                 "Команда CLI выполняется — дождитесь завершения или прервите её"
             )
         del self._projects[self._project_index(project_id)]
+        self._launches.pop(project_id, None)
         self._save()
 
     # --- группы -----------------------------------------------------------
@@ -439,7 +448,19 @@ class EdtWorkspace:
             installation.exe, project.workspace, jvm, installation.vm_args, project.vm_args
         )
         self._run(command)
+        # T-37: запуском считается только порождение EDT — активация уже
+        # открытого окна и отказы выше сюда не доходят.
+        self._launches[project_id] = self._now().astimezone(UTC)
+        try:
+            self._save()
+        except OSError as error:
+            raise EdtLaunchRecordError(
+                f"EDT запущен, но время запуска сохранить не удалось: {error}"
+            ) from error
         return LaunchOutcome.STARTED
+
+    def last_launched(self, project_id: str) -> datetime | None:
+        return self._launches.get(project_id)
 
     def editor(self, kind: EditorKind) -> EditorResolution:
         return self._editors(kind)
@@ -553,7 +574,10 @@ class EdtWorkspace:
         return self._groups[self._group_index(group_id)]
 
     def _save(self) -> None:
-        save_registry(self._path, EdtRegistry(tuple(self._groups), tuple(self._projects)))
+        save_registry(
+            self._path,
+            EdtRegistry(tuple(self._groups), tuple(self._projects), dict(self._launches)),
+        )
 
     @staticmethod
     def _folder(project: EdtProject) -> str:

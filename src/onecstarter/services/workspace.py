@@ -18,6 +18,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from onecstarter.config.v8i import parse_v8i
+from onecstarter.domain.connect import ConnectKind
 from onecstarter.domain.default_version import DefaultVersionRule
 from onecstarter.domain.launch import (
     ClientConvention,
@@ -26,6 +27,8 @@ from onecstarter.domain.launch import (
     LaunchTarget,
 )
 from onecstarter.domain.version import Installation
+from onecstarter.platform_1c.elevation import ElevationDeclinedError
+from onecstarter.platform_1c.elevation import spawn_elevated as spawn_elevated_process
 from onecstarter.platform_1c.process import spawn as spawn_process
 from onecstarter.security.credentials import SERVICE, CredentialBackendError, CredentialStore
 from onecstarter.services.catalog import (
@@ -42,6 +45,7 @@ from onecstarter.services.edit import Patch, PatchKind, PatchResult, ReorderPatc
 from onecstarter.services.errors import (
     CredentialStoreError,
     InvalidRequestError,
+    LaunchDeclinedError,
     LaunchError,
     ReadOnlySourceError,
     ServicesError,
@@ -103,6 +107,7 @@ class Workspace:
         default_app: str | None = None,
         web_default_is_browser: bool = False,
         spawn: Callable[[LaunchCommand], int] = spawn_process,
+        spawn_elevated: Callable[[LaunchCommand], int] = spawn_elevated_process,
         open_url: Callable[[str], bool] = webbrowser.open,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         new_id: Callable[[], str] = lambda: str(uuid.uuid4()),
@@ -119,6 +124,7 @@ class Workspace:
         self._default_app = default_app
         self._web_default_is_browser = web_default_is_browser
         self._spawn = spawn
+        self._spawn_elevated = spawn_elevated
         self._open_url = open_url
         self._now = now
         self._new_id = new_id
@@ -445,7 +451,13 @@ class Workspace:
         finally:
             self._rebuild()
 
-    def launch(self, key: str, forced: LaunchTarget | None = None) -> LaunchOutcome:
+    def launch(
+        self,
+        key: str,
+        forced: LaunchTarget | None = None,
+        *,
+        elevated: bool = False,
+    ) -> LaunchOutcome:
         if self._installations is None:
             # Спека T-04.6, §3.4: запуск до готовности обязан отказать
             # вежливо, а не молча идти дальше с пустым списком установок —  # noqa: RUF003
@@ -457,24 +469,37 @@ class Workspace:
                 "повторите попытку через несколько секунд"
             )
         item = self._item(key)
+        if elevated and item.kind is ConnectKind.WEB:
+            # T-31: повышать браузер бессмысленно, а клиент к ws= — не тот случай,  # noqa: RUF003
+            # о котором просили (спека 3.2.4 ч. 1, §4.1).  # noqa: RUF003
+            raise LaunchError(
+                f"Для «{item.name}» запуск от имени администратора не предусмотрен: "
+                "база опубликована на веб-сервере"
+            )
         if forced is not LaunchTarget.BROWSER:
             # Разовый «Открыть в браузере» — единственный канал, где имя базы
             # не участвует вовсе: открывается URL из `ws`, `/IBName` не строится
             # (финальное ревью ветки, I5). См. `_reject_ambiguous_name`.
             self._reject_ambiguous_name(item)
         credentials, store_failure = self._credentials_for_launch(key)
-        outcome = launch_infobase(
-            item,
-            installations=self._installations,
-            cfg_rules=self._cfg_rules,
-            conventions=self._conventions,
-            default_app=self._default_app,
-            web_default_is_browser=self._web_default_is_browser,
-            forced_target=forced,
-            spawn=self._spawn,
-            open_url=self._open_url,
-            credentials=credentials,
-        )
+        try:
+            outcome = launch_infobase(
+                item,
+                installations=self._installations,
+                cfg_rules=self._cfg_rules,
+                conventions=self._conventions,
+                default_app=self._default_app,
+                web_default_is_browser=self._web_default_is_browser,
+                forced_target=forced,
+                spawn=self._spawn_elevated if elevated else self._spawn,
+                open_url=self._open_url,
+                credentials=credentials,
+            )
+        except ElevationDeclinedError as error:
+            # Отказ в окне UAC — до записи времени: база не запущена.
+            raise LaunchDeclinedError(
+                f"«{item.name}»: отказ в повышении прав"
+            ) from error
         client = outcome.client.value if outcome.client else "browser"
         # Процесс уже порождён, и об этом сказано прямо в тексте: отказ  # noqa: RUF003
         # записи наших данных — не отказ запуска, и сообщение обязано

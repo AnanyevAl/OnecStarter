@@ -18,7 +18,7 @@ from PySide6.QtCore import (
     QUrl,
 )
 from PySide6.QtGui import QDragMoveEvent, QDropEvent, QKeyEvent, QKeySequence, QShortcut
-from PySide6.QtWidgets import QApplication, QDialog, QTreeView, QWidget
+from PySide6.QtWidgets import QApplication, QDialog, QHeaderView, QTreeView, QWidget
 
 from onecstarter import perf
 from onecstarter.config.shell_link import build_shell_link, safe_file_name, shortcut_command
@@ -31,6 +31,7 @@ from onecstarter.services.cache import CacheEntry, CacheKind, EntryKind
 from onecstarter.services.display import COMMON_NOTE, IMPLICIT_NOTE, MISSING_SUFFIX, RowKind
 from onecstarter.services.errors import (
     InvalidRequestError,
+    LaunchDeclinedError,
     LaunchError,
     ReadOnlySourceError,
     ServicesError,
@@ -324,11 +325,36 @@ def test_typing_filters_tree(qtbot, workspace_factory):
 def test_column_width_survives_search_that_shortens_visible_names(qtbot, workspace_factory):
     # Smoke №1 (08.08.2026), замечание 3: rebuild() звал resizeColumnToContents
     # для каждой колонки при каждой пересборке, а фильтр оставляет короткие  # noqa: RUF003
-    # имена — колонка «База» схлопывалась на первой же букве поиска.
+    # имена — колонки схлопывались на первой же букве поиска. С T-38 имя  # noqa: RUF003
+    # растягивается, и регресс возможен только в колонках с подгонкой.  # noqa: RUF003
     view, _, _, _ = _view(qtbot, workspace_factory)
-    before = view._tree.columnWidth(0)
+    before = [view._tree.columnWidth(column) for column in range(1, 4)]
     _type(view.search(), "порт")  # "Портал" — заметно короче полного дерева
-    assert view._tree.columnWidth(0) == before
+    assert [view._tree.columnWidth(column) for column in range(1, 4)] == before
+
+
+def test_saved_column_widths_are_applied_and_user_widths_saved(qtbot, workspace_factory):
+    """T-38: сохранённые ширины применяются, перетаскивание уходит в save без имени."""
+    workspace, _calls, _opened = workspace_factory()
+    saves: list[dict[str, int]] = []
+    view = BasesView(
+        workspace,
+        installations=INSTALLED,
+        cfg_rules=[],
+        recent_limit=lambda: DEFAULT_RECENT_LIMIT,
+        list_order=lambda: ListOrder.FILE,
+        column_widths={"size": 123},
+        save_column_widths=saves.append,
+    )
+    qtbot.addWidget(view)
+    view.rebuild()
+    assert view._tree.columnWidth(3) == 123
+    assert view._tree.header().sectionResizeMode(0) == QHeaderView.ResizeMode.Stretch
+    view._tree.setColumnWidth(2, 140)
+    qtbot.waitUntil(lambda: bool(saves), timeout=3000)
+    assert saves[-1]["last_launch"] == 140
+    assert saves[-1]["size"] == 123
+    assert "name" not in saves[-1]
 
 
 def test_enter_in_search_moves_to_first_found_base_without_launch(
@@ -454,7 +480,7 @@ def test_launched_is_not_emitted_when_launch_fails(qtbot, workspace_factory, mon
     seen: list[str] = []
     view.launched.connect(seen.append)
 
-    def refuse(key: str, forced: object = None) -> None:
+    def refuse(key: str, forced: object = None, **_options: object) -> None:
         raise LaunchError("обнаружение платформ ещё не завершено")
 
     monkeypatch.setattr(view.workspace(), "launch", refuse)
@@ -4841,3 +4867,68 @@ def test_probe_size_appears_in_the_size_column(qtbot, workspace_factory):
     view.rebuild()
     index = _index_of_key(view, _DEMO_ACCOUNTING_KEY)
     assert index.siblingAtColumn(3).data() == "2,0 ГБ"
+
+
+_ELEVATED = Qt.KeyboardModifier.AltModifier | Qt.KeyboardModifier.ShiftModifier
+
+
+@pytest.mark.parametrize(
+    ("key", "forced"), [(Qt.Key.Key_F3, None), (Qt.Key.Key_F4, LaunchTarget.DESIGNER)]
+)
+def test_alt_shift_f3_f4_launch_elevated(  # type: ignore[no-untyped-def]
+    qtbot, workspace_factory, monkeypatch, key, forced
+) -> None:
+    """T-31: Alt+Shift+F3 — как F3, Alt+Shift+F4 — как F4, но с повышением."""  # noqa: RUF002
+    view, _calls, _errors, _ = _view(qtbot, workspace_factory)
+    _show_exposed(qtbot, view)
+    _select_first_file_base(view)
+    seen: list[tuple[object, bool]] = []
+
+    def record(key_: str, forced_: object = None, *, elevated: bool = False) -> None:
+        seen.append((forced_, elevated))
+
+    monkeypatch.setattr(view.workspace(), "launch", record)
+    qtbot.keyClick(view, key, _ELEVATED)
+    assert seen == [(forced, True)]
+
+
+def test_declined_uac_is_silent_and_does_not_hide(  # type: ignore[no-untyped-def]
+    qtbot, workspace_factory, monkeypatch
+) -> None:
+    """Мутационная проверка обязательна: отказ UAC — ни окна ошибки, ни `launched`."""
+    view, _calls, errors, _ = _view(qtbot, workspace_factory)
+    launched: list[str] = []
+    view.launched.connect(launched.append)
+
+    def decline(key: str, forced: object = None, *, elevated: bool = False) -> None:
+        raise LaunchDeclinedError("отказ в повышении прав")
+
+    monkeypatch.setattr(view.workspace(), "launch", decline)
+    view.launch_key(_DEMO_ACCOUNTING_KEY, elevated=True)
+    assert errors == []
+    assert launched == []
+
+
+def test_menu_offers_elevated_launch_for_non_web_base_only(qtbot, workspace_factory, monkeypatch):
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    calls: list[tuple[LaunchTarget | None, bool]] = []
+
+    def record(key, forced=None, *, elevated=False):
+        calls.append((forced, elevated))
+
+    monkeypatch.setattr(view.workspace(), "launch", record)
+    bases = [item for item in view.workspace().items() if not item.is_group]
+    file_item = next(item for item in bases if item.kind is not ConnectKind.WEB)
+    web_item = next(item for item in bases if item.kind is ConnectKind.WEB)
+    file_actions = _menu_actions(view._build_menu(file_item, file_item.key))
+    web_actions = _menu_actions(view._build_menu(web_item, web_item.key))
+    for label in (
+        "Запустить от имени администратора	Alt+Shift+F3",
+        "Конфигуратор от имени администратора	Alt+Shift+F4",
+    ):
+        assert label in file_actions, label
+        assert label not in web_actions, label
+    # Пункты не только подписаны, но и запускают с повышением прав нужным клиентом.  # noqa: RUF003
+    file_actions["Запустить от имени администратора	Alt+Shift+F3"].trigger()
+    file_actions["Конфигуратор от имени администратора	Alt+Shift+F4"].trigger()
+    assert calls == [(None, True), (LaunchTarget.DESIGNER, True)]

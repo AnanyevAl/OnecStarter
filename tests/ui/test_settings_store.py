@@ -95,3 +95,26 @@ def test_successful_save_clears_previous_error(
     store.update(recent_limit=2)
 
     assert store.last_save_error is None
+
+
+def test_store_quietly_writes_without_changed(qtbot, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    """T-38: на `changed` подписано переобнаружение EDT — ширины пишутся без сигнала."""
+    path = tmp_path / "settings.json"
+    store = SettingsStore(path)
+    seen: list[bool] = []
+    store.changed.connect(lambda: seen.append(True))
+    assert store.store_quietly(column_widths={"bases": {"size": 80}}) is None
+    assert seen == []
+    assert store.settings.column_widths == {"bases": {"size": 80}}
+    assert load_settings(path).column_widths == {"bases": {"size": 80}}
+
+
+def test_store_quietly_returns_error_and_keeps_value(qtbot, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
+    target = tmp_path / "settings.json"
+    target.mkdir()  # каталог на месте файла — атомарная замена откажет
+    store = SettingsStore(target)
+    error = store.store_quietly(column_widths={"edt": {"edt": 100}})
+    assert error is not None
+    assert str(target) in error
+    assert store.settings.column_widths == {"edt": {"edt": 100}}
+    assert store.last_save_error is None

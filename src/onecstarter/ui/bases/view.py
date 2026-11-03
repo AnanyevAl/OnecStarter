@@ -11,7 +11,6 @@ import os
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
-from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import cast
@@ -60,12 +59,14 @@ from onecstarter.services.display import (
     RowKind,
     display_forest,
     filter_rows,
+    format_stamp,
     group_contents,
     version_cell,
     version_options,
 )
 from onecstarter.services.errors import (
     InvalidRequestError,
+    LaunchDeclinedError,
     ReadOnlySourceError,
     ServicesError,
     UnknownItemError,
@@ -78,7 +79,8 @@ from onecstarter.services.workspace import Workspace
 from onecstarter.ui import errors as error_ui
 from onecstarter.ui import theme
 from onecstarter.ui.bases.panel import ConnectionPanel
-from onecstarter.ui.bases.tree_model import KEY_ROLE, KIND_ROLE, build_model
+from onecstarter.ui.bases.tree_model import COLUMN_IDS, KEY_ROLE, KIND_ROLE, build_model
+from onecstarter.ui.column_widths import ColumnWidths
 from onecstarter.ui.dialogs.buttons import russian_confirm
 from onecstarter.ui.dialogs.confirm import (
     ask_group_removal,
@@ -89,11 +91,6 @@ from onecstarter.ui.dialogs.group import GroupDialog
 from onecstarter.ui.dialogs.infobase import InfobaseDialog, dropped_directory
 from onecstarter.ui.search_field import SearchField
 from onecstarter.ui.theme import Palette
-
-
-def _format_stamp(stamp: datetime) -> str:
-    return stamp.astimezone().strftime("%d.%m.%Y %H:%M")
-
 
 # Задача 7 (спека §3.4): подменю «Очистить кэш» показывает пункт неактивным
 # с одной из этих подсказок, а не молча — тот же приём, что у COMMON_NOTE/  # noqa: RUF003
@@ -438,6 +435,8 @@ class BasesView(QWidget):
         cache_ops: cache.CacheOps | None = None,
         confirm_cache_clear: Callable[[QWidget | None, str], bool] = confirm_cache_clear,
         show_cache_report: Callable[[QWidget | None, str], None] = show_cache_report,
+        column_widths: Mapping[str, int] | None = None,
+        save_column_widths: Callable[[dict[str, int]], None] = lambda _widths: None,
         parent: QWidget | None = None,
         palette: Palette = theme.DARK,
     ) -> None:
@@ -509,6 +508,10 @@ class BasesView(QWidget):
         self._tree.setAcceptDrops(True)
         self._tree.setDropIndicatorShown(True)
         self._tree.setDragDropMode(QTreeView.DragDropMode.InternalMove)
+        # T-38: имя растягивается, остальные ширины — из настроек и обратно.
+        self._column_widths = ColumnWidths(
+            self._tree, COLUMN_IDS, column_widths or {}, save_column_widths
+        )
         self._panel = ConnectionPanel(palette=self._palette, parent=self)
 
         layout = QVBoxLayout(self)
@@ -539,6 +542,16 @@ class BasesView(QWidget):
         # которого у F3 нет. Ctrl+3 дублирует F4 — дубль безвреден.  # noqa: RUF003
         QShortcut(QKeySequence("F3"), self, lambda: self._launch_current(None))
         QShortcut(QKeySequence("F4"), self, lambda: self._launch_current(LaunchTarget.DESIGNER))
+        # T-31: от имени администратора Windows — те же режимы, что F3/F4
+        # (схема сочетаний — решение заказчика 13.10.2026; Alt+F4 — «закрыть окно»).
+        QShortcut(
+            QKeySequence("Alt+Shift+F3"), self, lambda: self._launch_current(None, elevated=True)
+        )
+        QShortcut(
+            QKeySequence("Alt+Shift+F4"),
+            self,
+            lambda: self._launch_current(LaunchTarget.DESIGNER, elevated=True),
+        )
         # Задача 9 (v2.4): периодической перепроверки каталогов нет намеренно
         # (спека §5) — только явная команда. F5 — как «обновить» привычно
         # для списков в Windows.
@@ -660,17 +673,10 @@ class BasesView(QWidget):
         ничего не делали, потому что `_current_base_key()` читает именно
         текущую строку (находка ревью задачи 5).
 
-        Ширины колонок восстанавливаются тем же приёмом (smoke №1, 08.08.2026,
-        замечание 3): `resizeColumnToContents` на каждой пересборке схлопывал
-        колонку «База» до ширины самого короткого видимого имени — набор
-        текста в поиске сужал её на первой же букве. Подгонка по содержимому
-        нужна только при самой первой сборке, когда сохранённых ширин ещё
-        нет; дальше ширина — как и развёрнутость с текущей строкой — выбор
-        пользователя (в том числе ручная подстройка мышью), который не
-        должен теряться при каждой перерисовке.
+        Ширины колонок держит `ColumnWidths` (T-38): подгонка по содержимому —
+        только для колонки без сохранённой ширины, один раз за сеанс.
         """  # noqa: RUF002
         current_position = self._current_position()
-        column_widths = self._column_widths()
         items = self._workspace.items()
         forest = display_forest(
             items,
@@ -716,19 +722,13 @@ class BasesView(QWidget):
         model = build_model(
             self._rows,
             cells,
-            _format_stamp,
+            format_stamp,
             self._palette,
             availability=availability,
             sizes=sizes,
         )
-        self._tree.setModel(model)
-        if column_widths is None:
-            # Подгонка по содержимому уместна только на самой первой сборке —
-            # ширин ещё нет, восстанавливать нечего.
-            for column in range(model.columnCount()):
-                self._tree.resizeColumnToContents(column)
-        else:
-            self._restore_column_widths(column_widths)
+        with self._column_widths.rebuilding():
+            self._tree.setModel(model)
         self._filtered = bool(query.strip())
         if self._filtered:
             self._tree.expandAll()
@@ -839,22 +839,6 @@ class BasesView(QWidget):
         if found is not None:
             self._tree.setCurrentIndex(found)
 
-    def _column_widths(self) -> list[int] | None:
-        """Ширины колонок перед пересборкой — `None`, если модели ещё нет.
-
-        `None` отличает «первая сборка» (подгонка по содержимому уместна)
-        от «уже есть сохранённые ширины» (их надо вернуть) — пустой список
-        для этого не годится, колонок всегда три и список никогда не пуст.
-        """
-        model = self._tree.model()
-        if model is None:
-            return None
-        return [self._tree.columnWidth(column) for column in range(model.columnCount())]
-
-    def _restore_column_widths(self, widths: list[int]) -> None:
-        for column, width in enumerate(widths):
-            self._tree.setColumnWidth(column, width)
-
     def _expanded_keys(self) -> set[str]:
         model = self._tree.model()
         if model is None:
@@ -887,9 +871,15 @@ class BasesView(QWidget):
 
     # -- запуск и операции ---------------------------------------------------
 
-    def launch_key(self, key: str, forced: LaunchTarget | None = None) -> None:
+    def launch_key(
+        self, key: str, forced: LaunchTarget | None = None, *, elevated: bool = False
+    ) -> None:
         try:
-            self._workspace.launch(key, forced)
+            self._workspace.launch(key, forced, elevated=elevated)
+        except LaunchDeclinedError:
+            # T-31: отказ в окне UAC — решение человека, не ошибка. Без
+            # `launched` окно не прячется в трей (спека 3.2.4 ч. 1, §4.1).
+            pass
         except ServicesError as error:
             self._on_error(error)
         else:
@@ -1106,7 +1096,7 @@ class BasesView(QWidget):
         key = index.siblingAtColumn(0).data(KEY_ROLE)
         return key if isinstance(key, str) else None
 
-    def _launch_current(self, forced: LaunchTarget | None) -> None:
+    def _launch_current(self, forced: LaunchTarget | None, *, elevated: bool = False) -> None:
         """Веб-база больше не особый случай: клиент для неё выразим планом
         (спека v2.3, §3), а невозможные сочетания дают отказ с объяснением,
         а не тишину. Прежнее бездействие было обходом того, что «браузер»
@@ -1114,7 +1104,7 @@ class BasesView(QWidget):
         """  # noqa: RUF002
         key = self._current_base_key()
         if key:
-            self.launch_key(key, forced)
+            self.launch_key(key, forced, elevated=elevated)
 
     def _toggle_current_favorite(self) -> None:
         key = self._current_base_key()
@@ -1215,6 +1205,15 @@ class BasesView(QWidget):
             )
             menu.addAction(
                 "Конфигуратор\tF4", lambda: self.launch_key(key, LaunchTarget.DESIGNER)
+            )
+            # T-31: веб-базе этих пунктов нет — повышать браузер бессмысленно.
+            menu.addAction(
+                "Запустить от имени администратора\tAlt+Shift+F3",
+                lambda: self.launch_key(key, elevated=True),
+            )
+            menu.addAction(
+                "Конфигуратор от имени администратора\tAlt+Shift+F4",
+                lambda: self.launch_key(key, LaunchTarget.DESIGNER, elevated=True),
             )
         menu.addSeparator()
         # Ярлык осмыслен и для веб-базы: он зовёт нашу программу

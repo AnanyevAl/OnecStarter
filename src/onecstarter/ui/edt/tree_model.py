@@ -1,15 +1,19 @@
-"""Модель дерева раздела «EDT» (спека v3, §7): группы, записи, версия, статус.
+"""Модель дерева раздела «EDT» (спека v3, §7): группы, записи, версия,
+последний запуск, память, статус.
 
 Модель собирается заново на каждую перестройку — тот же приём, что
 `ui/bases/tree_model.py`: порядок и вложенность даёт координатор,
 здесь только раскладка по колонкам и подсветка.
 """
 
+from datetime import datetime
+
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QBrush, QColor, QStandardItem, QStandardItemModel
 
 from onecstarter.domain.edt import EdtInstallation, EdtProject, effective_heap_mb
 from onecstarter.domain.search import matches_pattern
+from onecstarter.services.display import format_stamp
 from onecstarter.services.edt import EdtStatus, EdtWorkspace
 from onecstarter.ui.edt.icons import cli_busy_icon, running_icon
 from onecstarter.ui.theme import Palette
@@ -19,7 +23,9 @@ KIND_ROLE = Qt.ItemDataRole.UserRole + 2
 KIND_GROUP = "group"
 KIND_PROJECT = "project"
 
-COLUMNS = ("Проект", "EDT", "Память")
+COLUMNS = ("Проект", "EDT", "Последний запуск", "Память")
+# T-38: устойчивые идентификаторы колонок для settings.json (см. ui/bases/tree_model.py).
+COLUMN_IDS = ("name", "edt", "last_launch", "memory")
 MISSING_SUFFIX = " (нет каталога)"
 NOT_INSTALLED_HINT = "EDT {version} не найден"
 NO_VERSION_HINT = "Версия EDT не задана"
@@ -67,14 +73,18 @@ def _fill(
         item.setFont(font)
         has_matches = _fill(item, group.id, workspace, query, palette)
         if has_matches or unfiltered:
-            parent.appendRow([item, _plain(""), _plain("")])
+            parent.appendRow([item, *(_plain("") for _ in COLUMNS[1:])])
             visible = True
     for project in projects:
         if not matches(project, query):
             continue
         status = workspace.status(project.id)
         installation = workspace.installation_for(project)
-        parent.appendRow(_project_row(project, status, installation, palette))
+        parent.appendRow(
+            _project_row(
+                project, status, installation, workspace.last_launched(project.id), palette
+            )
+        )
         visible = True
     return visible
 
@@ -89,6 +99,7 @@ def _project_row(
     project: EdtProject,
     status: EdtStatus,
     installation: EdtInstallation | None,
+    launched: datetime | None,
     palette: Palette,
 ) -> list[QStandardItem]:
     name = _plain(project.name + (MISSING_SUFFIX if status.workspace_present is False else ""))
@@ -122,4 +133,7 @@ def _project_row(
         memory.setToolTip(HEAP_DEFAULT_HINT)
         memory.setForeground(QBrush(QColor(palette.text_dim)))
 
-    return [name, version, memory]
+    # T-37: только открытие EDT; формат — тот же, что у «Баз».  # noqa: RUF003
+    last_launch = _plain(format_stamp(launched) if launched is not None else "")
+
+    return [name, version, last_launch, memory]

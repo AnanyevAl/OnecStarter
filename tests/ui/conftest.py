@@ -53,6 +53,9 @@ def workspace_factory(tmp_path):
             calls.append(command)
             return 7
 
+        def no_elevation(command: LaunchCommand) -> int:
+            raise AssertionError(f"повышение прав не ожидалось: {command.command_line}")
+
         def fake_open_url(url: str) -> bool:
             opened.append(url)
             return True
@@ -66,6 +69,7 @@ def workspace_factory(tmp_path):
             cfg_rules=[],
             default_app=None,
             spawn=fake_spawn,
+            spawn_elevated=no_elevation,
             open_url=fake_open_url,
             now=lambda: datetime.fromisoformat("2026-08-07T10:00:00+00:00"),
             new_id=lambda: "99999999-9999-9999-9999-999999999999",

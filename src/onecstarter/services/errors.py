@@ -90,6 +90,14 @@ class LaunchError(ServicesError):
     """Запуск невозможен; сообщение безопасно показывать пользователю."""
 
 
+class LaunchDeclinedError(LaunchError):
+    """Пользователь отказал в окне UAC (T-31) — решение человека, не сбой.
+
+    Интерфейс перехватывает его ДО общего `ServicesError` и молчит: ни окна
+    ошибки, ни записи времени, ни скрытия окна (спека 3.2.4 ч. 1, §4.1).
+    """  # noqa: RUF002
+
+
 class ServerError(ServicesError):
     """Общий корень ошибок локальных серверов 1С."""  # noqa: RUF002
 
@@ -116,6 +124,14 @@ class EdtUnavailableError(EdtError):
 
 class EdtLaunchError(EdtError):
     """Запуск EDT или редактора отказал до или при порождении процесса."""
+
+
+class EdtLaunchRecordError(EdtError):
+    """EDT запущен, но время запуска не сохранилось (T-37).
+
+    Отдельный класс: вид обязан и показать сообщение, и запросить снимок
+    процессов, как после успешного запуска, — EDT уже работает.
+    """
 
 
 class UpdateError(ServicesError):

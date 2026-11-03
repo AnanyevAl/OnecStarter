@@ -11,7 +11,7 @@
 раскрываясь сама (§14.5), и раскрывается только при запуске команды.
 """  # noqa: RUF002
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
@@ -57,8 +57,9 @@ from onecstarter.services.edt_scheme import (
     WorkspaceSchemes,
     bundled_schemes_dir,
 )
-from onecstarter.services.errors import ServicesError
+from onecstarter.services.errors import EdtLaunchRecordError, ServicesError
 from onecstarter.ui.bases.panel import open_in_explorer
+from onecstarter.ui.column_widths import ColumnWidths
 from onecstarter.ui.dialogs.buttons import ask_confirmation
 from onecstarter.ui.dialogs.infobase import dropped_directory
 from onecstarter.ui.edt.cli_import_dialog import CliImportDialog
@@ -78,7 +79,7 @@ from onecstarter.ui.edt.panel import EdtPanel
 from onecstarter.ui.edt.scheme_dialog import SchemeDialog
 from onecstarter.ui.edt.tree_model import CLI_BUSY_HINT as CLI_BUSY_HINT
 from onecstarter.ui.edt.tree_model import (
-    COLUMNS,
+    COLUMN_IDS,
     ID_ROLE,
     KIND_GROUP,
     KIND_PROJECT,
@@ -232,6 +233,8 @@ class EdtView(QWidget):
         cli: EdtCli | None = None,
         watcher: CliWatcher | None = None,
         documents_dir: str = str(Path.home() / "Documents"),
+        column_widths: Mapping[str, int] | None = None,
+        save_column_widths: Callable[[dict[str, int]], None] = lambda _widths: None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -282,6 +285,10 @@ class EdtView(QWidget):
         self._tree.setHeaderHidden(False)
         self._tree.setUniformRowHeights(True)
         self._tree.setRootIsDecorated(True)
+        # T-38: имя растягивается, остальные ширины — из настроек и обратно.
+        self._column_widths = ColumnWidths(
+            self._tree, COLUMN_IDS, column_widths or {}, save_column_widths
+        )
         self._tree.doubleClicked.connect(self._launch_index)
         # Alt+Enter — «Изменить…», как «Свойства…» у баз (спека v3.1.1 §10);  # noqa: RUF003
         # Return и Enter (цифровой блок) — разные клавиши Qt. Справочник в
@@ -374,28 +381,15 @@ class EdtView(QWidget):
     def rebuild(self) -> None:
         """Собрать модель заново, сохранив раскрытие, текущую строку и ширины колонок.
 
-        `setModel` сбрасывает раскрытие и текущую строку — ширины по умолчанию
-        ставятся только при первой сборке, дальше снимаются перед подменой
-        модели и возвращаются после (I2 финального ревью ветки). Последняя
-        колонка не растянута заголовком (`setStretchLastSection(False)`, ревью
-        Task 21): ширины всех колонок, включая последнюю, сохраняются между
-        пересборками наравне с первыми двумя (M-2 финального ревью ветки v3.1
-        — прежняя редакция докстринга и код `range(len(COLUMNS) - 1)` были
-        написаны для двухколоночного дерева и не обновились, когда «Память»
-        стала третьей колонкой).
-        """  # noqa: RUF002
+        `setModel` сбрасывает раскрытие и текущую строку. Ширины колонок держит
+        `ColumnWidths` (T-38): подгонка по содержимому — только для колонки без
+        сохранённой ширины, один раз за сеанс.
+        """
         expanded = self._expanded_ids()
         current = self.current()
-        widths = [self._tree.columnWidth(column) for column in range(len(COLUMNS))]
         self._model = build_edt_model(self._workspace, self._search.text(), self._palette)
-        self._tree.setModel(self._model)
-        if not self._built:
-            self._tree.setColumnWidth(0, 320)
-            self._tree.setColumnWidth(1, 110)
-            self._tree.setColumnWidth(2, 90)
-        else:
-            for column, width in enumerate(widths):
-                self._tree.setColumnWidth(column, width)
+        with self._column_widths.rebuilding():
+            self._tree.setModel(self._model)
         self._restore_expansion(expanded, expand_all=not self._built)
         self._restore_current(current)
         # Модель пересобрана целиком — прежняя selectionModel умерла вместе
@@ -463,9 +457,13 @@ class EdtView(QWidget):
     def launch_id(self, project_id: str) -> None:
         try:
             self._workspace.launch(project_id)
+        except EdtLaunchRecordError as error:
+            # T-37: EDT уже запущен — сообщение и снимок, как после успеха.
+            self._show_error(str(error))
         except ServicesError as error:
             self._show_error(str(error))
             return
+        self.rebuild()
         self._request_scan()
 
     def _launch_index(self, index: QModelIndex) -> None:

@@ -150,6 +150,11 @@ def filter_rows(rows: Sequence[Row], query: str) -> list[Row]:
 _SIZE_UNITS = ("КБ", "МБ", "ГБ", "ТБ")
 
 
+def format_stamp(stamp: datetime) -> str:
+    """Время запуска для колонки «Последний запуск» — локальное, до минут («Базы» и EDT)."""
+    return stamp.astimezone().strftime("%d.%m.%Y %H:%M")
+
+
 def format_size(size: int) -> str:
     """Размер файла для колонки «Размер» (T-33): «1,2 ГБ», двоичные единицы.
 

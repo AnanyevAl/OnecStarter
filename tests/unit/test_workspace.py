@@ -1,6 +1,6 @@
 import codecs
 import shutil
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from datetime import datetime
 from pathlib import Path
 
@@ -15,11 +15,13 @@ from onecstarter.domain.launch import (
     LaunchTarget,
 )
 from onecstarter.domain.version import Arch, Installation, parse_version
+from onecstarter.platform_1c.elevation import ElevationDeclinedError
 from onecstarter.security.credentials import CredentialBackendError, CredentialStore, MemoryStore
 from onecstarter.services.catalog import read_common_lists
 from onecstarter.services.errors import (
     CredentialStoreError,
     InvalidRequestError,
+    LaunchDeclinedError,
     LaunchError,
     ReadOnlySourceError,
     ServicesError,
@@ -51,12 +53,17 @@ INSTALLED = [
 STAMP = "2026-08-04T07:12:44+00:00"
 
 
+def _no_elevation(command: LaunchCommand) -> int:
+    raise AssertionError(f"повышение прав не ожидалось: {command.command_line}")
+
+
 def _raw_workspace(
     tmp_path: Path,
     calls: list[LaunchCommand] | None = None,
     cfg_paths: tuple[Path, ...] = (),
     installations: Sequence[Installation] | None = INSTALLED,
     store: CredentialStore | None = None,
+    spawn_elevated: Callable[[LaunchCommand], int] | None = None,
 ) -> Workspace:
     """Собрать Workspace как есть — без снимка общих списков.
 
@@ -84,6 +91,7 @@ def _raw_workspace(
         cfg_rules=[],
         default_app=None,
         spawn=fake_spawn,
+        spawn_elevated=spawn_elevated or _no_elevation,
         open_url=lambda url: True,
         now=lambda: datetime.fromisoformat(STAMP),
         new_id=lambda: "99999999-9999-9999-9999-999999999999",
@@ -1356,3 +1364,75 @@ def test_workspace_forced_designer_on_web_base_refuses(tmp_path: Path) -> None:
     with pytest.raises(LaunchError) as error:
         workspace.launch(_web_key(workspace), LaunchTarget.DESIGNER)
     assert "ws=" in str(error.value)
+
+
+_FILE_AND_WEB = (
+    '[Файловая]\r\nConnect=File="C:\\B";\r\n'
+    '[Веб]\r\nConnect=ws="http://srv/b";\r\n'  # noqa: RUF001
+)
+
+
+def _key_of(workspace: Workspace, name: str) -> str:
+    return next(item.key for item in workspace.items() if item.name == name)
+
+
+def _recording(calls: list[LaunchCommand]) -> Callable[[LaunchCommand], int]:
+    def spawn(command: LaunchCommand) -> int:
+        calls.append(command)
+        return 11
+
+    return spawn
+
+
+@pytest.mark.parametrize("forced", [None, LaunchTarget.DESIGNER])
+def test_elevated_launch_uses_same_command_as_plain(
+    tmp_path: Path, forced: LaunchTarget | None
+) -> None:
+    """T-31: тот же конвейер — версия, канал, учётные данные; другая функция порождения."""
+    (tmp_path / "ibases.v8i").write_bytes(_FILE_AND_WEB.encode())
+    plain: list[LaunchCommand] = []
+    elevated: list[LaunchCommand] = []
+    workspace = _raw_workspace(tmp_path, plain, spawn_elevated=_recording(elevated))
+    key = _key_of(workspace, "Файловая")
+    workspace.launch(key, forced)
+    workspace.launch(key, forced, elevated=True)
+    assert len(plain) == 1
+    assert [command.command_line for command in elevated] == [plain[0].command_line]
+
+
+def test_elevated_launch_records_history(tmp_path: Path) -> None:
+    (tmp_path / "ibases.v8i").write_bytes(_FILE_AND_WEB.encode())
+    elevated: list[LaunchCommand] = []
+    workspace = _raw_workspace(tmp_path, spawn_elevated=_recording(elevated))
+    key = _key_of(workspace, "Файловая")
+    workspace.launch(key, elevated=True)
+    item = next(item for item in workspace.items() if item.key == key)
+    assert item.launch_count == 1
+    assert item.last_launched_at is not None
+
+
+def test_elevated_launch_refuses_web_base(tmp_path: Path) -> None:
+    (tmp_path / "ibases.v8i").write_bytes(_FILE_AND_WEB.encode())
+    plain: list[LaunchCommand] = []
+    elevated: list[LaunchCommand] = []
+    workspace = _raw_workspace(tmp_path, plain, spawn_elevated=_recording(elevated))
+    with pytest.raises(LaunchError, match="веб-сервере"):
+        workspace.launch(_key_of(workspace, "Веб"), elevated=True)  # noqa: RUF001
+    assert plain == []
+    assert elevated == []
+
+
+def test_declined_uac_raises_declined_and_records_nothing(tmp_path: Path) -> None:
+    """Мутационная проверка обязательна: отказ UAC — без записи времени."""
+    (tmp_path / "ibases.v8i").write_bytes(_FILE_AND_WEB.encode())
+
+    def declining(_command: LaunchCommand) -> int:
+        raise ElevationDeclinedError("пользователь отказал")
+
+    workspace = _raw_workspace(tmp_path, spawn_elevated=declining)
+    key = _key_of(workspace, "Файловая")
+    with pytest.raises(LaunchDeclinedError):
+        workspace.launch(key, elevated=True)
+    item = next(item for item in workspace.items() if item.key == key)
+    assert item.launch_count == 0
+    assert item.last_launched_at is None

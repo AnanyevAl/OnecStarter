@@ -8,6 +8,7 @@ from PySide6.QtGui import QColor, QStandardItemModel
 from PySide6.QtWidgets import QApplication
 
 from onecstarter.domain.edt import EdtInstallation, EdtProject
+from onecstarter.services.display import format_stamp
 from onecstarter.services.edt import EdtScan, EdtWorkspace
 from onecstarter.ui.edt.tree_model import (
     CLI_BUSY_HINT,
@@ -155,7 +156,7 @@ def test_running_icon_and_missing_dir_after_scan(tmp_path: Path, qapp: QApplicat
     assert name.text() == "Розница" + MISSING_SUFFIX
     assert not name.icon().isNull()
     assert "Запущен (PID 42)" in name.toolTip()
-    assert model.columnCount() == 3
+    assert model.columnCount() == 4
 
 
 def test_no_status_before_scan(tmp_path: Path) -> None:
@@ -194,16 +195,36 @@ def test_memory_column_shows_effective_xmx(tmp_path: Path) -> None:
     ws.add_project(EdtProject("", "Из установки", r"D:\b", edt_version="2025.2.6+4"))
     ws.add_project(EdtProject("", "Без версии", r"D:\c"))
     model = build_edt_model(ws, "", DARK)
-    assert model.horizontalHeaderItem(2).text() == "Память"
-    assert model.item(0, 2).text() == "6144 МБ"
-    assert model.item(1, 2).text() == "8192 МБ"
-    assert model.item(2, 2).text() == "—"
-    assert model.item(2, 2).toolTip() == HEAP_DEFAULT_HINT
-    assert model.item(0, 2).textAlignment() & Qt.AlignmentFlag.AlignRight
+    assert model.horizontalHeaderItem(3).text() == "Память"
+    assert model.item(0, 3).text() == "6144 МБ"
+    assert model.item(1, 3).text() == "8192 МБ"
+    assert model.item(2, 3).text() == "—"
+    assert model.item(2, 3).toolTip() == HEAP_DEFAULT_HINT
+    assert model.item(0, 3).textAlignment() & Qt.AlignmentFlag.AlignRight
 
 
 def test_group_row_has_empty_memory_cell(tmp_path: Path) -> None:
     ws = _workspace(tmp_path)
     ws.add_group("2025", None)
     model = build_edt_model(ws, "", DARK)
+    assert model.item(0, 3).text() == ""
     assert model.item(0, 2).text() == ""
+
+
+def test_last_launch_column(tmp_path: Path) -> None:
+    """T-37: время открытия EDT — после версии, формат как у «Баз»; у групп пусто."""  # noqa: RUF002
+    ws = _workspace(tmp_path)
+    started = ws.add_project(EdtProject("", "Запущен", r"D:\a", edt_version="2025.2.6+4"))
+    ws.add_project(EdtProject("", "Не запускался", r"D:\b", edt_version="2025.2.6+4"))  # noqa: RUF001
+    ws.add_group("2025", None)
+    ws.launch(started.id)
+    stamp = ws.last_launched(started.id)
+    assert stamp is not None
+    model = build_edt_model(ws, "", DARK)
+    assert model.horizontalHeaderItem(2).text() == "Последний запуск"
+    cells = {
+        model.item(row, 0).text(): model.item(row, 2).text() for row in range(model.rowCount())
+    }
+    assert cells["Запущен"] == format_stamp(stamp)
+    assert cells["Не запускался"] == ""  # noqa: RUF001
+    assert cells["2025"] == ""

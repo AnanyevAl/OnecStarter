@@ -22,7 +22,7 @@
 """  # noqa: RUF002
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -38,8 +38,10 @@ RECENT_MIN = 0
 RECENT_MAX = 50
 DEFAULT_EDT_HEAP_MB = 8192  # умолчание EDT Start (скриншот заказчика, спека §2)
 EDT_HEAP_MIN = 256
+COLUMN_WIDTH_MAX = 2000
 
 __all__ = [
+    "COLUMN_WIDTH_MAX",
     "DEFAULT_EDT_HEAP_MB",
     "DEFAULT_HOTKEY",
     "DEFAULT_RECENT_LIMIT",
@@ -171,6 +173,11 @@ class Settings:
     # T-25: проверка новой версии при запуске — только с согласия (§4).  # noqa: RUF003
     # None — ещё не спрашивали: первый запуск с показанным окном задаёт вопрос.  # noqa: RUF003
     check_updates: bool | None = None
+    # T-38 (спека 3.2.4 ч. 1, §2): ширины колонок списков по устойчивым
+    # идентификаторам колонок — {"bases": {"version": 90, ...}, "edt": {...}}.
+    # Смысл идентификаторам дают виды (`ui/*/tree_model.py::COLUMN_IDS`), здесь
+    # только хранение. Ширина колонки имени не пишется — она растягивается.
+    column_widths: dict[str, dict[str, int]] = field(default_factory=dict)
 
 
 def load_settings(path: Path) -> Settings:
@@ -208,6 +215,7 @@ def load_settings(path: Path) -> Settings:
         editor_vscode=_text_of(payload.get("editor_vscode")),
         editor_antigravity=_text_of(payload.get("editor_antigravity")),
         check_updates=_consent_of(payload.get("check_updates")),
+        column_widths=_column_widths_of(payload.get("column_widths")),
     )
 
 
@@ -233,6 +241,7 @@ def save_settings(path: Path, settings: Settings) -> None:
         "editor_vscode": settings.editor_vscode,
         "editor_antigravity": settings.editor_antigravity,
         "check_updates": settings.check_updates,
+        "column_widths": settings.column_widths,
     }
     text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
     atomic_write(path, text.encode("utf-8"))
@@ -296,6 +305,31 @@ def _language_of(value: Any) -> str:
     """Незнакомый код — «по умолчанию», не порча."""
     codes = {code for code, _label in LANGUAGES}
     return value if isinstance(value, str) and value in codes else ""
+
+
+def _column_widths_of(value: Any) -> dict[str, dict[str, int]]:
+    """Ширины колонок (T-38): негодное отбрасывается поштучно, не порча файла.
+
+    Ширина — целое `1…COLUMN_WIDTH_MAX`; `bool` отсекается первым (подкласс `int`).
+    Список без единой годной ширины не сохраняется вовсе.
+    """
+    if not isinstance(value, dict):
+        return {}
+    result: dict[str, dict[str, int]] = {}
+    for list_id, widths in value.items():
+        if not isinstance(list_id, str) or not isinstance(widths, dict):
+            continue
+        clean = {
+            column: width
+            for column, width in widths.items()
+            if isinstance(column, str)
+            and isinstance(width, int)
+            and not isinstance(width, bool)
+            and 0 < width <= COLUMN_WIDTH_MAX
+        }
+        if clean:
+            result[list_id] = clean
+    return result
 
 
 def _consent_of(value: Any) -> bool | None:

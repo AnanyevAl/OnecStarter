@@ -1,6 +1,7 @@
 """Хранилище edt.json: калька политики `.bad` из `test_server_store.py` (спека §2)."""
 
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -131,3 +132,73 @@ class TestBadFile:
             load_registry(directory)
         assert directory.exists()
         assert not (tmp_path / "edt.json.bad").exists()
+
+
+STAMP = datetime(2026, 10, 31, 9, 30, tzinfo=UTC)
+SECOND = EdtProject(id="p2", name="Б", workspace=r"D:\b")
+
+
+class TestLaunches:
+    def test_round_trip(self, tmp_path: Path) -> None:
+        path = tmp_path / "edt.json"
+        save_registry(path, EdtRegistry((GROUP, CHILD), (PROJECT,), {"p1": STAMP}))
+        assert load_registry(path).launches == {"p1": STAMP}
+
+    def test_file_without_launches_reads_empty(self, tmp_path: Path) -> None:
+        path = tmp_path / "edt.json"
+        save_registry(path, REGISTRY)
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        del payload["launches"]
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        assert load_registry(path).launches == {}
+
+    def test_bad_pairs_are_dropped_without_bad_file(self, tmp_path: Path) -> None:
+        """Мутационная проверка обязательна: статистика не уносит записи в `.bad`."""
+        path = tmp_path / "edt.json"
+        save_registry(path, EdtRegistry((), (PROJECT, SECOND)))
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["launches"] = {
+            "p1": STAMP.isoformat(),
+            "p2": "не время",
+            "ghost": STAMP.isoformat(),
+        }
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        loaded = load_registry(path)
+        assert loaded.projects == (PROJECT, SECOND)
+        assert loaded.launches == {"p1": STAMP}
+        assert not (tmp_path / "edt.json.bad").exists()
+
+    @pytest.mark.parametrize(
+        "stamp", ["0001-01-01T00:00:00+05:00", "9999-12-31T23:59:00-05:00"]
+    )
+    def test_extreme_stamp_is_dropped(self, tmp_path: Path, stamp: str) -> None:
+        """Крайнее время не переводится в UTC/локальное (OverflowError) — пара отбрасывается."""
+        path = tmp_path / "edt.json"
+        save_registry(path, EdtRegistry((), (PROJECT, SECOND)))
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["launches"] = {"p1": stamp, "p2": STAMP.isoformat()}
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        loaded = load_registry(path)
+        save_registry(path, loaded)  # на крайнем времени save падал бы OverflowError
+        assert loaded.projects == (PROJECT, SECOND)
+        assert loaded.launches == {"p2": STAMP}
+        assert not (tmp_path / "edt.json.bad").exists()
+
+    def test_naive_stamp_is_dropped(self, tmp_path: Path) -> None:
+        path = tmp_path / "edt.json"
+        save_registry(path, EdtRegistry((), (PROJECT,)))
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["launches"] = {"p1": "2026-10-31T09:30:00"}
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        assert load_registry(path).launches == {}
+
+    @pytest.mark.parametrize("value", [[1, 2], "строка", None, 5])
+    def test_launches_not_an_object_reads_empty(self, tmp_path: Path, value: object) -> None:
+        path = tmp_path / "edt.json"
+        save_registry(path, EdtRegistry((), (PROJECT,)))
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["launches"] = value
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        loaded = load_registry(path)
+        assert loaded.launches == {}
+        assert loaded.projects == (PROJECT,)
