@@ -274,6 +274,56 @@ class TestBuildArguments:
             'ENTERPRISE /IBName"empty" /N"tester" /AppAutoCheckVersion /AppAutoCheckMode'
         )
 
+    @pytest.mark.parametrize(
+        ("client", "credentials", "expected"),
+        [
+            (
+                ClientKind.THIN,
+                None,
+                'ENTERPRISE /IBName"empty" /WA- /AppAutoCheckVersion /AppAutoCheckMode',
+            ),
+            (
+                ClientKind.DESIGNER,
+                None,
+                'DESIGNER /IBName"empty" /WA- /AppAutoCheckVersion /AppAutoCheckMode',
+            ),
+            (
+                ClientKind.THIN,
+                Credentials("tester"),
+                'ENTERPRISE /IBName"empty" /N"tester" /WA- /AppAutoCheckVersion /AppAutoCheckMode',
+            ),
+        ],
+    )
+    def test_deny_os_auth_puts_wa_minus_after_ibname(
+        self, client: ClientKind, credentials: Credentials | None, expected: str
+    ) -> None:
+        """[Ф] T-30 03.11.2026: `/WA-` после `/IBName` перекрывает WA=1 из .v8i."""
+        arguments = build_arguments(
+            client,
+            ib_name="empty",
+            auto_check_version=True,
+            auto_check_mode=True,
+            credentials=credentials,
+            deny_os_auth=True,
+        )
+        assert arguments == expected
+
+    def test_no_wa_key_by_default(self) -> None:
+        arguments = build_arguments(
+            ClientKind.THIN, ib_name="empty", auto_check_version=True, auto_check_mode=True
+        )
+        assert "/WA" not in arguments
+
+    def test_deny_os_auth_with_connect_string_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="/IBName"):
+            build_arguments(
+                ClientKind.THIN,
+                connect='File="C:\\b";',
+                auto_check_version=True,
+                auto_check_mode=True,
+                deny_os_auth=True,
+            )
+
     def test_quote_in_password_is_doubled(self) -> None:
         arguments = build_arguments(
             ClientKind.THIN, ib_name="empty", auto_check_version=True,

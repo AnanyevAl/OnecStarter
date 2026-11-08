@@ -161,3 +161,25 @@ def broken_common_cfg_paths(tmp_path):
     """  # noqa: RUF002
     missing = tmp_path / "missing.v8i"
     return _with_common_list(tmp_path, missing)
+
+
+class _FreeSingleInstance:
+    """T-39: `ui.app.main` в тестах всегда «первый экземпляр» — настоящий мьютекс
+    и канал машины не трогаются (иначе при открытом у разработчика OneCStarter
+    тест поднимал бы его окно и выходил с кодом 0)."""  # noqa: RUF002
+
+    def acquire(self) -> object:
+        return object()
+
+    def request_activation(self) -> bool:
+        raise AssertionError("в тестах второго экземпляра нет")
+
+    def serve(self, on_activate: object) -> None:
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _no_real_single_instance(monkeypatch: pytest.MonkeyPatch) -> None:
+    from onecstarter.ui import app as app_module
+
+    monkeypatch.setattr(app_module, "_system_single_instance", lambda env: _FreeSingleInstance())

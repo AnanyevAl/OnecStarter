@@ -13,6 +13,7 @@ from onecstarter.ui.dialogs.group_picker import INDENT
 from onecstarter.ui.dialogs.infobase import (
     CREDENTIALS_UNAVAILABLE_NOTE,
     HIDDEN_VALUE,
+    OS_AUTH_TOOLTIP,
     PASSWORD_NOT_KEPT_NOTE,
     STORED_PASSWORD_REMOVAL_NOTE,
     WEB_CLIENT_PLACEMENT_NOTE,
@@ -297,20 +298,48 @@ def test_app_choice_is_written(qtbot: Any) -> None:
     assert dialog.changes() == ({"App": "ThinClient"}, None)
 
 
-def test_os_auth_checkbox_writes_wa(qtbot: Any) -> None:
+@pytest.mark.parametrize(
+    ("keys", "checked_on_open", "actions", "expected"),
+    [
+        # Нет ключа: платформа и штатный стартер читают это как WA=1 ([Ф] T-30).
+        ((), True, (), {}),
+        ((), True, (False,), {"WA": "0"}),
+        ((("WA", "1"),), True, (False,), {"WA": "0"}),
+        ((("WA", "0"),), False, (True,), {"WA": "1"}),
+        ((("WA", "0"),), False, (), {}),
+        ((("WA", "1"),), True, (False, True), {}),
+    ],
+)
+def test_os_auth_checkbox_reads_missing_wa_as_on_and_writes_zero(
+    qtbot: Any,
+    keys: tuple[tuple[str, str], ...],
+    checked_on_open: bool,
+    actions: tuple[bool, ...],
+    expected: dict[str, str],
+) -> None:
+    """T-30.2: снятый флажок пишет WA=0 — удалённый ключ платформа читает как WA=1.
+
+    Мутационная проверка обязательна: снятый флажок снова даёт `None` —
+    падают строки «сняли»; чтение `== "1"` — падают строки «нет ключа».
+    """
+    item = _item('File="D:\\b";', keys)
+    dialog = InfobaseDialog(item, groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    assert dialog._os_auth.isChecked() is checked_on_open
+    for value in actions:
+        dialog.set_os_auth(value)
+    assert dialog.changes() == (expected, None)
+
+
+def test_os_auth_checkbox_tooltip_names_starter_options(qtbot: Any) -> None:
     item = _item('File="D:\\b";', ())
     dialog = InfobaseDialog(item, groups=["/"], installations=INSTALLED, cfg_rules=[])
     qtbot.addWidget(dialog)
-    dialog.set_os_auth(True)
-    assert dialog.changes() == ({"WA": "1"}, None)
-
-
-def test_os_auth_checkbox_removes_wa_when_unchecked(qtbot: Any) -> None:
-    item = _item('File="D:\\b";', (("WA", "1"),))
-    dialog = InfobaseDialog(item, groups=["/"], installations=INSTALLED, cfg_rules=[])
-    qtbot.addWidget(dialog)
-    dialog.set_os_auth(False)
-    assert dialog.changes() == ({"WA": None}, None)
+    assert OS_AUTH_TOOLTIP == (
+        "Как «Вариант аутентификации» в штатном стартере: отмечено — "
+        "«Выбирать автоматически», снято — «Запрашивать имя и пароль»"
+    )
+    assert dialog._os_auth.toolTip() == OS_AUTH_TOOLTIP
 
 
 def test_folder_choice_is_written(qtbot: Any) -> None:

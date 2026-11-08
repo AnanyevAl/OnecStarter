@@ -300,15 +300,24 @@ def build_arguments(
     auto_check_version: bool,
     auto_check_mode: bool,
     credentials: Credentials | None = None,
+    deny_os_auth: bool = False,
 ) -> str:
     if (ib_name is None) == (connect is None):
         raise ValueError("Нужно ровно одно из: ib_name, connect")
+    if deny_os_auth and connect is not None:
+        # /WA- рядом со строкой соединения при настроенном входе по ОС  # noqa: RUF003
+        # не измерен (спека 3.2.5, §3.2); режим запускает по /IBName.
+        raise ValueError("/WA- передаётся только при запуске по /IBName")
     mode = "DESIGNER" if client is ClientKind.DESIGNER else "ENTERPRISE"
     parts = [mode]
     if ib_name is not None:
         parts.append(f"/IBName{quote_launch_value(ib_name)}")
         if credentials is not None:
             parts.append(_credential_arguments(credentials))
+        if deny_os_auth:
+            # [Ф] T-30 03.11.2026: /WA- перекрывает WA=1 из .v8i — платформа
+            # показывает диалог входа и в Предприятии, и в конфигураторе.
+            parts.append("/WA-")
     else:
         if connect is None:
             # Недостижимо: выше проверено «ровно одно из ib_name, connect».

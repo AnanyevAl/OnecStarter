@@ -4884,7 +4884,9 @@ def test_alt_shift_f3_f4_launch_elevated(  # type: ignore[no-untyped-def]
     _select_first_file_base(view)
     seen: list[tuple[object, bool]] = []
 
-    def record(key_: str, forced_: object = None, *, elevated: bool = False) -> None:
+    def record(
+        key_: str, forced_: object = None, *, elevated: bool = False, ask_login: bool = False
+    ) -> None:
         seen.append((forced_, elevated))
 
     monkeypatch.setattr(view.workspace(), "launch", record)
@@ -4900,7 +4902,9 @@ def test_declined_uac_is_silent_and_does_not_hide(  # type: ignore[no-untyped-de
     launched: list[str] = []
     view.launched.connect(launched.append)
 
-    def decline(key: str, forced: object = None, *, elevated: bool = False) -> None:
+    def decline(
+        key: str, forced: object = None, *, elevated: bool = False, ask_login: bool = False
+    ) -> None:
         raise LaunchDeclinedError("отказ в повышении прав")
 
     monkeypatch.setattr(view.workspace(), "launch", decline)
@@ -4913,7 +4917,7 @@ def test_menu_offers_elevated_launch_for_non_web_base_only(qtbot, workspace_fact
     view, _, _, _ = _view(qtbot, workspace_factory)
     calls: list[tuple[LaunchTarget | None, bool]] = []
 
-    def record(key, forced=None, *, elevated=False):
+    def record(key, forced=None, *, elevated=False, ask_login=False):
         calls.append((forced, elevated))
 
     monkeypatch.setattr(view.workspace(), "launch", record)
@@ -4932,3 +4936,51 @@ def test_menu_offers_elevated_launch_for_non_web_base_only(qtbot, workspace_fact
     file_actions["Запустить от имени администратора	Alt+Shift+F3"].trigger()
     file_actions["Конфигуратор от имени администратора	Alt+Shift+F4"].trigger()
     assert calls == [(None, True), (LaunchTarget.DESIGNER, True)]
+
+
+@pytest.mark.parametrize(
+    ("key", "forced"), [(Qt.Key.Key_F3, None), (Qt.Key.Key_F4, LaunchTarget.DESIGNER)]
+)
+def test_shift_f3_f4_launch_with_login_prompt(  # type: ignore[no-untyped-def]
+    qtbot, workspace_factory, monkeypatch, key, forced
+) -> None:
+    """T-32: Shift+F3 — как F3, Shift+F4 — как F4, но с запросом входа."""  # noqa: RUF002
+    view, _calls, _errors, _ = _view(qtbot, workspace_factory)
+    _show_exposed(qtbot, view)
+    _select_first_file_base(view)
+    seen: list[tuple[object, bool, bool]] = []
+
+    def record(
+        key_: str, forced_: object = None, *, elevated: bool = False, ask_login: bool = False
+    ) -> None:
+        seen.append((forced_, elevated, ask_login))
+
+    monkeypatch.setattr(view.workspace(), "launch", record)
+    qtbot.keyClick(view, key, Qt.KeyboardModifier.ShiftModifier)
+    assert seen == [(forced, False, True)]
+
+
+def test_menu_offers_login_prompt_launch_for_non_web_base_only(
+    qtbot, workspace_factory, monkeypatch
+):
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    calls: list[tuple[LaunchTarget | None, bool, bool]] = []
+
+    def record(key, forced=None, *, elevated=False, ask_login=False):
+        calls.append((forced, elevated, ask_login))
+
+    monkeypatch.setattr(view.workspace(), "launch", record)
+    bases = [item for item in view.workspace().items() if not item.is_group]
+    file_item = next(item for item in bases if item.kind is not ConnectKind.WEB)
+    web_item = next(item for item in bases if item.kind is ConnectKind.WEB)
+    file_actions = _menu_actions(view._build_menu(file_item, file_item.key))
+    web_actions = _menu_actions(view._build_menu(web_item, web_item.key))
+    for label in (
+        "Запустить с запросом входа	Shift+F3",  # noqa: RUF001
+        "Конфигуратор с запросом входа	Shift+F4",  # noqa: RUF001
+    ):
+        assert label in file_actions, label
+        assert label not in web_actions, label
+    file_actions["Запустить с запросом входа	Shift+F3"].trigger()  # noqa: RUF001
+    file_actions["Конфигуратор с запросом входа	Shift+F4"].trigger()  # noqa: RUF001
+    assert calls == [(None, False, True), (LaunchTarget.DESIGNER, False, True)]

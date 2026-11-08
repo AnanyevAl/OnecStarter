@@ -69,6 +69,7 @@ def launch_infobase(
     spawn: Callable[[LaunchCommand], int] = spawn_process,
     open_url: Callable[[str], bool] = webbrowser.open,
     credentials: Credentials | None = None,
+    deny_os_auth: bool = False,
 ) -> LaunchOutcome:
     """Запустить базу: процесс клиента или браузер.
 
@@ -102,6 +103,7 @@ def launch_infobase(
         auto_check_version=plan.auto_check_version,
         auto_check_mode=plan.auto_check_mode,
         credentials=credentials,
+        deny_os_auth=deny_os_auth,
     )
     command = build_launch_command(installation, convention, plan.client, arguments)
     try:

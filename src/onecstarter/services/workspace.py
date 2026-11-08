@@ -457,7 +457,12 @@ class Workspace:
         forced: LaunchTarget | None = None,
         *,
         elevated: bool = False,
+        ask_login: bool = False,
     ) -> LaunchOutcome:
+        if elevated and ask_login:
+            # Решение заказчика 03.11.2026 (спека 3.2.5, §1, п. 4): режимы не
+            # сочетаются; UI такого вызова не делает — это ошибка программиста.
+            raise ValueError("Запуск от имени администратора и с запросом входа не сочетаются")  # noqa: RUF001
         if self._installations is None:
             # Спека T-04.6, §3.4: запуск до готовности обязан отказать
             # вежливо, а не молча идти дальше с пустым списком установок —  # noqa: RUF003
@@ -476,12 +481,27 @@ class Workspace:
                 f"Для «{item.name}» запуск от имени администратора не предусмотрен: "
                 "база опубликована на веб-сервере"
             )
+        if ask_login and item.kind is ConnectKind.WEB:
+            # T-32: вход в веб-базу решает веб-сервер, /WA- его не касается  # noqa: RUF003
+            # (спека 3.2.5, §3.1).
+            raise LaunchError(
+                f"Для «{item.name}» запуск с запросом входа не предусмотрен: "  # noqa: RUF001
+                "база опубликована на веб-сервере"
+            )
         if forced is not LaunchTarget.BROWSER:
             # Разовый «Открыть в браузере» — единственный канал, где имя базы
             # не участвует вовсе: открывается URL из `ws`, `/IBName` не строится
             # (финальное ревью ветки, I5). См. `_reject_ambiguous_name`.
             self._reject_ambiguous_name(item)
-        credentials, store_failure = self._credentials_for_launch(key)
+        credentials: Credentials | None
+        store_failure: CredentialStoreError | None
+        if ask_login:
+            # T-32: хранилище не читается вовсе — сохранённые логин и пароль
+            # не уходят в argv и не меняются, а сбой хранилища этот запуск  # noqa: RUF003
+            # не ломает (спека 3.2.5, §3.2).
+            credentials, store_failure = None, None
+        else:
+            credentials, store_failure = self._credentials_for_launch(key)
         try:
             outcome = launch_infobase(
                 item,
@@ -494,6 +514,7 @@ class Workspace:
                 spawn=self._spawn_elevated if elevated else self._spawn,
                 open_url=self._open_url,
                 credentials=credentials,
+                deny_os_auth=ask_login,
             )
         except ElevationDeclinedError as error:
             # Отказ в окне UAC — до записи времени: база не запущена.

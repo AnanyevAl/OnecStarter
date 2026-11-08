@@ -5,7 +5,7 @@
 (`replace_fragment`), и только то, что пользователь фактически тронул —
 нетронутое поле не попадает в правку, даже если его виджет инициализирован
 значением, отличным по форме от сырого значения файла (см. `_initial_app`,
-`_initial_wa`, добавление текущей версии/нормализованной папки в свои
+`_initial_os_auth`, добавление текущей версии/нормализованной папки в свои
 выпадающие списки).
 
 **Круг правок 1 (ревью задачи 9, самая сильная модель).** Поля размещения
@@ -382,6 +382,13 @@ WEB_CLIENT_PLACEMENT_NOTE = (
     "веб-сервере (ws=): выберите другого клиента или верните веб-размещение"
 )
 
+# T-30.2: подпись флажка прежняя, формулировки штатного стартера — в подсказке
+# (решение заказчика 03.11.2026; названия сняты с экрана, [Ф] T-30).  # noqa: RUF003
+OS_AUTH_TOOLTIP = (
+    "Как «Вариант аутентификации» в штатном стартере: отмечено — "
+    "«Выбирать автоматически», снято — «Запрашивать имя и пароль»"
+)
+
 
 @dataclass(frozen=True)
 class DialogCredentials:
@@ -599,8 +606,11 @@ class InfobaseDialog(QDialog):
 
         if item is not None:
             self._os_auth = QCheckBox()
-            self._os_auth.setChecked(_typed_value(item.keys, "WA") == "1")
-            self._initial_wa = "1" if self._os_auth.isChecked() else None
+            self._os_auth.setToolTip(OS_AUTH_TOOLTIP)
+            # [Ф] T-30 03.11.2026: секцию без WA платформа и штатный стартер
+            # читают как WA=1 (вход по ОС включён) — флажок показывает это так же.  # noqa: RUF003
+            self._initial_os_auth = _typed_value(item.keys, "WA") != "0"
+            self._os_auth.setChecked(self._initial_os_auth)
             form.addRow("Аутентификация ОС", self._os_auth)  # noqa: RUF001
 
             self._rows = other_keys(item)
@@ -1274,9 +1284,11 @@ class InfobaseDialog(QDialog):
         app = self._app.currentData()
         if app != self._initial_app:
             changes["App"] = app
-        wa = "1" if self._os_auth.isChecked() else None
-        if wa != self._initial_wa:
-            changes["WA"] = wa
+        # T-30.2: снятый флажок — WA=0, а не удаление ключа: удалённый ключ  # noqa: RUF003
+        # платформа читает как WA=1, и снять флажок было нельзя ([Ф] T-30).
+        checked = self._os_auth.isChecked()
+        if checked != self._initial_os_auth:
+            changes["WA"] = "1" if checked else "0"
         name = self._name.text().strip()
         return changes, (name if name != item.name else None)
 

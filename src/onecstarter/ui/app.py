@@ -38,7 +38,7 @@ from onecstarter.domain.edt import EditorResolution, EdtInstallation
 from onecstarter.domain.launch import ClientConvention
 from onecstarter.domain.server import ServerConvention
 from onecstarter.domain.version import Installation, VersionNumber
-from onecstarter.platform_1c import console
+from onecstarter.platform_1c import console, instance_lock
 from onecstarter.platform_1c.discovery import cfg_paths, find_installations
 from onecstarter.platform_1c.editors import EditorKind, find_editor
 from onecstarter.platform_1c.edt_discovery import (
@@ -97,6 +97,7 @@ from onecstarter.ui.servers.view import ServersView
 from onecstarter.ui.settings_store import SettingsStore
 from onecstarter.ui.settings_view import SettingsView
 from onecstarter.ui.shell import MainWindow
+from onecstarter.ui.single_instance import ActivationServer, request_activation
 from onecstarter.ui.theme_controller import ThemeController
 from onecstarter.ui.tray import create_tray
 from onecstarter.ui.watcher import FileWatcher
@@ -1525,7 +1526,108 @@ def _build_main_window(
     return window, tasks, monitor, start_probe, edt_monitor
 
 
-def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
+# Без числа секунд: при отказе подключения (в т. ч. первый запущен от имени
+# администратора, [Ф] приёмка 08.11.2026) второй сдаётся за 3 с, при молчащем  # noqa: RUF003
+# канале — за 20 с. Подсказка про администратора — по итогам той же приёмки.  # noqa: RUF003
+ALREADY_RUNNING_NOT_RESPONDING = (
+    "OneCStarter уже запущен, но не откликнулся на просьбу показать окно. "
+    "Если он запущен от имени администратора — переключитесь на его окно "  # noqa: RUF001
+    "или значок в трее. Если окна нигде нет — закройте OneCStarter в диспетчере "
+    "задач и запустите снова."
+)
+
+
+class SingleInstance(Protocol):
+    """T-39 (спека 3.2.5 §6.2): признак «уже запущено» и канал «покажи окно»."""
+
+    def acquire(self) -> object | None: ...
+    def request_activation(self) -> bool: ...
+    def serve(self, on_activate: Callable[[], None]) -> object | None: ...
+
+
+@dataclass(frozen=True)
+class _SystemSingleInstance:
+    name: str
+
+    def acquire(self) -> object | None:
+        return instance_lock.acquire(self.name)
+
+    def request_activation(self) -> bool:
+        instance_lock.allow_foreground_for_any()
+        return request_activation(self.name)
+
+    def serve(self, on_activate: Callable[[], None]) -> object | None:
+        return ActivationServer(self.name, on_activate)
+
+
+class _ActivationTarget:
+    """Цель канала «покажи окно», назначаемая после сборки окна (I1 финального ревью T-39).
+
+    Канал открывается сразу после захвата признака, а окно собирается секунды
+    спустя. Просьба, пришедшая раньше окна, запоминается; `set` показывает окно
+    сразу — даже при тихом старте: пользователь явно попросил окно.
+    """  # noqa: RUF002
+
+    def __init__(self) -> None:
+        self._target: Callable[[], None] | None = None
+        self._pending = False
+
+    def __call__(self) -> None:
+        if self._target is None:
+            _log.info("просьба «покажи окно» до сборки окна — запомнена")
+            self._pending = True
+            return
+        self._target()
+
+    def set(self, target: Callable[[], None]) -> None:
+        self._target = target
+        if self._pending:
+            self._pending = False
+            _log.info("просьба «покажи окно», пришедшая при старте, — окно показано")
+            target()
+
+
+def _system_single_instance(env: Mapping[str, str]) -> SingleInstance:
+    return _SystemSingleInstance(
+        instance_lock.instance_id(env, instance_lock.current_session_id())
+    )
+
+
+def _yield_to_running_instance(guard: SingleInstance, *, start_hidden: bool) -> int | None:
+    """Код выхода второго экземпляра; `None` — просьба «покажи окно» не доставлена.
+
+    Код 0 — тихо (автозапуск) или после доставленной просьбы.
+    """
+    if start_hidden:
+        _log.info("автозапуск: программа уже работает, выход")
+        return 0
+    if guard.request_activation():
+        _log.info("программа уже работает: окно поднято, выход")
+        return 0
+    return None
+
+
+def _acquire_after_silence(guard: SingleInstance) -> object | None:
+    """Захватить признак ещё раз, когда первый экземпляр не принял просьбу.
+
+    Первый мог выйти («Выход» в трее) за мгновение до повторного запуска
+    (m2 финального ревью T-39): тогда признак свободен, и программа стартует
+    первым экземпляром. Отказ ОС здесь — «занято»: признак только что был,
+    и второй экземпляр поверх тех же файлов не запускается.
+    """  # noqa: RUF002
+    try:
+        return guard.acquire()
+    except OSError:
+        _log.exception("повторный захват признака «уже запущено» не удался")
+        return None
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    start_hidden: bool = False,
+    single_instance: SingleInstance | None = None,
+) -> int:
     """Обычный запуск. `start_hidden` — старт при входе в Windows (спека §3.4).
 
     Тихий старт показывает окно всё равно, если трея нет: невидимый процесс,
@@ -1539,6 +1641,34 @@ def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
     """  # noqa: RUF002
     application = QApplication(argv if argv is not None else sys.argv)
     application.setApplicationName("OneCStarter")
+    # T-39: один экземпляр на пользователя в сеансе Windows (спека 3.2.5 §6) — до
+    # чтения списка баз: второй экземпляр поверх тех же файлов не запускается.
+    guard: SingleInstance | None
+    try:
+        candidate = (
+            single_instance if single_instance is not None
+            else _system_single_instance(os.environ)
+        )
+        lock = candidate.acquire()
+    except OSError:
+        _log.exception("признак «уже запущено» недоступен — старт без защиты")
+        guard, lock = None, object()
+    else:
+        guard = candidate
+        if lock is None:
+            code = _yield_to_running_instance(candidate, start_hidden=start_hidden)
+            if code is not None:
+                return code
+            lock = _acquire_after_silence(candidate)
+            if lock is None:
+                QMessageBox.critical(None, "OneCStarter", ALREADY_RUNNING_NOT_RESPONDING)
+                return 1
+    # Канал «покажи окно» — сразу, до чтения списка баз (I1 финального ревью
+    # T-39): второй экземпляр, запущенный, пока этот стартует, подключится и
+    # дождётся чтения, а не получит ложное «не отвечает». Цель назначается после  # noqa: RUF003
+    # сборки окна. Канал живёт до выхода из `main` (`application.exec()` ниже).
+    activation_target = _ActivationTarget()
+    _activation = guard.serve(activation_target) if guard is not None else None
     application.setStyleSheet(theme.stylesheet(theme.DARK))
     try:
         runtime = build_runtime(os.environ)
@@ -1575,6 +1705,9 @@ def main(argv: list[str] | None = None, *, start_hidden: bool = False) -> int:
     else:
         window.show()
         _log.info("окно показано")
+    # После решения «показать/скрыть»: просьба, пришедшая при старте, показывает
+    # окно и при тихом старте — пользователь явно попросил окно.
+    activation_target.set(window.show_and_focus_search)
     tasks.start()
     # Время жизни — окно, как у мониторов: ссылка нужна, иначе объект  # noqa: RUF003
     # соберёт сборщик мусора и тики прекратятся молча.

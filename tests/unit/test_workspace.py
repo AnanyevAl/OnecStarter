@@ -1436,3 +1436,81 @@ def test_declined_uac_raises_declined_and_records_nothing(tmp_path: Path) -> Non
     item = next(item for item in workspace.items() if item.key == key)
     assert item.launch_count == 0
     assert item.last_launched_at is None
+
+
+# -- T-32: запуск с запросом входа (Shift+F3/F4) --------------------------------  # noqa: RUF003
+
+
+@pytest.mark.parametrize(
+    ("forced", "executable", "mode"),
+    [(None, "1cv8c.exe", "ENTERPRISE"), (LaunchTarget.DESIGNER, "1cv8.exe", "DESIGNER")],
+)
+def test_ask_login_drops_stored_credentials_and_denies_os_auth(
+    tmp_path: Path, forced: LaunchTarget | None, executable: str, mode: str
+) -> None:
+    """Мутационная проверка обязательна: сохранённые /N /P в режим не попадают."""
+    (tmp_path / "ibases.v8i").write_bytes(_FILE_AND_WEB.encode())
+    calls: list[LaunchCommand] = []
+    store = MemoryStore()
+    workspace = _raw_workspace(tmp_path, calls, store=store)
+    key = _key_of(workspace, "Файловая")
+    workspace.set_credentials(key, "tester", "p@ss", remember=True)
+
+    workspace.launch(key, forced, ask_login=True)
+
+    assert len(calls) == 1
+    assert calls[0].executable.name == executable
+    assert calls[0].arguments.startswith(f'{mode} /IBName"Файловая" /WA- ')
+    assert "/N" not in calls[0].arguments and "/P" not in calls[0].arguments
+    # Сохранённое на месте: режим не «зачищает» учётные данные.
+    assert workspace.credentials_of(key) == ("tester", True)
+    assert store.read(key) == "p@ss"
+
+
+def test_ask_login_never_touches_the_credential_store(tmp_path: Path) -> None:
+    """Мутационная проверка обязательна: хранилище в режиме не читается вовсе."""
+
+    class Untouchable(MemoryStore):
+        def read(self, key: str) -> str | None:
+            raise AssertionError("ask_login не должен читать хранилище")
+
+    (tmp_path / "ibases.v8i").write_bytes(_FILE_AND_WEB.encode())
+    calls: list[LaunchCommand] = []
+    workspace = _raw_workspace(tmp_path, calls, store=Untouchable())
+    key = _key_of(workspace, "Файловая")
+    workspace._user = set_login(workspace._user, key, "tester")
+
+    workspace.launch(key, ask_login=True)
+
+    assert len(calls) == 1
+
+
+def test_ask_login_records_history(tmp_path: Path) -> None:
+    (tmp_path / "ibases.v8i").write_bytes(_FILE_AND_WEB.encode())
+    workspace = _raw_workspace(tmp_path)
+    key = _key_of(workspace, "Файловая")
+    workspace.launch(key, ask_login=True)
+    item = next(item for item in workspace.items() if item.key == key)
+    assert item.launch_count == 1
+    assert item.last_launched_at is not None
+
+
+def test_ask_login_refuses_web_base(tmp_path: Path) -> None:
+    (tmp_path / "ibases.v8i").write_bytes(_FILE_AND_WEB.encode())
+    calls: list[LaunchCommand] = []
+    workspace = _raw_workspace(tmp_path, calls)
+    with pytest.raises(LaunchError) as error:
+        workspace.launch(_key_of(workspace, "Веб"), ask_login=True)  # noqa: RUF001
+    assert str(error.value) == (
+        "Для «Веб» запуск с запросом входа не предусмотрен: база опубликована на веб-сервере"  # noqa: RUF001
+    )
+    assert calls == []
+
+
+def test_ask_login_and_elevated_do_not_combine(tmp_path: Path) -> None:
+    (tmp_path / "ibases.v8i").write_bytes(_FILE_AND_WEB.encode())
+    calls: list[LaunchCommand] = []
+    workspace = _raw_workspace(tmp_path, calls)
+    with pytest.raises(ValueError, match="не сочетаются"):
+        workspace.launch(_key_of(workspace, "Файловая"), elevated=True, ask_login=True)
+    assert calls == []

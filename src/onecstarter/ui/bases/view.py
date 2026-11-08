@@ -552,6 +552,16 @@ class BasesView(QWidget):
             self,
             lambda: self._launch_current(LaunchTarget.DESIGNER, elevated=True),
         )
+        # T-32: с запросом входа — без сохранённых логина и пароля и с /WA-  # noqa: RUF003
+        # (схема сочетаний — решение заказчика 13.10.2026).
+        QShortcut(
+            QKeySequence("Shift+F3"), self, lambda: self._launch_current(None, ask_login=True)
+        )
+        QShortcut(
+            QKeySequence("Shift+F4"),
+            self,
+            lambda: self._launch_current(LaunchTarget.DESIGNER, ask_login=True),
+        )
         # Задача 9 (v2.4): периодической перепроверки каталогов нет намеренно
         # (спека §5) — только явная команда. F5 — как «обновить» привычно
         # для списков в Windows.
@@ -872,10 +882,15 @@ class BasesView(QWidget):
     # -- запуск и операции ---------------------------------------------------
 
     def launch_key(
-        self, key: str, forced: LaunchTarget | None = None, *, elevated: bool = False
+        self,
+        key: str,
+        forced: LaunchTarget | None = None,
+        *,
+        elevated: bool = False,
+        ask_login: bool = False,
     ) -> None:
         try:
-            self._workspace.launch(key, forced, elevated=elevated)
+            self._workspace.launch(key, forced, elevated=elevated, ask_login=ask_login)
         except LaunchDeclinedError:
             # T-31: отказ в окне UAC — решение человека, не ошибка. Без
             # `launched` окно не прячется в трей (спека 3.2.4 ч. 1, §4.1).
@@ -1096,7 +1111,9 @@ class BasesView(QWidget):
         key = index.siblingAtColumn(0).data(KEY_ROLE)
         return key if isinstance(key, str) else None
 
-    def _launch_current(self, forced: LaunchTarget | None, *, elevated: bool = False) -> None:
+    def _launch_current(
+        self, forced: LaunchTarget | None, *, elevated: bool = False, ask_login: bool = False
+    ) -> None:
         """Веб-база больше не особый случай: клиент для неё выразим планом
         (спека v2.3, §3), а невозможные сочетания дают отказ с объяснением,
         а не тишину. Прежнее бездействие было обходом того, что «браузер»
@@ -1104,7 +1121,7 @@ class BasesView(QWidget):
         """  # noqa: RUF002
         key = self._current_base_key()
         if key:
-            self.launch_key(key, forced, elevated=elevated)
+            self.launch_key(key, forced, elevated=elevated, ask_login=ask_login)
 
     def _toggle_current_favorite(self) -> None:
         key = self._current_base_key()
@@ -1214,6 +1231,15 @@ class BasesView(QWidget):
             menu.addAction(
                 "Конфигуратор от имени администратора\tAlt+Shift+F4",
                 lambda: self.launch_key(key, LaunchTarget.DESIGNER, elevated=True),
+            )
+            # T-32: веб-базе этих пунктов нет — вход в неё решает веб-сервер.
+            menu.addAction(
+                "Запустить с запросом входа\tShift+F3",  # noqa: RUF001
+                lambda: self.launch_key(key, ask_login=True),
+            )
+            menu.addAction(
+                "Конфигуратор с запросом входа\tShift+F4",  # noqa: RUF001
+                lambda: self.launch_key(key, LaunchTarget.DESIGNER, ask_login=True),
             )
         menu.addSeparator()
         # Ярлык осмыслен и для веб-базы: он зовёт нашу программу

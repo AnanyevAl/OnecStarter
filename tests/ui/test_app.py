@@ -738,6 +738,8 @@ class _Assembly:
     probe: _FakeAvailabilityProbe
     store: SettingsStore
     shown: list[int]
+    activate: Any  # T-39: что `main` отдал каналу «покажи окно»
+    order: list[str]  # T-39: порядок «канал открыт» / «список баз прочитан»
 
 
 def _assemble(
@@ -748,8 +750,13 @@ def _assemble(
     tray: _FakeTray | None,
     *,
     start_hidden: bool = False,
+    request_during_start: bool = False,
 ) -> Iterator[_Assembly]:
     """Собрать приложение настоящим `main()` и отдать его части тесту.
+
+    `request_during_start` — T-39, I1 финального ревью: просьба «покажи окно»
+    приходит сразу после открытия канала, то есть до сборки окна (второй
+    экземпляр запущен, пока первый ещё стартует).
 
     `tray` — то, что вернёт подменённая `create_tray`: `None` (трея
     в системе нет) или двойник. Две ветки, а не одна: признак
@@ -771,9 +778,13 @@ def _assemble(
         servers=tmp_path / "servers.json",
         edt=tmp_path / "edt.json",
     )
-    monkeypatch.setattr(app_module, "build_runtime", lambda env: runtime)
+    captured: dict[str, Any] = {"order": []}
 
-    captured: dict[str, Any] = {}
+    def fake_build_runtime(env: Any) -> Any:
+        captured["order"].append("build_runtime")
+        return runtime
+
+    monkeypatch.setattr(app_module, "build_runtime", fake_build_runtime)
 
     class _CapturingStore(SettingsStore):
         def __init__(self, *args: Any, **kwargs: Any) -> None:
@@ -854,6 +865,23 @@ def _assemble(
     monkeypatch.setattr(app_module, "FileWatcher", _CapturingWatcher)
     monkeypatch.setattr(app_module, "create_tray", fake_create_tray)
     monkeypatch.setattr(app_module, "GlobalHotkey", fake_hotkey)
+
+    class _RecordingSingleInstance:
+        def acquire(self) -> object:
+            return object()
+
+        def request_activation(self) -> bool:
+            raise AssertionError("в тестах второго экземпляра нет")
+
+        def serve(self, on_activate: Any) -> None:
+            captured["order"].append("serve")
+            captured["activate"] = on_activate
+            if request_during_start:
+                on_activate()
+
+    monkeypatch.setattr(
+        app_module, "_system_single_instance", lambda env: _RecordingSingleInstance()
+    )
     monkeypatch.setattr(app_module, "StartupTasks", fake_startup_tasks)
     monkeypatch.setattr(app_module, "ServerMonitor", fake_server_monitor)
     monkeypatch.setattr(app_module, "EdtMonitor", fake_edt_monitor)
@@ -955,6 +983,8 @@ def _assemble(
         probe=captured["probe"],
         store=captured["store"],
         shown=captured["shown"],
+        activate=captured.get("activate"),
+        order=captured["order"],
     )
     # Разбирается вручную и до конца, а не через `qtbot.addWidget`: тот  # noqa: RUF003
     # откладывает удаление до `deleteLater`, то есть до произвольного
@@ -1007,6 +1037,17 @@ def assembled_hidden_start_with_tray(
 
 
 @pytest.fixture
+def assembled_hidden_start_with_tray_and_early_request(
+    monkeypatch: Any, qapp: Any, workspace_factory: Any, tmp_path: Any
+) -> Iterator[_Assembly]:
+    """Тихий автозапуск с треем, но второй экземпляр попросил окно, пока этот стартовал."""  # noqa: RUF002
+    yield from _assemble(
+        monkeypatch, qapp, workspace_factory, tmp_path, _FakeTray(),
+        start_hidden=True, request_during_start=True,
+    )
+
+
+@pytest.fixture
 def assembled_hidden_start_without_tray(
     monkeypatch: Any, qapp: Any, workspace_factory: Any, tmp_path: Any
 ) -> Iterator[_Assembly]:
@@ -1040,6 +1081,37 @@ def assembled_hidden_start_with_tray_and_close_to_tray_off(
 
 def test_main_returns_the_event_loop_code(assembled: _Assembly) -> None:
     assert assembled.code == 0
+
+
+def test_main_opens_the_activation_channel_before_reading_the_bases(
+    assembled: _Assembly,
+) -> None:
+    """T-39, I1 финального ревью: канал открыт до `build_runtime`.
+
+    Старт до готовности окна — секунды; второй экземпляр, запущенный в это время,
+    обязан подключиться, а не получить «не отвечает».
+    """  # noqa: RUF002
+    assert assembled.order == ["serve", "build_runtime"]
+
+
+def test_activation_request_after_start_shows_the_hidden_window(
+    assembled_hidden_start_with_tray: _Assembly,
+) -> None:
+    """T-39: цель канала — `show_and_focus_search` собранного окна."""
+    window = assembled_hidden_start_with_tray.window
+    assert window.isHidden()
+    assembled_hidden_start_with_tray.activate()
+    assert window.isVisible()
+
+
+def test_activation_request_during_start_shows_the_window_even_on_autostart(
+    assembled_hidden_start_with_tray_and_early_request: _Assembly,
+) -> None:
+    """T-39, I1 финального ревью: просьба до сборки окна запоминается и показывает
+    окно, как только оно собрано, — даже при тихом старте: пользователь явно
+    попросил окно. Мутационная проверка обязательна: без показа запомненной
+    просьбы окно остаётся скрытым в трее, тест падает."""
+    assert assembled_hidden_start_with_tray_and_early_request.window.isVisible()
 
 
 def test_main_starts_the_background_tasks(assembled: _Assembly) -> None:
@@ -1451,6 +1523,137 @@ def test_main_reports_servers_workspace_unavailable_instead_of_crashing(
 
     assert code == 1
     assert shown_errors, "отказ обязан дойти до пользователя окном, не трассировкой"
+
+
+class _BusySingleInstance:
+    def __init__(self, delivered: bool) -> None:
+        self.delivered = delivered
+        self.requests = 0
+
+    def acquire(self) -> None:
+        return None
+
+    def request_activation(self) -> bool:
+        self.requests += 1
+        return self.delivered
+
+    def serve(self, on_activate: Any) -> None:
+        raise AssertionError("второй экземпляр канал не открывает")
+
+
+def _forbid_window(monkeypatch: Any, qapp: Any) -> None:
+    monkeypatch.setattr(app_module, "QApplication", lambda argv: qapp)
+    monkeypatch.setattr(qapp, "setStyleSheet", lambda _sheet: None)
+
+    def no_runtime(env: Any) -> Any:
+        raise AssertionError("второй экземпляр не читает список баз и не строит окно")
+
+    monkeypatch.setattr(app_module, "build_runtime", no_runtime)
+
+
+def test_second_instance_asks_the_first_and_exits(qapp: Any, monkeypatch: Any) -> None:
+    """Мутационная проверка обязательна: убрать ветку «занято → выйти» — тест падает
+    на `build_runtime` (второй экземпляр поверх тех же файлов)."""
+    _forbid_window(monkeypatch, qapp)
+    guard = _BusySingleInstance(delivered=True)
+    assert app_module.main([], single_instance=guard) == 0
+    assert guard.requests == 1
+
+
+def test_second_instance_on_autostart_exits_silently(qapp: Any, monkeypatch: Any) -> None:
+    _forbid_window(monkeypatch, qapp)
+    guard = _BusySingleInstance(delivered=True)
+    assert app_module.main([], start_hidden=True, single_instance=guard) == 0
+    assert guard.requests == 0
+
+
+def test_unresponsive_first_instance_is_reported(qapp: Any, monkeypatch: Any) -> None:
+    _forbid_window(monkeypatch, qapp)
+    shown: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox, "critical", lambda parent, title, text: shown.append(text)
+    )
+    guard = _BusySingleInstance(delivered=False)
+    assert app_module.main([], single_instance=guard) == 1
+    assert shown == [app_module.ALREADY_RUNNING_NOT_RESPONDING]
+
+
+class _StartedAsFirstInstance(Exception):  # noqa: N818
+    """`main` дошёл до чтения списка баз — то есть стартует как первый экземпляр."""
+
+
+class _ScriptedSingleInstance:
+    """Признак с заданными ответами `acquire` по очереди; журнал вызовов в `calls`."""  # noqa: RUF002
+
+    def __init__(self, *acquired: object, delivered: bool = False) -> None:
+        self._acquired = list(acquired)
+        self.delivered = delivered
+        self.calls: list[str] = []
+
+    def acquire(self) -> object:
+        self.calls.append("acquire")
+        result = self._acquired.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    def request_activation(self) -> bool:
+        self.calls.append("request")
+        return self.delivered
+
+    def serve(self, on_activate: Any) -> None:
+        self.calls.append("serve")
+
+
+def _record_start(monkeypatch: Any, qapp: Any, calls: list[str]) -> None:
+    monkeypatch.setattr(app_module, "QApplication", lambda argv: qapp)
+    monkeypatch.setattr(qapp, "setStyleSheet", lambda _sheet: None)
+
+    def started(env: Any) -> Any:
+        calls.append("build_runtime")
+        raise _StartedAsFirstInstance
+
+    monkeypatch.setattr(app_module, "build_runtime", started)
+
+
+def test_first_instance_gone_after_unanswered_request_starts_as_first(
+    qapp: Any, monkeypatch: Any
+) -> None:
+    """m2 финального ревью T-39: первый вышел («Выход» в трее) за мгновение до
+    повторного запуска — просьба не доставлена, но признак уже свободен."""
+    guard = _ScriptedSingleInstance(None, object(), delivered=False)
+    _record_start(monkeypatch, qapp, guard.calls)
+    monkeypatch.setattr(
+        QMessageBox, "critical", lambda *args: pytest.fail("сообщение «не ответил» лишнее")
+    )
+    with pytest.raises(_StartedAsFirstInstance):
+        app_module.main([], single_instance=guard)
+    assert guard.calls == ["acquire", "request", "acquire", "serve", "build_runtime"]
+
+
+def test_unanswered_request_with_failing_retry_is_reported(qapp: Any, monkeypatch: Any) -> None:
+    """Повторный захват отказал ОС — признак только что был: второй не стартует."""  # noqa: RUF002
+    guard = _ScriptedSingleInstance(None, OSError("отказ"), delivered=False)
+    _record_start(monkeypatch, qapp, guard.calls)
+    shown: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox, "critical", lambda parent, title, text: shown.append(text)
+    )
+    assert app_module.main([], single_instance=guard) == 1
+    assert shown == [app_module.ALREADY_RUNNING_NOT_RESPONDING]
+    assert "build_runtime" not in guard.calls
+
+
+def test_unavailable_instance_lock_starts_without_the_channel(
+    qapp: Any, monkeypatch: Any
+) -> None:
+    """`OSError` из `acquire` — старт без защиты: список баз читается, канал
+    не открывается (отложенное замечание задачи 3)."""
+    guard = _ScriptedSingleInstance(OSError("отказ"))
+    _record_start(monkeypatch, qapp, guard.calls)
+    with pytest.raises(_StartedAsFirstInstance):
+        app_module.main([], single_instance=guard)
+    assert guard.calls == ["acquire", "build_runtime"]
 
 
 # -- _build_main_window напрямую: сборка окна отдельно от main() (T-04.6) ----
