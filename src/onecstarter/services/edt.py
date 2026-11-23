@@ -41,6 +41,7 @@ from onecstarter.domain.edt import (
 )
 from onecstarter.domain.launch import LaunchCommand
 from onecstarter.platform_1c import process, window_activate
+from onecstarter.platform_1c.dll_search import startfile
 from onecstarter.platform_1c.editors import EditorKind
 from onecstarter.platform_1c.edtstart_registry import EdtStartRegistry
 from onecstarter.platform_1c.process_scan import ProcessScanner
@@ -216,7 +217,7 @@ class EdtWorkspace:
         rejected_count: Callable[[], int] = lambda: 0,
         spawn: Callable[[LaunchCommand], int] = process.spawn,
         activate: Callable[[int], bool] = window_activate.activate_window,
-        open_file: Callable[[str], None] = os.startfile,
+        open_file: Callable[[str], None] = startfile,
         new_id: Callable[[], str] = _new_id,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:

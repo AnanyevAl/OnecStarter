@@ -1,10 +1,11 @@
 """Диалог профиля сервера и диалог консоли администрирования (T-08, задача 15)."""
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 from PySide6.QtCore import QEvent, Qt
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtGui import QKeyEvent, QShortcut
 from PySide6.QtWidgets import QApplication, QDialog, QWidget
 
 from onecstarter.domain.server import ServerProfile
@@ -110,6 +111,27 @@ def test_for_edit_untouched_regport_has_no_warning(application: QApplication) ->
     profile = _profile()
     dialog = ServerProfileDialog.for_edit(profile, [], [_installation()], "")
     assert dialog.warning_text() == ""
+
+
+
+def _press_ctrl_enter(dialog: QDialog) -> None:
+    """Сочетание Ctrl+Enter: на offscreen `keyClick` не доходит до `QShortcut`,
+    поэтому проверяем подключение обоих ключей и испускаем `activated`."""
+    shortcuts = {s.key().toString(): s for s in dialog.findChildren(QShortcut)}
+    assert {"Ctrl+Return", "Ctrl+Enter"} <= shortcuts.keys()
+    shortcuts["Ctrl+Return"].activated.emit()
+
+
+def test_ctrl_enter_accepts_the_server_profile_dialog(qtbot: Any) -> None:
+    """П1."""
+    dialog = ServerProfileDialog.for_edit(_profile(), [], [_installation()], "")
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.activateWindow()
+    qtbot.waitExposed(dialog)
+    assert dialog.ok_button().isEnabled() is True
+    _press_ctrl_enter(dialog)
+    assert dialog.result() == QDialog.DialogCode.Accepted
 
 
 # -- подстановка каталога от разрешённой версии (спека §3.2) ---------------

@@ -2,7 +2,8 @@
 
 from pathlib import Path
 
-from PySide6.QtWidgets import QLabel
+from PySide6.QtGui import QShortcut
+from PySide6.QtWidgets import QDialog, QLabel
 
 from onecstarter.domain.edt import EdtInstallation, EdtProject
 from onecstarter.ui.edt.dialog import (
@@ -144,3 +145,25 @@ def test_workspace_field_is_called_working_area(qtbot) -> None:  # type: ignore[
     dialog.name_edit().setText("a")
     dialog.workspace_edit().setText("")
     assert dialog.error_text() == "Рабочая область не задана"
+
+
+
+def _press_ctrl_enter(dialog: QDialog) -> None:
+    """Сочетание Ctrl+Enter: на offscreen `keyClick` не доходит до `QShortcut`,
+    поэтому проверяем подключение обоих ключей и испускаем `activated`."""
+    shortcuts = {s.key().toString(): s for s in dialog.findChildren(QShortcut)}
+    assert {"Ctrl+Return", "Ctrl+Enter"} <= shortcuts.keys()
+    shortcuts["Ctrl+Return"].activated.emit()
+
+
+def test_ctrl_enter_accepts_the_edt_record_dialog(qtbot) -> None:  # type: ignore[no-untyped-def]
+    """П1."""
+    project = EdtProject(id="p1", name="Розница", workspace=r"D:\edt\retail")
+    dialog = EdtProjectDialog(project, INSTALLED, defaults=DEFAULTS, choose_directory=lambda: "")
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.activateWindow()
+    qtbot.waitExposed(dialog)
+    assert dialog.ok_button().isEnabled() is True
+    _press_ctrl_enter(dialog)
+    assert dialog.result() == QDialog.DialogCode.Accepted

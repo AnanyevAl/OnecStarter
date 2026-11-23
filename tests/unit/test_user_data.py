@@ -13,8 +13,10 @@ from onecstarter.services.user_data import (
     record_launch,
     rekey,
     save_user_data,
+    set_designer_params,
     set_favorite,
     set_login,
+    set_repository,
 )
 
 WHEN = datetime(2026, 8, 4, 7, 12, 44, tzinfo=UTC)
@@ -176,3 +178,44 @@ def test_non_string_login_in_the_file_is_coerced_to_text(tmp_path: Path) -> None
         json.dumps({"schema": 1, "entries": {"id:x": {"login": 123}}}), encoding="utf-8"
     )
     assert load_user_data(path)["id:x"].login == "123"
+
+
+def test_designer_params_round_trip(tmp_path: Path) -> None:
+    path = tmp_path / "bases.json"
+    entries = set_designer_params({}, "id:1", '/Len /Out "C:\\a b.txt"')
+    save_user_data(path, entries)
+    assert load_user_data(path)["id:1"].designer_params == '/Len /Out "C:\\a b.txt"'
+
+
+def test_designer_params_missing_in_old_file_is_none(tmp_path: Path) -> None:
+    path = tmp_path / "bases.json"
+    path.write_text('{"schema": 1, "entries": {"id:1": {"favorite": true}}}', encoding="utf-8")
+    assert load_user_data(path)["id:1"].designer_params is None
+
+
+def test_designer_params_non_string_is_coerced(tmp_path: Path) -> None:
+    path = tmp_path / "bases.json"
+    path.write_text(
+        '{"schema": 1, "entries": {"id:1": {"designer_params": 42}}}', encoding="utf-8"
+    )
+    assert load_user_data(path)["id:1"].designer_params == "42"
+
+
+def test_designer_params_move_on_rekey() -> None:
+    entries = set_designer_params({}, "old", "/Len")
+    assert rekey(entries, "old", "new")["new"].designer_params == "/Len"
+
+
+def test_repository_fields_round_trip(tmp_path: Path) -> None:
+    path = tmp_path / "bases.json"
+    entries = set_repository({}, "id:1", "tcp://repo/main", "builder")
+    save_user_data(path, entries)
+    loaded = load_user_data(path)["id:1"]
+    assert (loaded.repository_address, loaded.repository_user) == ("tcp://repo/main", "builder")
+
+
+def test_old_file_without_repository_fields_loads(tmp_path: Path) -> None:
+    path = tmp_path / "bases.json"
+    path.write_text('{"schema": 1, "entries": {"id:1": {"favorite": true}}}', encoding="utf-8")
+    loaded = load_user_data(path)["id:1"]
+    assert loaded.repository_address is None and loaded.repository_user is None

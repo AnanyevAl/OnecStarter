@@ -32,6 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from onecstarter.domain.cli_catalog import CatalogError
 from onecstarter.domain.launch import LaunchCommand
 from onecstarter.domain.server import ServerConvention, ServerProfile
 from onecstarter.domain.version import Arch, Installation, VersionNumber, parse_version
@@ -77,6 +78,9 @@ from onecstarter.ui.edt.cli_watch import CliWatcher
 from onecstarter.ui.edt.monitor import EdtMonitor
 from onecstarter.ui.edt.view import EdtView
 from onecstarter.ui.hotkey import GlobalHotkey
+from onecstarter.ui.ops.controller import OperationsController
+from onecstarter.ui.ops.quit_dialog import QuitChoice
+from onecstarter.ui.ops.view import OperationsView
 from onecstarter.ui.servers.dialog import ConsoleDialog
 from onecstarter.ui.servers.journal_panel import JournalPanel
 from onecstarter.ui.servers.monitor import ServerMonitor
@@ -718,6 +722,33 @@ class _FakeAvailabilityProbe(QObject):
         self.start_calls.append(list(targets))
 
 
+@pytest.fixture(autouse=True)
+def _release_app_children(qapp: Any) -> Iterator[None]:
+    """Убрать `SettingsStore`/`ThemeController` окон после теста (финальное ревью 2б, п. 1).
+
+    Оба — дети `qapp`, а `deleteLater` в teardown pytest-qt на нулевом уровне цикла событий
+    не срабатывает: пережившие тест контроллеры темы перестилизуют все ещё живые окна, и
+    время каждого следующего теста растёт линейно. Teardown этой фикстуры идёт после
+    `_close_widgets` pytest-qt (она создана раньше).
+
+    План В, полный прогон: таблицу стилей приложения, поставленную `ThemeController` настоящего
+    `main()`, тоже возвращаем (иначе 10pt темы остаются у соседних файлов и ломают тесты,
+    меряющие ширину текста). Возврат — только если таблица изменилась и только после
+    удаления окон теста: `setStyleSheet` поверх живого дерева — источник access violation.
+    """  # noqa: RUF002
+    sheet_before = qapp.styleSheet()
+    yield
+    for child in qapp.children():
+        if isinstance(child, SettingsStore | ThemeController):
+            child.deleteLater()
+    for top in qapp.topLevelWidgets():
+        if isinstance(top, MainWindow):  # окна `run_smoke` без `qtbot.addWidget` тоже уходят
+            top.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    if qapp.styleSheet() != sheet_before:
+        qapp.setStyleSheet(sheet_before)
+
+
 @dataclass
 class _Assembly:
     code: int
@@ -1023,6 +1054,20 @@ def assembled_edt_unavailable(
 ) -> Iterator[_Assembly]:
     """`edt.json` — каталог: `load_registry` отказывает `EdtUnavailableError` (C2)."""
     (tmp_path / "edt.json").mkdir()
+    yield from _assemble(monkeypatch, qapp, workspace_factory, tmp_path, None)
+
+
+@pytest.fixture
+def assembled_catalog_broken(
+    monkeypatch: Any, qapp: Any, workspace_factory: Any, tmp_path: Any, caplog: Any
+) -> Iterator[_Assembly]:
+    """Каталог ключей не загрузился (финальное ревью блока 1, F7)."""
+
+    def broken(data: bytes | None = None) -> Any:
+        raise CatalogError("/X: имя повторяется")
+
+    monkeypatch.setattr(app_module, "load_cli_catalog", broken)
+    caplog.set_level(logging.WARNING, logger="onecstarter.startup")
     yield from _assemble(monkeypatch, qapp, workspace_factory, tmp_path, None)
 
 
@@ -1866,7 +1911,7 @@ def test_build_main_window_has_three_sections_in_mockup_order(
     qtbot.addWidget(window)
 
     labels = [button.text() for button in window.section_buttons()]
-    assert labels == ["Базы", "Серверы", "EDT", "Настройки"]
+    assert labels == ["Базы", "Серверы", "EDT", "Операции", "Настройки"]
     assert isinstance(window.current_section(), BasesView)  # «Базы» остались первым разделом
     window.show_section(labels.index("Серверы"))
     assert isinstance(window.current_section(), ServersView)
@@ -2456,9 +2501,9 @@ def test_clearing_a_busy_hotkey_resets_the_tooltip_to_plain(
     assert "занято" in tooltips[-1]
     balloons_after_start = len(messages)
 
-    # Раздел «Настройки» — индекс 3 с задачи 19 (v3): «Серверы» и «EDT»  # noqa: RUF003
+    # Раздел «Настройки» — индекс 4 с вехи v4: «Серверы», «EDT» и «Операции»  # noqa: RUF003
     # встали между «Базами» и «Настройками» (порядок мокапа).
-    window.show_section(3)
+    window.show_section(4)
     settings_view = window.current_section()
     settings_view.hotkey_edit().captured.emit("")
 
@@ -2535,10 +2580,11 @@ def test_busy_hotkey_without_tray_opens_the_settings_section(
     )
     section = window.current_section()
     assert isinstance(section, SettingsView)
-    # Четыре раздела с задачи 19 (v3) — «Настройки» последние по счёту  # noqa: RUF003
-    # («Серверы» и «EDT» между «Базами» и «Настройками», порядок мокапа);
+    # Пять разделов с вехи v4 — «Настройки» последние по счёту  # noqa: RUF003
+    # («Серверы», «EDT» и «Операции» между «Базами» и «Настройками», порядок мокапа);
     # отмечена последняя.
     assert [button.isChecked() for button in window.section_buttons()] == [
+        False,
         False,
         False,
         False,
@@ -2853,14 +2899,15 @@ def test_settings_view_window_shortcut_range_matches_real_section_count(
         application, runtime, {"APPDATA": str(tmp_path / "appdata")}
     )
 
-    # Раздел «Настройки» — индекс 3 (см. test_clearing_a_busy_hotkey_resets_
-    # the_tooltip_to_plain выше): «Серверы» и «EDT» встали между «Базами»
-    # и «Настройками» с v3.  # noqa: RUF003
-    window.show_section(3)
+    # Раздел «Настройки» — индекс 4 (см. test_clearing_a_busy_hotkey_resets_
+    # the_tooltip_to_plain выше): «Серверы», «EDT» и «Операции» встали между
+    # «Базами» и «Настройками».
+    window.show_section(4)
     settings_view = window.current_section()
     assert isinstance(settings_view, SettingsView)
     assert settings_view.window_shortcut_reference_rows() == [
-        ("Alt+1 … Alt+4", WINDOW_SHORTCUTS[0].title)
+        ("Alt+1 … Alt+5", WINDOW_SHORTCUTS[0].title),
+        (WINDOW_SHORTCUTS[1].label, WINDOW_SHORTCUTS[1].title),
     ]
 
     window.close()
@@ -4098,6 +4145,20 @@ def test_main_keeps_working_when_edt_json_unreadable(
     assert shown_errors == [], "отказ раздела — заглушка на месте раздела, не модальное окно"
 
 
+def test_main_keeps_working_when_cli_catalog_fails(
+    assembled_catalog_broken: _Assembly, shown_errors: list[str], caplog: Any
+) -> None:
+    """Сбой каталога не роняет запуск: раздел «Базы» работает без пунктов параметров."""
+    assert assembled_catalog_broken.code == 0
+    assert assembled_catalog_broken.view._catalog is None
+    assert shown_errors == []
+    # `main()` выполняется в фикстуре — записи лога принадлежат фазе setup.
+    assert any(
+        record.name == "onecstarter.startup" and "каталог" in record.getMessage()
+        for record in caplog.get_records("setup")
+    )
+
+
 def test_run_smoke_reports_edt_unavailable_when_edt_json_unreadable(
     tmp_path: Any, monkeypatch: Any, qtbot: Any, caplog: Any
 ) -> None:
@@ -4368,7 +4429,7 @@ def test_edt_installations_note_never_walks_disk_directly(
     qtbot.addWidget(window)
     assert calls == [], "конструктор вьюхи настроек не должен обходить ручной каталог"
 
-    window.show_section(3)
+    window.show_section(4)
     settings_view = window.current_section()
     assert isinstance(settings_view, SettingsView)
     settings_view.refresh_edt_notes()
@@ -4426,7 +4487,7 @@ def test_settings_note_distinguishes_missing_version_from_nothing_found(
     qtbot.addWidget(window)
     assert edt_monitor is not None
 
-    window.show_section(3)
+    window.show_section(4)
     settings_view = window.current_section()
     assert isinstance(settings_view, SettingsView)
     before = settings_view.row_note(EDT_INSTALLATIONS_ROW).text()
@@ -4507,7 +4568,7 @@ def test_settings_note_stays_neutral_when_rejection_reason_is_not_missing_versio
     qtbot.addWidget(window)
     assert edt_monitor is not None
 
-    window.show_section(3)
+    window.show_section(4)
     settings_view = window.current_section()
     assert isinstance(settings_view, SettingsView)
 
@@ -4553,6 +4614,7 @@ def test_smoke_edt_line_format_matches_the_build_gate(
     а не только настоящей упаковкой. Проверены оба формата строки: без отброшенных
     (`smoke: edt=N`) и с ними (`smoke: edt=N, отброшено=M`) — расхождение поймало
     бы только второй, и покрытие одним первым было бы неполным доказательством.
+    Тем же прогоном сверяется строка `smoke: indicators=` (план Б, задача 4).
     """  # noqa: RUF002
     smoke = _load_build_smoke_module()
     monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
@@ -4572,7 +4634,25 @@ def test_smoke_edt_line_format_matches_the_build_gate(
     assert re.search(smoke.EDT_LINE_PATTERN, caplog.text, re.MULTILINE), (
         "формат строки smoke: edt=… разошёлся с регэкспом гейта build/smoke.py"  # noqa: RUF001
     )
+    # План Б, задача 4: картинки индикаторов теряются в `datas` spec-файла или без qsvg —
+    # тот же прогон `run_smoke`, тот же приём «регэксп гейта против настоящей строки».
+    assert re.search(smoke.INDICATORS_LINE_PATTERN, caplog.text, re.MULTILINE), (
+        "строка smoke: indicators=… не прошла регэксп гейта build/smoke.py"
+    )
     qtbot.addWidget(captured["window"])
+
+
+def test_smoke_indicators_line_pattern_accepts_only_ok() -> None:
+    smoke = _load_build_smoke_module()
+    assert re.search(smoke.INDICATORS_LINE_PATTERN, "smoke: indicators=ok", re.MULTILINE)
+    assert not re.search(
+        smoke.INDICATORS_LINE_PATTERN, "smoke: indicators=FAIL: indicator-check.svg", re.MULTILINE
+    )
+
+
+def test_indicator_status_names_a_missing_image(monkeypatch: Any, tmp_path: Any) -> None:
+    monkeypatch.setattr(theme, "indicator_path", lambda name: tmp_path / name)
+    assert app_module.indicator_images_status() == f"FAIL: {theme.INDICATOR_CHECK}"
 
 
 def test_smoke_edt_line_pattern_also_matches_the_rejected_variant(tmp_path: Any) -> None:
@@ -4620,6 +4700,44 @@ def test_main_window_builds_update_controller_without_checking(
     assert asked == []
 
 
+def test_update_installer_starts_without_the_inherited_dll_directory(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Any
+) -> None:
+    """Н1, ревью задачи 10, п. 3: установщик, который заменяет файлы `_internal`, не должен
+    сам держать их — контроллер окна запускает его через `dll_search`, а не `os.startfile`.
+
+    `os.startfile` подменён: возврат к нему в `app.py` красит тест, а не запускает файл.
+    """  # noqa: RUF002
+    import os
+
+    from onecstarter.platform_1c import dll_search
+
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    monkeypatch.setattr(app_module, "AvailabilityProbe", _FakeAvailabilityProbe)
+    monkeypatch.setattr(app_module, "urllib_get", lambda _url, **_kwargs: b"")
+    env = {"APPDATA": str(tmp_path)}
+    window, _tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(
+        qapp, build_runtime(env), env
+    )
+    qtbot.addWidget(window)
+
+    bundle = r"C:\app\_internal"
+    state: dict[str, str | None] = {"dir": bundle}
+    monkeypatch.setattr(dll_search, "get_dll_directory", lambda: state["dir"])
+    monkeypatch.setattr(dll_search, "set_dll_directory", lambda p: state.__setitem__("dir", p))
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "_MEIPASS", bundle, raising=False)
+    started: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(os, "startfile", lambda path: started.append((str(path), state["dir"])))
+
+    setup = tmp_path / "OneCStarter-setup.exe"
+    controller = window.update_controller
+    assert isinstance(controller, UpdateController)
+    controller._launch(setup)
+    assert started == [(str(setup), None)]
+    assert state["dir"] == bundle
+
+
 def test_column_widths_saver_merges_lists_quietly(qtbot, tmp_path: Path) -> None:  # type: ignore[no-untyped-def]
     store = SettingsStore(tmp_path / "settings.json")
     assert store.store_quietly(column_widths={"edt": {"edt": 100}}) is None
@@ -4637,3 +4755,366 @@ def test_column_widths_saver_logs_write_failure(qtbot, tmp_path: Path, caplog) -
     with caplog.at_level("WARNING", logger="onecstarter.startup"):
         _column_widths_saver(store, "bases")({"size": 80})
     assert "ширины колонок не сохранены" in caplog.text
+
+
+# -- Раздел «Операции» (план 2б, задача 10) ----------------------------------  # noqa: RUF003
+
+
+def _ops_window(
+    qtbot: Any,
+    monkeypatch: Any,
+    qapp: Any,
+    tmp_path: Path,
+    *,
+    operations_json: str | None = None,
+    **kwargs: Any,
+) -> MainWindow:
+    """Настоящая сборка окна на `tmp_path`: без процессов 1С и без настоящих диалогов."""  # noqa: RUF002
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    env = {"APPDATA": str(tmp_path), "LOCALAPPDATA": str(tmp_path)}
+    runtime = build_runtime(env)
+    if operations_json is not None:
+        runtime.settings.parent.mkdir(parents=True, exist_ok=True)
+        runtime.settings.with_name("operations.json").write_text(operations_json, encoding="utf-8")
+    window, _tasks, _monitor, _start_probe, _edt_monitor = _build_main_window(
+        qapp, runtime, env, process_scanner=NullScanner(), **kwargs
+    )
+    qtbot.addWidget(window)
+    return window
+
+
+def test_operations_section_stands_before_settings(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Path
+) -> None:
+    window = _ops_window(qtbot, monkeypatch, qapp, tmp_path)
+    labels = [button.text() for button in window.section_buttons()]
+    assert labels == ["Базы", "Серверы", "EDT", "Операции", "Настройки"]
+    assert window.section_buttons()[3].toolTip() == "Операции (Alt+4)"
+    assert window.section_buttons()[4].toolTip() == "Настройки (Alt+5)"
+    assert not window.section_buttons()[3].icon().isNull()
+    window.show_section(3)
+    assert isinstance(window.current_section(), OperationsView)
+    assert window.operations_controller is not None
+
+
+def test_scenario_request_from_bases_opens_operations_and_the_run_dialog(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Path
+) -> None:
+    asked: list[tuple[str | None, list[str]]] = []
+    monkeypatch.setattr(
+        OperationsView,
+        "request_run",
+        lambda self, scenario_id=None, keys=None, **_kw: asked.append((scenario_id, list(keys))),
+    )
+    window = _ops_window(qtbot, monkeypatch, qapp, tmp_path)
+    bases_view = window.findChild(BasesView)
+    assert bases_view is not None
+    bases_view.scenario_requested.emit("builtin:dump-dt", ["id:1"])
+    assert asked == [("builtin:dump-dt", ["id:1"])]
+    assert isinstance(window.current_section(), OperationsView)
+    window.show_section(0)
+    bases_view.operations_requested.emit()
+    assert isinstance(window.current_section(), OperationsView)
+
+
+def test_bases_view_gets_scenarios_and_busy_keys_from_the_controller(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Path
+) -> None:
+    window = _ops_window(qtbot, monkeypatch, qapp, tmp_path)
+    bases_view = window.findChild(BasesView)
+    assert bases_view is not None
+    assert bases_view._scenarios is not None
+    assert [s.name for s in bases_view._scenarios()][:3] == [
+        "Выгрузить в .dt",
+        "Загрузить из .dt",
+        "Выгрузить .cf",
+    ]
+    assert bases_view._busy_keys() == frozenset()
+
+
+def test_unreadable_operations_json_replaces_the_section_only(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Path
+) -> None:
+    bad = '{"schema": 99, "scenarios": []}'
+    window = _ops_window(qtbot, monkeypatch, qapp, tmp_path, operations_json=bad)
+    assert [button.text() for button in window.section_buttons()][3] == "Операции"
+    window.show_section(3)
+    placeholder = window.current_section()
+    assert isinstance(placeholder, QLabel)
+    assert placeholder.objectName() == "OperationsUnavailable"
+    assert placeholder.text().startswith("Раздел «Операции» недоступен: ")
+    assert window.operations_controller is None
+    bases_view = window.findChild(BasesView)
+    assert bases_view is not None
+    assert bases_view._scenarios is None  # меню сценариев нет
+    path = build_runtime({"APPDATA": str(tmp_path)}).settings.with_name("operations.json")
+    assert path.read_text(encoding="utf-8") == bad  # файл не тронут
+
+
+def test_quit_during_a_run_waits_for_the_run_and_then_quits(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Path
+) -> None:
+    choices = iter([QuitChoice.STAY, QuitChoice.WAIT])
+    questions: list[str] = []
+
+    def ask(_parent: QWidget, message: str) -> QuitChoice:
+        questions.append(message)
+        return next(choices)
+
+    quits: list[int] = []
+    monkeypatch.setattr(qapp, "quit", lambda: quits.append(1))
+    window = _ops_window(
+        qtbot,
+        monkeypatch,
+        qapp,
+        tmp_path,
+        quit_dialog=lambda _parent, _message: True,
+        operations_quit_dialog=ask,
+    )
+    controller = window.operations_controller
+    assert isinstance(controller, OperationsController)
+    soft: list[int] = []
+    hard: list[int] = []
+    monkeypatch.setattr(controller, "cancel_soft_for_quit", lambda: soft.append(1))
+    monkeypatch.setattr(controller, "cancel_hard", lambda: hard.append(1))
+    monkeypatch.setattr(type(controller), "running", property(lambda self: True))
+    monkeypatch.setattr(controller, "quit_question", lambda: "Сценарий «X» ещё выполняется")
+    assert window.confirm_quit is not None
+    try:
+        assert window.confirm_quit() is False  # «Не выходить»  # noqa: RUF003
+        assert soft == [] and quits == []
+        assert window.confirm_quit() is False  # «Дождаться шага и выйти» — выход отложен
+        assert soft == [1] and hard == [] and quits == []
+        assert questions == ["Сценарий «X» ещё выполняется"] * 2
+        assert "затем программа закроется" in window.windowTitle()
+        assert isinstance(window.current_section(), OperationsView)
+
+        controller.run_finished.emit(None)
+        assert quits == [1]
+        controller.run_finished.emit(None)  # обычное завершение запуска без ожидания выхода
+        assert quits == [1]
+    finally:
+        window.confirm_quit = None  # teardown `qtbot` закрывает окно: гейт не нужен
+
+
+def test_quit_wait_then_stay_revokes_the_quit_cancel_once(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Path
+) -> None:
+    """Финальное ревью плана А, T4-b: `revoke_soft` гейта проведён к контроллеру (Р4)."""  # noqa: RUF002
+    choices = iter([QuitChoice.WAIT, QuitChoice.STAY, QuitChoice.STAY])
+    quits: list[int] = []
+    monkeypatch.setattr(qapp, "quit", lambda: quits.append(1))
+    window = _ops_window(
+        qtbot,
+        monkeypatch,
+        qapp,
+        tmp_path,
+        quit_dialog=lambda _parent, _message: True,
+        operations_quit_dialog=lambda _parent, _message: next(choices),
+    )
+    controller = window.operations_controller
+    assert isinstance(controller, OperationsController)
+    soft: list[int] = []
+    revoked: list[int] = []
+    monkeypatch.setattr(controller, "cancel_soft_for_quit", lambda: soft.append(1))
+    monkeypatch.setattr(controller, "revoke_quit_cancel", lambda: revoked.append(1))
+    monkeypatch.setattr(type(controller), "running", property(lambda self: True))
+    monkeypatch.setattr(controller, "quit_question", lambda: "Сценарий «X» ещё выполняется")
+    assert window.confirm_quit is not None
+    try:
+        assert window.confirm_quit() is False  # «Дождаться шага и выйти»
+        assert soft == [1] and revoked == []
+        assert window.confirm_quit() is False  # повторный выход → «Не выходить»  # noqa: RUF003
+        assert revoked == [1]
+        assert window.confirm_quit() is False  # снова «Не выходить»: снимать нечего  # noqa: RUF003
+        assert revoked == [1]
+        assert "затем программа закроется" not in window.windowTitle()
+        controller.run_finished.emit(None)
+        assert quits == []
+    finally:
+        window.confirm_quit = None
+
+
+def test_quit_during_a_run_can_abort(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(qapp, "quit", lambda: None)
+    window = _ops_window(
+        qtbot,
+        monkeypatch,
+        qapp,
+        tmp_path,
+        quit_dialog=lambda _parent, _message: True,
+        operations_quit_dialog=lambda _parent, _message: QuitChoice.ABORT,
+    )
+    controller = window.operations_controller
+    assert isinstance(controller, OperationsController)
+    hard: list[int] = []
+    monkeypatch.setattr(controller, "cancel_hard", lambda: hard.append(1))
+    monkeypatch.setattr(type(controller), "running", property(lambda self: True))
+    assert window.confirm_quit is not None
+    try:
+        assert window.confirm_quit() is False and hard == [1]
+    finally:
+        window.confirm_quit = None
+
+
+def test_quit_without_a_run_asks_nothing_about_operations(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Path
+) -> None:
+    asked: list[str] = []
+
+    def never(_parent: QWidget, message: str) -> QuitChoice:
+        asked.append(message)
+        return QuitChoice.STAY
+
+    window = _ops_window(
+        qtbot,
+        monkeypatch,
+        qapp,
+        tmp_path,
+        quit_dialog=lambda _parent, _message: True,
+        operations_quit_dialog=never,
+    )
+    assert window.confirm_quit is not None
+    assert window.confirm_quit() is True and asked == []
+
+
+def test_second_pass_of_the_quit_gate_after_a_waited_run_asks_nothing_and_logs_once(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Path
+) -> None:
+    """`application.quit()` шлёт окну closeEvent → `confirm_quit` второй раз (ревью, п. 1)."""
+    quits: list[int] = []
+    monkeypatch.setattr(qapp, "quit", lambda: quits.append(1))
+    shutdown_marks: list[int] = []
+    monkeypatch.setattr(ServersWorkspace, "log_shutdown", lambda self: shutdown_marks.append(1))
+    plain_questions: list[str] = []
+
+    def plain_dialog(_parent: QWidget, message: str) -> bool:
+        plain_questions.append(message)
+        return True
+
+    window = _ops_window(
+        qtbot,
+        monkeypatch,
+        qapp,
+        tmp_path,
+        quit_dialog=plain_dialog,
+        operations_quit_dialog=lambda _parent, _message: QuitChoice.WAIT,
+    )
+    controller = window.operations_controller
+    assert isinstance(controller, OperationsController)
+    monkeypatch.setattr(controller, "cancel_soft_for_quit", lambda: None)
+    monkeypatch.setattr(type(controller), "running", property(lambda self: True))
+    assert window.confirm_quit is not None
+    try:
+        assert window.confirm_quit() is False
+        controller.run_finished.emit(None)
+        assert quits == [1] and shutdown_marks == [1]
+        assert window.confirm_quit() is True  # проход closeEvent после `quit()`
+        assert shutdown_marks == [1] and plain_questions == []
+    finally:
+        window.confirm_quit = None
+
+
+def test_quit_when_the_run_finishes_inside_the_open_question_finalizes_once(
+    qtbot: Any, monkeypatch: Any, qapp: Any, tmp_path: Path
+) -> None:
+    """Финальное ревью 2б, п. 3: конец запуска во вложенном цикле вопроса — одна отметка выхода.
+
+    Выход уже отложен (`pending`), пользователь повторно закрывает окно, и пока открыт вопрос,
+    приходит `run_finished`: `on_run_finished` отмечает выход и просит закрытие. Возврат
+    `check()` не должен отметить выход второй раз.
+    """  # noqa: RUF002
+    quits: list[int] = []
+    monkeypatch.setattr(qapp, "quit", lambda: quits.append(1))
+    shutdown_marks: list[int] = []
+    monkeypatch.setattr(ServersWorkspace, "log_shutdown", lambda self: shutdown_marks.append(1))
+    state: dict[str, bool] = {"running": True}
+    controller_box: list[OperationsController] = []
+    answers = iter([QuitChoice.WAIT, QuitChoice.WAIT])
+
+    def ask(_parent: QWidget, _message: str) -> QuitChoice:
+        choice = next(answers)
+        if state.get("second"):
+            state["running"] = False
+            controller_box[0].run_finished.emit(None)
+        return choice
+
+    window = _ops_window(
+        qtbot,
+        monkeypatch,
+        qapp,
+        tmp_path,
+        quit_dialog=lambda _parent, _message: True,
+        operations_quit_dialog=ask,
+    )
+    controller = window.operations_controller
+    assert isinstance(controller, OperationsController)
+    controller_box.append(controller)
+    monkeypatch.setattr(controller, "cancel_soft_for_quit", lambda: None)
+    monkeypatch.setattr(type(controller), "running", property(lambda self: state["running"]))
+    assert window.confirm_quit is not None
+    try:
+        assert window.confirm_quit() is False  # «Дождаться»: выход отложен
+        state["second"] = True
+        assert window.confirm_quit() is True
+        assert quits == [1]
+        assert shutdown_marks == [1]  # одна отметка, не две
+    finally:
+        window.confirm_quit = None
+
+
+def test_main_wires_the_operations_quit_dialog(
+    monkeypatch: Any, qapp: Any, workspace_factory: Any, tmp_path: Any
+) -> None:
+    """`main()` обязана передать `operations_quit_dialog`, иначе выход при запуске не спросит.
+
+    Мутация: убрать `operations_quit_dialog=ask_operations_quit` из вызова в `main()` —
+    `quit_gate` станет `None`, и закрытие во время запуска пройдёт молча.
+    """
+    asked: list[str] = []
+
+    def substitute(_parent: Any, message: str) -> QuitChoice:
+        asked.append(message)
+        return QuitChoice.STAY
+
+    monkeypatch.setattr(app_module, "ask_operations_quit", substitute)
+    assembly_gen = _assemble(monkeypatch, qapp, workspace_factory, tmp_path, None)
+    assembly = next(assembly_gen)
+    try:
+        controller = assembly.window.operations_controller
+        assert isinstance(controller, OperationsController)
+        monkeypatch.setattr(type(controller), "running", property(lambda self: True))
+        monkeypatch.setattr(controller, "quit_question", lambda: "идёт сценарий")
+        assert assembly.window.confirm_quit is not None
+        assert assembly.window.confirm_quit() is False
+        assert asked == ["идёт сценарий"]
+    finally:
+        assembly.window.confirm_quit = None
+        next(assembly_gen, None)
+
+
+def test_smoke_reports_operations_count_and_unavailable_section(
+    tmp_path: Any, monkeypatch: Any, qtbot: Any, caplog: Any
+) -> None:
+    monkeypatch.setattr(app_module, "GlobalHotkey", _FakeHotkey)
+    captured = _capture_window(monkeypatch)
+    target = tmp_path / "out"
+    target.mkdir()
+    with caplog.at_level(logging.INFO):
+        run_smoke(str(target), {"APPDATA": str(tmp_path / "ok")}, credential_store=_MemoryVault())
+    assert re.search(r"smoke: operations=[1-9]\d*", caplog.text)
+    qtbot.addWidget(captured["window"])
+
+    caplog.clear()
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    (broken / "OneCStarter").mkdir()
+    (broken / "OneCStarter" / "operations.json").write_text('{"schema": 99}', encoding="utf-8")
+    captured = _capture_window(monkeypatch)
+    with caplog.at_level(logging.INFO):
+        run_smoke(str(target), {"APPDATA": str(broken)}, credential_store=_MemoryVault())
+    assert "smoke: operations=unavailable" in caplog.text
+    qtbot.addWidget(captured["window"])
+

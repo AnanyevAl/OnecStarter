@@ -13,7 +13,13 @@ from onecstarter.domain.launch import (
 )
 from onecstarter.domain.version import Arch, Installation, parse_version
 from onecstarter.security.secrets import redact_connect
-from onecstarter.services.launch import LaunchError, LaunchKind, LaunchOutcome, launch_infobase
+from onecstarter.services.launch import (
+    LaunchError,
+    LaunchKind,
+    LaunchOutcome,
+    launch_infobase,
+    opens_in_browser,
+)
 from onecstarter.services.model import InfobaseItem, InfobaseSource, item_from_section
 
 CONVENTIONS = [
@@ -473,3 +479,56 @@ def test_auto_version_path_without_installations_fails_before_spawn() -> None:
             open_url=lambda url: pytest.fail("браузер не должен открываться"),
         )
     assert "не найдено" in str(error.value)
+
+
+FILE_SECTION = '[Склад]\r\nConnect=File="C:\\Bases\\Stock";\r\nVersion=8.3.25.1633\r\n'
+
+
+def test_extra_params_reach_the_command_line() -> None:
+    outcome, calls = _launch(FILE_SECTION, extra_params="/Len")
+    assert " /Len /AppAutoCheckVersion-" in calls[0].arguments
+    assert outcome.command_line is not None and "/Len" in outcome.command_line
+
+
+def test_extra_params_for_browser_are_refused_before_opening() -> None:
+    with pytest.raises(LaunchError, match="разовые параметры не передать"):
+        _launch(WEB_SECTION, forced_target=LaunchTarget.BROWSER, extra_params="/Len")
+
+
+def test_secret_in_extra_params_is_masked_in_outcome() -> None:
+    outcome, _calls = _launch(FILE_SECTION, extra_params='/WSN u /WSP "секрет"')
+    assert outcome.command_line is not None
+    assert "секрет" not in outcome.command_line
+    assert "/WSP ***" in outcome.command_line
+    assert "/WSN u" in outcome.command_line
+
+
+_WEB_PLAIN = '[Веб]\r\nConnect=ws="http://srv/b";\r\n'  # noqa: RUF001
+_WEB_BROWSER = '[Веб]\r\nConnect=ws="http://srv/b";\r\nApp=WebClient\r\n'  # noqa: RUF001
+
+
+@pytest.mark.parametrize(
+    ("section", "default_app", "web_default_is_browser", "expected"),
+    [
+        (WEB_SECTION, None, True, False),  # App=ThinClient сильнее настройки
+        (_WEB_PLAIN, None, False, False),  # настройка «тонкий клиент»
+        (_WEB_PLAIN, None, True, True),  # настройка «браузер»
+        (_WEB_PLAIN, "WebClient", False, False),  # умолчание машины веб-базу не касается
+        (_WEB_BROWSER, None, False, True),
+        (SRV_SECTION, None, True, False),
+        # App=WebClient у файловой базы — отказ плана, а не браузер.  # noqa: RUF003
+        ('[Ф]\r\nConnect=File="C:\\B";\r\nApp=WebClient\r\n', None, True, False),
+        ("[Клиенты]\r\nFolder=/\r\n", None, True, False),
+    ],
+)
+def test_opens_in_browser_follows_the_launch_plan(
+    section: str, default_app: str | None, web_default_is_browser: bool, expected: bool
+) -> None:
+    """Финальное ревью блока 1, F4: тот же выбор канала, что у `launch_infobase`."""  # noqa: RUF002
+    item = _item(section)
+    assert (
+        opens_in_browser(
+            item, default_app=default_app, web_default_is_browser=web_default_is_browser
+        )
+        is expected
+    )

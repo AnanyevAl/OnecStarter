@@ -246,3 +246,29 @@ def test_install_with_wrong_digest_never_launches(rig_factory: Callable[..., Rig
     assert rig.launched == []
     assert rig.quits == 0
     assert "контрольная сумма" in rig.banner.text()
+
+
+def test_release_page_opens_without_the_inherited_dll_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Н1: браузер, открытый страницей выпуска, — без пути DLL `_internal`."""  # noqa: RUF002
+    import sys
+
+    from onecstarter.platform_1c import dll_search
+    from onecstarter.ui import update
+
+    state: dict[str, str | None] = {"dir": r"C:\app\_internal"}
+    monkeypatch.setattr(dll_search, "get_dll_directory", lambda: state["dir"])
+    monkeypatch.setattr(dll_search, "set_dll_directory", lambda p: state.__setitem__("dir", p))
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    seen: list[str | None] = []
+
+    def fake_open(_url: object) -> bool:
+        seen.append(state["dir"])
+        return True
+
+    monkeypatch.setattr(update.QDesktopServices, "openUrl", fake_open)  # type: ignore[attr-defined]
+    update._open_url("https://example.invalid/release")
+    assert seen == [None]
+    assert state["dir"] == r"C:\app\_internal"
+

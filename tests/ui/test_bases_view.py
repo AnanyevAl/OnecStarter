@@ -8,6 +8,7 @@ from unittest import mock
 import pytest
 from PySide6.QtCore import (
     QEvent,
+    QItemSelectionModel,
     QMimeData,
     QModelIndex,
     QPoint,
@@ -18,16 +19,18 @@ from PySide6.QtCore import (
     QUrl,
 )
 from PySide6.QtGui import QDragMoveEvent, QDropEvent, QKeyEvent, QKeySequence, QShortcut
-from PySide6.QtWidgets import QApplication, QDialog, QHeaderView, QTreeView, QWidget
+from PySide6.QtWidgets import QApplication, QDialog, QHeaderView, QMenu, QTreeView, QWidget
 
 from onecstarter import perf
 from onecstarter.config.shell_link import build_shell_link, safe_file_name, shortcut_command
+from onecstarter.domain.cli_catalog import Mode
 from onecstarter.domain.connect import ConnectKind
 from onecstarter.domain.launch import LaunchCommand, LaunchTarget
 from onecstarter.domain.version import Arch, Installation, parse_version
 from onecstarter.security.credentials import CredentialBackendError, MemoryStore
 from onecstarter.services.availability import Availability, path_key
 from onecstarter.services.cache import CacheEntry, CacheKind, EntryKind
+from onecstarter.services.cli_catalog import load_cli_catalog
 from onecstarter.services.display import COMMON_NOTE, IMPLICIT_NOTE, MISSING_SUFFIX, RowKind
 from onecstarter.services.errors import (
     InvalidRequestError,
@@ -40,6 +43,7 @@ from onecstarter.services.errors import (
 )
 from onecstarter.services.groups import GroupRemoval
 from onecstarter.services.model import InfobaseItem, InfobaseSource, binding_key
+from onecstarter.services.param_sets import ParamSet, save_param_sets
 from onecstarter.services.paths import ROOT, group_path, normalize_folder, render_folder
 from onecstarter.services.settings import DEFAULT_RECENT_LIMIT, ListOrder
 from onecstarter.ui import theme
@@ -47,6 +51,7 @@ from onecstarter.ui.bases.icons import placement_icon
 from onecstarter.ui.bases.tree_model import KEY_ROLE, KIND_ROLE
 from onecstarter.ui.bases.view import (
     ALPHABETICAL_REORDER_NOTE,
+    BROWSER_PARAMS_NOTE,
     NO_CACHE_ROOT_NOTE,
     BasesView,
     DropTarget,
@@ -55,6 +60,7 @@ from onecstarter.ui.bases.view import (
 from onecstarter.ui.dialogs.confirm import ask_group_removal, confirm_removal
 from onecstarter.ui.dialogs.group import GroupDialog
 from onecstarter.ui.dialogs.infobase import InfobaseDialog
+from onecstarter.ui.settings_group import chevron_pixmap
 from onecstarter.ui.shortcuts import BASES_SHORTCUTS
 from tests.unit.test_cache import FakeCacheOps
 
@@ -85,6 +91,7 @@ def _view(
     show_cache_report: Callable[[QWidget | None, str], None] | None = None,
     list_order: Callable[[], ListOrder] | None = None,
     store: MemoryStore | None = None,
+    view_kwargs: Mapping[str, Any] | None = None,
 ) -> tuple[BasesView, list[LaunchCommand], list[ServicesError], list[str]]:
     # По умолчанию — INSTALLED, не None: большинство тестов файла ничего
     # не знают про фоновое обнаружение и ждут готовых версий сразу.
@@ -124,6 +131,7 @@ def _view(
         kwargs["confirm_cache_clear"] = confirm_cache_clear
     if show_cache_report is not None:
         kwargs["show_cache_report"] = show_cache_report
+    kwargs.update(view_kwargs or {})
     view = BasesView(
         workspace,
         installations=installations,
@@ -572,6 +580,21 @@ def test_context_menu_has_properties_action(qtbot, workspace_factory):
     assert "Свойства…\tAlt+Enter" in texts
 
 
+def test_context_menu_has_room_between_titles_and_shortcuts(qtbot, workspace_factory):
+    """План В, Б9: меню базы шире естественной ширины на запас под сочетания."""  # noqa: RUF002
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    key = "id:44444444-4444-4444-4444-444444444444"
+    item = next(i for i in view.workspace().items() if i.key == key)
+    menu = view._build_menu(item, key)
+    assert menu.minimumWidth() > 0
+
+
+def test_empty_space_menu_has_room_for_the_shortcut(qtbot, workspace_factory):
+    """Предпроверка плана В, п. 22: у «Обновить» в меню пустого места — сочетание F5."""  # noqa: RUF002
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    assert view._build_empty_space_menu().minimumWidth() > 0
+
+
 # -- отказ записи bases.json доходит до пользователя (финальное ревью, I9) ----
 #
 # Ловцы в `BasesView` ловят `ServicesError`, а `save_user_data` поднимала  # noqa: RUF003
@@ -689,6 +712,21 @@ def test_properties_dialog_is_built_for_the_requested_item(qtbot, workspace_fact
     assert dialog is not None
     qtbot.addWidget(dialog)
     assert dialog.name_text() == "Демо Бухгалтерия"
+
+
+def test_properties_dialog_gets_the_view_palette(qtbot, workspace_factory):
+    """Аудит плана Б, 1.4: вызывающий передаёт свою палитру в окно свойств."""
+    view, _, _, _ = _view(
+        qtbot,
+        workspace_factory,
+        view_kwargs={"catalog": load_cli_catalog(), "palette": theme.LIGHT},
+    )
+    dialog = view._build_properties_dialog("id:44444444-4444-4444-4444-444444444444")
+    assert dialog is not None
+    qtbot.addWidget(dialog)
+    block = dialog.launch_params_block()
+    assert block is not None
+    assert block.chevron().toImage() == chevron_pixmap(False, theme.LIGHT.text).toImage()
 
 
 def test_properties_dialog_is_none_for_a_missing_key(qtbot, workspace_factory):
@@ -4984,3 +5022,685 @@ def test_menu_offers_login_prompt_launch_for_non_web_base_only(
     file_actions["Запустить с запросом входа	Shift+F3"].trigger()  # noqa: RUF001
     file_actions["Конфигуратор с запросом входа	Shift+F4"].trigger()  # noqa: RUF001
     assert calls == [(None, False, True), (LaunchTarget.DESIGNER, False, True)]
+
+
+def _file_item(view: BasesView) -> InfobaseItem:
+    return next(
+        item for item in view.workspace().items()
+        if item.kind is ConnectKind.FILE and not item.is_group
+        and item.source is InfobaseSource.USER
+        # App=Auto — тонкий клиент по умолчанию; версия-маска разрешается в INSTALLED.
+        and (item.app or "Auto").casefold() == "auto"
+    )
+
+
+def test_properties_dialog_gets_designer_params_and_saves_them(
+    qtbot: Any, workspace_factory: Any
+) -> None:
+    saved_blocks: list[dict[str, bool]] = []
+    view, _, errors, _ = _view(
+        qtbot, workspace_factory,
+        view_kwargs={
+            "catalog": load_cli_catalog(),
+            "properties_blocks": {"launch_params": True},
+            "save_properties_blocks": saved_blocks.append,
+        },
+    )
+    item = _file_item(view)
+    view.workspace().set_designer_params(item.key, "/DisableStartupMessages")
+    dialog = view._build_properties_dialog(item.key)
+    assert dialog is not None
+    block = dialog.launch_params_block()
+    assert block is not None and block.is_expanded()
+    assert block.designer_text() == "/DisableStartupMessages"
+
+    block.set_designer_text("/TechnicalSpecialistMode")
+    block.set_expanded(False)
+    view._apply_properties(item.key, dialog)
+
+    assert errors == []
+    assert view.workspace().designer_params_of(_file_item(view).key) == "/TechnicalSpecialistMode"
+    assert saved_blocks[-1] == {"launch_params": False}
+
+
+def test_builder_from_properties_is_locked_to_line_mode(qtbot: Any, workspace_factory: Any) -> None:
+    built: list[Any] = []
+
+    def run(dialog: Any) -> bool:
+        built.append(dialog)
+        dialog.set_key_checked("/DisableStartupMessages", True)
+        return True
+
+    view, _, _, _ = _view(
+        qtbot, workspace_factory,
+        view_kwargs={"catalog": load_cli_catalog(), "run_builder": run},
+    )
+    item = _file_item(view)
+    dialog = view._build_properties_dialog(item.key)
+    assert dialog is not None
+    block = dialog.launch_params_block()
+    assert block is not None
+    block.run_builder(Mode.DESIGNER)
+    assert built[0].result_mode() is Mode.DESIGNER and not built[0].mode_switch_enabled()
+    assert built[0].action_label() == "Применить"
+    assert block.designer_text() == "/DisableStartupMessages"
+
+
+def test_designer_line_stays_out_of_v8i_file(
+    qtbot: Any, workspace_factory: Any, tmp_path: Path
+) -> None:
+    """Мутационная проверка: правка строки Конфигуратора не меняет .v8i ни байтом."""
+    view, _, errors, _ = _view(
+        qtbot, workspace_factory, view_kwargs={"catalog": load_cli_catalog()}
+    )
+    item = _file_item(view)
+    before = (tmp_path / "ibases.v8i").read_bytes()
+    dialog = view._build_properties_dialog(item.key)
+    assert dialog is not None
+    block = dialog.launch_params_block()
+    assert block is not None
+    block.set_designer_text("/TechnicalSpecialistMode")
+    view._apply_properties(item.key, dialog)
+    assert errors == []
+    assert (tmp_path / "ibases.v8i").read_bytes() == before
+    assert view.workspace().designer_params_of(_file_item(view).key) == "/TechnicalSpecialistMode"
+
+
+def test_designer_line_with_password_is_refused_but_other_changes_apply(
+    qtbot: Any, workspace_factory: Any, tmp_path: Path
+) -> None:
+    """Мутационная проверка (финальное ревью, F1): пароль в bases.json не попадает."""
+    view, _, errors, _ = _view(
+        qtbot, workspace_factory, view_kwargs={"catalog": load_cli_catalog()}
+    )
+    item = _file_item(view)
+    dialog = view._build_properties_dialog(item.key)
+    assert dialog is not None
+    block = dialog.launch_params_block()
+    assert block is not None
+    block.set_designer_text("/DisableStartupMessages /WSP zzz")
+    block.set_enterprise_text("/Len")
+    view._apply_properties(item.key, dialog)
+    assert len(errors) == 1 and isinstance(errors[0], InvalidRequestError)
+    assert "zzz" not in str(errors[0]) and "поле «Пароль»" in str(errors[0])
+    user_data = tmp_path / "bases.json"
+    assert not user_data.exists() or "zzz" not in user_data.read_text(encoding="utf-8")
+    assert view.workspace().designer_params_of(_file_item(view).key) is None
+    assert "AdditionalParameters=/Len" in (tmp_path / "ibases.v8i").read_text(
+        encoding="utf-8-sig", errors="replace"
+    )
+
+
+def _builder_runner(text: str, mode: Mode | None = None) -> Callable[[Any], bool]:
+    def run(dialog: Any) -> bool:
+        if mode is not None:
+            dialog.set_mode(mode)
+        for name in text.split():
+            dialog.set_key_checked(name, True)
+        return True
+
+    return run
+
+
+@pytest.mark.parametrize(
+    ("mode", "switch_to", "executable", "head"),
+    [
+        (Mode.ENTERPRISE, None, "1cv8c.exe", "ENTERPRISE"),
+        (Mode.DESIGNER, None, "1cv8.exe", "DESIGNER"),
+        (Mode.ENTERPRISE, Mode.DESIGNER, "1cv8.exe", "DESIGNER"),
+    ],
+)
+def test_launch_with_params_runs_once_in_chosen_mode(
+    qtbot: Any, workspace_factory: Any, mode: Mode, switch_to: Mode | None,
+    executable: str, head: str,
+) -> None:
+    view, calls, errors, _ = _view(
+        qtbot, workspace_factory,
+        view_kwargs={
+            "catalog": load_cli_catalog(),
+            "run_builder": _builder_runner("/DisableStartupMessages", switch_to),
+        },
+    )
+    item = _file_item(view)
+    view.launch_with_params(item.key, mode)
+    assert errors == []
+    assert calls[-1].executable.name == executable
+    assert calls[-1].arguments.startswith(f"{head} /IBName")
+    assert " /DisableStartupMessages /AppAutoCheckVersion" in calls[-1].arguments
+
+
+def test_cancelled_builder_launches_nothing(qtbot: Any, workspace_factory: Any) -> None:
+    view, calls, _, _ = _view(
+        qtbot, workspace_factory,
+        view_kwargs={"catalog": load_cli_catalog(), "run_builder": lambda _dialog: False},
+    )
+    view.launch_with_params(_file_item(view).key, Mode.ENTERPRISE)
+    assert calls == []
+
+
+def test_launch_set_runs_and_reports_errors_after_launch(
+    qtbot: Any, workspace_factory: Any
+) -> None:
+    view, calls, errors, _ = _view(
+        qtbot, workspace_factory, view_kwargs={"catalog": load_cli_catalog()}
+    )
+    item = _file_item(view)
+    view.launch_set(item.key, ParamSet("Кривой", Mode.ENTERPRISE, "/Foo /DisableStartupMessages"))
+    assert " /Foo /DisableStartupMessages " in calls[-1].arguments
+    assert len(errors) == 1
+    assert "Набор «Кривой»" in str(errors[0]) and "неизвестный ключ" in str(errors[0])  # noqa: RUF001
+
+
+@pytest.mark.parametrize(
+    ("params", "name"),
+    [("/UCzzz", "/UC"), ("/WSPzzz", "/WSP"), ("/ModifyPasswordzzz", "/ModifyPassword")],
+)
+def test_launch_set_message_does_not_show_secret_glued_to_unknown_key(
+    qtbot: Any, workspace_factory: Any, params: str, name: str
+) -> None:
+    """Мутационная проверка обязательна (финальное ревью, F2): сообщение называет только имя."""
+    view, calls, errors, _ = _view(
+        qtbot, workspace_factory, view_kwargs={"catalog": load_cli_catalog()}
+    )
+    item = _file_item(view)
+    view.launch_set(item.key, ParamSet("Ручной", Mode.ENTERPRISE, params))
+    assert len(calls) == 1 and len(errors) == 1
+    assert f"{name} — неизвестный ключ" in str(errors[0])
+    assert "zzz" not in str(errors[0])
+
+
+def test_menu_has_param_items_and_sets(
+    qtbot: Any, workspace_factory: Any, tmp_path: Path
+) -> None:
+    sets_path = tmp_path / "param_sets.json"
+    save_param_sets(
+        sets_path,
+        (
+            ParamSet("Отладка", Mode.ENTERPRISE, "/Debug"),
+            ParamSet("Тихо", Mode.DESIGNER, "/DisableStartupMessages"),
+        ),
+    )
+    view, _, _, _ = _view(
+        qtbot, workspace_factory,
+        view_kwargs={"catalog": load_cli_catalog(), "param_sets_path": sets_path},
+    )
+    item = _file_item(view)
+    menu = view._build_menu(item, item.key)
+    labels = [action.text() for action in menu.actions()]
+    designer_at = labels.index("Конфигуратор\tF4")
+    # Приёмка 21.11.2026, В16: после «Конфигуратор» — разделитель, затем параметры.  # noqa: RUF003
+    assert labels[designer_at + 1 : designer_at + 5] == [
+        "",
+        "Запустить с параметрами…\tCtrl+F3",  # noqa: RUF001
+        "Конфигуратор с параметрами…\tCtrl+F4",  # noqa: RUF001
+        "Набор параметров",  # noqa: RUF001
+    ]
+    submenu = cast(QMenu, menu.actions()[designer_at + 4].menu())
+    assert [a.text() for a in submenu.actions()] == [
+        "Отладка — 1С:Предприятие",  # noqa: RUF001
+        "Тихо — Конфигуратор",
+    ]
+
+
+def test_empty_sets_submenu_has_disabled_note(qtbot: Any, workspace_factory: Any) -> None:
+    view, _, _, _ = _view(qtbot, workspace_factory, view_kwargs={"catalog": load_cli_catalog()})
+    item = _file_item(view)
+    menu = view._build_menu(item, item.key)
+    submenu = cast(QMenu, next(a.menu() for a in menu.actions() if a.text() == "Набор параметров"))  # noqa: RUF001
+    (only,) = submenu.actions()
+    assert only.text() == "Наборов нет" and not only.isEnabled()
+
+
+def test_web_menu_offers_only_enterprise_params(qtbot: Any, workspace_factory: Any) -> None:
+    view, _, _, _ = _view(qtbot, workspace_factory, view_kwargs={"catalog": load_cli_catalog()})
+    item = next(i for i in view.workspace().items() if i.kind is ConnectKind.WEB)
+    labels = [action.text() for action in view._build_menu(item, item.key).actions()]
+    assert "Запустить с параметрами…\tCtrl+F3" in labels  # noqa: RUF001
+    assert "Конфигуратор с параметрами…\tCtrl+F4" not in labels  # noqa: RUF001
+
+
+def _browser_web_view(
+    qtbot: Any, workspace_factory: Any, tmp_path: Path, *, browser: bool, run_builder: Any = None
+) -> tuple[BasesView, InfobaseItem, list[LaunchCommand], list[ServicesError], list[str]]:
+    sets_path = tmp_path / "param_sets.json"
+    save_param_sets(sets_path, (ParamSet("Отладка", Mode.ENTERPRISE, "/Debug"),))
+    kwargs: dict[str, Any] = {"catalog": load_cli_catalog(), "param_sets_path": sets_path}
+    if run_builder is not None:
+        kwargs["run_builder"] = run_builder
+    view, calls, errors, opened = _view(qtbot, workspace_factory, view_kwargs=kwargs)
+    # «Портал» фикстуры — без App: канал решает настройка (спека v2.3, §3).
+    view.workspace().set_web_launch(is_browser=browser)
+    item = next(i for i in view.workspace().items() if i.kind is ConnectKind.WEB)
+    return view, item, calls, errors, opened
+
+
+def _param_actions(menu: QMenu) -> dict[str, Any]:
+    return {
+        action.text(): action
+        for action in menu.actions()
+        if action.text() in ("Запустить с параметрами…\tCtrl+F3", "Набор параметров")  # noqa: RUF001
+    }
+
+
+def test_browser_web_base_has_param_items_disabled(
+    qtbot: Any, workspace_factory: Any, tmp_path: Path
+) -> None:
+    """Финальное ревью, F4 (решение заказчика 09.11.2026): пункт недоступен (спека §4.5)."""
+    view, item, _, _, _ = _browser_web_view(qtbot, workspace_factory, tmp_path, browser=True)
+    actions = _param_actions(view._build_menu(item, item.key))
+    assert set(actions) == {"Запустить с параметрами…\tCtrl+F3", "Набор параметров"}  # noqa: RUF001
+    assert not any(action.isEnabled() for action in actions.values())
+    assert all("браузер" in action.toolTip() for action in actions.values())
+
+
+def test_thin_client_web_base_keeps_param_items_enabled(
+    qtbot: Any, workspace_factory: Any, tmp_path: Path
+) -> None:
+    view, item, _, _, _ = _browser_web_view(qtbot, workspace_factory, tmp_path, browser=False)
+    actions = _param_actions(view._build_menu(item, item.key))
+    assert len(actions) == 2 and all(action.isEnabled() for action in actions.values())
+
+
+def test_browser_web_base_refuses_params_before_builder(
+    qtbot: Any, workspace_factory: Any, tmp_path: Path
+) -> None:
+    """Мутационная проверка: Ctrl+F3 и набор отказывают сразу, браузер не открывается."""
+
+    def never(_dialog: Any) -> bool:
+        raise AssertionError("конструктор не должен открываться")
+
+    view, item, calls, errors, opened = _browser_web_view(
+        qtbot, workspace_factory, tmp_path, browser=True, run_builder=never
+    )
+    view.launch_with_params(item.key, Mode.ENTERPRISE)
+    view.launch_set(item.key, ParamSet("Отладка", Mode.ENTERPRISE, "/Debug"))
+    assert calls == [] and opened == []
+    # Текст — отказа представления, а не запуска (`launch_infobase` отказал бы позже  # noqa: RUF003
+    # своим «разовые параметры не передать»): отказ пришёл до запуска.
+    assert [str(error) for error in errors] == [f"«{item.name}» {BROWSER_PARAMS_NOTE}"] * 2
+
+
+def test_thin_client_web_base_launches_with_params(
+    qtbot: Any, workspace_factory: Any, tmp_path: Path
+) -> None:
+    view, item, calls, errors, opened = _browser_web_view(
+        qtbot, workspace_factory, tmp_path, browser=False,
+        run_builder=_builder_runner("/DisableStartupMessages"),
+    )
+    view.launch_with_params(item.key, Mode.ENTERPRISE)
+    assert errors == [] and opened == []
+    assert " /DisableStartupMessages " in calls[-1].arguments
+
+
+def _menu_layout(menu: QMenu) -> list[str]:
+    return ["—" if a.isSeparator() else a.text().split("\t")[0] for a in menu.actions()]
+
+
+def test_base_menu_is_grouped_by_meaning(qtbot: Any, workspace_factory: Any) -> None:
+    """Приёмка 21.11.2026, В16: группы по смыслу, «с запросом входа» выше «от администратора»."""  # noqa: RUF002
+    view, _errors = _scenario_view(qtbot, workspace_factory)
+    item = _file_item(view)
+    layout = _menu_layout(view._build_menu(item, item.key))
+    assert layout[:16] == [
+        "Запустить", "Тонкий клиент", "Толстый клиент", "Конфигуратор", "—",
+        "Запустить с параметрами…", "Конфигуратор с параметрами…", "Набор параметров", "—",  # noqa: RUF001
+        "Запустить с запросом входа", "Конфигуратор с запросом входа",  # noqa: RUF001
+        "Запустить от имени администратора", "Конфигуратор от имени администратора", "—",
+        "Выполнить сценарий", "—",
+    ]
+    assert layout[-3:] == ["В избранное", "—", "Удалить из списка…"]  # noqa: RUF001
+
+
+def test_web_base_menu_is_grouped_by_meaning(qtbot: Any, workspace_factory: Any) -> None:
+    """Приёмка 21.11.2026, В16: у веб-базы «Открыть в браузере» сразу после клиента."""  # noqa: RUF002
+    view, _, _, _ = _view(qtbot, workspace_factory, view_kwargs={"catalog": load_cli_catalog()})
+    item = next(i for i in view.workspace().items() if i.kind is ConnectKind.WEB)
+    layout = _menu_layout(view._build_menu(item, item.key))
+    assert layout[:6] == [
+        "Запустить", "Тонкий клиент", "Открыть в браузере", "—",
+        "Запустить с параметрами…", "Набор параметров",  # noqa: RUF001
+    ]
+    assert layout[-3:] == ["В избранное", "—", "Удалить из списка…"]  # noqa: RUF001
+
+
+def test_menu_without_catalog_has_no_param_items(qtbot: Any, workspace_factory: Any) -> None:
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    item = _file_item(view)
+    labels = [action.text() for action in view._build_menu(item, item.key).actions()]
+    assert not any("с параметрами" in label for label in labels)  # noqa: RUF001
+
+
+def test_launch_set_failed_launch_shows_only_launch_error(
+    qtbot: Any, workspace_factory: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    view, _, errors, _ = _view(
+        qtbot, workspace_factory, view_kwargs={"catalog": load_cli_catalog()}
+    )
+
+    def fail(*_args: Any, **_kwargs: Any) -> None:
+        raise LaunchError("Платформа не найдена")
+
+    monkeypatch.setattr(view.workspace(), "launch", fail)
+    item = _file_item(view)
+    view.launch_set(item.key, ParamSet("Кривой", Mode.ENTERPRISE, "/Foo"))
+    assert [str(e) for e in errors] == ["Платформа не найдена"]
+    assert not any("Запуск выполнен" in str(e) for e in errors)
+
+
+def test_launch_set_successful_launch_keeps_single_check_message(
+    qtbot: Any, workspace_factory: Any
+) -> None:
+    view, calls, errors, _ = _view(
+        qtbot, workspace_factory, view_kwargs={"catalog": load_cli_catalog()}
+    )
+    item = _file_item(view)
+    view.launch_set(item.key, ParamSet("Кривой", Mode.ENTERPRISE, "/Foo"))
+    assert len(calls) == 1 and len(errors) == 1
+    assert str(errors[0]).endswith("Запуск выполнен.")
+
+
+def test_designer_on_web_base_refuses_before_builder(
+    qtbot: Any, workspace_factory: Any
+) -> None:
+    def never(_dialog: Any) -> bool:
+        raise AssertionError("конструктор не должен открываться")
+
+    view, calls, errors, _ = _view(
+        qtbot, workspace_factory,
+        view_kwargs={"catalog": load_cli_catalog(), "run_builder": never},
+    )
+    item = next(i for i in view.workspace().items() if i.kind is ConnectKind.WEB)
+    view.launch_with_params(item.key, Mode.DESIGNER)
+    view.launch_set(item.key, ParamSet("Конф", Mode.DESIGNER, "/DisableStartupMessages"))
+    assert calls == []
+    assert len(errors) == 2
+    assert all("Конфигуратор к ней не подключается" in str(e) for e in errors)
+
+
+def _catalog_view(qtbot: Any, workspace_factory: Any, **extra: Any) -> Any:
+    saved: list[dict[str, bool]] = []
+    view, _calls, errors, _ = _view(
+        qtbot,
+        workspace_factory,
+        view_kwargs={
+            "catalog": load_cli_catalog(),
+            "save_properties_blocks": saved.append,
+            **extra,
+        },
+    )
+    return view, errors, saved
+
+
+def test_properties_dialog_carries_the_repository_block(
+    qtbot: Any, workspace_factory: Any
+) -> None:
+    view, _errors, saved = _catalog_view(qtbot, workspace_factory)
+    view.workspace().set_repository(_DEMO_ACCOUNTING_KEY, "tcp://repo/buh", "dev", "pw", True)
+
+    dialog = view._build_properties_dialog(_DEMO_ACCOUNTING_KEY)
+    assert dialog is not None
+    block = dialog.repository_block()
+
+    assert block is not None and not block.is_expanded()
+    assert block.title() == "Хранилище конфигурации — tcp://repo/buh · dev"
+    assert block.password_edit().text() == "" and not dialog.repository_changed()
+    block.set_expanded(True)
+    assert saved[-1]["repository"] is True
+    # Состояние блока запоминается: следующий диалог открывается развёрнутым.
+    again = view._build_properties_dialog(_DEMO_ACCOUNTING_KEY)
+    assert again is not None
+    again_block = again.repository_block()
+    assert again_block is not None and again_block.is_expanded()
+
+
+def test_web_base_has_no_repository_block(qtbot: Any, workspace_factory: Any) -> None:
+    view, _errors, _saved = _catalog_view(qtbot, workspace_factory)
+    web_key = next(
+        item.key
+        for item in view.workspace().items()
+        if not item.is_group and item.kind is ConnectKind.WEB
+    )
+    dialog = view._build_properties_dialog(web_key)
+    assert dialog is not None and dialog.repository_block() is None
+
+
+def test_repository_edits_are_stored_and_survive_a_rename(
+    qtbot: Any, workspace_factory: Any
+) -> None:
+    """Хранилище пишется ДО правки `.v8i`: у записи без ID правка меняет ключ."""  # noqa: RUF002
+    view, errors, _saved = _catalog_view(qtbot, workspace_factory)
+    workspace = view.workspace()
+    key = binding_key(None, 'File="C:\\Bases\\Manual";', "Без идентификатора")
+    assert not key.startswith("id:")
+    dialog = view._build_properties_dialog(key)
+    assert dialog is not None
+    block = dialog.repository_block()
+    assert block is not None
+    block.address_edit().setText("tcp://repo/x")
+    block.user_edit().setText("dev")
+    block.password_edit().setText("pw")
+    dialog.set_name("Переименованная")
+
+    view._apply_properties(key, dialog)
+
+    assert errors == []
+    renamed = next(item for item in workspace.items() if item.name == "Переименованная")
+    assert renamed.key != key
+    settings = workspace.repository_of(renamed.key)
+    assert (settings.address, settings.user, settings.has_password) == ("tcp://repo/x", "dev", True)
+
+
+def test_untouched_repository_block_writes_nothing(
+    qtbot: Any, workspace_factory: Any, monkeypatch: Any
+) -> None:
+    view, _errors, _saved = _catalog_view(qtbot, workspace_factory)
+    calls: list[tuple[Any, ...]] = []
+    monkeypatch.setattr(view.workspace(), "set_repository", lambda *args: calls.append(args))
+    dialog = view._build_properties_dialog(_DEMO_ACCOUNTING_KEY)
+    assert dialog is not None
+    assert dialog.repository_block() is not None
+    view._apply_properties(_DEMO_ACCOUNTING_KEY, dialog)
+    assert calls == []
+
+
+def _stored_repository_dialog(qtbot: Any, workspace_factory: Any) -> Any:
+    view, errors, _saved = _catalog_view(qtbot, workspace_factory)
+    view.workspace().set_repository(_DEMO_ACCOUNTING_KEY, "tcp://repo/a", "dev", "pw", True)
+    dialog = view._build_properties_dialog(_DEMO_ACCOUNTING_KEY)
+    assert dialog is not None
+    block = dialog.repository_block()
+    assert block is not None
+    return view, errors, dialog, block
+
+
+def test_editing_repository_address_keeps_the_stored_password(
+    qtbot: Any, workspace_factory: Any
+) -> None:
+    view, errors, dialog, block = _stored_repository_dialog(qtbot, workspace_factory)
+    block.address_edit().setText("tcp://repo/b")
+
+    view._apply_properties(_DEMO_ACCOUNTING_KEY, dialog)
+
+    settings = view.workspace().repository_of(_DEMO_ACCOUNTING_KEY)
+    assert errors == []
+    assert (settings.address, settings.user, settings.has_password) == (
+        "tcp://repo/b",
+        "dev",
+        True,
+    )
+
+
+def test_unchecking_remember_removes_the_stored_repository_password(
+    qtbot: Any, workspace_factory: Any
+) -> None:
+    view, errors, dialog, block = _stored_repository_dialog(qtbot, workspace_factory)
+    block.remember_checkbox().setChecked(False)
+
+    view._apply_properties(_DEMO_ACCOUNTING_KEY, dialog)
+
+    settings = view.workspace().repository_of(_DEMO_ACCOUNTING_KEY)
+    assert errors == []
+    assert (settings.address, settings.has_password) == ("tcp://repo/a", False)
+
+
+def test_clearing_repository_user_removes_the_stored_password(
+    qtbot: Any, workspace_factory: Any
+) -> None:
+    # Правило Workspace.set_repository: пользователь пуст — секрет удаляется.
+    view, errors, dialog, block = _stored_repository_dialog(qtbot, workspace_factory)
+    block.user_edit().setText("")
+
+    view._apply_properties(_DEMO_ACCOUNTING_KEY, dialog)
+
+    settings = view.workspace().repository_of(_DEMO_ACCOUNTING_KEY)
+    assert errors == []
+    assert (settings.user, settings.has_password) == (None, False)
+
+
+def _scenario_view(qtbot: Any, workspace_factory: Any, **extra: Any) -> Any:
+    from onecstarter.domain.operations import BUILTIN_SCENARIOS, Scenario
+
+    own = Scenario("u1", "Ночной архив", ())
+    view, errors, _saved = _catalog_view(
+        qtbot, workspace_factory, scenarios=lambda: (*BUILTIN_SCENARIOS, own), **extra
+    )
+    return view, errors
+
+
+def _file_base_keys(view: BasesView, count: int) -> list[str]:
+    keys = [
+        item.key
+        for item in view.workspace().items()
+        if not item.is_group and item.kind is ConnectKind.FILE
+    ]
+    assert len(keys) >= count
+    return keys[:count]
+
+
+def _select_many(view: BasesView, keys: list[str]) -> None:
+    selection = view._tree.selectionModel()
+    selection.clearSelection()
+    for key in keys:
+        selection.select(
+            _index_of_key(view, key),
+            QItemSelectionModel.SelectionFlag.Select | QItemSelectionModel.SelectionFlag.Rows,
+        )
+
+
+def _submenu(menu: QMenu, title_start: str) -> QMenu:
+    action = next(a for a in menu.actions() if a.text().startswith(title_start))
+    submenu = action.menu()
+    assert isinstance(submenu, QMenu)
+    return submenu
+
+
+def test_scenario_menu_lists_builtin_and_own_scenarios(qtbot: Any, workspace_factory: Any) -> None:
+    view, _errors = _scenario_view(qtbot, workspace_factory)
+    key = _file_base_keys(view, 1)[0]
+    item = next(i for i in view.workspace().items() if i.key == key)
+    requested: list[tuple[str, list[str]]] = []
+    opened: list[int] = []
+    view.scenario_requested.connect(lambda sid, keys: requested.append((sid, list(keys))))
+    view.operations_requested.connect(lambda: opened.append(1))
+
+    submenu = _submenu(view._build_menu(item, key), "Выполнить сценарий")
+    texts = [action.text() for action in submenu.actions() if not action.isSeparator()]
+    assert texts == [
+        "Выгрузить в .dt",
+        "Загрузить из .dt",
+        "Выгрузить .cf",
+        "Ночной архив",
+        "Управление сценариями…",
+    ]
+    submenu.actions()[3].trigger()
+    assert requested == [("u1", [key])]
+    next(a for a in submenu.actions() if a.text() == "Управление сценариями…").trigger()
+    assert opened == [1]
+
+
+def test_scenario_menu_runs_for_all_selected_bases(qtbot: Any, workspace_factory: Any) -> None:
+    view, _errors = _scenario_view(qtbot, workspace_factory)
+    first, second = _file_base_keys(view, 2)
+    _select_many(view, [first, second])
+    assert sorted(view.selected_base_keys()) == sorted([first, second])
+    item = next(i for i in view.workspace().items() if i.key == first)
+    requested: list[list[str]] = []
+    view.scenario_requested.connect(lambda _sid, keys: requested.append(list(keys)))
+
+    menu = view._build_menu(item, first)
+    title = next(a.text() for a in menu.actions() if a.text().startswith("Выполнить сценарий"))
+    assert title == "Выполнить сценарий (2 базы)"
+    _submenu(menu, "Выполнить сценарий").actions()[0].trigger()
+    assert sorted(requested[0]) == sorted([first, second])
+
+
+def test_menu_on_a_row_outside_the_selection_runs_for_that_row_only(
+    qtbot: Any, workspace_factory: Any
+) -> None:
+    view, _errors = _scenario_view(qtbot, workspace_factory)
+    first, second, third = _file_base_keys(view, 3)
+    _select_many(view, [first, second])
+    item = next(i for i in view.workspace().items() if i.key == third)
+    requested: list[list[str]] = []
+    view.scenario_requested.connect(lambda _sid, keys: requested.append(list(keys)))
+    _submenu(view._build_menu(item, third), "Выполнить сценарий").actions()[0].trigger()
+    assert requested == [[third]]
+
+
+def test_no_scenario_menu_for_web_base_or_without_scenarios(
+    qtbot: Any, workspace_factory: Any
+) -> None:
+    view, _errors = _scenario_view(qtbot, workspace_factory)
+    web = next(
+        i for i in view.workspace().items() if not i.is_group and i.kind is ConnectKind.WEB
+    )
+    assert not any(
+        a.text().startswith("Выполнить сценарий") for a in view._build_menu(web, web.key).actions()
+    )
+    plain, _, _, _ = _view(qtbot, workspace_factory)
+    key = _file_base_keys(plain, 1)[0]
+    item = next(i for i in plain.workspace().items() if i.key == key)
+    assert not any(
+        a.text().startswith("Выполнить сценарий") for a in plain._build_menu(item, key).actions()
+    )
+
+
+def test_single_base_shortcuts_still_use_the_current_row(
+    qtbot: Any, workspace_factory: Any
+) -> None:
+    view, _errors = _scenario_view(qtbot, workspace_factory)
+    first, second = _file_base_keys(view, 2)
+    _select_many(view, [first, second])
+    view._tree.selectionModel().setCurrentIndex(
+        _index_of_key(view, second), QItemSelectionModel.SelectionFlag.NoUpdate
+    )
+    assert view._current_base_key() == second
+
+
+def test_launch_of_a_busy_base_asks_first(qtbot: Any, workspace_factory: Any) -> None:
+    asked: list[str] = []
+    answers = iter([False, True])
+
+    def confirm(_parent: Any, name: str) -> bool:
+        asked.append(name)
+        return next(answers)
+
+    key_holder: list[str] = []
+    view, calls, _errors, _ = _view(
+        qtbot,
+        workspace_factory,
+        view_kwargs={
+            "busy_keys": lambda: frozenset(key_holder),
+            "confirm_busy_launch": confirm,
+        },
+    )
+    key = _DEMO_ACCOUNTING_KEY
+    name = next(i.name for i in view.workspace().items() if i.key == key)
+    key_holder.append(key)
+
+    assert view.launch_key(key) is False
+    assert calls == [] and asked == [name]
+    assert view.launch_key(key) is True
+    assert len(calls) == 1 and asked == [name, name]
+    key_holder.clear()
+    assert view.launch_key(key) is True and asked == [name, name]

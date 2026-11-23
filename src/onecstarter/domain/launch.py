@@ -301,6 +301,7 @@ def build_arguments(
     auto_check_mode: bool,
     credentials: Credentials | None = None,
     deny_os_auth: bool = False,
+    extra: str | None = None,
 ) -> str:
     if (ib_name is None) == (connect is None):
         raise ValueError("Нужно ровно одно из: ib_name, connect")
@@ -355,6 +356,14 @@ def build_arguments(
             # После /IBConnectionString — см. докстринг _credential_arguments:
             # более поздний ключ переопределяет часть строки соединения.
             parts.append(_credential_arguments(credentials))
+    if extra is not None and extra.strip():
+        if "\r" in extra or "\n" in extra:
+            raise ValueError("Параметры запуска не могут содержать перевод строки")
+        # Спека v4, §4.5: добавка — после /IBName, учётных данных и /WA-, до
+        # /AppAutoCheckVersion. При одном ключе в .v8i и в argv побеждает argv
+        # ([Ф] T-42 Э3) — поэтому строка Конфигуратора и разовые параметры
+        # действуют поверх AdditionalParameters.
+        parts.append(extra.strip())
     parts.append("/AppAutoCheckVersion" if auto_check_version else "/AppAutoCheckVersion-")
     if auto_check_mode:
         parts.append("/AppAutoCheckMode")

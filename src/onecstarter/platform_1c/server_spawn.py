@@ -76,6 +76,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from onecstarter.domain.launch import LaunchCommand
+from onecstarter.platform_1c.dll_search import clean_dll_search
 from onecstarter.platform_1c.job import Job, JobError
 
 __all__ = ["LoggedProcess", "spawn_logged", "spawn_server"]
@@ -208,13 +209,15 @@ def _spawn_into_job(command: LaunchCommand, log_path: Path, job: Job) -> subproc
     """  # noqa: RUF002
     fd = _open_append_shared(log_path)
     try:
-        process = subprocess.Popen(
-            command.command_line,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-            stdout=fd,
-            stderr=subprocess.STDOUT,
-            close_fds=True,
-        )
+        # Н1: сервер и CLI EDT не наследуют путь DLL `_internal` программы.  # noqa: RUF003
+        with clean_dll_search():
+            process = subprocess.Popen(
+                command.command_line,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                stdout=fd,
+                stderr=subprocess.STDOUT,
+                close_fds=True,
+            )
     finally:
         os.close(fd)
     # КРИТИЧНО ([Ф] находка задачи 1 T-10, см. докстринг модуля): assign

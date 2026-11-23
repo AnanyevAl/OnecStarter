@@ -11,9 +11,8 @@
 """  # noqa: RUF002
 
 import uuid
-import webbrowser
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -22,15 +21,26 @@ from onecstarter.domain.connect import ConnectKind
 from onecstarter.domain.default_version import DefaultVersionRule
 from onecstarter.domain.launch import (
     ClientConvention,
+    ClientKind,
     Credentials,
     LaunchCommand,
     LaunchTarget,
+    convention_for,
 )
-from onecstarter.domain.version import Installation
+from onecstarter.domain.selection import resolve_version
+from onecstarter.domain.version import Installation, VersionNumber, parse_version
+from onecstarter.platform_1c.dll_search import open_url as open_url_clean
 from onecstarter.platform_1c.elevation import ElevationDeclinedError
 from onecstarter.platform_1c.elevation import spawn_elevated as spawn_elevated_process
 from onecstarter.platform_1c.process import spawn as spawn_process
-from onecstarter.security.credentials import SERVICE, CredentialBackendError, CredentialStore
+from onecstarter.security.credentials import (
+    SERVICE,
+    CredentialBackendError,
+    CredentialStore,
+    repository_key,
+)
+from onecstarter.security.secrets import contains_secret_arguments, has_unclosed_quote
+from onecstarter.services.availability import file_path_of
 from onecstarter.services.catalog import (
     EMPTY_COMMON_DATA,
     CommonListData,
@@ -53,18 +63,41 @@ from onecstarter.services.errors import (
     UserDataWriteError,
 )
 from onecstarter.services.groups import GroupPatch, GroupPatchKind, GroupRemoval
-from onecstarter.services.launch import LaunchOutcome, launch_infobase
+from onecstarter.services.launch import LaunchOutcome, launch_infobase, opens_in_browser
 from onecstarter.services.model import InfobaseItem, InfobaseSource
+from onecstarter.services.paths import ROOT, normalize_folder
 from onecstarter.services.user_data import (
     BaseUserData,
     load_user_data,
     record_launch,
     rekey,
     save_user_data,
+    set_designer_params,
     set_favorite,
     set_login,
+    set_repository,
 )
 from onecstarter.services.writer import write_patch
+
+
+def _has_control_chars(text: str) -> bool:
+    """Есть ли управляющий символ < 0x20, кроме табуляции (она — разделитель ключей).
+
+    `subprocess.Popen` на NUL поднимает `ValueError`, а не `ServicesError`, — он вылетел
+    бы из слота Qt; перевод строки разорвал бы argv (финальное ревью блока 1, F7).
+    """  # noqa: RUF002
+    return any(ord(char) < 0x20 and char != "\t" for char in text)
+
+
+def _full_version(text: str | None) -> VersionNumber | None:
+    """Полная (четырёхчастная) версия из `Version` секции; иначе `None`."""
+    if text is None:
+        return None
+    try:
+        version = parse_version(text.strip())
+    except ValueError:
+        return None
+    return version if version.is_full else None
 
 
 def _records_word(count: int) -> str:
@@ -76,6 +109,49 @@ def _records_word(count: int) -> str:
     if count % 10 in (2, 3, 4):
         return "записи"
     return "записей"
+
+
+@dataclass(frozen=True)
+class RepositorySettings:
+    """Хранилище конфигурации базы — диалогу свойств. Сам пароль наружу не отдаётся."""
+
+    address: str | None
+    user: str | None
+    has_password: bool | None  # None — диспетчер учётных данных недоступен
+
+
+@dataclass(frozen=True)
+class BatchTarget:
+    """Всё, что исполнителю пакетных операций нужно знать о базе (спека v4, §6.1–§6.3).
+
+    Пароли в `repr` и сравнение не попадают (инвариант 5) — как у `Credentials`.
+    """  # noqa: RUF002
+
+    key: str
+    name: str
+    group: str = ""
+    executable: Path | None = None
+    version: VersionNumber | None = None
+    login: str | None = None
+    password: str | None = field(default=None, repr=False, compare=False)
+    repository_address: str | None = None
+    repository_user: str | None = None
+    repository_password: str | None = field(default=None, repr=False, compare=False)
+    file_path: str | None = None
+    problems: tuple[str, ...] = ()
+    # Диспетчер учётных данных отказал: пароли `None`, их можно ввести при запуске.
+    store_unavailable: bool = False
+
+
+# Приёмка 21.11.2026, Р2: окно свойств запирает «ОК» заранее, это — второй рубеж.  # noqa: RUF003
+DESIGNER_QUOTE_REFUSAL = (
+    "Строка параметров Конфигуратора не сохранена: в ней незакрытая кавычка — закройте её, "
+    "иначе строку не проверить на пароль"
+)
+DESIGNER_SECRET_REFUSAL = (
+    "Строка параметров Конфигуратора не сохранена: в ней пароль, а в файле программы он "  # noqa: RUF001
+    "лежал бы открытым текстом. Пароль пользователя базы задайте в поле «Пароль» свойств базы"
+)
 
 
 @dataclass(frozen=True)
@@ -108,7 +184,7 @@ class Workspace:
         web_default_is_browser: bool = False,
         spawn: Callable[[LaunchCommand], int] = spawn_process,
         spawn_elevated: Callable[[LaunchCommand], int] = spawn_elevated_process,
-        open_url: Callable[[str], bool] = webbrowser.open,
+        open_url: Callable[[str], bool] = open_url_clean,
         now: Callable[[], datetime] = lambda: datetime.now(UTC),
         new_id: Callable[[], str] = lambda: str(uuid.uuid4()),
         credentials: CredentialStore,
@@ -303,12 +379,12 @@ class Workspace:
         """  # noqa: RUF002
         self._reject_common(key)
         applied = self._write(SectionPatch(PatchKind.REMOVE, target_key=key)).applied
-        try:
-            self._credentials.delete(key)
-        except CredentialBackendError as error:
+        failed = self._delete_secrets(key)
+        if failed:
             raise CredentialStoreError(
-                f"Запись удалена, но пароль в диспетчере учётных данных остался: {error}"
-            ) from error
+                "Запись удалена, но в диспетчере учётных данных остались секреты — "
+                "удалите их вручную: " + "; ".join(failed)
+            )
         return applied
 
     def add_group(self, name: str, folder: str | None = None) -> str:
@@ -368,16 +444,28 @@ class Workspace:
         gone = before - {item.key for item in self.items() if not item.is_group}
         failed: list[str] = []
         for removed in sorted(gone):
-            try:
-                self._credentials.delete(removed)
-            except CredentialBackendError as error:
-                failed.append(f"{removed}: {error}")
+            failed += self._delete_secrets(removed)
         if failed:
             raise CredentialStoreError(
                 "Группа удалена, но пароли её записей остались в диспетчере "
-                "учётных данных: " + "; ".join(failed)
+                "учётных данных — удалите их вручную: " + "; ".join(failed)
             )
         return applied
+
+    def _delete_secrets(self, key: str) -> list[str]:
+        """Удалить пароль базы и пароль хранилища записи; вернуть отказы.
+
+        Каждый секрет — в своём `try`: отказ первого не оставляет второй в хранилище
+        молча. Отказ называет запись хранилища паролей целиком (ключ секретом не
+        является — как в `_move_secret`), значение не называет.
+        """
+        failed: list[str] = []
+        for secret_key, what in ((key, "пароль"), (repository_key(key), "пароль хранилища")):
+            try:
+                self._credentials.delete(secret_key)
+            except CredentialBackendError as error:
+                failed.append(f"{what} `{SERVICE}/{secret_key}`: {error}")
+        return failed
 
     def move_within_group(self, key: str, after_key: str | None) -> None:
         """Переставить запись/группу внутри её группы. `after_key is None` — в начало.
@@ -451,6 +539,218 @@ class Workspace:
         finally:
             self._rebuild()
 
+    def repository_of(self, key: str) -> RepositorySettings:
+        data = self._user.get(key, BaseUserData())
+        try:
+            has_password: bool | None = self._credentials.read(repository_key(key)) is not None
+        except CredentialBackendError:
+            has_password = None
+        return RepositorySettings(data.repository_address, data.repository_user, has_password)
+
+    def set_repository(
+        self,
+        key: str,
+        address: str | None,
+        user: str | None,
+        password: str | None,
+        remember: bool,
+    ) -> None:
+        """Адрес и пользователь хранилища — в наши данные, пароль — в хранилище паролей.
+
+        Правила те же, что у `set_credentials`: данные пишутся первыми, отказ хранилища
+        паролей их не откатывает; пользователь пуст или «запомнить» снято — секрет
+        удаляется; «запомнить» стоит, пароль не задан — сохранённый остаётся.
+        """  # noqa: RUF002
+        item = self._item(key)
+        if item.is_group:
+            raise InvalidRequestError(f"«{item.name}» — группа, у неё нет хранилища конфигурации")  # noqa: RUF001
+        clean_address = (address or "").strip() or None
+        clean_user = (user or "").strip() or None
+        if clean_address is not None and _has_control_chars(clean_address):
+            raise InvalidRequestError("Адрес хранилища не может содержать управляющие символы")
+        if clean_user is not None and _has_control_chars(clean_user):
+            raise InvalidRequestError(
+                "Имя пользователя хранилища не может содержать управляющие символы"
+            )
+        self._store_user(
+            set_repository(self._user, key, clean_address, clean_user),
+            "Не удалось сохранить параметры хранилища конфигурации",  # noqa: RUF001
+        )
+        secret_key = repository_key(key)
+        try:
+            if clean_user is None or not remember:
+                self._credentials.delete(secret_key)
+            elif password is not None:
+                self._credentials.write(secret_key, password)
+        except CredentialBackendError as error:
+            raise CredentialStoreError(
+                f"Параметры хранилища сохранены, пароль — нет: {error}"
+            ) from error
+        finally:
+            self._rebuild()
+
+    def opens_in_browser(self, key: str) -> bool:
+        """Откроет ли обычный запуск записи браузер (`services.launch.opens_in_browser`).
+
+        Неизвестный ключ — `False`: отказ даст сам запуск, своим сообщением.
+        """
+        item = self._find(key)
+        if item is None:
+            return False
+        return opens_in_browser(
+            item,
+            default_app=self._default_app,
+            web_default_is_browser=self._web_default_is_browser,
+        )
+
+    def batch_target(self, key: str) -> BatchTarget:
+        """База для пакетной операции Конфигуратора; исключений не бросает.
+
+        Что мешает запуску — в `problems`. Шаг идёт с `/AppAutoCheckVersion-`:
+        перезапуск другой версии нам не нужен.
+
+        Версия файловой базы — `resolve_version`, как у обычного запуска. Серверная база —
+        только с точной (полной) версией в `Version` секции, и она должна быть установлена:
+        версию клиента серверной базы диктует кластер ([Ф] T-05.16, скил platform-launch,
+        факт 14), а клиент не той версии с `/AppAutoCheckVersion-` молча зависает
+        ([Ф] T-05.16). Подбор по умолчаниям (`DefaultVersion`, правила cfg, максимальная
+        установленная) для серверной базы не применяется. Пакетный режим при версии, не
+        совпавшей с кластером, не виснет и не перезапускается — ошибка с кодом 1 в обеих
+        полярностях `/AppAutoCheckVersion` ([Ф] Э11, 22.11.2026, скил, факт 18): другой
+        версией шаг не выполнится, поэтому правило точной версии остаётся.
+        """  # noqa: RUF002
+        item = self._find(key)
+        if item is None:
+            return BatchTarget(key, "", problems=("база не найдена в списке",))
+        if item.is_group or item.connect is None:
+            return BatchTarget(key, item.name, problems=("это группа, а не база",))  # noqa: RUF001
+        folder = normalize_folder(item.folder)
+        group = "" if folder == ROOT else folder
+        if item.kind is ConnectKind.WEB:
+            return BatchTarget(
+                key,
+                item.name,
+                group,
+                problems=("веб-база: пакетный режим Конфигуратора с ней не работает",),  # noqa: RUF001
+            )
+        problems: list[str] = []
+        executable: Path | None = None
+        version: VersionNumber | None = None
+        if self._installations is None:
+            problems.append("обнаружение версий платформы ещё не завершено")
+        else:
+            installed = [installation.version for installation in self._installations]
+            if item.kind is ConnectKind.SERVER:
+                exact = _full_version(item.requested_version)
+                if exact is None:
+                    problems.append(
+                        "серверная база: задайте в свойствах точную версию платформы "
+                        "(например, 8.3.27.2214)"
+                    )
+                elif exact in installed:
+                    version = exact
+                else:
+                    problems.append(f"версия платформы {item.requested_version} не установлена")
+            else:
+                version = resolve_version(
+                    item.requested_version,
+                    item.section_default_version,
+                    self._cfg_rules,
+                    installed,
+                ).version
+                if version is None:
+                    problems.append(
+                        f"версия платформы {item.requested_version} не установлена"
+                        if item.requested_version
+                        else "версия платформы не определена"
+                    )
+            if version is not None:
+                installation = next(i for i in self._installations if i.version == version)
+                convention = convention_for(version, self._conventions)
+                if convention is None or ClientKind.DESIGNER not in convention.executables:
+                    problems.append("версия платформы не определена")
+                else:
+                    executable = (
+                        installation.path
+                        / convention.bin_dir
+                        / convention.executables[ClientKind.DESIGNER]
+                    )
+        try:
+            self._reject_ambiguous_name(item)
+        except LaunchError:
+            problems.append("имя базы в списке не единственное")
+        data = self._user.get(key, BaseUserData())
+        login = (data.login or "").strip() or None
+        user = (data.repository_user or "").strip() or None
+        # Отказ диспетчера — не проблема готовности: пароль остаётся `None`, его  # noqa: RUF003
+        # можно ввести при запуске (`store_unavailable` объясняет, почему его нет).  # noqa: RUF003
+        store_unavailable = False
+        secrets: dict[str, str | None] = {}
+        for owner, secret_key in ((login, key), (user, repository_key(key))):
+            if owner is None:
+                continue
+            try:
+                secrets[secret_key] = self._credentials.read(secret_key)
+            except CredentialBackendError:
+                store_unavailable = True
+        password = secrets.get(key)
+        repository_password = secrets.get(repository_key(key))
+        return BatchTarget(
+            key=key,
+            name=item.name,
+            group=group,
+            executable=executable,
+            version=version,
+            login=login,
+            password=password,
+            repository_address=(data.repository_address or "").strip() or None,
+            repository_user=user,
+            repository_password=repository_password,
+            file_path=file_path_of(item),
+            problems=tuple(problems),
+            store_unavailable=store_unavailable,
+        )
+
+    def designer_params_of(self, key: str) -> str | None:
+        """Строка параметров Конфигуратора записи (спека v4, §4.3) или `None`."""
+        return self._user.get(key, BaseUserData()).designer_params
+
+    def set_designer_params(self, key: str, params: str | None) -> None:
+        """Записать строку параметров Конфигуратора в наши данные (`bases.json`).
+
+        Пустая строка — `None`: «параметров нет». Перевод строки и другие управляющие
+        символы (кроме табуляции) отвергаются: строка уходит в argv одной строкой. `.v8i`
+        не трогается вовсе.
+
+        Строка с паролем не сохраняется (решение заказчика 09.11.2026, финальное ревью
+        блока 1, F1): `bases.json` — наш файл, пароль в нём лежал бы открытым текстом
+        (инвариант 5). Признак — тот же, что у отказа набора: `contains_secret_arguments`
+        (`/P`, `/WSP`, `/ModifyPassword`, `/AccessToken`, `/UC`, `-PPwd`, `-pwd`; строка
+        с незакрытой кавычкой — тоже, границы токенов недостоверны, — но со своим текстом,
+        приёмка 21.11.2026, Р2). Защита здесь, — чтобы никакой путь UI её не обошёл.
+        Текст отказа значения не повторяет.
+        """  # noqa: RUF002
+        item = self._item(key)
+        if item.is_group:
+            raise InvalidRequestError(f"«{item.name}» — группа, у неё нет параметров запуска")  # noqa: RUF001
+        if params is not None and _has_control_chars(params):
+            raise InvalidRequestError(
+                "Параметры Конфигуратора не могут содержать перевод строки "
+                "и другие управляющие символы"
+            )
+        if params is not None and has_unclosed_quote(params):
+            raise InvalidRequestError(DESIGNER_QUOTE_REFUSAL)
+        if params is not None and contains_secret_arguments(params):
+            raise InvalidRequestError(DESIGNER_SECRET_REFUSAL)
+        normalized = params if params is not None and params.strip() else None
+        try:
+            self._store_user(
+                set_designer_params(self._user, key, normalized),
+                "Не удалось сохранить параметры Конфигуратора",  # noqa: RUF001
+            )
+        finally:
+            self._rebuild()
+
     def launch(
         self,
         key: str,
@@ -458,11 +758,19 @@ class Workspace:
         *,
         elevated: bool = False,
         ask_login: bool = False,
+        once: str | None = None,
     ) -> LaunchOutcome:
         if elevated and ask_login:
             # Решение заказчика 03.11.2026 (спека 3.2.5, §1, п. 4): режимы не
             # сочетаются; UI такого вызова не делает — это ошибка программиста.
             raise ValueError("Запуск от имени администратора и с запросом входа не сочетаются")  # noqa: RUF001
+        if once is not None and once.strip() and (elevated or ask_login):
+            # Спека v4, §4.5: разовые параметры не сочетаются с повышением и входом;  # noqa: RUF003
+            # UI такого вызова не делает — это ошибка программиста.
+            raise ValueError(
+                "Разовые параметры не сочетаются с запуском от имени администратора "  # noqa: RUF001
+                "и с запросом входа"  # noqa: RUF001
+            )
         if self._installations is None:
             # Спека T-04.6, §3.4: запуск до готовности обязан отказать
             # вежливо, а не молча идти дальше с пустым списком установок —  # noqa: RUF003
@@ -502,6 +810,25 @@ class Workspace:
             credentials, store_failure = None, None
         else:
             credentials, store_failure = self._credentials_for_launch(key)
+        extra_parts: list[str] = []
+        if forced is LaunchTarget.DESIGNER:
+            designer = (self._user.get(key, BaseUserData()).designer_params or "").strip()
+            if designer:
+                # bases.json правится и руками: инвариант сеттера на загрузке не
+                # гарантирован. Текст ошибки значения не повторяет.
+                if _has_control_chars(designer):
+                    raise LaunchError(
+                        "Строка параметров Конфигуратора содержит перевод строки или другой "
+                        "управляющий символ — исправьте её в свойствах базы."
+                    )
+                extra_parts.append(designer)
+        if once is not None and once.strip():
+            if _has_control_chars(once):
+                raise LaunchError(
+                    "Разовые параметры содержат перевод строки или другой управляющий "
+                    "символ — запуск отменён."
+                )
+            extra_parts.append(once.strip())
         try:
             outcome = launch_infobase(
                 item,
@@ -515,6 +842,7 @@ class Workspace:
                 open_url=self._open_url,
                 credentials=credentials,
                 deny_os_auth=ask_login,
+                extra_params=" ".join(extra_parts) or None,
             )
         except ElevationDeclinedError as error:
             # Отказ в окне UAC — до записи времени: база не запущена.
@@ -698,7 +1026,7 @@ class Workspace:
             self._user = previous
             raise UserDataWriteError(f"{what} ({self.paths.user_data}): {error}") from error
 
-    def _move_secret(self, rekey_from: str, new_key: str) -> str | None:
+    def _move_secret(self, rekey_from: str, new_key: str, what: str = "пароль") -> str | None:
         """Перевесить секрет со старого ключа на новый. `None` — сделано.
 
         Строка-результат вместо исключения: `_write` собирает отказы
@@ -727,7 +1055,7 @@ class Workspace:
         except CredentialBackendError as error:
             return (
                 "Запись изменена, но не удалось проверить, есть ли у неё "  # noqa: RUF001
-                f"сохранённый пароль: {error}"
+                f"сохранённый {what}: {error}"
             )
         if secret is None:
             return None
@@ -735,14 +1063,14 @@ class Workspace:
             self._credentials.write(new_key, secret)
         except CredentialBackendError as error:
             return (
-                "Запись изменена, но пароль не перенесён — он остался "
+                f"Запись изменена, но {what} не перенесён — он остался "
                 f"у прежней записи: {error}"  # noqa: RUF001
             )
         try:
             self._credentials.delete(rekey_from)
         except CredentialBackendError as error:
             return (
-                "Запись изменена, пароль перенесён, но старая копия осталась "
+                f"Запись изменена, {what} перенесён, но старая копия осталась "
                 "в диспетчере учётных данных — удалите запись "
                 f"`{SERVICE}/{rekey_from}` вручную: {error}"
             )
@@ -789,9 +1117,13 @@ class Workspace:
                 failures.append(str(error))
                 data_failed = True
             if move_secret:
-                store_failure = self._move_secret(rekey_from, result.key)
-                if store_failure is not None:
-                    failures.append(store_failure)
+                for old, new, what in (
+                    (rekey_from, result.key, "пароль"),
+                    (repository_key(rekey_from), repository_key(result.key), "пароль хранилища"),
+                ):
+                    store_failure = self._move_secret(old, new, what)
+                    if store_failure is not None:
+                        failures.append(store_failure)
         self._raw = payload
         self._rebuild()
         if failures:

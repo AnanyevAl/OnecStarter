@@ -96,7 +96,6 @@ T-12 (задача 4): обнаружение остатков — на сним
 """  # noqa: RUF002
 
 import logging
-import os
 import re
 import uuid
 from collections.abc import Callable, Sequence
@@ -123,6 +122,7 @@ from onecstarter.domain.server_match import (
 )
 from onecstarter.domain.version import VersionNumber
 from onecstarter.platform_1c import console, elevation
+from onecstarter.platform_1c.dll_search import startfile
 from onecstarter.platform_1c.job import Job, JobError
 from onecstarter.platform_1c.process_scan import ProcessInfo, ProcessScanner
 from onecstarter.platform_1c.server_discovery import ServerInstallation
@@ -278,7 +278,7 @@ class ServersWorkspace:
         server_spawn: Callable[[LaunchCommand, Path, Job], int],
         logs_dir: Path,
         run_elevated: Callable[[str, str], int] = elevation.run_elevated,
-        open_file: Callable[[str], None] = os.startfile,
+        open_file: Callable[[str], None] = startfile,
         registered_radmin: Callable[[], Path | None] = console.registered_radmin_path,
         new_id: Callable[[], str] = lambda: uuid.uuid4().hex,
         now: Callable[[], datetime] = lambda: datetime.now().astimezone(),

@@ -1,4 +1,4 @@
-"""Наши данные о базах: избранное, история запусков и логин пользователя базы.
+"""Наши данные о базах: избранное, история запусков, логин и строка параметров Конфигуратора.
 
 Файл лежит в %APPDATA%\\OneCStarter\\bases.json и принадлежит только этому
 слою. В ibases.v8i свои ключи не пишем — привязка идёт ключом из model.
@@ -33,8 +33,10 @@ __all__ = [
     "record_launch",
     "rekey",
     "save_user_data",
+    "set_designer_params",
     "set_favorite",
     "set_login",
+    "set_repository",
 ]
 
 
@@ -45,6 +47,14 @@ class BaseUserData:
     launch_count: int = 0
     last_client: str | None = None
     login: str | None = None
+    # v4 (решение заказчика 08.11.2026): строка параметров Конфигуратора — наша,
+    # уходит в argv только при запуске Конфигуратора (спека v4, §4.3).
+    designer_params: str | None = None
+    # v4, блок 2 (спека §2, решение 9): адрес и пользователь хранилища конфигурации
+    # принадлежат базе. Пароль хранилища здесь не лежит никогда — он в
+    # `security/credentials.py` под ключом `repository_key(<ключ базы>)`.
+    repository_address: str | None = None
+    repository_user: str | None = None
 
 
 def load_user_data(path: Path) -> dict[str, BaseUserData]:
@@ -117,6 +127,20 @@ def set_login(
     return {**entries, key: replace(current, login=login)}
 
 
+def set_designer_params(
+    entries: Mapping[str, BaseUserData], key: str, params: str | None
+) -> dict[str, BaseUserData]:
+    current = entries.get(key, BaseUserData())
+    return {**entries, key: replace(current, designer_params=params)}
+
+
+def set_repository(
+    entries: Mapping[str, BaseUserData], key: str, address: str | None, user: str | None
+) -> dict[str, BaseUserData]:
+    current = entries.get(key, BaseUserData())
+    return {**entries, key: replace(current, repository_address=address, repository_user=user)}
+
+
 def rekey(
     entries: Mapping[str, BaseUserData], old_key: str, new_key: str
 ) -> dict[str, BaseUserData]:
@@ -150,6 +174,9 @@ def _encode(data: BaseUserData) -> dict[str, Any]:
         "launch_count": data.launch_count,
         "last_client": data.last_client,
         "login": data.login,
+        "designer_params": data.designer_params,
+        "repository_address": data.repository_address,
+        "repository_user": data.repository_user,
     }
 
 
@@ -167,4 +194,15 @@ def _decode(value: Any) -> BaseUserData:
         # в `set_credentials`/`launch` и упал бы там `AttributeError` —
         # сбоем далеко от причины (финальное ревью, M1).
         login=str(raw) if (raw := value.get("login")) is not None else None,
+        designer_params=(
+            str(raw_params) if (raw_params := value.get("designer_params")) is not None else None
+        ),
+        repository_address=(
+            str(raw_address)
+            if (raw_address := value.get("repository_address")) is not None
+            else None
+        ),
+        repository_user=(
+            str(raw_user) if (raw_user := value.get("repository_user")) is not None else None
+        ),
     )

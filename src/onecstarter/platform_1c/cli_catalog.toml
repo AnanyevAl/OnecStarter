@@ -1,0 +1,1755 @@
+# Каталог ключей командной строки 1С:Предприятия (клиентские ключи, раздел 7.3 «Приложения 7», 8.5.4).
+# Описания написаны своими словами; названия и синтаксис ключей — факты платформы.
+# Поле versions: build/catalog_versions.py (since/until по Приложению 7 версий 8.3.18…8.5.4).
+
+[[group]]
+id = "debug"
+title = "Отладка и диагностика"
+order = 10
+
+[[group]]
+id = "startup"
+title = "Сообщения и диалоги при старте"
+order = 20
+
+[[group]]
+id = "locale"
+title = "Язык и локализация"
+order = 30
+
+[[group]]
+id = "ui"
+title = "Окно и интерфейс"
+order = 40
+
+[[group]]
+id = "auth"
+title = "Аутентификация"
+order = 50
+
+[[group]]
+id = "connection"
+title = "Соединение и сжатие"
+order = 60
+
+[[group]]
+id = "version"
+title = "Версия, клиент, разрядность"
+order = 70
+
+[[group]]
+id = "config"
+title = "Параметры конфигурации"
+order = 80
+
+[[group]]
+id = "thick"
+title = "Режим толстого клиента"
+order = 90
+
+[[group]]
+id = "other"
+title = "Прочие"
+order = 100
+
+# ---------------------------------------------------------------- debug
+
+[[key]]
+name = "/Debug"
+group = "debug"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "запуск в режиме отладки"
+description = """Клиент стартует с отладкой. Протокол выбирают -tcp или -http; -attach (только для HTTP) сам подключает предметы отладки к серверу отладки, адрес которого задаёт ключ /DebuggerURL."""
+its = "Приложение 7, 7.3.7"
+reliability = "doc"
+args = [
+  { kind = "enum", values = ["-tcp", "-http"], label = "протокол" },
+  { kind = "flag", flag = "-attach", requires = "-http", label = "подключать предметы отладки автоматически" },
+]
+
+[[key]]
+name = "/DebuggerURL"
+group = "debug"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "адрес отладчика или сервера отладки"
+description = """При отладке по TCP это адрес отладчика, при отладке по HTTP — адрес сервера отладки вместе с портом, а не только имя компьютера."""
+its = "Приложение 7, 7.3.7"
+reliability = "doc"
+args = [{ kind = "string", required = true, label = "адрес отладчика" }]
+
+[[key]]
+name = "/EmulateServerCallDelay"
+group = "debug"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "имитация медленного соединения"
+description = """Чтобы посмотреть, как приложение ведёт себя на плохой связи: клиент добавляет паузу к каждому обращению к серверу (-Call, без значения — 1.45 с) и к каждому отправленному (-Send, 0.45 с) и полученному (-Recevie, 0.15 с) килобайту. Секунды пишутся вплотную к подключу, предел — 9.99 с. Опечатка в -Recevie — из документации; программа передаёт подключ в том же виде."""
+its = "Приложение 7, 7.3.7"
+reliability = "doc"
+args = [
+  { kind = "string", flag = "-Call", attached = true, label = "задержка вызова, с" },
+  { kind = "string", flag = "-Send", attached = true, label = "задержка отправки на 1 КБ, с" },
+  { kind = "string", flag = "-Recevie", attached = true, label = "задержка приёма на 1 КБ, с" },
+]
+
+[[key]]
+name = "/TestManager"
+group = "debug"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "запуск как менеджер тестирования"
+description = """Толстый или тонкий клиент поднимается как управляющий: он командует клиентами тестирования через специальную объектную модель."""
+its = "Приложение 7, 7.3.8"
+reliability = "doc"
+
+[[key]]
+name = "/TestClient"
+group = "debug"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "запуск как клиент тестирования"
+description = """Любое клиентское приложение работает под управлением менеджера тестирования. Порт по умолчанию 1538; идентификатор различает несколько клиентов одного менеджера (веб и мобильный); адрес публикации нужен мобильному приложению."""
+its = "Приложение 7, 7.3.8"
+reliability = "doc"
+args = [
+  { kind = "int", flag = "-TPort", attached = true, label = "порт" },
+  { kind = "string", flag = "-TestClientID", attached = true, label = "идентификатор" },
+  { kind = "string", flag = "-TURL=", attached = true, label = "адрес публикации" },
+]
+
+[[key]]
+name = "/UILogRecorder"
+group = "debug"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "запись журнала действий пользователя"
+description = """Клиент записывает интерактивные действия в журнал, из которого можно получить код на встроенном языке для их воспроизведения. Сочетается с /TestClient. Если менеджер тестирования не подключён, журнал после записи сохраняется в указанный файл."""
+its = "Приложение 7, 7.3.8"
+reliability = "doc"
+args = [
+  { kind = "int", flag = "-TPort", attached = true, label = "порт" },
+  { kind = "file", flag = "-File", attached = true, label = "файл журнала" },
+]
+
+[[key]]
+name = "/EnableCheckModal"
+group = "debug"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "строгая проверка модальных методов"
+description = """Включает жёсткий контроль того, как код пользуется модальными методами."""
+its = "Приложение 7, 7.3.9"
+reliability = "doc"
+
+[[key]]
+name = "/EnableCheckExtensionsAndAddInsSyncCalls"
+group = "debug"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "проверка синхронных вызовов расширений и компонент"
+description = """Включает строгий контроль синхронных вызовов расширений работы с файлами и криптографией, а также внешних компонент. В толстом клиенте ключ не действует."""
+its = "Приложение 7, 7.3.9"
+reliability = "doc"
+
+[[key]]
+name = "/EnableCheckServerCalls"
+group = "debug"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "проверка контекстных серверных вызовов формы"
+description = """Если в обработчике события формы, где серверный вызов запрещён, он всё же происходит, в окно сообщений выводится предупреждение; то же сообщение видно в информации для техподдержки."""
+its = "Приложение 7, 7.3.9"
+reliability = "doc"
+
+[[key]]
+name = "/EnableCheckScriptCircularRefs"
+group = "debug"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "поиск циклических ссылок в коде"
+description = """Во время исполнения встроенного языка платформа ищет циклические ссылки между объектами."""
+its = "Приложение 7, 7.3.9"
+reliability = "doc"
+
+[[key]]
+name = "/TechnicalSpecialistMode"
+group = "debug"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "меню «Функции для технического специалиста»"
+description = """Делает доступной в главном меню клиента команду с инструментами для технического специалиста."""
+its = "Приложение 7, 7.3.5"
+reliability = "doc"
+
+[[key]]
+name = "/DisplayPerformance"
+group = "debug"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "показатели обмена с сервером"
+description = """В клиенте выводятся счётчики: сколько было вызовов сервера и сколько данных отправлено на сервер и получено от него."""
+its = "Приложение 7, 7.3.7"
+reliability = "doc"
+
+# ---------------------------------------------------------------- startup
+
+[[key]]
+name = "/DisableStartupMessages"
+group = "startup"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "не показывать стартовые сообщения"
+description = """Подавляет предупреждения при запуске, например о несовпадении конфигурации базы с сохранённой или о нехватке возможностей компьютера для редактирования справки и html."""
+its = "Приложение 7, 7.3.12"
+reliability = "doc"
+
+[[key]]
+name = "/DisableStartupDialogs"
+group = "startup"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "не показывать стартовые диалоги и вход"
+description = """Убирает стартовый диалог и диалоги аутентификации и переводит клиент в пакетный режим. Если командной строки не хватает для выбора базы, режима или входа, вместо диалога будет ошибка. Поддерживают Конфигуратор, тонкий и толстый клиенты."""
+its = "Приложение 7, 7.3.12"
+reliability = "doc"
+
+[[key]]
+name = "/DisableSplash"
+group = "startup"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "отключить заставку"
+description = """Скрывает окно заставки, но только если оно было полностью заменено; саму замену заставки делает фирма «1С»."""
+its = "Приложение 7, 7.3.12"
+reliability = "doc"
+
+[[key]]
+name = "/DisableUnrecoverableErrorMessage"
+group = "startup"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "без окна при невосстановимой ошибке"
+description = """При фатальной ошибке окно не показывается, дамп пишется по настройкам logcfg.xml (в Windows), отчёт уходит при настроенной автоотправке и размере до 5 МБ, процесс завершается с ненулевым кодом. Подходит для окружения без пользователя."""
+its = "Приложение 7, 7.3.12"
+reliability = "doc"
+
+[[key]]
+name = "/DisableHomePageForms"
+group = "startup"
+modes = ["enterprise"]
+clients = ["thin"]
+versions = { since = "8.3.23" }
+summary = "не открывать формы начальной страницы"
+description = """Тонкий клиент при старте не открывает формы начальной страницы прикладного решения."""
+its = "Приложение 7, 7.3.12"
+reliability = "doc"
+
+[[key]]
+name = "/DisplayUserNotificationList"
+group = "startup"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "показать непрочитанные оповещения при старте"
+description = """При запуске клиент выводит непрочитанные сообщения из системы взаимодействия и центра оповещений."""
+its = "Приложение 7, 7.3.12"
+reliability = "doc"
+
+[[key]]
+name = "/DisableBackgroundIndexBuild"
+group = "startup"
+modes = ["designer"]
+clients = []
+versions = { since = "8.3.27" }
+summary = "без фонового индекса рефакторинга"
+description = """Конфигуратор не строит при запуске индекс, нужный для поиска ссылок на объект, его удаления и переименования."""
+its = "Приложение 7, 7.3.12"
+reliability = "doc"
+
+[[key]]
+name = "/Out"
+group = "startup"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "файл служебных сообщений"
+description = """Платформа пишет сообщения в указанный файл в UTF-8; без -NoTruncate файл очищается. Файл создаётся сразу при запуске, и пока сообщений нет, в нём только BOM UTF-8. В пакетных режимах запись идёт без буферизации, так что файл можно читать во время работы."""
+its = "Приложение 7, 7.3.12"
+reliability = "fact"
+args = [
+  { kind = "file", required = true, label = "файл сообщений" },
+  { kind = "flag", flag = "-NoTruncate", label = "не очищать файл" },
+]
+
+# ---------------------------------------------------------------- locale
+
+[[key]]
+name = "/L"
+group = "locale"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "язык интерфейса платформы"
+description = """Код языка меню и сообщений платформы, вплотную к ключу: /Len. Из списка баз (AdditionalParameters) платформа этот ключ не применяет — только из командной строки."""
+its = "Приложение 7, 7.3.6"
+reliability = "fact"
+from_v8i = false
+args = [{ kind = "string", attached = true, required = true, label = "код языка (ru, en, …)" }]
+
+[[key]]
+name = "/VL"
+group = "locale"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "локализация сеанса"
+description = """Код локализации, по которому форматируются числа и даты и работают ЧислоПрописью() и ПредставлениеПериода(). Пишется вплотную к ключу: /VLru_RU."""
+its = "Приложение 7, 7.3.6"
+reliability = "doc"
+args = [{ kind = "string", attached = true, required = true, label = "код локализации (ru_RU, …)" }]
+
+# ---------------------------------------------------------------- ui
+
+[[key]]
+name = "/i85"
+group = "ui"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.5.1" }
+summary = "интерфейс версии 8.5"
+description = """Клиент открывается в режиме интерфейса, появившегося в версии 8.5."""
+its = "Приложение 7, 7.3.5"
+reliability = "doc"
+
+[[key]]
+name = "/iTaxi"
+group = "ui"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "интерфейс «Такси»"
+description = """Клиент открывается в интерфейсе «Такси»."""
+its = "Приложение 7, 7.3.5"
+reliability = "doc"
+
+[[key]]
+name = "/itdi"
+group = "ui"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "интерфейс с закладками"
+description = """Клиент открывается в режиме, где окна располагаются на закладках."""
+its = "Приложение 7, 7.3.5"
+reliability = "doc"
+
+[[key]]
+name = "/AppCaptionFromInfobaseList"
+group = "ui"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.5.4" }
+summary = "заголовок окна из списка баз"
+description = """Заголовком окна становится представление базы из списка баз компьютера; база ищется по строке подключения, при нескольких совпадениях берётся первая, при отсутствии ничего не меняется. Конфигурация такой заголовок затем не изменит. В веб-клиенте ключ не действует."""
+its = "Приложение 7, 7.3.11"
+reliability = "doc"
+
+[[key]]
+name = "/Theme"
+group = "ui"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.5.1" }
+summary = "тема интерфейса 8.5"
+description = """Выбирает тёмную или светлую тему, когда клиент работает в интерфейсе версии 8.5, как бы он ни был запущен."""
+its = "Приложение 7, 7.3.5"
+reliability = "doc"
+args = [{ kind = "enum", values = ["-Dark", "-Light"], required = true, label = "тема" }]
+
+[[key]]
+name = "/MainWindowMode"
+group = "ui"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "режим главного окна"
+description = """Явно задаёт режим главного окна: обычный, рабочее место, встроенное рабочее место (для вставки веб-клиента в чужой сайт), полноэкранное рабочее место или киоск."""
+its = "Приложение 7, 7.3.5"
+reliability = "doc"
+args = [{ kind = "enum", values = ["-Normal", "-Workplace", "-EmbeddedWorkplace", "-FullscreenWorkplace", "-Kiosk"], required = true, label = "режим окна" }]
+
+[[key]]
+name = "/AppShortCaption"
+group = "ui"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.5.4" }
+summary = "короткий заголовок окна"
+description = """Текст ставится в заголовок перед системным текстом и отделяется точкой. Изменённый ключом заголовок конфигурация потом не поменяет."""
+its = "Приложение 7, 7.3.11"
+reliability = "doc"
+args = [{ kind = "string", required = true, label = "заголовок" }]
+
+[[key]]
+name = "/AppCaption"
+group = "ui"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.5.4" }
+summary = "заголовок окна приложения"
+description = """Задаёт заголовок окна целиком; с пробелами значение берут в кавычки. Конфигурация этот заголовок не изменит."""
+its = "Приложение 7, 7.3.11"
+reliability = "doc"
+args = [{ kind = "string", required = true, label = "заголовок" }]
+
+# ---------------------------------------------------------------- auth
+
+[[key]]
+name = "/N"
+group = "auth"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "имя пользователя"
+description = """Имя как в списке пользователей информационной базы, пишется вплотную к ключу. При запуске по /IBName в форме /N"имя" вместе с /P перекрывает данные из списка баз, вход проходит без диалога."""
+its = "Приложение 7, 7.3.2"
+reliability = "fact"
+args = [{ kind = "string", attached = true, quoted = true, required = true, label = "имя пользователя" }]
+
+[[key]]
+name = "/P"
+group = "auth"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "пароль пользователя"
+description = """Пароль пользователя из /N, вплотную к ключу; без пароля у пользователя ключ опускают. Проверено в форме /P"пароль" вместе с /N: вход без диалога, список баз при этом не меняется."""
+its = "Приложение 7, 7.3.2"
+reliability = "fact"
+args = [{ kind = "secret", attached = true, quoted = true, label = "пароль" }]
+
+[[key]]
+name = "/ModifyPassword"
+group = "auth"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "сменить пароль при входе"
+description = """Работает только вместе с /N и /P: после успешного входа со старым паролем пользователю ставится новый, и сеанс продолжается."""
+its = "Приложение 7, 7.3.2"
+reliability = "doc"
+args = [{ kind = "secret", required = true, label = "новый пароль" }]
+
+[[key]]
+name = "/WA"
+group = "auth"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "аутентификация средствами ОС"
+description = """Плюс требует вход по учётной записи ОС, минус запрещает; без ключа действует плюс. При запуске по /IBName ключ переопределяет настройку из списка баз в обе стороны."""
+its = "Приложение 7, 7.3.2"
+reliability = "fact"
+args = [{ kind = "enum", values = ["+", "-"], attached = true, label = "режим" }]
+
+[[key]]
+name = "/WSA"
+group = "auth"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "аутентификация ОС на веб-сервере"
+description = """Включает (по умолчанию) или запрещает принудительную аутентификацию средствами ОС на веб-сервере."""
+its = "Приложение 7, 7.3.2"
+reliability = "doc"
+args = [{ kind = "enum", values = ["+", "-"], attached = true, label = "режим" }]
+
+[[key]]
+name = "/OIDA"
+group = "auth"
+modes = ["enterprise", "designer"]
+clients = ["thin"]
+versions = { since = "8.3.18" }
+summary = "сквозная аутентификация OpenID"
+description = """Управляет входом через OpenID-провайдера, адрес которого указан в публикации (default.vrd). По умолчанию вход включён; при необходимости провайдер сам показывает диалог ввода имени и пароля."""
+its = "Приложение 7, 7.3.2"
+reliability = "doc"
+args = [{ kind = "enum", values = ["+", "-"], attached = true, label = "режим" }]
+
+[[key]]
+name = "/WSN"
+group = "auth"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "пользователь ОС для веб-сервера"
+description = """Имя пользователя ОС, под которым выполняется аутентификация на веб-сервере при /WSA+; пароль даёт /WSP."""
+its = "Приложение 7, 7.3.2"
+reliability = "doc"
+args = [{ kind = "string", required = true, label = "имя пользователя ОС" }]
+
+[[key]]
+name = "/WSP"
+group = "auth"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "пароль пользователя для веб-сервера"
+description = """Пароль того пользователя, чьё имя передано в /WSN."""
+its = "Приложение 7, 7.3.2"
+reliability = "doc"
+args = [{ kind = "secret", required = true, label = "пароль пользователя ОС" }]
+
+[[key]]
+name = "/AccessToken"
+group = "auth"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.21" }
+summary = "вход по токену JWT"
+description = """Передаёт JWT, по которому платформа аутентифицирует пользователя."""
+its = "Приложение 7, 7.3.2"
+reliability = "doc"
+args = [{ kind = "secret", label = "JWT" }]
+
+[[key]]
+name = "/Authoff"
+group = "auth"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "выход из OpenID"
+description = """OpenID logout: вход через OpenID или OpenID Connect сбрасывается, как бы пользователь ни входил после этого."""
+its = "Приложение 7, 7.3.2"
+reliability = "doc"
+
+[[key]]
+name = "/SAOnRestart"
+group = "auth"
+modes = ["enterprise", "designer"]
+clients = ["thick"]
+versions = { since = "8.3.18" }
+summary = "спрашивать пароль при перезапуске"
+description = """Если приложение перезапустится из этого сеанса, окно входа с именем и паролем появится снова; без ключа перезапуск проходит без пароля. Только толстый клиент."""
+its = "Приложение 7, 7.3.2"
+reliability = "doc"
+
+[[key]]
+name = "/ResetSavedAuth"
+group = "auth"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.26" }
+summary = "забыть сохранённый вход"
+description = """Удаляет из хранилища токен повторного входа и имена пользователей базы, входивших с этого компьютера."""
+its = "Приложение 7, 7.3.2"
+reliability = "doc"
+
+[[key]]
+name = "/EmailAuth"
+group = "auth"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.27" }
+summary = "вход по коду из почты"
+description = """Вход с подтверждением по почте: код приходит письмом на заданный адрес и вводится в отдельном окне. Ключ не работает ни в пакетном Конфигураторе, ни вместе с /DisableStartupDialogs."""
+its = "Приложение 7, 7.3.2"
+reliability = "doc"
+args = [{ kind = "string", required = true, label = "адрес почты" }]
+
+# ---------------------------------------------------------------- connection
+
+[[key]]
+name = "/F"
+group = "connection"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "файловая база"
+description = """Каталог, где лежит файл базы 1Cv8.1CD."""
+its = "Приложение 7, 7.3.1"
+reliability = "doc"
+managed = true
+args = [{ kind = "dir", required = true, label = "каталог базы" }]
+
+[[key]]
+name = "/S"
+group = "connection"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "клиент-серверная база"
+description = """Адрес базы на сервере в виде сервер/имя-в-кластере. Разделитель лучше прямой; обратный допустим только в Windows, если не взять весь адрес в кавычки."""
+its = "Приложение 7, 7.3.1"
+reliability = "doc"
+managed = true
+args = [{ kind = "string", required = true, label = "сервер/база" }]
+
+[[key]]
+name = "/IBName"
+group = "connection"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "база из списка по имени"
+description = """Запуск базы, найденной в списке по имени, вплотную к ключу. Поиск без учёта регистра; два одноимённых элемента клиент не откроет и скажет об этом, а ненайденное имя молча приведёт к окну выбора базы. Кавычки внутри имени удваиваются."""
+its = "Приложение 7, 7.3.1"
+reliability = "fact"
+managed = true
+args = [{ kind = "string", attached = true, quoted = true, required = true, label = "имя базы" }]
+
+[[key]]
+name = "/IBConnectionString"
+group = "connection"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "строка соединения целиком"
+description = """Полная строка соединения, как её возвращает СтрокаСоединенияИнформационнойБазы(), вплотную к ключу, в кавычках, внутренние кавычки удвоены. Отдельные части переопределяются ключами, стоящими после него. Запуск по строке соединения список баз не меняет."""
+its = "Приложение 7, 7.3.1"
+reliability = "fact"
+managed = true
+args = [{ kind = "string", attached = true, quoted = true, required = true, label = "строка соединения" }]
+
+[[key]]
+name = "/WS"
+group = "connection"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "ws-соединение"
+description = """Адрес базы для соединения по ws."""
+its = "Приложение 7, 7.3.1"
+reliability = "doc"
+managed = true
+args = [{ kind = "string", required = true, label = "адрес" }]
+
+[[key]]
+name = "/O"
+group = "connection"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "скорость соединения"
+description = """Нормальная (по умолчанию) или низкая скорость; настройка относится к элементу списка баз и используется тонким клиентом."""
+its = "Приложение 7, 7.3.1"
+reliability = "doc"
+args = [{ kind = "enum", values = ["Normal", "Low"], attached = true, label = "скорость соединения" }]
+
+[[key]]
+name = "/TComp"
+group = "connection"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "сжатие трафика"
+description = """Выбирает алгоритм сжатия обмена сервера с тонким клиентом: без сжатия, deflate, собственный SDC, LZ4 или Zstandard (по умолчанию)."""
+its = "Приложение 7, 7.3.1"
+reliability = "doc"
+args = [{ kind = "enum", values = ["-None", "-Deflate", "-SDC", "-lz4", "-zstd"], label = "сжатие" }]
+
+[[key]]
+name = "/SLev"
+group = "connection"
+modes = ["enterprise", "designer"]
+clients = ["thick"]
+versions = { since = "8.3.18" }
+summary = "защищённость соединения"
+description = """Уровень защиты связи клиента с сервером: 0 без защиты, 1 только на время входа, 2 на весь сеанс. Без значения равно 0. К тонкому клиенту не относится."""
+its = "Приложение 7, 7.3.1"
+reliability = "doc"
+args = [{ kind = "enum", values = ["0", "1", "2"], attached = true, label = "уровень защиты" }]
+
+[[key]]
+name = "/Z"
+group = "connection"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "значения разделителей"
+description = """Задаёт значения общих реквизитов-разделителей, с которыми стартует клиент; список в кавычках через запятую."""
+its = "Приложение 7, 7.3.1"
+reliability = "doc"
+args = [{ kind = "string", required = true, label = "разделители через запятую" }]
+
+[[key]]
+name = "/NoProxy"
+group = "connection"
+modes = ["enterprise", "designer"]
+clients = ["thin"]
+versions = { since = "8.3.18" }
+summary = "не использовать прокси"
+description = """Отключает прокси для соединения; применимо только к ws-соединению."""
+its = "Приложение 7, 7.3.2"
+reliability = "doc"
+
+[[key]]
+name = "/Proxy"
+group = "connection"
+modes = ["enterprise", "designer"]
+clients = ["thin"]
+versions = { since = "8.3.18" }
+summary = "явные настройки прокси"
+description = """Прокси из ключа используется вместо настроек по умолчанию: адрес и порт обязательны, пользователь необязателен, пароль имеет смысл только вместе с пользователем. Только для ws-соединения."""
+its = "Приложение 7, 7.3.2"
+reliability = "doc"
+args = [
+  { kind = "string", flag = "-PSrv", required = true, label = "адрес прокси" },
+  { kind = "int", flag = "-PPort", required = true, label = "порт" },
+  { kind = "string", flag = "-PUser", label = "пользователь прокси" },
+  { kind = "secret", flag = "-PPwd", requires = "-PUser", label = "пароль прокси" },
+]
+
+[[key]]
+name = "/HttpsCert"
+group = "connection"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "источник клиентского сертификата"
+description = """Откуда брать клиентский сертификат для HTTPS: системное хранилище Windows, каталог Linux или хранилище macOS, либо файл с ключом (его пароль задаёт -pwd), либо ничего. Подключи -recent, -auto и -choose определяют выбор сертификата в хранилище. Если не указан ни один источник, ключ игнорируется."""
+its = "Приложение 7, 7.3.4"
+reliability = "doc"
+args = [
+  { kind = "flag", flag = "-windows" },
+  { kind = "flag", flag = "-linux" },
+  { kind = "flag", flag = "-macos" },
+  { kind = "flag", flag = "-recent" },
+  { kind = "flag", flag = "-auto" },
+  { kind = "flag", flag = "-choose" },
+  { kind = "file", flag = "-file", label = "файл сертификата" },
+  { kind = "secret", flag = "-pwd", requires = "-file", label = "пароль файла" },
+  { kind = "flag", flag = "-none" },
+]
+
+[[key]]
+name = "/HttpsCA"
+group = "connection"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "источник корневых сертификатов"
+description = """Откуда брать сертификаты удостоверяющих центров для проверки сертификата сервера: системные хранилища, файл (с паролем -pwd) или никуда — тогда сервер не проверяется. Без указания источника ключ игнорируется."""
+its = "Приложение 7, 7.3.4"
+reliability = "doc"
+args = [
+  { kind = "flag", flag = "-windows" },
+  { kind = "flag", flag = "-linux" },
+  { kind = "flag", flag = "-macos" },
+  { kind = "file", flag = "-file", label = "файл сертификатов" },
+  { kind = "secret", flag = "-pwd", requires = "-file", label = "пароль файла" },
+  { kind = "flag", flag = "-none" },
+]
+
+[[key]]
+name = "/HttpsForceTLS1_0"
+group = "connection"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "принудительно TLS 1.0"
+description = """При работе через веб-сервер по HTTPS заставляет клиент использовать TLS 1.0. Несколько ключей /HttpsForce* вместе давать нельзя: поведение не определено."""
+its = "Приложение 7, 7.3.4"
+reliability = "doc"
+
+[[key]]
+name = "/HttpsForceTLS1_1"
+group = "connection"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.21" }
+summary = "принудительно TLS 1.1"
+description = """Заставляет использовать TLS 1.1 или более ранние версии. Не сочетается с другими ключами /HttpsForce*."""
+its = "Приложение 7, 7.3.4"
+reliability = "doc"
+
+[[key]]
+name = "/HttpsForceTLS1_2"
+group = "connection"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.21" }
+summary = "принудительно TLS 1.2"
+description = """Заставляет использовать TLS 1.2 или более ранние версии. Без любого из этих ключей клиент начинает с TLS 1.3 и при необходимости понижает версию. Не сочетается с другими /HttpsForce*."""
+its = "Приложение 7, 7.3.4"
+reliability = "doc"
+
+[[key]]
+name = "/UC"
+group = "connection"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "код доступа при блокировке соединений"
+description = """Позволяет подключиться к базе, на которую поставлена блокировка соединений, если при установке блокировки задан непустой код доступа."""
+its = "Приложение 7, 7.3.10"
+reliability = "doc"
+args = [{ kind = "secret", required = true, label = "код доступа" }]
+
+# ---------------------------------------------------------------- version
+
+[[key]]
+name = "/AppAutoCheckVersion"
+group = "version"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "автоподбор версии платформы"
+description = """Включает (по умолчанию, как и /AppAutoCheckVersion+) или отключает подбор версии под базу: версия берётся из .v8i для файловой базы или от сервера для клиент-серверной. Проверено: при положительном значении платформа сама поднимает клиента нужной версии, а при минусе и «не той» версии клиент молча зависает на загрузке."""
+its = "Приложение 7, 7.3.3"
+reliability = "fact"
+args = [{ kind = "enum", values = ["+", "-"], attached = true, label = "режим" }]
+
+[[key]]
+name = "/AppAutoInstallLastVersion"
+group = "version"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "автоустановка новых версий"
+description = """Разрешает или запрещает платформе самой ставить новые версии клиентского приложения."""
+its = "Приложение 7, 7.3.10"
+reliability = "doc"
+args = [{ kind = "enum", values = ["+", "-"], attached = true, label = "режим" }]
+
+[[key]]
+name = "/UseHwLicenses"
+group = "version"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "поиск лицензий у менеджеров лицензий"
+description = """Определяет, ищет ли клиент при старте лицензию в доступных менеджерах лицензий: по умолчанию ищет (плюс), с минусом поиск отключён."""
+its = "Приложение 7, 7.3.12"
+reliability = "doc"
+args = [{ kind = "enum", values = ["+", "-"], attached = true, label = "режим" }]
+
+[[key]]
+name = "/AppAutoCheckMode"
+group = "version"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "автоподбор клиента под базу и пользователя"
+description = """Платформа сверяет основной режим запуска базы и режим пользователя с текущим клиентом и при расхождении, если есть право на нужный клиент, перезапускает его той же версии. Штатный стартер передаёт ключ только при режиме «Выбирать автоматически»; при явно выбранном клиенте его нет."""
+its = "Приложение 7, 7.3.3"
+reliability = "fact"
+
+[[key]]
+name = "/AppArch"
+group = "version"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "разрядность клиента"
+description = """Ограничивает или предпочитает 32- либо 64-разрядные версии: x86 и x86_64 только указанные, суффикс _prt означает предпочтение. По умолчанию x86_prt."""
+its = "Приложение 7, 7.3.3"
+reliability = "doc"
+args = [{ kind = "enum", values = ["x86", "x86_prt", "x86_64", "x86_64_prt"], required = true, label = "разрядность" }]
+
+# ---------------------------------------------------------------- config
+
+[[key]]
+name = "/C"
+group = "config"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "параметр запуска для прикладного решения"
+description = """Строка текста, которую прикладное решение получает при старте; она доступна конфигурации как ПараметрЗапуска."""
+its = "Приложение 7, 7.3.10"
+reliability = "fact"
+args = [{ kind = "string", required = true, label = "параметр запуска" }]
+
+[[key]]
+name = "/UsePrivilegedMode"
+group = "config"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "привилегированный режим"
+description = """Привилегированный сеанс — только для вошедшего пользователя с административными правами. В журнал регистрации попадает и включение режима, и отказ в нём."""
+its = "Приложение 7, 7.3.1"
+reliability = "doc"
+
+[[key]]
+name = "/ClearCache"
+group = "config"
+modes = ["enterprise", "designer"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "очистить кеш клиента"
+description = """Чистит служебные данные базы в каталоге данных приложения: кеш клиент-серверных вызовов (vrs-cache) и индекс поиска по модулям (cfg-cache; индекс очищается, но не удаляется). Каталог зависит от UUID базы из списка баз."""
+its = "Приложение 7, 7.3.10"
+reliability = "doc"
+
+[[key]]
+name = "/DisableExtensions"
+group = "config"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.5.4" }
+summary = "отключить расширения на время сеанса"
+description = """Отключает перечисленные расширения или все (-AllExtensions) только в этом сеансе. Нужно право администрирования расширений; при разделителях затрагиваются расширения с областью «Область данных»."""
+its = "Приложение 7, 7.3.12"
+reliability = "doc"
+args = [
+  { kind = "string", label = "имена расширений через запятую" },
+  { kind = "flag", flag = "-AllExtensions", label = "все расширения" },
+]
+
+[[key]]
+name = "/AllowExecuteScheduledJobs"
+group = "config"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "управление регламентными заданиями"
+description = """Какой клиент выполняет регламентные задания. -Off — этот клиент за них не берётся; -Force — забирает их себе, сколько бы сеансов ни было открыто. Без ключа задания идут в самом раннем клиенте без -Off, а после его закрытия переходят к одному из оставшихся."""
+its = "Приложение 7, 7.3.10"
+reliability = "doc"
+args = [{ kind = "enum", values = ["-Off", "-Force"], required = true, label = "регламентные задания" }]
+
+[[key]]
+name = "/Execute"
+group = "config"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "открыть внешнюю обработку после старта"
+description = """Сразу после запуска выполняется внешняя обработка по полному пути; ключ /URL при этом игнорируется. Без указания базы соединение идёт со служебной пустой базой EmptyIB рядом со списком баз, которая создаётся при отсутствии."""
+its = "Приложение 7, 7.3.10"
+reliability = "doc"
+args = [{ kind = "file", required = true, label = "внешняя обработка" }]
+
+[[key]]
+name = "/URL"
+group = "config"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "переход по навигационной ссылке"
+description = """Открывает объект по ссылке e1c (толстый и тонкий клиенты) или http(s) (только тонкий). Внешняя ссылка ищет уже запущенный клиент той же базы либо запускает новый; абсолютная ссылка отменяет ключи подключения /F, /S, /WS, /IBName. Внутренняя ссылка игнорируется."""
+its = "Приложение 7, 7.3.10"
+reliability = "doc"
+args = [{ kind = "string", required = true, label = "навигационная ссылка" }]
+
+# ---------------------------------------------------------------- thick
+
+[[key]]
+name = "/RunModeOrdinaryApplication"
+group = "thick"
+modes = ["enterprise"]
+clients = ["thick"]
+versions = { since = "8.3.18" }
+summary = "толстый клиент в обычном режиме"
+description = """Толстый клиент запускается в режиме обычного приложения, невзирая на настройки конфигурации и пользователя. В тонком клиенте не используется."""
+its = "Приложение 7, 7.3.3"
+reliability = "doc"
+
+[[key]]
+name = "/RunModeManagedApplication"
+group = "thick"
+modes = ["enterprise"]
+clients = ["thick"]
+versions = { since = "8.3.18" }
+summary = "толстый клиент в управляемом режиме"
+description = """Запускает управляемое приложение с учётом настройки основного режима в списке баз (автоматически и тонкий — тонкий; веб — веб; толстый — толстый). Автоподбор клиента при этом отключается."""
+its = "Приложение 7, 7.3.3"
+reliability = "doc"
+
+# ---------------------------------------------------------------- other
+
+[[key]]
+name = "/ManageLicenses"
+group = "other"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.5.4" }
+summary = "открыть «Управление лицензиями»"
+description = """Клиент стартует сразу с функцией управления лицензиями. Толстому клиенту и программе запуска база и лицензия не нужны (создаётся временная пустая база), тонкому нужны оба."""
+its = "Приложение 7, 7.3.3"
+reliability = "doc"
+
+[[key]]
+name = "/ManageServers"
+group = "other"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.5.4" }
+summary = "открыть «Управление серверами»"
+description = """Клиент стартует сразу с функцией управления серверами; требования к базе и лицензии те же, что у /ManageLicenses."""
+its = "Приложение 7, 7.3.3"
+reliability = "doc"
+
+[[key]]
+name = "/RunShortcut"
+group = "other"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "запуск со списком баз из файла"
+description = """Система открывается со списком баз из указанного файла общего списка (.v8i) или ярлыка (.v8l)."""
+its = "Приложение 7, 7.3.10"
+reliability = "doc"
+args = [{ kind = "file", required = true, label = "файл списка (.v8i, .v8l)" }]
+
+[[key]]
+name = "/@"
+group = "other"
+modes = ["enterprise"]
+clients = []
+versions = { since = "8.3.18" }
+summary = "командная строка из файла"
+description = """Для строк запуска длиннее, чем разрешает ОС: команда целиком, одной строкой, кладётся в файл, и платформа читает её оттуда вместо настоящей. Поэтому ключ ставится первым или единственным — в другом месте результат не определён. Кодировка файла — та же, что у интерпретатора, из которого запускают."""
+its = "Приложение 7, 7.3.12"
+reliability = "doc"
+args = [{ kind = "file", required = true, label = "файл с командной строкой" }]
+
+# ── Команды пакетного режима Конфигуратора (раздел 7.4 «Приложения 7», 8.5.4) ──────────
+# exclusive = true измерено только у /DumpIB (T-42 Э7); у остальных — по смыслу операции.
+# Взаимоисключающие подпараметры разнесены в отдельные аргументы; в подписи каждого
+# сказано «не вместе с …». Диапазоны версий (versions) — build/catalog_versions.py.
+
+[[group]]
+id = "backup"
+title = "Резерв и конфигурация"
+order = 110
+
+[[group]]
+id = "maintenance"
+title = "Обслуживание и проверки"
+order = 120
+
+[[group]]
+id = "repository"
+title = "Хранилище конфигурации"
+order = 130
+
+[[group]]
+id = "external"
+title = "Внешние обработки"
+order = 140
+
+# ── backup: выгрузка и загрузка базы, конфигурации, файлов ───────────────────────────────
+
+[[command]]
+name = "/DumpIB"
+group = "backup"
+effect = "none"
+exclusive = true
+summary = "выгрузить информационную базу в файл .dt"
+description = """Сохраняет всю базу — данные и конфигурацию — в один файл выгрузки. Пока идёт выгрузка, в базе не должно быть других сеансов."""
+its = "Приложение 7, 7.4.2"
+reliability = "fact"
+versions = { since = "8.3.18" }
+args = [{ kind = "file", role = "output", ext = ".dt", required = true, label = "файл выгрузки" }]
+
+# Базовая форма команды измерена в T-42 (часть Б); подпараметры — по документации.
+[[command]]
+name = "/RestoreIB"
+group = "backup"
+effect = "replaces"
+exclusive = true
+summary = "загрузить информационную базу из файла .dt"
+description = """Полностью заменяет содержимое базы тем, что лежит в файле выгрузки: данные, конфигурацию и список пользователей. Прерванная загрузка оставляет базу испорченной."""
+its = "Приложение 7, 7.4.2"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "file", role = "input", ext = ".dt", required = true, label = "файл выгрузки" },
+  { kind = "enum", flag = "-UseBinaryDataStorage", attached = true, values = ["+", "-"], label = "двоичные данные — во встроенное хранилище" },
+  { kind = "int", flag = "-JobsCount", label = "число фоновых заданий загрузки (0 — по числу процессоров)" },
+]
+
+# Базовая форма команды измерена в T-42 (часть Б); подпараметры — по документации.
+[[command]]
+name = "/DumpCfg"
+group = "backup"
+effect = "none"
+exclusive = false
+summary = "сохранить конфигурацию в файл .cf"
+description = """Записывает основную конфигурацию базы в файл. С подпараметром -Extension сохраняется указанное расширение."""
+its = "Приложение 7, 7.4.4.3"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "file", role = "output", ext = ".cf", required = true, label = "файл конфигурации (.cf, для расширения .cfe)" },
+  { kind = "string", flag = "-Extension", label = "имя расширения" },
+]
+
+[[command]]
+name = "/DumpDBCfg"
+group = "backup"
+effect = "none"
+exclusive = false
+summary = "сохранить конфигурацию базы данных в файл"
+description = """Пишет в файл не рабочую конфигурацию, а ту, что сейчас хранится в самой базе данных. Для расширения укажите его имя в -Extension."""
+its = "Приложение 7, 7.4.4.6"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "file", role = "output", ext = ".cf", required = true, label = "файл конфигурации (.cf, для расширения .cfe)" },
+  { kind = "string", flag = "-Extension", label = "имя расширения" },
+]
+
+# Базовая форма команды измерена в T-42 (часть Б); подпараметры — по документации.
+[[command]]
+name = "/DumpConfigToFiles"
+group = "backup"
+effect = "none"
+exclusive = false
+summary = "выгрузить конфигурацию в файлы XML"
+description = """Раскладывает конфигурацию по каталогу файлов. Можно выгрузить только изменившееся с прошлого раза, получить список изменений или записать результат в zip-архив."""
+its = "Приложение 7, 7.4.4.5"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "dir", role = "output", required = true, label = "каталог выгрузки" },
+  { kind = "string", flag = "-Extension", label = "имя расширения (не вместе с -AllExtensions)" },
+  { kind = "flag", flag = "-AllExtensions", label = "выгрузить все расширения, без основной конфигурации (не вместе с -Extension)" },
+  { kind = "flag", flag = "-update", label = "обновить прежнюю выгрузку: записать только изменившиеся объекты" },
+  { kind = "flag", flag = "-force", requires = "-update", label = "при расхождении формата выгрузки сделать полную выгрузку (только с -update)" },
+  { kind = "file", flag = "-getChanges", role = "output", label = "файл для списка изменений относительно прежней выгрузки" },
+  { kind = "file", flag = "-configDumpInfoForChanges", role = "input", label = "файл версий ConfigDumpInfo.xml для сравнения (с -update или -getChanges)" },
+  { kind = "file", flag = "-listFile", role = "input", label = "файл со списком объектов, которые выгрузить в любом случае (отдельно от других подпараметров)" },
+  { kind = "flag", flag = "-configDumpInfoOnly", label = "создать только файл версий ConfigDumpInfo.xml" },
+  { kind = "flag", flag = "-Server", label = "выгружать на стороне сервера 1С:Предприятия" },
+  { kind = "int", flag = "-JobsCount", requires = "-Server", label = "число фоновых заданий выгрузки (0 — подберёт платформа; только с -Server)" },
+  { kind = "file", flag = "-archive", role = "output", ext = ".zip", label = "zip-архив для результата" },
+  { kind = "flag", flag = "-ignoreUnresolvedReferences", label = "пропускать ссылки, ведущие на давно удалённые объекты" },
+]
+
+[[command]]
+name = "/DumpDBCfgList"
+group = "backup"
+effect = "none"
+exclusive = false
+summary = "вывести имена конфигурации или расширений базы"
+description = """Без подпараметров показывает имя основной конфигурации, с ними — имя одного расширения или всех. Вывод попадает в файл, заданный ключом /Out."""
+its = "Приложение 7, 7.4.4.7"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "string", flag = "-Extension", label = "имя расширения (не вместе с -AllExtensions)" },
+  { kind = "flag", flag = "-AllExtensions", label = "показать все расширения (не вместе с -Extension)" },
+]
+
+[[command]]
+name = "/CompareCfg"
+group = "backup"
+effect = "none"
+exclusive = false
+summary = "сравнить две конфигурации и записать отчёт"
+description = """Сопоставляет две конфигурации из разных источников — основной, базы, поставщика, расширения, хранилища или файла — и сохраняет отчёт о различиях. Каждая сторона задаётся типом и, если нужно, именем, файлом или версией хранилища."""
+its = "Приложение 7, 7.4.4.1"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "enum", flag = "-FirstConfigurationType", values = ["MainConfiguration", "DBConfiguration", "VendorConfiguration", "ExtensionConfiguration", "ExtensionDBConfiguration", "ConfigurationRepository", "ExtensionConfigurationRepository", "File"], required = true, label = "откуда взять первую конфигурацию" },
+  { kind = "string", flag = "-FirstName", label = "имя первой конфигурации (для поставщика и расширений)" },
+  { kind = "file", flag = "-FirstFile", role = "input", label = "файл .cf или .cfe первой конфигурации (при типе File)" },
+  { kind = "string", flag = "-FirstVersion", label = "версия хранилища для первой конфигурации (при типе из хранилища)" },
+  { kind = "enum", flag = "-SecondConfigurationType", values = ["MainConfiguration", "DBConfiguration", "VendorConfiguration", "ExtensionConfiguration", "ExtensionDBConfiguration", "ConfigurationRepository", "ExtensionConfigurationRepository", "File"], required = true, label = "откуда взять вторую конфигурацию" },
+  { kind = "string", flag = "-SecondName", label = "имя второй конфигурации (для поставщика и расширений)" },
+  { kind = "file", flag = "-SecondFile", role = "input", label = "файл .cf или .cfe второй конфигурации (при типе File)" },
+  { kind = "string", flag = "-SecondVersion", label = "версия хранилища для второй конфигурации (при типе из хранилища)" },
+  { kind = "enum", flag = "-MappingRule", values = ["ByObjectName", "ByObjectIDs"], label = "как сопоставлять объекты: по именам (по умолчанию) или по внутренним идентификаторам" },
+  { kind = "file", flag = "-Objects", role = "input", label = "файл со списком сравниваемых объектов" },
+  { kind = "enum", flag = "-ReportType", values = ["Brief", "Full"], required = true, label = "краткий или полный отчёт" },
+  { kind = "flag", flag = "-IncludeChangedObjects", label = "в отчёте показывать подчинённые объекты, которые изменились" },
+  { kind = "flag", flag = "-IncludeDeletedObjects", label = "в отчёте показывать подчинённые объекты, которых больше нет" },
+  { kind = "flag", flag = "-IncludeAddedObjects", label = "в отчёте показывать появившиеся подчинённые объекты" },
+  { kind = "enum", flag = "-ReportFormat", values = ["txt", "mxl"], required = true, label = "формат отчёта: текст или табличный документ" },
+  { kind = "file", flag = "-ReportFile", role = "output", required = true, label = "файл отчёта" },
+]
+
+[[command]]
+name = "/LoadCfg"
+group = "backup"
+effect = "replaces"
+exclusive = false
+summary = "загрузить конфигурацию из файла .cf"
+description = """Заменяет основную конфигурацию содержимым файла. С подпараметром -Extension загружается расширение, и если его в базе нет, оно создаётся; расширение, подключённое к хранилищу, загрузить так нельзя."""
+its = "Приложение 7, 7.4.4.9"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "file", role = "input", ext = ".cf", required = true, label = "файл конфигурации (.cf, для расширения .cfe)" },
+  { kind = "string", flag = "-Extension", label = "имя расширения" },
+]
+
+# Базовая форма команды измерена в T-42 (часть Б); подпараметры — по документации.
+# -Format упомянут в тексте раздела, но отсутствует в строке синтаксиса и списке параметров,
+# поэтому в каталоге его нет — не проверено.
+[[command]]
+name = "/LoadConfigFromFiles"
+group = "backup"
+effect = "replaces"
+exclusive = false
+summary = "загрузить конфигурацию из файлов XML"
+description = """Принимает конфигурацию в виде набора XML-файлов — из каталога или из zip-архива — и делает её рабочей в базе. Допускает и частичную загрузку отдельных файлов по списку."""
+its = "Приложение 7, 7.4.4.11"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "dir", role = "input", label = "каталог загрузки (обязателен, если не задан -Archive; вместе с ним не указывается)" },
+  { kind = "string", flag = "-Extension", label = "имя расширения (не вместе с -AllExtensions)" },
+  { kind = "flag", flag = "-AllExtensions", label = "загрузить расширения: каждый подкаталог — одно расширение (не вместе с -Extension, -files, -listFile)" },
+  { kind = "string", flag = "-files", quoted = true, label = "файлы для частичной загрузки через запятую, весь список в кавычках (не вместе с -AllExtensions)" },
+  { kind = "file", flag = "-listFile", role = "input", label = "файл со списком загружаемых файлов, по одному в строке (не вместе с -AllExtensions)" },
+  { kind = "flag", flag = "-updateConfigDumpInfo", label = "в конце создать или обновить файл версий ConfigDumpInfo.xml" },
+  { kind = "flag", flag = "-NoCheck", label = "не проверять целостность загружаемой конфигурации" },
+  { kind = "file", flag = "-Archive", role = "input", ext = ".zip", label = "zip-архив, из которого загружать (вместо каталога загрузки)" },
+  { kind = "flag", flag = "-partial", label = "частичная загрузка: только элементы описания, названные файлами" },
+  { kind = "int", flag = "-JobsCount", label = "число потоков загрузки (0 — подберёт платформа)" },
+]
+
+[[command]]
+name = "/UpdateDBCfg"
+group = "backup"
+effect = "modifies"
+exclusive = true
+summary = "обновить конфигурацию базы данных"
+description = """Приводит структуру базы в соответствие с рабочей конфигурацией. Обычно нужен монопольный доступ; динамическое и фоновое обновление позволяют обойтись без него, но не всегда применимы."""
+its = "Приложение 7, 7.4.4.16"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "enum", flag = "-Dynamic", attached = true, values = ["+", "-"], label = "динамическое обновление (по умолчанию разрешено)" },
+  { kind = "enum", flag = "-DynamicRestruct", attached = true, values = ["+", "-"], label = "динамическая реструктуризация (по умолчанию запрещена)" },
+  { kind = "flag", flag = "-BackgroundStart", label = "запустить фоновое обновление и сразу завершиться" },
+  { kind = "flag", flag = "-BackgroundCancel", label = "отменить запущенное фоновое обновление" },
+  { kind = "flag", flag = "-BackgroundFinish", label = "завершить фоновое обновление фазой принятия изменений" },
+  { kind = "flag", flag = "-Visible", requires = "-BackgroundFinish", label = "показать диалог, если принять изменения не удаётся (только с -BackgroundFinish)" },
+  { kind = "flag", flag = "-BackgroundSuspend", label = "приостановить фоновое обновление" },
+  { kind = "flag", flag = "-BackgroundResume", label = "продолжить приостановленное фоновое обновление" },
+  { kind = "flag", flag = "-WarningsAsErrors", label = "считать предупреждения ошибками" },
+  { kind = "flag", flag = "-Server", label = "выполнять обновление на сервере (клиент-серверный вариант)" },
+  { kind = "flag", flag = "-v1", label = "обычный механизм реструктуризации (не вместе с -v2)" },
+  { kind = "flag", flag = "-v2", label = "оптимизированный механизм реструктуризации (не вместе с -v1)" },
+  { kind = "string", flag = "-Extension", label = "имя расширения" },
+  { kind = "enum", flag = "-SessionTerminate", values = ["disable", "force"], label = "завершать ли сеансы ради монопольной блокировки: disable (по умолчанию) или force" },
+]
+
+[[command]]
+name = "/RollbackCfg"
+group = "backup"
+effect = "replaces"
+exclusive = false
+summary = "вернуться к конфигурации базы данных"
+description = """Отбрасывает изменения рабочей конфигурации и возвращает ту, что хранится в базе данных. Для расширения — с подпараметром -Extension."""
+its = "Приложение 7, 7.4.4.15"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [{ kind = "string", flag = "-Extension", label = "имя расширения" }]
+
+[[command]]
+name = "/UpdateCfg"
+group = "backup"
+effect = "replaces"
+exclusive = false
+summary = "обновить конфигурацию, стоящую на поддержке"
+description = """Объединяет текущую конфигурацию с файлом поставщика или файлом обновления по заранее подготовленному файлу настроек."""
+its = "Приложение 7, 7.4.6"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "file", role = "input", ext = ".cf", required = true, label = "файл конфигурации (.cf) или обновления (.cfu)" },
+  { kind = "file", flag = "-Settings", role = "input", required = true, label = "файл настроек объединения" },
+  { kind = "flag", flag = "-IncludeObjectsByUnresolvedRefs", label = "дополнительно включать объекты, на которые остались ссылки (не вместе с -ClearUnresolvedRefs)" },
+  { kind = "flag", flag = "-ClearUnresolvedRefs", label = "очищать ссылки на невключённые объекты (не вместе с -IncludeObjectsByUnresolvedRefs)" },
+  { kind = "flag", flag = "-DumpListOfTwiceChangedProperties", label = "вывести список свойств, изменённых с обеих сторон" },
+  { kind = "flag", flag = "-force", label = "продолжать несмотря на предупреждения (спорные объекты исключаются или берутся по умолчанию)" },
+]
+
+[[command]]
+name = "/MergeCfg"
+group = "backup"
+effect = "replaces"
+exclusive = false
+summary = "объединить конфигурацию с файлом .cf или .cfe"
+description = """Вливает в текущую конфигурацию или расширение содержимое файла по правилам из файла настроек. Постановка на поддержку управляется отдельными подпараметрами."""
+its = "Приложение 7, 7.4.4.12"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "file", role = "input", ext = ".cf", required = true, label = "файл объединяемой конфигурации (.cf) или расширения (.cfe)" },
+  { kind = "file", flag = "-Settings", role = "input", required = true, label = "файл настроек объединения" },
+  { kind = "flag", flag = "-EnableSupport", label = "поставить на поддержку (не вместе с -DisableSupport и -Extension)" },
+  { kind = "flag", flag = "-DisableSupport", label = "не ставить на поддержку (не вместе с -EnableSupport и -Extension)" },
+  { kind = "flag", flag = "-IncludeObjectsByUnresolvedRefs", label = "дополнительно включать объекты, на которые остались ссылки (не вместе с -ClearUnresolvedRefs)" },
+  { kind = "flag", flag = "-ClearUnresolvedRefs", label = "очищать ссылки на невключённые объекты (не вместе с -IncludeObjectsByUnresolvedRefs)" },
+  { kind = "string", flag = "-Extension", label = "имя расширения, с которым объединять" },
+  { kind = "flag", flag = "-force", label = "продолжать несмотря на предупреждения" },
+]
+
+[[command]]
+name = "/DeleteCfg"
+group = "backup"
+effect = "replaces"
+exclusive = false
+summary = "удалить расширение конфигурации"
+description = """Убирает из базы одно расширение по имени либо все расширения разом. Без указания, что именно удалять, команда не работает."""
+its = "Приложение 7, 7.4.4.2"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "string", flag = "-Extension", label = "имя удаляемого расширения (не вместе с -AllExtensions)" },
+  { kind = "flag", flag = "-AllExtensions", label = "удалить все расширения (не вместе с -Extension)" },
+]
+
+# ── maintenance: проверки и обслуживание ──────────────────────────────────────────────────
+
+[[command]]
+name = "/IBCheckAndRepair"
+group = "maintenance"
+effect = "modifies"
+exclusive = true
+summary = "протестировать и исправить информационную базу"
+description = """Запускает набор операций обслуживания: проверку целостности, реиндексацию, пересчёт итогов, сжатие и другие. Без -TestOnly найденные повреждения исправляются. В группах подпараметров допускается только один."""
+its = "Приложение 7, 7.4.5.4"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "flag", flag = "-ReIndex", label = "реиндексация таблиц" },
+  { kind = "string", flag = "-LogIntegrity", label = "проверка логической целостности; через запятую можно ограничить типы объектов, например Catalogs,Documents (не вместе с -LogAndRefsIntegrity)" },
+  { kind = "string", flag = "-LogAndRefsIntegrity", label = "проверка логической и ссылочной целостности; типы объектов через запятую, как у -LogIntegrity (не вместе с -LogIntegrity)" },
+  { kind = "flag", flag = "-RecalcTotals", label = "пересчёт итогов" },
+  { kind = "flag", flag = "-IBCompression", label = "сжатие таблиц" },
+  { kind = "flag", flag = "-Rebuild", label = "реструктуризация таблиц базы" },
+  { kind = "flag", flag = "-RebuildStandaloneCfg", label = "пересобрать конфигурацию автономного мобильного клиента" },
+  { kind = "flag", flag = "-RebuildConfigurationExtension", label = "реструктуризация таблиц расширений" },
+  { kind = "flag", flag = "-TestOnly", label = "только проверка, без исправлений (не вместе с -BadRef… и -BadData…)" },
+  { kind = "flag", flag = "-BadRefCreate", label = "ссылки на несуществующие объекты: создавать объекты (не вместе с -BadRefClear, -BadRefNone, -TestOnly)" },
+  { kind = "flag", flag = "-BadRefClear", label = "ссылки на несуществующие объекты: очищать (не вместе с -BadRefCreate, -BadRefNone, -TestOnly)" },
+  { kind = "flag", flag = "-BadRefNone", label = "ссылки на несуществующие объекты: не менять (не вместе с -BadRefCreate, -BadRefClear, -TestOnly)" },
+  { kind = "flag", flag = "-BadDataCreate", label = "частичная потеря данных объекта: создавать объекты (не вместе с -BadDataDelete, -TestOnly)" },
+  { kind = "flag", flag = "-BadDataDelete", label = "частичная потеря данных объекта: удалять объекты (не вместе с -BadDataCreate, -TestOnly)" },
+  { kind = "flag", flag = "-UseStartPoint", label = "возобновить прерванную ранее проверку с сохранённой точки" },
+  { kind = "string", flag = "-TimeLimit:", attached = true, label = "предельное время сеанса в виде ччч:мм, например 2:30 (без пробела после двоеточия)" },
+  { kind = "flag", flag = "-ConfigurationExtensionsLogIntegrity", label = "проверить расширения на логическую целостность и по возможности починить" },
+  { kind = "flag", flag = "-RefreshTableLocation", label = "перечитать, в каких пользовательских табличных пространствах лежат таблицы" },
+  { kind = "string", flag = "-BinaryDataStorageIntegrity", label = "проверка целостности хранилища двоичных данных; типы объектов через запятую, как у -LogIntegrity" },
+  { kind = "int", flag = "-JobsCount", label = "число фоновых заданий (0 — по числу ядер, 1 — без параллельности)" },
+  { kind = "string", flag = "-Z:", label = "значения разделителей области данных; для нескольких областей подпараметр нужно повторить вручную в строке" },
+  { kind = "flag", flag = "-CheckAndEnableCORPFunctionality", label = "проверить и актуализировать базу под функциональность КОРП" },
+  { kind = "flag", flag = "-CheckBinaryDataBlockStorage", label = "вычистить мусорные записи блочного хранилища двоичных данных; вместе с -TestOnly лишь покажет их число и объём" },
+]
+
+[[command]]
+name = "/IBRestoreIntegrity"
+group = "maintenance"
+effect = "modifies"
+exclusive = true
+summary = "восстановить структуру информационной базы"
+description = """Нужна, когда база осталась в неконсистентном состоянии после аварийного обрыва, скажем при незавершённом обновлении структуры. Любые дополнительные параметры в этом запуске не действуют; итог попадёт в файл, указанный в /Out."""
+its = "Приложение 7, 7.4.3"
+reliability = "doc"
+versions = { since = "8.3.18" }
+
+[[command]]
+name = "/ReduceEventLogSize"
+group = "maintenance"
+effect = "modifies"
+exclusive = false
+summary = "сократить журнал регистрации до указанной даты"
+description = """Удаляет из журнала записи старше заданной границы. Удаляемые записи при желании можно сохранить в отдельный файл."""
+its = "Приложение 7, 7.4.11"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "string", required = true, label = "новая граница журнала, дата в виде ГГГГ-ММ-ДД" },
+  { kind = "file", flag = "-saveAs", role = "output", label = "файл для копии удаляемых записей" },
+  { kind = "flag", flag = "-KeepSplitting", label = "сохранить разбиение журнала на файлы по периодам" },
+]
+
+[[command]]
+name = "/CheckConfig"
+group = "maintenance"
+effect = "none"
+exclusive = false
+summary = "централизованная проверка конфигурации"
+description = """Выполняет выбранные проверки: целостность, ссылки, синтаксис модулей в разных средах исполнения, неиспользуемые и пустые обработчики. Какие проверки включить, решают подпараметры."""
+its = "Приложение 7, 7.4.5.2"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "flag", flag = "-ConfigLogIntegrity", label = "логическая целостность конфигурации" },
+  { kind = "flag", flag = "-IncorrectReferences", label = "поиск некорректных ссылок" },
+  { kind = "flag", flag = "-ThinClient", label = "модули тонкого клиента" },
+  { kind = "flag", flag = "-WebClient", label = "модули веб-клиента" },
+  { kind = "flag", flag = "-MobileClient", label = "модули мобильного клиента" },
+  { kind = "flag", flag = "-MobileAppClient", label = "модули клиента мобильного приложения" },
+  { kind = "flag", flag = "-Server", label = "модули сервера 1С:Предприятия" },
+  { kind = "flag", flag = "-MobileAppServer", label = "модули сервера мобильного приложения" },
+  { kind = "flag", flag = "-MobileClientStandalone", label = "модули автономного мобильного клиента" },
+  { kind = "flag", flag = "-ExternalConnection", label = "модули внешнего соединения, файловый режим" },
+  { kind = "flag", flag = "-ExternalConnectionServer", label = "модули внешнего соединения, клиент-серверный режим" },
+  { kind = "flag", flag = "-ThickClientManagedApplication", label = "толстый клиент, управляемое приложение, файловый режим" },
+  { kind = "flag", flag = "-ThickClientServerManagedApplication", label = "толстый клиент, управляемое приложение, клиент-серверный режим" },
+  { kind = "flag", flag = "-ThickClientOrdinaryApplication", label = "толстый клиент, обычное приложение, файловый режим" },
+  { kind = "flag", flag = "-ThickClientServerOrdinaryApplication", label = "толстый клиент, обычное приложение, клиент-серверный режим" },
+  { kind = "flag", flag = "-DistributiveModules", label = "убедиться, что модули допустимо поставлять скомпилированными" },
+  { kind = "flag", flag = "-UnreferenceProcedures", label = "поиск неиспользуемых процедур и функций" },
+  { kind = "flag", flag = "-HandlersExistence", label = "проверка существования назначенных обработчиков" },
+  { kind = "flag", flag = "-EmptyHandlers", label = "поиск пустых обработчиков" },
+  { kind = "flag", flag = "-ExtendedModulesCheck", label = "углублённый контроль: обращения через точку и строковые аргументы вроде имени формы" },
+  { kind = "flag", flag = "-CheckUseModality", requires = "-ExtendedModulesCheck", label = "поиск модальных вызовов (только с -ExtendedModulesCheck)" },
+  { kind = "flag", flag = "-CheckUseSynchronousCalls", requires = "-ExtendedModulesCheck", label = "поиск синхронных вызовов (только с -ExtendedModulesCheck)" },
+  { kind = "flag", flag = "-UnsupportedFunctional", label = "найти то, что мобильная платформа не умеет" },
+  { kind = "flag", flag = "-MobileClientDigiSign", label = "сверить электронную подпись конфигурации для мобильного клиента" },
+  { kind = "string", flag = "-Extension", label = "имя расширения (не вместе с -AllExtensions)" },
+  { kind = "flag", flag = "-AllExtensions", label = "проверить все расширения (не вместе с -Extension)" },
+]
+
+[[command]]
+name = "/CheckModules"
+group = "maintenance"
+effect = "none"
+exclusive = false
+summary = "проверка программных модулей"
+description = """Прогоняет синтаксический контроль модулей для тех сред исполнения, которые вы отметите. Если ни одна среда не отмечена, ничего не проверяется."""
+its = "Приложение 7, 7.4.5.3"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "flag", flag = "-ThinClient", label = "режим тонкого клиента" },
+  { kind = "flag", flag = "-WebClient", label = "режим веб-клиента" },
+  { kind = "flag", flag = "-MobileClient", label = "режим мобильного клиента" },
+  { kind = "flag", flag = "-MobileClientStandalone", label = "режим автономного мобильного клиента" },
+  { kind = "flag", flag = "-MobileAppClient", label = "режим клиента мобильного приложения" },
+  { kind = "flag", flag = "-Server", label = "режим сервера 1С:Предприятия" },
+  { kind = "flag", flag = "-MobileAppServer", label = "режим сервера мобильного приложения" },
+  { kind = "flag", flag = "-ExternalConnection", label = "режим внешнего соединения" },
+  { kind = "flag", flag = "-ThickClientOrdinaryApplication", label = "режим толстого клиента, обычное приложение" },
+  { kind = "flag", flag = "-ExtendedModulesCheck", label = "углублённый контроль: обращения через точку и строковые аргументы вроде имени формы" },
+  { kind = "string", flag = "-Extension", label = "имя расширения (не вместе с -AllExtensions)" },
+  { kind = "flag", flag = "-AllExtensions", label = "проверить все расширения (не вместе с -Extension)" },
+]
+
+[[command]]
+name = "/CheckCanApplyConfigurationExtensions"
+group = "maintenance"
+effect = "none"
+exclusive = false
+summary = "проверить, применимы ли расширения к этой базе"
+description = """Выясняет, можно ли подключить расширения к конкретной базе. Без имени расширения проверяются все, в порядке загрузки."""
+its = "Приложение 7, 7.4.5.1"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "string", flag = "-Extension", label = "имя расширения (не вместе с -AllZones)" },
+  { kind = "flag", flag = "-AllZones", label = "проверить во всех областях данных (не вместе с -Extension и -Z)" },
+  { kind = "string", flag = "-Z", quoted = true, label = "значения разделителей области данных (не вместе с -AllZones)" },
+]
+
+# ── repository: хранилище конфигурации ────────────────────────────────────────────────────
+# Адрес, пользователь и пароль хранилища берутся из свойств базы (три bound-аргумента в конце).
+
+# Базовая форма команды измерена в T-42 (часть Б); подпараметры — по документации.
+[[command]]
+name = "/ConfigurationRepositoryUpdateCfg"
+group = "repository"
+effect = "modifies"
+exclusive = false
+summary = "получить конфигурацию из хранилища"
+description = """Обновляет рабочую конфигурацию данными хранилища. Если база подключена к хранилищу, номер версии игнорируется и берётся последняя. Появление или удаление объектов выполняется только с -force."""
+its = "Приложение 7, 7.4.15.5"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "int", flag = "-v", label = "номер версии хранилища (пусто или -1 — последняя)" },
+  { kind = "flag", flag = "-revised", label = "при необходимости подтянуть и захваченные объекты" },
+  { kind = "flag", flag = "-force", label = "подтвердить добавление и удаление объектов конфигурации" },
+  { kind = "file", flag = "-Objects", role = "input", label = "файл со списком объектов" },
+  { kind = "string", flag = "-Extension", label = "имя расширения" },
+  { kind = "bound", source = "repository.address" },
+  { kind = "bound", source = "repository.user" },
+  { kind = "bound", source = "repository.password" },
+]
+
+# Базовая форма команды измерена в T-42 (часть Б); подпараметры — по документации.
+[[command]]
+name = "/ConfigurationRepositoryCommit"
+group = "repository"
+effect = "modifies"
+exclusive = false
+summary = "поместить изменения в хранилище"
+description = """Отправляет в хранилище изменённые объекты — из списка или всю конфигурацию. По умолчанию после помещения захват объектов снимается."""
+its = "Приложение 7, 7.4.15.4"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "file", flag = "-Objects", role = "input", label = "файл со списком объектов" },
+  { kind = "string", flag = "-comment", quoted = true, label = "комментарий к версии; для нескольких строк подпараметр повторяют вручную" },
+  { kind = "flag", flag = "-keepLocked", label = "после помещения не отпускать объекты, оставить их за собой" },
+  { kind = "flag", flag = "-force", label = "если остались ссылки на удалённые объекты, обнулить их вместо ошибки" },
+  { kind = "string", flag = "-Extension", label = "имя расширения" },
+  { kind = "bound", source = "repository.address" },
+  { kind = "bound", source = "repository.user" },
+  { kind = "bound", source = "repository.password" },
+]
+
+# Базовая форма команды измерена в T-42 (часть Б); подпараметры — по документации.
+[[command]]
+name = "/ConfigurationRepositoryLock"
+group = "repository"
+effect = "none"
+exclusive = false
+summary = "захватить объекты в хранилище конфигурации"
+description = """Захватывает для редактирования объекты из списка в файле, а без списка — всю конфигурацию."""
+its = "Приложение 7, 7.4.15.4"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "file", flag = "-Objects", role = "input", label = "файл со списком объектов" },
+  { kind = "flag", flag = "-revised", label = "при необходимости подтянуть и захваченные объекты" },
+  { kind = "string", flag = "-Extension", label = "имя расширения" },
+  { kind = "bound", source = "repository.address" },
+  { kind = "bound", source = "repository.user" },
+  { kind = "bound", source = "repository.password" },
+]
+
+[[command]]
+name = "/ConfigurationRepositoryUnLock"
+group = "repository"
+effect = "none"
+exclusive = false
+summary = "отменить захват объектов в хранилище"
+description = """Снимает захват с объектов из списка или со всей конфигурации. Если среди них есть локально изменённые, без -force вся операция отменяется."""
+its = "Приложение 7, 7.4.15.4"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "file", flag = "-Objects", role = "input", label = "файл со списком объектов" },
+  { kind = "flag", flag = "-force", label = "объекты с локальными правками вернуть к виду в хранилище; сами правки пропадут" },
+  { kind = "string", flag = "-Extension", label = "имя расширения" },
+  { kind = "bound", source = "repository.address" },
+  { kind = "bound", source = "repository.user" },
+  { kind = "bound", source = "repository.password" },
+]
+
+[[command]]
+name = "/ConfigurationRepositoryReport"
+group = "repository"
+effect = "none"
+exclusive = false
+summary = "отчёт по истории хранилища"
+description = """Строит отчёт о версиях хранилища за выбранный диапазон номеров или дат. Способ группировки при необходимости задаётся подпараметрами."""
+its = "Приложение 7, 7.4.15.6"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "file", role = "output", required = true, label = "файл отчёта" },
+  { kind = "int", flag = "-NBegin", label = "номер версии, с которой строить отчёт (-1 — последняя)" },
+  { kind = "int", flag = "-NEnd", label = "номер версии, по которую строить отчёт" },
+  { kind = "string", flag = "-DateBegin", label = "дата начала отчёта в синтаксисе конструктора даты встроенного языка" },
+  { kind = "string", flag = "-DateEnd", label = "дата окончания отчёта в синтаксисе конструктора даты встроенного языка" },
+  { kind = "flag", flag = "-GroupByObject", label = "группировать версии по объектам" },
+  { kind = "flag", flag = "-GroupByComment", label = "группировать версии по комментарию" },
+  { kind = "flag", flag = "-DoNotIncludeVersionsWithLabels", label = "исключить версии, на которые поставлены метки" },
+  { kind = "flag", flag = "-IncludeOnlyVersionsWithLabels", label = "включать только версии с метками (игнорируется вместе с -DoNotIncludeVersionsWithLabels)" },
+  { kind = "flag", flag = "-IncludeCommentLinesWithDoubleSlash", label = "включать строки комментариев, начинающиеся с //" },
+  { kind = "string", flag = "-ConfigurationVersion", label = "версия конфигурации, по которой строится отчёт" },
+  { kind = "enum", flag = "-ReportFormat", values = ["txt", "mxl"], label = "формат отчёта: текст или табличный документ (по умолчанию mxl)" },
+  { kind = "string", flag = "-Extension", label = "имя расширения" },
+  { kind = "bound", source = "repository.address" },
+  { kind = "bound", source = "repository.user" },
+  { kind = "bound", source = "repository.password" },
+]
+
+[[command]]
+name = "/ConfigurationRepositoryDumpCfg"
+group = "repository"
+effect = "none"
+exclusive = false
+summary = "сохранить версию конфигурации из хранилища в файл"
+description = """Записывает в файл выбранную версию конфигурации из хранилища, по умолчанию — последнюю."""
+its = "Приложение 7, 7.4.15.5"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "file", role = "output", ext = ".cf", required = true, label = "файл конфигурации" },
+  { kind = "int", flag = "-v", label = "номер версии хранилища (пусто или -1 — последняя)" },
+  { kind = "string", flag = "-Extension", label = "имя расширения" },
+  { kind = "bound", source = "repository.address" },
+  { kind = "bound", source = "repository.user" },
+  { kind = "bound", source = "repository.password" },
+]
+
+# Базовая форма команды измерена в T-42 (часть Б); подпараметры — по документации.
+[[command]]
+name = "/ConfigurationRepositoryBindCfg"
+group = "repository"
+effect = "modifies"
+exclusive = false
+summary = "подключить базу к хранилищу конфигурации"
+description = """Привязывает ещё не подключённую базу к хранилищу. Если конфигурация в базе не пуста, замену её версией из хранилища нужно подтвердить подпараметром."""
+its = "Приложение 7, 7.4.15.5"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "flag", flag = "-forceBindAlreadyBindedUser", label = "подключать и тогда, когда этот пользователь уже привязан к хранилищу другой своей конфигурацией" },
+  { kind = "flag", flag = "-forceReplaceCfg", label = "разрешить затереть уже имеющуюся в базе конфигурацию версией из хранилища" },
+  { kind = "string", flag = "-Extension", label = "имя расширения" },
+  { kind = "bound", source = "repository.address" },
+  { kind = "bound", source = "repository.user" },
+  { kind = "bound", source = "repository.password" },
+]
+
+[[command]]
+name = "/ConfigurationRepositoryUnbindCfg"
+group = "repository"
+effect = "modifies"
+exclusive = false
+summary = "отключить конфигурацию от хранилища"
+description = """Разрывает связь базы с хранилищем; нужны административные права в базе. Если есть захваченные и изменённые объекты, без -force отключение не выполняется."""
+its = "Приложение 7, 7.4.15.5"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "flag", flag = "-force", label = "обойтись без запроса пароля и не обращать внимания на захваченные изменённые объекты" },
+  { kind = "string", flag = "-Extension", label = "имя расширения" },
+  { kind = "bound", source = "repository.address" },
+  { kind = "bound", source = "repository.user" },
+  { kind = "bound", source = "repository.password" },
+]
+
+[[command]]
+name = "/ConfigurationRepositorySetLabel"
+group = "repository"
+effect = "none"
+exclusive = false
+summary = "поставить метку на версию хранилища"
+description = """Помечает версию хранилища именем и необязательным комментарием. Если версия не указана, метка ставится на последнюю."""
+its = "Приложение 7, 7.4.15.6"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "int", flag = "-v", label = "номер версии хранилища (по умолчанию последняя)" },
+  { kind = "string", quoted = true, required = true, label = "текст метки" },
+  { kind = "string", flag = "-comment", quoted = true, label = "комментарий к метке; для нескольких строк подпараметр повторяют вручную" },
+  { kind = "string", flag = "-Extension", label = "имя расширения" },
+  { kind = "bound", source = "repository.address" },
+  { kind = "bound", source = "repository.user" },
+  { kind = "bound", source = "repository.password" },
+]
+
+[[command]]
+name = "/ConfigurationRepositoryClearCache"
+group = "repository"
+effect = "none"
+exclusive = false
+summary = "очистить локальную базу данных хранилища"
+description = """Чистит локальную базу, в которой программа держит данные хранилища конфигурации."""
+its = "Приложение 7, 7.4.15.7"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "string", flag = "-Extension", label = "имя расширения" },
+  { kind = "bound", source = "repository.address" },
+  { kind = "bound", source = "repository.user" },
+  { kind = "bound", source = "repository.password" },
+]
+
+[[command]]
+name = "/ConfigurationRepositoryClearLocalCache"
+group = "repository"
+effect = "none"
+exclusive = false
+summary = "очистить локальный кеш версий конфигурации"
+description = """Удаляет сохранённые на этом компьютере копии версий конфигурации из хранилища."""
+its = "Приложение 7, 7.4.15.7"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "string", flag = "-Extension", label = "имя расширения" },
+  { kind = "bound", source = "repository.address" },
+  { kind = "bound", source = "repository.user" },
+  { kind = "bound", source = "repository.password" },
+]
+
+[[command]]
+name = "/ConfigurationRepositoryClearGlobalCache"
+group = "repository"
+effect = "none"
+exclusive = false
+summary = "очистить глобальный кеш версий конфигурации"
+description = """Удаляет общий кеш версий конфигурации, который платформа ведёт для всех пользователей компьютера."""
+its = "Приложение 7, 7.4.15.7"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "string", flag = "-Extension", label = "имя расширения" },
+  { kind = "bound", source = "repository.address" },
+  { kind = "bound", source = "repository.user" },
+  { kind = "bound", source = "repository.password" },
+]
+
+[[command]]
+name = "/ConfigurationRepositoryOptimizeData"
+group = "repository"
+effect = "none"
+exclusive = false
+summary = "оптимизировать хранение данных хранилища"
+description = """Упорядочивает данные внутри хранилища конфигурации, чтобы оно занимало меньше места и работало быстрее."""
+its = "Приложение 7, 7.4.15.6"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "string", flag = "-Extension", label = "имя расширения" },
+  { kind = "bound", source = "repository.address" },
+  { kind = "bound", source = "repository.user" },
+  { kind = "bound", source = "repository.password" },
+]
+
+# ── external: внешние обработки и отчёты ──────────────────────────────────────────────────
+
+[[command]]
+name = "/DumpExternalDataProcessorOrReportToFiles"
+group = "external"
+effect = "none"
+exclusive = false
+summary = "выгрузить внешнюю обработку или отчёт в файлы XML"
+description = """Раскладывает файл .epf или .erf по каталогу в формате XML. Если внутри есть ссылки на объекты конфигурации, выгружать лучше с подключением к базе, иначе типы запишутся идентификаторами."""
+its = "Приложение 7, 7.4.8"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "dir", role = "output", required = true, label = "корневой каталог выгрузки" },
+  { kind = "file", role = "input", required = true, label = "внешняя обработка или отчёт (.epf, .erf)" },
+]
+
+[[command]]
+name = "/LoadExternalDataProcessorOrReportFromFiles"
+group = "external"
+effect = "none"
+exclusive = false
+summary = "собрать внешнюю обработку или отчёт из файлов XML"
+description = """Строит файл .epf или .erf из каталога выгрузки; расширение результата платформа подставит сама. Чтобы типы остались ссылками на реальные объекты, загружайте с подключением к базе."""
+its = "Приложение 7, 7.4.8"
+reliability = "doc"
+versions = { since = "8.3.18" }
+args = [
+  { kind = "dir", role = "input", required = true, label = "корневой каталог с выгрузкой" },
+  { kind = "file", role = "output", required = true, label = "создаваемая обработка или отчёт (.epf, .erf)" },
+]

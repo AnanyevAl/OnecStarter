@@ -366,3 +366,32 @@ def test_spawn_logged_kills_process_when_job_assign_fails(tmp_path: Path) -> Non
     for proc in spawned:
         proc.kill()
     assert not spawned, "процесс без Job пережил отказ assign()"
+
+
+def test_spawn_logged_runs_without_the_inherited_dll_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Н1: консоль CLI EDT и серверы — тоже без пути DLL `_internal`."""  # noqa: RUF002
+    from onecstarter.platform_1c import dll_search
+
+    state: dict[str, str | None] = {"dir": r"C:\app\_internal"}
+    monkeypatch.setattr(dll_search, "get_dll_directory", lambda: state["dir"])
+    monkeypatch.setattr(dll_search, "set_dll_directory", lambda p: state.__setitem__("dir", p))
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    seen: list[str | None] = []
+
+    class FakePopen:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            seen.append(state["dir"])
+            self.pid = 42
+            self._handle = 0
+
+        def kill(self) -> None:
+            raise AssertionError("NullJob не отказывает — убивать незачем")
+
+    monkeypatch.setattr(server_spawn.subprocess, "Popen", FakePopen)  # type: ignore[attr-defined]
+    logged = spawn_logged(LaunchCommand(Path("C:/x.exe"), ""), tmp_path / "j.log", NullJob())
+    assert logged.pid == 42
+    assert seen == [None]
+    assert state["dir"] == r"C:\app\_internal"
+

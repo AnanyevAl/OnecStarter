@@ -43,7 +43,7 @@ from PySide6.QtWidgets import QMessageBox, QPushButton, QWidget
 
 from onecstarter.services.groups import GroupRemoval
 from onecstarter.services.model import InfobaseItem
-from onecstarter.ui.dialogs.buttons import build_confirm_box, is_confirmed
+from onecstarter.ui.dialogs.buttons import ask_confirmation, build_confirm_box, is_confirmed
 
 
 def removal_question(item: InfobaseItem) -> str:
@@ -201,3 +201,16 @@ def confirm_cache_clear(parent: QWidget | None, question: str) -> bool:
     box = build_cache_confirm_box(parent, question)
     box.exec()
     return is_confirmed(box)
+
+
+def busy_launch_question(name: str) -> str:
+    return (
+        f"Над базой «{name}» выполняется пакетная операция Конфигуратора. Она может держать "
+        "базу монопольно: запуск может завершиться ошибкой или помешать операции. "
+        "Всё равно запустить?"
+    )
+
+
+def confirm_busy_launch(parent: QWidget | None, name: str) -> bool:
+    """Спека v4, §6.4: F3/F4 по базе, над которой идёт операция. По умолчанию — «Нет»."""
+    return ask_confirmation(parent, "OneCStarter", busy_launch_question(name))

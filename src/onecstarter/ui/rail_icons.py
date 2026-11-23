@@ -9,7 +9,7 @@ MainWindow.apply_palette (спека рестайла §3).
 from collections.abc import Callable
 
 from PySide6.QtCore import QPointF, QRectF, Qt
-from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPixmap, QPolygonF
 
 from onecstarter.ui.theme import Palette
 
@@ -100,6 +100,11 @@ def _draw_edt(painter: QPainter) -> None:
     painter.drawLine(9, 3, 7, 13)
 
 
+def _draw_operations(painter: QPainter) -> None:
+    """▶ мокапа: треугольник «выполнить». Координаты сдвинуты на 0.3 px, как у `_draw_bases`."""  # noqa: RUF002
+    painter.drawPolygon(QPolygonF([QPointF(4.3, 3.3), QPointF(12.7, 8.0), QPointF(4.3, 12.7)]))
+
+
 def bases_icon(palette: Palette) -> QIcon:
     return _icon(palette, _draw_bases)
 
@@ -114,3 +119,7 @@ def servers_icon(palette: Palette) -> QIcon:
 
 def edt_icon(palette: Palette) -> QIcon:
     return _icon(palette, _draw_edt)
+
+
+def operations_icon(palette: Palette) -> QIcon:
+    return _icon(palette, _draw_operations)

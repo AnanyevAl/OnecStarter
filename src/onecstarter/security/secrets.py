@@ -193,10 +193,15 @@ def _leaks_secret(redacted: str) -> bool:
     )
 
 
+_SEPARATORS = (" ", "\t")
+
+
 def _tokenize_arguments(arguments: str) -> list[str] | None:
     """Командная строка → токены с учётом кавычек, либо `None` при их разъезде.
 
-    Вне кавычек пробел завершает токен. Кавычка открывает режим цитирования;
+    Вне кавычек пробел или табуляция завершает токен (табуляция — как в
+    `domain/cli_params._SPACES`: строка с ней приходит из вставленной или правленной
+    руками строки Конфигуратора; финальное ревью блока 1, F3a). Кавычка открывает режим цитирования;
     внутри него удвоенная кавычка (`""`, форма `quote_launch_value`) —
     экранированная пара и остаётся частью токена как есть, одиночная —
     закрывает режим. Конец строки при незакрытой кавычке — `None`: граница
@@ -222,7 +227,7 @@ def _tokenize_arguments(arguments: str) -> list[str] | None:
                 current.append(char)
             index += 1
             continue
-        if char == " ":
+        if char in _SEPARATORS:
             if current:
                 tokens.append("".join(current))
                 current = []
@@ -237,6 +242,21 @@ def _tokenize_arguments(arguments: str) -> list[str] | None:
     if current:
         tokens.append("".join(current))
     return tokens
+
+
+# Ключи и подпараметры, чьё значение — отдельный следующий токен и секрет (спека v4, §4.4;
+# каталог `cli_catalog.toml`, аргументы kind = "secret" без прижатия).
+_SECRET_VALUE_NAMES = frozenset(
+    {
+        "/wsp",
+        "/modifypassword",
+        "/accesstoken",
+        "/uc",
+        "-ppwd",
+        "-pwd",
+        "/configurationrepositoryp",
+    }
+)
 
 
 def redact_arguments(arguments: str) -> str:
@@ -255,8 +275,96 @@ def redact_arguments(arguments: str) -> str:
     делает границы токенов недостоверными: показывается заглушка, а не
     строка частично. Токены при пересборке разделяются одним пробелом —
     нормализация допустима по той же причине, что и в `redact_connect`.
+
+    v4: значение отдельным токеном после `/WSP`, `/ModifyPassword`, `/AccessToken`, `/UC`,
+    `-PPwd`, `-pwd` тоже заменяется на `***` — эти ключи может принести строка
+    параметров запуска. Имя `/p…` строчными режется так же: регистр имени ключа
+    платформа не различает ([Ф] T-42 Э2). Прижатая форма этих имён (`/WSP"x"`,
+    `-pwd=x`) режется до `<имя>***`.
+
+    Исключение из правила `/P`: токен, равный `/Proxy` без учёта регистра, — ключ
+    каталога v4, а не пароль; пароль прокси (`-PPwd`) маскируется отдельно
+    (ревью задачи 10, решение заказчика 08.11.2026).
+
+    Голый `/P` (ровно `/P` без учёта регистра): следующий токен, не начинающийся
+    с `/` или `-`, тоже заменяется на `***`. Читает ли платформа слово после `/P`
+    как пароль — **[?]**, не измерено; маскирование ошибается в безопасную сторону
+    (финальное ревью блока 1, F3b).
     """  # noqa: RUF002
     tokens = _tokenize_arguments(arguments)
     if tokens is None:
         return HIDDEN_ARGUMENTS
-    return " ".join("/P***" if token.startswith("/P") else token for token in tokens)
+    shown: list[str] = []
+    hide_next = False
+    hide_next_word = False
+    for token in tokens:
+        if hide_next:
+            shown.append(_MASK)
+            hide_next = False
+            continue
+        if hide_next_word:
+            hide_next_word = False
+            if not token.startswith(("/", "-")):
+                shown.append(_MASK)
+                continue
+        if _is_p_password(token):
+            shown.append("/P***")
+            hide_next_word = token.casefold() == "/p"
+            continue
+        masked = _mask_attached(token)
+        if masked is not None:
+            shown.append(masked)
+            continue
+        shown.append(token)
+        hide_next = token.casefold() in _SECRET_VALUE_NAMES
+    return " ".join(shown)
+
+
+def _is_p_password(token: str) -> bool:
+    """Токен — `/P` с паролем (или без): начинается с `/P`, но не `/Proxy`."""  # noqa: RUF002
+    return token[:2].casefold() == "/p" and token.casefold() != "/proxy"
+
+
+def secret_name_at(word: str) -> str | None:
+    """Секретное имя в начале слова, как записано, или `None`.
+
+    Для показа имени ключа (`domain/cli_params.key_name_of`): приклеенное без
+    разделителя значение секретного имени (`/UCcode`, `/WSPsecret`) в показ не
+    попадает — показывается только имя (финальное ревью блока 1, F2). Список имён —
+    тот же, что у `redact_arguments`: `_SECRET_VALUE_NAMES` и правило `/P`
+    (кроме `/Proxy`). Лишнее усечение неизвестного ключа (`/UCx` → `/UC`) допустимо,
+    утечка — нет (решение заказчика 08.11.2026).
+    """  # noqa: RUF002
+    folded = word.casefold()
+    for name in _SECRET_VALUE_NAMES:
+        if folded.startswith(name):
+            return word[: len(name)]
+    if _is_p_password(word):
+        return word[:2]
+    return None
+
+
+def _mask_attached(token: str) -> str | None:
+    """`/WSP"x"`, `-pwd=x`: значение прижато к имени — показывается `<имя как написано>***`.
+
+    Решение заказчика 08.11.2026: лишнее маскирование неизвестного ключа на эти
+    префиксы (`/UCx`) допустимо, утечка — нет.
+    """  # noqa: RUF002, RUF100
+    folded = token.casefold()
+    for name in _SECRET_VALUE_NAMES:
+        if folded.startswith(name) and len(token) > len(name):
+            return token[: len(name)] + _MASK
+    return None
+
+
+def contains_secret_arguments(arguments: str) -> bool:
+    """Меняет ли `redact_arguments` что-то, кроме нормализации пробелов (или строка непарсима)."""
+    tokens = _tokenize_arguments(arguments)
+    if tokens is None:
+        return True
+    return redact_arguments(arguments) != " ".join(tokens)
+
+
+def has_unclosed_quote(arguments: str) -> bool:
+    """Незакрытая кавычка: границы токенов недостоверны, строку не проверить на пароль."""
+    return _tokenize_arguments(arguments) is None

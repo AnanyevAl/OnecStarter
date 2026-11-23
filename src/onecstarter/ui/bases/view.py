@@ -44,9 +44,12 @@ from onecstarter.config.shell_link import (
     safe_file_name,
     shortcut_command,
 )
+from onecstarter.domain.cli_catalog import CLIENT_TITLES, MODE_TITLES, Catalog, Mode
+from onecstarter.domain.cli_params import CheckContext, Level, Where, check, parse
 from onecstarter.domain.connect import ConnectKind
 from onecstarter.domain.default_version import DefaultVersionRule
 from onecstarter.domain.launch import LaunchTarget
+from onecstarter.domain.operations import Scenario
 from onecstarter.domain.version import Installation
 from onecstarter.services import cache
 from onecstarter.services.availability import Availability, probe_targets
@@ -67,12 +70,14 @@ from onecstarter.services.display import (
 from onecstarter.services.errors import (
     InvalidRequestError,
     LaunchDeclinedError,
+    ParamSetsUnavailableError,
     ReadOnlySourceError,
     ServicesError,
     UnknownItemError,
 )
 from onecstarter.services.groups import GroupRemoval
 from onecstarter.services.model import InfobaseItem, InfobaseSource
+from onecstarter.services.param_sets import ParamSet, load_param_sets, save_param_sets, upsert_set
 from onecstarter.services.paths import ROOT, group_path, normalize_folder, render_folder
 from onecstarter.services.settings import ListOrder
 from onecstarter.services.workspace import Workspace
@@ -81,14 +86,30 @@ from onecstarter.ui import theme
 from onecstarter.ui.bases.panel import ConnectionPanel
 from onecstarter.ui.bases.tree_model import COLUMN_IDS, KEY_ROLE, KIND_ROLE, build_model
 from onecstarter.ui.column_widths import ColumnWidths
+from onecstarter.ui.components import widen_for_shortcuts
 from onecstarter.ui.dialogs.buttons import russian_confirm
 from onecstarter.ui.dialogs.confirm import (
     ask_group_removal,
+    confirm_busy_launch,
     confirm_cache_clear,
     confirm_removal,
 )
 from onecstarter.ui.dialogs.group import GroupDialog
 from onecstarter.ui.dialogs.infobase import InfobaseDialog, dropped_directory
+from onecstarter.ui.dialogs.launch_params import (
+    BLOCK_ID,
+    additional_parameters,
+    base_client,
+    base_version,
+    plural,
+    preview_command,
+)
+from onecstarter.ui.dialogs.param_builder import (
+    BuilderPurpose,
+    ParamBuilderDialog,
+    run_builder_dialog,
+)
+from onecstarter.ui.dialogs.repository import BLOCK_ID as REPOSITORY_BLOCK_ID
 from onecstarter.ui.search_field import SearchField
 from onecstarter.ui.theme import Palette
 
@@ -101,6 +122,8 @@ NO_CACHE_ID_NOTE = "У записи нет ID — каталог кэша не �
 # причины, и подсказка не должна путать одну с другой.  # noqa: RUF003
 NO_CACHE_ROOT_NOTE = "В окружении нет корня кэша (APPDATA/LOCALAPPDATA)"  # noqa: RUF001
 CACHE_EMPTY_NOTE = "кэш пуст"
+# Спека v4, §4.5: веб-базе, открываемой в браузере, параметры запуска не передать.
+BROWSER_PARAMS_NOTE = "открывается в браузере: параметры запуска ей не передать"
 # Находка финального ревью ветки: отказ переставить запись в алфавитном режиме
 # (мышью и с клавиатуры) был молчаливым `return` — тот же дефект класса, что  # noqa: RUF003
 # customer сообщил в smoke №2 (09.08.2026): курсор обещает перенос, ничего не
@@ -414,6 +437,10 @@ class BasesView(QWidget):
     # он живёт в проводке `ui/app.py` рядом со StartupTasks. Так `F5` работает  # noqa: RUF003
     # без того, чтобы раздел знал про потоки.
     probe_requested = Signal()
+    # v4, блок 2: «Выполнить сценарий ▸» — id сценария и ключи выделенных баз; окно запуска
+    # и раздел «Операции» живут в проводке `ui/app.py`, вьюха о них не знает.  # noqa: RUF003
+    scenario_requested = Signal(str, object)
+    operations_requested = Signal()
 
     def __init__(
         self,
@@ -437,6 +464,14 @@ class BasesView(QWidget):
         show_cache_report: Callable[[QWidget | None, str], None] = show_cache_report,
         column_widths: Mapping[str, int] | None = None,
         save_column_widths: Callable[[dict[str, int]], None] = lambda _widths: None,
+        catalog: Catalog | None = None,
+        properties_blocks: Mapping[str, bool] | None = None,
+        save_properties_blocks: Callable[[dict[str, bool]], None] = lambda _blocks: None,
+        param_sets_path: Path | None = None,
+        run_builder: Callable[[ParamBuilderDialog], bool] = run_builder_dialog,
+        scenarios: Callable[[], Sequence[Scenario]] | None = None,
+        busy_keys: Callable[[], frozenset[str]] = frozenset,
+        confirm_busy_launch: Callable[[QWidget | None, str], bool] = confirm_busy_launch,
         parent: QWidget | None = None,
         palette: Palette = theme.DARK,
     ) -> None:
@@ -448,6 +483,14 @@ class BasesView(QWidget):
         # готовый список и снимает состояние ожидания.
         self._installations = None if installations is None else list(installations)
         self._cfg_rules = list(cfg_rules)
+        self._catalog = catalog
+        self._properties_blocks = dict(properties_blocks or {})
+        self._save_properties_blocks = save_properties_blocks
+        self._param_sets_path = param_sets_path
+        self._run_builder = run_builder
+        self._scenarios = scenarios
+        self._busy_keys = busy_keys
+        self._confirm_busy_launch = confirm_busy_launch
         # Провайдер, а не число: настройка меняется на лету и следующая  # noqa: RUF003
         # пересборка обязана взять новое значение (тот же приём, что
         # `theme_mode=lambda: controller.mode` у трея).  # noqa: RUF003
@@ -492,6 +535,9 @@ class BasesView(QWidget):
         self._tree.setHeaderHidden(False)
         self._tree.setAlternatingRowColors(False)
         self._tree.setEditTriggers(QTreeView.EditTrigger.NoEditTriggers)
+        # v4, блок 2 (спека §7.3): сценарий выполняется по нескольким выделенным базам.
+        # Одиночные действия (F3/F4, свойства, перетаскивание) берут текущую строку.
+        self._tree.setSelectionMode(QTreeView.SelectionMode.ExtendedSelection)
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         # Задача 14: перенос по группам перетаскиванием. InternalMove, а не  # noqa: RUF003
         # DragDrop — иначе дерево приняло бы и чужое перетаскивание вообще
@@ -561,6 +607,13 @@ class BasesView(QWidget):
             QKeySequence("Shift+F4"),
             self,
             lambda: self._launch_current(LaunchTarget.DESIGNER, ask_login=True),
+        )
+        # v4 (спека §7.3): разовый запуск с параметрами — конструктор, затем запуск.  # noqa: RUF003
+        QShortcut(
+            QKeySequence("Ctrl+F3"), self, lambda: self._launch_current_with_params(Mode.ENTERPRISE)
+        )
+        QShortcut(
+            QKeySequence("Ctrl+F4"), self, lambda: self._launch_current_with_params(Mode.DESIGNER)
         )
         # Задача 9 (v2.4): периодической перепроверки каталогов нет намеренно
         # (спека §5) — только явная команда. F5 — как «обновить» привычно
@@ -888,9 +941,20 @@ class BasesView(QWidget):
         *,
         elevated: bool = False,
         ask_login: bool = False,
-    ) -> None:
+        once: str | None = None,
+    ) -> bool:
+        """Запустить базу; `True` — запуск состоялся, `False` — отказ или сбой (уже показан)."""
+        if key in self._busy_keys():
+            # Спека v4, §6.4: над базой идёт операция — спросить, а не мешать молча.  # noqa: RUF003
+            item = next((i for i in self._workspace.items() if i.key == key), None)
+            if not self._confirm_busy_launch(self, item.name if item is not None else key):
+                return False
+        launched = False
         try:
-            self._workspace.launch(key, forced, elevated=elevated, ask_login=ask_login)
+            # `once` — только когда он есть: прочие запуски зовут `launch` прежним набором
+            # аргументов (подставные `launch` в тестах T-31/T-32 `once` не принимают).
+            extra = {"once": once} if once is not None else {}
+            self._workspace.launch(key, forced, elevated=elevated, ask_login=ask_login, **extra)
         except LaunchDeclinedError:
             # T-31: отказ в окне UAC — решение человека, не ошибка. Без
             # `launched` окно не прячется в трей (спека 3.2.4 ч. 1, §4.1).
@@ -898,8 +962,10 @@ class BasesView(QWidget):
         except ServicesError as error:
             self._on_error(error)
         else:
+            launched = True
             self.launched.emit(key)
         self.rebuild()
+        return launched
 
     def toggle_favorite(self, key: str) -> None:
         item = next((i for i in self._workspace.items() if i.key == key), None)
@@ -1102,6 +1168,19 @@ class BasesView(QWidget):
         label = str(index.data() or "") if index.isValid() else ""
         self._panel.show_card(panel_card(kind, item, label), self._palette)
 
+    def selected_base_keys(self) -> list[str]:
+        """Ключи выделенных баз в порядке показа; группы и служебные строки не в счёт."""
+        keys: list[str] = []
+        for index in sorted(
+            self._tree.selectionModel().selectedRows(0),
+            key=lambda i: self._tree.visualRect(i).top(),
+        ):
+            key = index.data(KEY_ROLE)
+            if index.data(KIND_ROLE) == RowKind.BASE.value and isinstance(key, str):
+                if key not in keys:
+                    keys.append(key)
+        return keys
+
     def _current_base_key(self) -> str | None:
         index = self._tree.currentIndex()
         if not index.isValid():
@@ -1122,6 +1201,148 @@ class BasesView(QWidget):
         key = self._current_base_key()
         if key:
             self.launch_key(key, forced, elevated=elevated, ask_login=ask_login)
+
+    def _launch_current_with_params(self, mode: Mode) -> None:
+        key = self._current_base_key()
+        if key and self._catalog is not None:
+            self.launch_with_params(key, mode)
+
+    def launch_with_params(self, key: str, mode: Mode) -> None:
+        """Ctrl+F3 / Ctrl+F4: конструктор над пустой строкой, запуск в выбранном режиме."""
+        item = next((i for i in self._workspace.items() if i.key == key), None)
+        if item is None or self._catalog is None:
+            return
+        if mode is Mode.DESIGNER and item.kind is ConnectKind.WEB:
+            self._refuse_designer_on_web(item)
+            return
+        if self._workspace.opens_in_browser(key):
+            self._refuse_params_in_browser(item)
+            return
+        dialog = self._builder_for(item, mode, BuilderPurpose.ONCE, "", mode_locked=False)
+        if not self._run_builder(dialog):
+            return
+        chosen = dialog.result_mode()
+        if chosen is Mode.DESIGNER and item.kind is ConnectKind.WEB:
+            self._refuse_designer_on_web(item)
+            return
+        target = LaunchTarget.DESIGNER if chosen is Mode.DESIGNER else None
+        self.launch_key(key, target, once=dialog.result_text())
+
+    def _refuse_designer_on_web(self, item: InfobaseItem) -> None:
+        self._on_error(
+            InvalidRequestError(
+                f"«{item.name}» опубликована на веб-сервере: Конфигуратор к ней не подключается"
+            )
+        )
+
+    def _refuse_params_in_browser(self, item: InfobaseItem) -> None:
+        """Спека §4.5: веб-базе, открываемой в браузере, параметры запуска не передать.
+
+        Отказ — до конструктора, чтобы собранная строка не терялась отказом запуска
+        (решение заказчика 09.11.2026, финальное ревью блока 1, F4).
+        """
+        self._on_error(InvalidRequestError(f"«{item.name}» {BROWSER_PARAMS_NOTE}"))
+
+    def launch_set(self, key: str, param_set: ParamSet) -> None:
+        """«Набор параметров ▸»: запуск без конструктора; проверка не блокирует (спека §4.6).
+
+        Строки состояния у раздела нет, поэтому ошибки проверки — сообщением после
+        запуска (отступление от §4.6, записано в спеке).
+        """  # noqa: RUF002
+        item = next((i for i in self._workspace.items() if i.key == key), None)
+        if item is None or self._catalog is None:
+            return
+        if param_set.mode is Mode.DESIGNER and item.kind is ConnectKind.WEB:
+            self._refuse_designer_on_web(item)
+            return
+        if self._workspace.opens_in_browser(key):
+            self._refuse_params_in_browser(item)
+            return
+        context = CheckContext(
+            where=Where.ONCE,
+            mode=param_set.mode,
+            client=base_client(item.app) if param_set.mode is Mode.ENTERPRISE else None,
+            version=base_version(item, self._installations or [], self._cfg_rules),
+            permanent=parse(additional_parameters(item), self._catalog),
+        )
+        findings = check(parse(param_set.params, self._catalog), context)
+        target = LaunchTarget.DESIGNER if param_set.mode is Mode.DESIGNER else None
+        launched = self.launch_key(key, target, once=param_set.params)
+        errors = [finding.text for finding in findings if finding.level is Level.ERROR]
+        # Решение заказчика 09.11.2026: замечания — только после состоявшегося запуска;
+        # при сбое или отказе ошибка запуска уже показана, второго сообщения нет.  # noqa: RUF003
+        if launched and errors:
+            self._on_error(
+                InvalidRequestError(
+                    f"Набор «{param_set.name}»: {'; '.join(errors)}. Запуск выполнен."  # noqa: RUF001
+                )
+            )
+
+    def _add_scenario_menu(self, menu: QMenu, key: str) -> None:
+        """«Выполнить сценарий ▸» (спека v4, §7.3) — по выделенным базам.
+
+        Строка меню вне выделения — сценарий только для неё: щелчок правой кнопкой по
+        невыделенной строке не должен молча запускать операцию над другими базами.
+        """
+        if self._scenarios is None or self._catalog is None:
+            return
+        selected = self.selected_base_keys()
+        keys = selected if key in selected else [key]
+        title = "Выполнить сценарий"
+        if len(keys) > 1:
+            title = f"{title} ({plural(len(keys), 'база', 'базы', 'баз')})"
+        submenu = QMenu(title, menu)
+        menu.addMenu(submenu)
+        for scenario in self._scenarios():
+            submenu.addAction(
+                scenario.name,
+                lambda chosen=scenario.id: self.scenario_requested.emit(chosen, list(keys)),
+            )
+        submenu.addSeparator()
+        submenu.addAction("Управление сценариями…", self.operations_requested.emit)
+
+    def _add_param_menu(self, menu: QMenu, key: str, *, web: bool) -> None:
+        """Пункты разового запуска с параметрами.
+
+        Веб-база, которую обычный запуск открывает в браузере: пункты видны, но
+        неактивны и объясняют себя подсказкой — тот же приём, что у записи общего
+        списка (`_build_menu`); спека §4.5, решение заказчика 09.11.2026 (F4).
+        «Конфигуратора с параметрами…» у веб-базы нет вовсе, как и «Конфигуратора».
+        """  # noqa: RUF002
+        if self._catalog is None:
+            return
+        browser = web and self._workspace.opens_in_browser(key)
+        launch = menu.addAction(
+            "Запустить с параметрами…\tCtrl+F3",  # noqa: RUF001
+            lambda: self.launch_with_params(key, Mode.ENTERPRISE),
+        )
+        if not web:
+            menu.addAction(
+                "Конфигуратор с параметрами…\tCtrl+F4",  # noqa: RUF001
+                lambda: self.launch_with_params(key, Mode.DESIGNER),
+            )
+        # Явный родитель и addMenu(QMenu): подменю от addMenu(str) PySide удаляло
+        # вместе с обёрткой, и тест видел «Internal C++ object already deleted».  # noqa: RUF003
+        submenu = QMenu("Набор параметров", menu)  # noqa: RUF001
+        menu.addMenu(submenu)
+        if browser:
+            menu.setToolTipsVisible(True)
+            for action in (launch, submenu.menuAction()):
+                action.setEnabled(False)
+                action.setToolTip(f"База {BROWSER_PARAMS_NOTE}")
+            return
+        sets = [
+            s for s in self._load_param_sets(quiet=True) if not web or s.mode is Mode.ENTERPRISE
+        ]
+        if not sets:
+            note = submenu.addAction("Наборов нет")
+            note.setEnabled(False)
+            return
+        for param_set in sets:
+            submenu.addAction(
+                f"{param_set.name} — {MODE_TITLES[param_set.mode]}",
+                lambda chosen=param_set: self.launch_set(key, chosen),
+            )
 
     def _toggle_current_favorite(self) -> None:
         key = self._current_base_key()
@@ -1205,6 +1426,9 @@ class BasesView(QWidget):
             menu.addAction(
                 "Открыть в браузере", lambda: self.launch_key(key, LaunchTarget.BROWSER)
             )
+            # Приёмка 21.11.2026, В16: группы по смыслу, разделители между ними.  # noqa: RUF003
+            menu.addSeparator()
+            self._add_param_menu(menu, key, web=True)
         else:
             # Подписи — сочетания штатного стартера, к которым привык
             # заказчик (smoke №1, 08.08.2026, замечание 5), а не наши  # noqa: RUF003
@@ -1223,15 +1447,10 @@ class BasesView(QWidget):
             menu.addAction(
                 "Конфигуратор\tF4", lambda: self.launch_key(key, LaunchTarget.DESIGNER)
             )
-            # T-31: веб-базе этих пунктов нет — повышать браузер бессмысленно.
-            menu.addAction(
-                "Запустить от имени администратора\tAlt+Shift+F3",
-                lambda: self.launch_key(key, elevated=True),
-            )
-            menu.addAction(
-                "Конфигуратор от имени администратора\tAlt+Shift+F4",
-                lambda: self.launch_key(key, LaunchTarget.DESIGNER, elevated=True),
-            )
+            # Приёмка 21.11.2026, В16: группы по смыслу, разделители между ними.  # noqa: RUF003
+            menu.addSeparator()
+            self._add_param_menu(menu, key, web=False)
+            menu.addSeparator()
             # T-32: веб-базе этих пунктов нет — вход в неё решает веб-сервер.
             menu.addAction(
                 "Запустить с запросом входа\tShift+F3",  # noqa: RUF001
@@ -1241,6 +1460,17 @@ class BasesView(QWidget):
                 "Конфигуратор с запросом входа\tShift+F4",  # noqa: RUF001
                 lambda: self.launch_key(key, LaunchTarget.DESIGNER, ask_login=True),
             )
+            # T-31: веб-базе этих пунктов нет — повышать браузер бессмысленно.
+            menu.addAction(
+                "Запустить от имени администратора\tAlt+Shift+F3",
+                lambda: self.launch_key(key, elevated=True),
+            )
+            menu.addAction(
+                "Конфигуратор от имени администратора\tAlt+Shift+F4",
+                lambda: self.launch_key(key, LaunchTarget.DESIGNER, elevated=True),
+            )
+            menu.addSeparator()
+            self._add_scenario_menu(menu, key)
         menu.addSeparator()
         # Ярлык осмыслен и для веб-базы: он зовёт нашу программу
         # с `--ib-name`, а та выбирает канал по `App` записи и настройке  # noqa: RUF003
@@ -1265,6 +1495,7 @@ class BasesView(QWidget):
             for action in (properties, removal):
                 action.setEnabled(False)
                 action.setToolTip(COMMON_NOTE)
+        widen_for_shortcuts(menu)
         return menu
 
     def _add_version_menu(self, menu: QMenu, item: InfobaseItem, key: str) -> None:
@@ -1661,7 +1892,81 @@ class BasesView(QWidget):
             login=login,
             has_password=has_password,
             servers=known_servers(self._workspace.items()),
+            catalog=self._catalog,
+            designer_params=self._workspace.designer_params_of(key),
+            params_expanded=self._properties_blocks.get(BLOCK_ID, False),
+            on_params_expanded=lambda expanded: self._remember_block(BLOCK_ID, expanded),
+            open_builder=lambda mode, text: self._edit_line(item, mode, text),
+            # Без каталога пакетных операций нет вовсе — блок хранилища не показываем.
+            repository=self._workspace.repository_of(key) if self._catalog is not None else None,
+            repository_expanded=self._properties_blocks.get(REPOSITORY_BLOCK_ID, False),
+            on_repository_expanded=lambda expanded: self._remember_block(
+                REPOSITORY_BLOCK_ID, expanded
+            ),
+            palette=self._palette,
         )
+
+    def _remember_block(self, block_id: str, expanded: bool) -> None:
+        self._properties_blocks[block_id] = expanded
+        self._save_properties_blocks(dict(self._properties_blocks))
+
+    def _builder_for(
+        self,
+        item: InfobaseItem,
+        mode: Mode,
+        purpose: BuilderPurpose,
+        text: str,
+        *,
+        mode_locked: bool,
+    ) -> ParamBuilderDialog:
+        if self._catalog is None:  # pragma: no cover — без каталога пунктов и «…» нет
+            raise RuntimeError("каталог ключей не загружен")
+        client = base_client(item.app)
+        version = base_version(item, self._installations or [], self._cfg_rules)
+        details = [str(version)] if version is not None else []
+        if client is not None:
+            details.append(CLIENT_TITLES[client])
+        suffix = f" ({', '.join(details)})" if details else ""
+        return ParamBuilderDialog(
+            self._catalog,
+            title=f"Параметры запуска — {item.name}{suffix}",
+            mode=mode,
+            purpose=purpose,
+            text=text,
+            client=client,
+            version=version,
+            mode_locked=mode_locked,
+            permanent=additional_parameters(item),
+            sets=self._load_param_sets(quiet=False),
+            save_set=self._store_param_set,
+            preview=lambda m, t: preview_command(item.name, m, client, t),
+            palette=self._palette,
+            parent=self,
+        )
+
+    def _edit_line(self, item: InfobaseItem, mode: Mode, text: str) -> str | None:
+        dialog = self._builder_for(item, mode, BuilderPurpose.WRITE, text, mode_locked=True)
+        return dialog.result_text() if self._run_builder(dialog) else None
+
+    def _load_param_sets(self, *, quiet: bool) -> tuple[ParamSet, ...]:
+        if self._param_sets_path is None:
+            return ()
+        try:
+            return load_param_sets(self._param_sets_path)
+        except ParamSetsUnavailableError as error:
+            if not quiet:
+                self._on_error(error)
+            return ()
+
+    def _store_param_set(self, new: ParamSet) -> str | None:
+        if self._param_sets_path is None:
+            return "Файл наборов не задан"
+        try:
+            sets = load_param_sets(self._param_sets_path)
+            save_param_sets(self._param_sets_path, upsert_set(sets, new))
+        except (ServicesError, OSError) as error:
+            return f"Набор не сохранён: {error}"  # noqa: RUF001
+        return None
 
     def show_properties(self, key: str) -> None:
         dialog = self._build_properties_dialog(key)
@@ -1713,6 +2018,12 @@ class BasesView(QWidget):
         что прошла успешно. Записанные ДО правки логин и секрет переносит на
         новый ключ сам `_write` (rekey задачи 4) — тем же путём, что уже
         переносит избранное и историю запусков.
+
+        v4: строка параметров Конфигуратора — тоже до `update_infobase`, тем же путём,
+        что учётные данные: она живёт в `bases.json` под ключом записи.
+
+        v4, блок 2: хранилище конфигурации — тем же путём и в том же месте, что строка
+        Конфигуратора: до `update_infobase`, перенос на новый ключ делает `_write`.
         """  # noqa: RUF002
         warning = dialog.kind_change_warning()
         if warning is not None and not russian_confirm(self, "Смена вида размещения", warning):
@@ -1727,13 +2038,38 @@ class BasesView(QWidget):
             )
             return
         credentials_changed = dialog.credentials_changed()
-        if not changes and new_name is None and not credentials_changed:
+        designer_changed = dialog.designer_params_changed()
+        repository_changed = dialog.repository_changed()
+        if (
+            not changes
+            and new_name is None
+            and not credentials_changed
+            and not designer_changed
+            and not repository_changed
+        ):
             return
         if credentials_changed:
             entered = dialog.credentials()
             try:
                 self._workspace.set_credentials(
                     key, entered.login, entered.password, entered.remember
+                )
+            except ServicesError as error:
+                self._on_error(error)
+        if designer_changed:
+            try:
+                self._workspace.set_designer_params(key, dialog.designer_params())
+            except ServicesError as error:
+                self._on_error(error)
+        if repository_changed:
+            entered_repository = dialog.repository_values()
+            try:
+                self._workspace.set_repository(
+                    key,
+                    entered_repository.address,
+                    entered_repository.user,
+                    entered_repository.password,
+                    entered_repository.remember,
                 )
             except ServicesError as error:
                 self._on_error(error)
@@ -1773,6 +2109,7 @@ class BasesView(QWidget):
         menu.addAction("Обновить\tF5", self.refresh_all)
         menu.addAction("Добавить базу…", lambda: self.add_infobase(ROOT))
         menu.addAction("Создать группу…", lambda: self.add_group(ROOT))
+        widen_for_shortcuts(menu)
         return menu
 
     def _build_group_menu(self, item: InfobaseItem, key: str) -> QMenu:

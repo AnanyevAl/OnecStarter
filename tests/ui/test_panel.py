@@ -127,3 +127,29 @@ def test_open_failure_shows_a_warning_not_silence(
     _show(panel, _item(r'File="D:\bases\acc";'))
     panel.link().linkActivated.emit("")
     assert warnings == [r"Не удалось открыть каталог: D:\bases\acc"]  # noqa: RUF001
+
+
+def test_explorer_opens_without_the_inherited_dll_directory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Н1: проводник, открытый по ссылке каталога, — не наш ребёнок с путём DLL `_internal`."""  # noqa: RUF002
+    import sys
+
+    from onecstarter.platform_1c import dll_search
+    from onecstarter.ui.bases import panel
+
+    state: dict[str, str | None] = {"dir": r"C:\app\_internal"}
+    monkeypatch.setattr(dll_search, "get_dll_directory", lambda: state["dir"])
+    monkeypatch.setattr(dll_search, "set_dll_directory", lambda p: state.__setitem__("dir", p))
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    seen: list[str | None] = []
+
+    def fake_open(_url: object) -> bool:
+        seen.append(state["dir"])
+        return True
+
+    monkeypatch.setattr(panel.QDesktopServices, "openUrl", fake_open)  # type: ignore[attr-defined]
+    assert panel.open_in_explorer(r"C:\base")
+    assert seen == [None]
+    assert state["dir"] == r"C:\app\_internal"
+

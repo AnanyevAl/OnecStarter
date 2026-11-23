@@ -26,6 +26,7 @@ from collections.abc import Callable
 from ctypes import wintypes
 
 from onecstarter.domain.launch import LaunchCommand
+from onecstarter.platform_1c.dll_search import clean_dll_search
 
 __all__ = ["ElevationDeclinedError", "run_elevated", "spawn_elevated"]
 
@@ -80,9 +81,14 @@ def _start(executable: str, arguments: str) -> int:
     info.hIcon = None
     info.hProcess = None
 
-    ok = shell32.ShellExecuteExW(ctypes.byref(info))
+    # Н1 (ревью задачи 10, решение заказчика 22.11.2026): процесс с `runas`  # noqa: RUF003
+    # создаёт служба согласия, но при уже повышенных правах оболочка может
+    # создать его из нашего процесса — [не проверено]; поэтому путь DLL  # noqa: RUF003
+    # и окружение очищаются и здесь.
+    with clean_dll_search():
+        ok = shell32.ShellExecuteExW(ctypes.byref(info))
+        error = 0 if ok else ctypes.get_last_error()
     if not ok:
-        error = ctypes.get_last_error()
         if error == _ERROR_CANCELLED:
             raise ElevationDeclinedError(
                 f"пользователь отказал в повышении прав для {executable}"

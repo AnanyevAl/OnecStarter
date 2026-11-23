@@ -1,16 +1,17 @@
 """Сценарий запуска базы: команда → процесс или браузер.
 
 Своей логики почти нет — склеиваются готовые слои. Запуск идёт по /IBName:
-платформа сама читает из ibases.v8i ключи WA, AdditionalParameters и прочие
-([Ф] скил platform-launch), а секреты из строки соединения не попадают
-в argv. Базы из общих списков запускаются так же — [Ф] T-05.2: клиент
+платформа сама читает из ibases.v8i ключи WA, AdditionalParameters и прочие.
+AdditionalParameters — [Ф] T-42 Э1: клиент читает строку сам и при прямом
+запуске по /IBName, в 1С:Предприятии и в Конфигураторе, но /L из неё не
+действует (скил platform-launch, факт 16). Секреты из строки соединения не
+попадают в argv. Базы из общих списков запускаются так же — [Ф] T-05.2: клиент
 находит имя из `CommonInfoBases` и материализует запись в ibases.v8i.
 
 Ошибки поднимаются до порождения процесса: неустановленная версия видна
 пользователю заранее, а не после падения клиента.
 """  # noqa: RUF002
 
-import webbrowser
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import Enum
@@ -34,12 +35,13 @@ from onecstarter.domain.launch import (
 )
 from onecstarter.domain.selection import ResolutionSource, resolve_version
 from onecstarter.domain.version import Installation, VersionNumber
+from onecstarter.platform_1c.dll_search import open_url as open_url_clean
 from onecstarter.platform_1c.process import spawn as spawn_process
 from onecstarter.security.secrets import redact_arguments, redact_connect
 from onecstarter.services.errors import LaunchError
 from onecstarter.services.model import InfobaseItem
 
-__all__ = ["LaunchError", "LaunchKind", "LaunchOutcome", "launch_infobase"]
+__all__ = ["LaunchError", "LaunchKind", "LaunchOutcome", "launch_infobase", "opens_in_browser"]
 
 
 class LaunchKind(Enum):
@@ -67,9 +69,10 @@ def launch_infobase(
     web_default_is_browser: bool = False,
     forced_target: LaunchTarget | None = None,
     spawn: Callable[[LaunchCommand], int] = spawn_process,
-    open_url: Callable[[str], bool] = webbrowser.open,
+    open_url: Callable[[str], bool] = open_url_clean,
     credentials: Credentials | None = None,
     deny_os_auth: bool = False,
+    extra_params: str | None = None,
 ) -> LaunchOutcome:
     """Запустить базу: процесс клиента или браузер.
 
@@ -89,6 +92,10 @@ def launch_infobase(
 
     plan = _plan(item, default_app, web_default_is_browser, forced_target)
     if plan.client is None:
+        if extra_params is not None and extra_params.strip():
+            raise LaunchError(
+                f"Для «{item.name}» разовые параметры не передать: база открывается в браузере"
+            )
         return _launch_web(item, open_url)
 
     installation, version = _installation_for(item, plan, installations, cfg_rules)
@@ -104,6 +111,7 @@ def launch_infobase(
         auto_check_mode=plan.auto_check_mode,
         credentials=credentials,
         deny_os_auth=deny_os_auth,
+        extra=extra_params,
     )
     command = build_launch_command(installation, convention, plan.client, arguments)
     try:
@@ -124,6 +132,32 @@ def launch_infobase(
         pid=pid,
         version=version,
     )
+
+
+def opens_in_browser(
+    item: InfobaseItem, *, default_app: str | None, web_default_is_browser: bool
+) -> bool:
+    """Откроет ли обычный запуск записи браузер — без процессов и обращений к ФС.
+
+    Тот же выбор канала, что у `launch_infobase` без разового выбора (`forced=None`):
+    `choose_launch_plan` — чистая функция. Отказ плана (группа, `App=WebClient`
+    у не-ws записи) — не браузер: о нём скажет сам запуск. Нужна, чтобы разовые
+    параметры для такой базы отказывали до конструктора, а пункты меню были
+    недоступны (спека v4, §4.5; финальное ревью блока 1, F4).
+    """  # noqa: RUF002
+    if item.is_group or item.connect is None:
+        return False
+    try:
+        outcome = choose_launch_plan(
+            item.kind,
+            item.app,
+            default_app,
+            web_default_is_browser=web_default_is_browser,
+            forced=None,
+        )
+    except ValueError:
+        return False
+    return isinstance(outcome, LaunchPlan) and outcome.client is None
 
 
 _REFUSAL_TEXTS = {

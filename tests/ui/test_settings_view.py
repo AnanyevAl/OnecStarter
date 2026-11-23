@@ -1,6 +1,6 @@
 """Раздел «Настройки»: четыре группы мокапа плюс СЕРВЕРЫ (v2, T-08 задача 7)."""
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +77,20 @@ def application(qapp: QApplication) -> QApplication:
     return qapp
 
 
+@pytest.fixture(autouse=True)
+def _restore_application_stylesheet(qapp: QApplication) -> Iterator[None]:
+    """`_view` строит настоящий `ThemeController` — вернуть таблицу стилей приложения.
+
+    Иначе шрифт 10pt темы доживает до соседних файлов и расширяет текст в тестах, меряющих
+    ширину (план В, полный прогон). Фикстура автоматическая, значит, закрывается после окон
+    теста (`qtbot`), и возврат идёт не поверх живого дерева.
+    """  # noqa: RUF002
+    sheet_before = qapp.styleSheet()
+    yield
+    if qapp.styleSheet() != sheet_before:
+        qapp.setStyleSheet(sheet_before)
+
+
 def _view(
     application: QApplication,
     tmp_path: Path,
@@ -89,7 +103,11 @@ def _view(
     choose_file: Callable[[], str] | None = None,
 ) -> tuple[SettingsView, SettingsStore]:
     store = SettingsStore(tmp_path / "settings.json")
-    controller = ThemeController(application, store, system_mode=lambda: ThemeMode.DARK)
+    controller = ThemeController(
+        application,
+        store,
+        system_mode=lambda: ThemeMode.DARK,
+    )
     view = SettingsView(
         controller,
         store,
@@ -140,7 +158,11 @@ def test_save_failure_is_visible(application: QApplication, tmp_path: Path) -> N
     blocked = tmp_path / "busy"
     blocked.write_text("", encoding="utf-8")
     store = SettingsStore(blocked / "settings.json")
-    controller = ThemeController(application, store, system_mode=lambda: ThemeMode.DARK)
+    controller = ThemeController(
+        application,
+        store,
+        system_mode=lambda: ThemeMode.DARK,
+    )
     view = SettingsView(
         controller,
         store,
@@ -185,7 +207,28 @@ def test_about_group_shows_version_and_repository_link(
     view, _ = _view(application, tmp_path)
     assert view.version_label().text() == about.app_version()
     assert about.REPOSITORY_URL in view.repository_label().text()
-    assert view.repository_label().openExternalLinks() is True
+    assert view.repository_label().openExternalLinks() is False
+
+
+def test_repository_link_opens_through_dll_search(
+    application: QApplication, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Н1 (предпроверка плана В, п. 9): ссылку открывает `dll_search`, а не сама метка —
+    иначе браузер, запущенный ссылкой впервые, держал бы DLL `_internal`."""  # noqa: RUF002
+    from onecstarter.ui import settings_view as settings_view_module
+
+    opened: list[str] = []
+
+    def fake_open(url: str) -> bool:
+        opened.append(url)
+        return True
+
+    monkeypatch.setattr(settings_view_module, "open_url_clean", fake_open)
+    view, _ = _view(application, tmp_path)
+    label = view.repository_label()
+    assert label.openExternalLinks() is False
+    label.linkActivated.emit(about.REPOSITORY_URL)
+    assert opened == [about.REPOSITORY_URL]
 
 
 @pytest.mark.parametrize(
@@ -541,7 +584,21 @@ def test_set_window_section_count_rebuilds_the_window_shortcut_range(
     view.set_window_section_count(4)
 
     title = WINDOW_SHORTCUTS[0].title
-    assert view.window_shortcut_reference_rows() == [("Alt+1 … Alt+4", title)]
+    assert view.window_shortcut_reference_rows() == [
+        ("Alt+1 … Alt+4", title),
+        (WINDOW_SHORTCUTS[1].label, WINDOW_SHORTCUTS[1].title),
+    ]
+
+
+def test_window_shortcut_reference_lists_ctrl_enter_for_dialogs(
+    application: QApplication, tmp_path: Path
+) -> None:
+    """П1: справочник сообщает про Ctrl+Enter в трёх окнах."""
+    view, _ = _view(application, tmp_path)
+    assert (
+        "Ctrl+Enter",
+        "«ОК» в свойствах базы, записи EDT и профиля сервера",  # noqa: RUF001
+    ) in view.window_shortcut_reference_rows()
 
 
 def test_reference_range_is_built_from_section_count() -> None:

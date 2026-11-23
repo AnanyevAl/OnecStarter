@@ -76,6 +76,18 @@ class UserDataWriteError(ServicesError):
     """  # noqa: RUF002
 
 
+class ParamSetsUnavailableError(ServicesError):
+    """`param_sets.json` недоступен для чтения или испорчен и не переносится в `.bad`."""
+
+
+class OperationsUnavailableError(ServicesError):
+    """`operations.json` недоступен для чтения или испорчен и не переносится в `.bad`."""
+
+
+class OperationsBusyError(ServicesError):
+    """Пакетная операция уже выполняется: одновременно идёт один сценарий (спека v4, §6.4)."""
+
+
 class CredentialStoreError(ServicesError):
     """Диспетчер учётных данных Windows отказал. Текст — причина без секрета.
 

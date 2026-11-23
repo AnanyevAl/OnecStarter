@@ -28,6 +28,15 @@ from typing import Protocol
 SERVICE = "OneCStarter"
 
 
+def repository_key(base_key: str) -> str:
+    """Имя записи пароля хранилища конфигурации базы (спека v4, §2).
+
+    Отличается от ключа пароля базы суффиксом: ключ привязки — `id:<uuid>` либо суррогат
+    с хешем, `#repository` в нём не встречается.
+    """  # noqa: RUF002
+    return f"{base_key}#repository"
+
+
 class CredentialBackendError(Exception):
     """Хранилище отказало. Текст — только причина, никогда не секрет."""
 

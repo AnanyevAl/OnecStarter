@@ -30,7 +30,7 @@ from onecstarter.domain.edt import (
     join_vm_args,
     split_vm_args,
 )
-from onecstarter.ui.dialogs.buttons import ButtonKind, russian_button_box
+from onecstarter.ui.dialogs.buttons import ButtonKind, accept_on_ctrl_enter, russian_button_box
 
 HEAP_CHOICES = (2048, 4096, 8192, 12288, 16384)
 NOT_INSTALLED_MARK = " (не установлена)"
@@ -116,6 +116,7 @@ class EdtProjectDialog(QDialog):
         self._buttons = russian_button_box(ButtonKind.OK, ButtonKind.CANCEL)
         self._buttons.accepted.connect(self.accept)
         self._buttons.rejected.connect(self.reject)
+        accept_on_ctrl_enter(self, self._buttons)
 
         form = QFormLayout()
         form.addRow("Имя", self._name)

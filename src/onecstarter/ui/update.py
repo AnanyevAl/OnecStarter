@@ -18,6 +18,7 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QToolButton, QWidget
 
 from onecstarter.domain.update import Release, is_newer
+from onecstarter.platform_1c.dll_search import clean_dll_search
 from onecstarter.services.errors import UpdateError
 from onecstarter.services.update import HttpGet, download_verified, fetch_latest
 from onecstarter.ui.settings_store import SettingsStore
@@ -38,7 +39,9 @@ def _spawn_daemon(task: Callable[[], None]) -> None:
 
 
 def _open_url(url: str) -> None:
-    QDesktopServices.openUrl(QUrl(url))
+    # Н1: браузер, запущенный страницей выпуска, не наследует путь DLL `_internal`.  # noqa: RUF003
+    with clean_dll_search():
+        QDesktopServices.openUrl(QUrl(url))
 
 
 class UpdateChecker(QObject):

@@ -6,6 +6,7 @@ from onecstarter.security.credentials import (
     CredentialBackendError,
     KeyringStore,
     MemoryStore,
+    repository_key,
 )
 
 
@@ -83,3 +84,8 @@ def test_failure_repr_never_carries_the_secret(monkeypatch: pytest.MonkeyPatch) 
     assert "p@ss" not in str(error)
     assert "p@ss" not in repr(error)
     assert not any("p@ss" in str(arg) for arg in error.args)
+
+
+def test_repository_key_differs_from_base_key() -> None:
+    assert repository_key("id:1") == "id:1#repository"
+    assert repository_key("id:1") != "id:1"

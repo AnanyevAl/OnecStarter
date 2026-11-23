@@ -170,26 +170,28 @@ from dataclasses import field as dataclass_field
 from pathlib import Path
 from typing import cast
 
-from PySide6.QtCore import QMimeData
-from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent
+from PySide6.QtCore import QMimeData, QRect, QSize, Qt
+from PySide6.QtGui import QDragEnterEvent, QDragMoveEvent, QDropEvent, QShowEvent
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDialog,
-    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from onecstarter.domain.cli_catalog import Catalog, Mode
 from onecstarter.domain.connect import (
     ConnectKind,
     extra_fragment_names,
@@ -199,13 +201,29 @@ from onecstarter.domain.connect import (
 from onecstarter.domain.default_version import DefaultVersionRule
 from onecstarter.domain.launch import is_web_client_app
 from onecstarter.domain.version import Installation
-from onecstarter.security.secrets import is_secret_key
+from onecstarter.security.secrets import (
+    contains_secret_arguments,
+    has_unclosed_quote,
+    is_secret_key,
+)
 from onecstarter.services.connection import BADGE_LABELS, connection_path
 from onecstarter.services.display import version_cell, version_options
 from onecstarter.services.model import InfobaseItem, NewInfobase
 from onecstarter.services.paths import ROOT, normalize_folder
-from onecstarter.ui.dialogs.buttons import ButtonKind, russian_button_box
+from onecstarter.services.workspace import RepositorySettings
+from onecstarter.ui.components import DialogFooter, align_form, dim_label
+from onecstarter.ui.dialogs.buttons import (
+    PRIMARY,
+    ButtonKind,
+    accept_button,
+    accept_on_ctrl_enter,
+    mark_button,
+    russian_button_box,
+)
 from onecstarter.ui.dialogs.group_picker import GroupPicker
+from onecstarter.ui.dialogs.launch_params import LaunchParamsBlock, base_client, base_version
+from onecstarter.ui.dialogs.repository import DialogRepository, RepositoryBlock
+from onecstarter.ui.theme import DARK, Palette
 
 HIDDEN_VALUE = "значение скрыто"
 _UNPARSED_PLACEMENT_HINT = "не удалось разобрать для правки"
@@ -223,7 +241,10 @@ _FORBIDDEN_PLACEMENT_CHARACTERS = ('"', ";")
 # «прочих» они не идут: Connect несёт пароли, ID и OrderInList — наша
 # внутренняя механика, остальные дублировали бы поля выше.
 TYPED_KEYS = frozenset(
-    {"connect", "version", "defaultversion", "app", "wa", "id", "orderinlist", "folder"}
+    {
+        "connect", "version", "defaultversion", "app", "wa", "id", "orderinlist", "folder",
+        "additionalparameters",
+    }
 )
 
 # Подписанные фрагменты Connect по виду записи — общий источник для формы
@@ -341,11 +362,11 @@ def _typed_value(keys: Sequence[tuple[str, str]], name: str) -> str | None:
 def _app_key(app: str | None) -> str | None:
     """Привести `App` к данным пункта комбобокса: `None`/`Auto` — «Авто».
 
-    [Ф] скил v8i-format: `App=Auto` и отсутствие ключа `App` означают одно
-    и то же (тонкий клиент, `/AppAutoCheckMode`). Без этой нормализации
-    запись с явным `App=Auto` в файле (обычное дело — так его пишет сама
-    платформа) на нетронутом диалоге отличалась бы от данных пункта «Авто»
-    (`None`) и `changes()` молча снимала бы App при каждом открытии-ОК.
+    Нужна только для сравнения в `changes()`: секция с явным `App=Auto` (так её
+    пишет платформа) на нетронутом диалоге не должна считаться изменённой.
+    Читает ли платформа секцию без `App` как `Auto` — **[?]** (в скилах не
+    измерено), поэтому при смене на «Авто» пишется `App=Auto`, а не удаление
+    ключа (приёмка 21.11.2026, Ф3).
     """  # noqa: RUF002
     if app is None or app.casefold() == "auto":
         return None
@@ -382,12 +403,41 @@ WEB_CLIENT_PLACEMENT_NOTE = (
     "веб-сервере (ws=): выберите другого клиента или верните веб-размещение"
 )
 
+DESIGNER_QUOTE_NOTE = (
+    "Строка «Конфигуратор»: незакрытая кавычка — закройте её, иначе строку не проверить "
+    "на пароль"
+)
+DESIGNER_SECRET_NOTE = (
+    "Строка «Конфигуратор»: пароль здесь не сохранить — задайте его в поле «Пароль»"  # noqa: RUF001
+)
+
 # T-30.2: подпись флажка прежняя, формулировки штатного стартера — в подсказке
 # (решение заказчика 03.11.2026; названия сняты с экрана, [Ф] T-30).  # noqa: RUF003
 OS_AUTH_TOOLTIP = (
     "Как «Вариант аутентификации» в штатном стартере: отмечено — "
     "«Выбирать автоматически», снято — «Запрашивать имя и пароль»"
 )
+
+
+class _ContentScroll(QScrollArea):
+    """Область прокрутки, чей `sizeHint` — размер содержимого, а не стандартные ~36 на 24 em.
+
+    Без этого `adjustSize` окна свойств упирался в урезанный `sizeHint` `QScrollArea` и окно
+    не росло под раскрытый блок (ревью фикс-раунда 1). К высоте — `heightForWidth` содержимого
+    (перенесённые метки), к ширине — полоса прокрутки: при нехватке высоты она не должна
+    вызывать горизонтальную.
+    """  # noqa: RUF002
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        content = self.widget()
+        if content is None:
+            return super().sizeHint()
+        hint = content.sizeHint()
+        width = hint.width() + self.verticalScrollBar().sizeHint().width()
+        height = hint.height()
+        if content.hasHeightForWidth():
+            height = max(height, content.heightForWidth(hint.width()))
+        return QSize(width, height)
 
 
 @dataclass(frozen=True)
@@ -413,6 +463,15 @@ class InfobaseDialog(QDialog):
         login: str | None = None,
         has_password: bool | None = False,
         servers: Sequence[str] = (),
+        catalog: Catalog | None = None,
+        designer_params: str | None = None,
+        params_expanded: bool = False,
+        on_params_expanded: Callable[[bool], None] = lambda _expanded: None,
+        open_builder: Callable[[Mode, str], str | None] = lambda _mode, _text: None,
+        repository: RepositorySettings | None = None,
+        repository_expanded: bool = False,
+        on_repository_expanded: Callable[[bool], None] = lambda _expanded: None,
+        palette: Palette = DARK,
     ) -> None:
         super().__init__(parent)
         self._item = item
@@ -604,6 +663,11 @@ class InfobaseDialog(QDialog):
         self._password.textChanged.connect(self._refresh_ok_state)
         self._remember.toggled.connect(self._refresh_ok_state)
 
+        self._params_block: LaunchParamsBlock | None = None
+        self._repository_block: RepositoryBlock | None = None
+        self._initial_additional: str | None = None
+        self._initial_designer = designer_params
+
         if item is not None:
             self._os_auth = QCheckBox()
             self._os_auth.setToolTip(OS_AUTH_TOOLTIP)
@@ -613,6 +677,34 @@ class InfobaseDialog(QDialog):
             self._os_auth.setChecked(self._initial_os_auth)
             form.addRow("Аутентификация ОС", self._os_auth)  # noqa: RUF001
 
+            self._initial_additional = _typed_value(item.keys, "AdditionalParameters")
+            if catalog is not None:
+                # Спека v4, §7.1: строка «Конфигуратор» — только там, где Конфигуратор
+                # подключается; к ws-записи он не подключается (спека v2.3, §3).
+                self._params_block = LaunchParamsBlock(
+                    catalog,
+                    enterprise=self._initial_additional or "",
+                    designer=designer_params or "",
+                    show_designer=item.kind is not ConnectKind.WEB,
+                    client=base_client(item.app),
+                    version=base_version(item, installations, cfg_rules),
+                    open_builder=open_builder,
+                    expanded=params_expanded,
+                    palette=palette,
+                )
+                self._params_block.toggled.connect(on_params_expanded)
+                self._params_block.designer_text_changed.connect(
+                    lambda _text: self._refresh_ok_state()
+                )
+
+            # Спека v4, §7.1: хранилище конфигурации нужно командам пакетного режима
+            # Конфигуратора; к ws-записи Конфигуратор не подключается.
+            if repository is not None and item.kind is not ConnectKind.WEB:
+                self._repository_block = RepositoryBlock(
+                    repository, expanded=repository_expanded, palette=palette
+                )
+                self._repository_block.toggled.connect(on_repository_expanded)
+
             self._rows = other_keys(item)
             self._table = QTableWidget(len(self._rows), 2)
             self._table.setHorizontalHeaderLabels(["Ключ", "Значение"])
@@ -620,27 +712,61 @@ class InfobaseDialog(QDialog):
             for row, (name, value) in enumerate(self._rows):
                 self._table.setItem(row, 0, QTableWidgetItem(name))
                 self._table.setItem(row, 1, QTableWidgetItem(value))
+            # План В, Б10: шапка на всю ширину, а не обрывом после двух колонок.  # noqa: RUF003
+            self._table.horizontalHeader().setStretchLastSection(True)
 
+        align_form(form)
         self._buttons = russian_button_box(ButtonKind.OK, ButtonKind.CANCEL)
         self._buttons.accepted.connect(self._on_accept)
         self._buttons.rejected.connect(self.reject)
-        self._ok_button = next(
-            button
-            for button in self._buttons.buttons()
-            if self._buttons.buttonRole(button) == QDialogButtonBox.ButtonRole.AcceptRole
-        )
+        self._ok_button = accept_button(self._buttons)
+        # Мокап `.btn.pri` (решение заказчика 1): «ОК» — жёлтая главная кнопка окна.  # noqa: RUF003
+        mark_button(self._ok_button, PRIMARY)
+        accept_on_ctrl_enter(self, self._buttons)
         # Пояснение к неактивной «ОК» — рядом с ней, а не окном после клика  # noqa: RUF003
-        # (решение заказчика: отказ показывается раньше, до действия).
-        self._required_hint = QLabel()
-        self._required_hint.setWordWrap(True)
+        # (решение заказчика: отказ показывается раньше, до действия). Это подсказка самой
+        # полосы (`.q` мокапа, стр. 123): своя метка рядом дублировала бы её.
+        self._footer = DialogFooter()
+        self._footer.add_right(self._buttons)
 
-        layout = QVBoxLayout(self)
-        layout.addLayout(form)
+        content = QVBoxLayout()
+        content.setContentsMargins(12, 12, 12, 8)
+        content.addLayout(form)
+        if self._params_block is not None:
+            content.addWidget(self._params_block)
+        if self._repository_block is not None:
+            content.addWidget(self._repository_block)
         if item is not None:
-            layout.addWidget(QLabel("Прочие ключи секции (только чтение)"))
-            layout.addWidget(self._table)
-        layout.addWidget(self._required_hint)
-        layout.addWidget(self._buttons)
+            content.addWidget(dim_label("Прочие ключи секции (только чтение)"))
+            content.addWidget(self._table)
+        # В4, решение заказчика 21.11.2026: содержимое — в прокручиваемой области,  # noqa: RUF003
+        # полоса «ОК» остаётся на месте. Имена — у области, viewport и содержимого  # noqa: RUF003
+        # (урок T-20, `theme.py`: типовой `QWidget` красил бы и полосы прокрутки).
+        body = QWidget()
+        body.setObjectName("PropertiesContent")
+        body.setLayout(content)
+        scroll = _ContentScroll()
+        scroll.setObjectName("PropertiesScroll")
+        scroll.viewport().setObjectName("PropertiesViewport")
+        scroll.setWidget(body)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll = scroll
+        self._capped_on_show = False
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addWidget(scroll, 1)
+        layout.addWidget(self._footer)
+
+        # В4: раскрытый блок с замечаниями не должен ужимать перенесённые метки.  # noqa: RUF003
+        for block in (self._params_block, self._repository_block):
+            if block is not None:
+                block.toggled.connect(lambda _expanded: self._fit_to_content())
+        if self._params_block is not None:
+            self._params_block.content_changed.connect(self._fit_to_content)
 
         self._name.textChanged.connect(self._refresh_ok_state)
         for field in self._placement_widgets().values():
@@ -936,25 +1062,42 @@ class InfobaseDialog(QDialog):
         иначе полностью заполненная запись с паролем без логина считалась
         бы готовой к «ОК» до первого нажатия на поле имени или размещения.
         """  # noqa: RUF002
+        hint_before = self._footer.hint_text()
         empty = self._empty_required()
         self._ok_button.setEnabled(not empty)
         if not empty:
-            self._required_hint.setText("")
+            self._footer.set_hint("")
         else:
             fields = ", ".join(f"«{label}»" for label in empty)
-            self._required_hint.setText(f"Заполните: {fields}")
+            self._footer.set_hint(f"Заполните: {fields}")
 
         # Подпись считается ДО проверки «пароль без логина»: прежний ранний
         # `return` в этой ветке оставлял на экране подпись от предыдущего
         # состояния (финальное ревью, I4 — подпись обязана отвечать тому,
         # что в полях сейчас).
+        note_before = (self._credentials_note.text(), self._credentials_note.isVisibleTo(self))
         self._credentials_note.setText(self._credentials_note_text())
 
         if self._password.text() and not self._login.text().strip():
             self._ok_button.setEnabled(False)
-            self._required_hint.setText(
+            self._footer.set_hint(
                 "Заполните: «Пользователь» — пароль без него не применить"
             )
+
+        # Приёмка 21.11.2026, Р2: строку, которую `Workspace` не сохранит, «ОК» не  # noqa: RUF003
+        # принимает — иначе окно закрывалось, а строка терялась за сообщением (Ф2).  # noqa: RUF003
+        # Управляющий символ в строке диалог не проверяет: в `QLineEdit` перевод
+        # строки не набрать. Второй рубеж — `Workspace.set_designer_params`.
+        designer = self.designer_params()
+        if self.designer_params_changed() and designer is not None:
+            note = None
+            if has_unclosed_quote(designer):
+                note = DESIGNER_QUOTE_NOTE
+            elif contains_secret_arguments(designer):
+                note = DESIGNER_SECRET_NOTE
+            if note is not None:
+                self._ok_button.setEnabled(False)
+                self._footer.set_hint(note)
 
         # Последним — и потому перебивает предыдущие пояснения (финальное
         # ревью ветки, I1). Незаполненное поле и пароль без логина — это
@@ -963,7 +1106,57 @@ class InfobaseDialog(QDialog):
         # состояния одинаково запирают «ОК», разница только в тексте.  # noqa: RUF003
         if self._web_client_conflict():
             self._ok_button.setEnabled(False)
-            self._required_hint.setText(WEB_CLIENT_PLACEMENT_NOTE)
+            self._footer.set_hint(WEB_CLIENT_PLACEMENT_NOTE)
+        # Подсказка переносится на несколько строк: пересчёт размера — только при
+        # смене её текста, не на каждый ввод (решение заказчика 21.11.2026, Б).
+        note_after = (self._credentials_note.text(), self._credentials_note.isVisibleTo(self))
+        if self._footer.hint_text() != hint_before or note_after != note_before:
+            self._fit_to_content()
+
+    def showEvent(self, event: QShowEvent) -> None:  # noqa: N802
+        super().showEvent(event)
+        if self._capped_on_show:
+            return
+        self._capped_on_show = True
+        # Предпроверка, п. 4: [проверено] 22.11.2026 офскрин-пробой — после
+        # `adjustSize` Qt при первом показе `WA_Resized` снят, после `resize()` до показа
+        # стоит. Размер, заданный вызывающим, не ужимаем.
+        if not self.testAttribute(Qt.WidgetAttribute.WA_Resized):
+            self._cap_to_area(self._available_area())
+
+    def _available_area(self) -> QRect:
+        return self.screen().availableGeometry()
+
+    def _cap_to_area(self, area: QRect) -> None:
+        """План В, Б6 (повторная приёмка 21.11.2026): `adjustSize` при первом показе берёт
+        2/3 экрана, а не рабочей области — окно было 800 при потолке 768 над панелью задач."""  # noqa: RUF002
+        width = min(self.width(), area.width() * 2 // 3)
+        height = min(self.height(), area.height() * 2 // 3)
+        if width != self.width() or height != self.height():
+            self.resize(width, height)
+
+    def _fit_to_content(self) -> None:
+        """В4 (приёмка 21.11.2026): окно растёт под раскрытый блок, но не сжимается.
+
+        [гипотеза аудита плана Б, результат — задача 12, шаг 1] При прежней высоте окна
+        раскладка ужимала перенесённые метки ниже `heightForWidth`: минимальная высота
+        `QFormLayout` его не учитывает. Цель — `sizeHint` окна с высотой по ширине (как
+        у `adjustSize`), не выше 2/3 доступной области экрана по каждой оси; размер,
+        выбранный пользователем, не отнимается. Финальное ревью плана Б, F1: без
+        промежуточного `adjustSize` — тот сжимал увеличенное окно до `sizeHint` и растил
+        обратно (два события Resize на пересчёт); развёрнутое окно не трогается.
+        """  # noqa: RUF002
+        if not self.isVisible() or self.isMaximized() or self.isFullScreen():
+            return
+        target = self.sizeHint()
+        layout = self.layout()
+        if layout is not None and layout.hasHeightForWidth():
+            target.setHeight(layout.totalHeightForWidth(target.width()))
+        area = self._available_area()
+        width = min(target.width(), area.width() * 2 // 3)
+        height = min(target.height(), area.height() * 2 // 3)
+        if width > self.width() or height > self.height():
+            self.resize(max(width, self.width()), max(height, self.height()))
 
     def _autocheck_remember(self) -> None:
         """Ввод пароля включает «Запомнить» (финальное ревью, I4).
@@ -1060,6 +1253,31 @@ class InfobaseDialog(QDialog):
             remember=self._remember.isChecked(),
         )
 
+    def launch_params_block(self) -> LaunchParamsBlock | None:
+        return self._params_block
+
+    def repository_block(self) -> RepositoryBlock | None:
+        return self._repository_block
+
+    def repository_changed(self) -> bool:
+        return self._repository_block is not None and self._repository_block.changed()
+
+    def repository_values(self) -> DialogRepository:
+        if self._repository_block is None:
+            return DialogRepository(None, None)
+        return self._repository_block.values()
+
+    def designer_params_changed(self) -> bool:
+        block = self._params_block
+        return block is not None and block.designer_text() != (self._initial_designer or "")
+
+    def designer_params(self) -> str | None:
+        block = self._params_block
+        if block is None:
+            return self._initial_designer
+        text = block.designer_text()
+        return text if text.strip() else None
+
     def credentials_changed(self) -> bool:
         """Есть ли что записывать: логин сменился, пароль введён заново или
         галочка переключена. Нетронутый диалог не должен трогать хранилище.
@@ -1099,7 +1317,7 @@ class InfobaseDialog(QDialog):
         Названо не `placement_hint`: с N3 пояснение говорит и про имя,
         и про размещение, а имя частью размещения не является.
         """  # noqa: RUF002
-        return self._required_hint.text()
+        return self._footer.hint_text()
 
     def kind_change_warning(self) -> str | None:
         """Что пропадёт при смене вида размещения. `None` — вид не менялся
@@ -1283,12 +1501,22 @@ class InfobaseDialog(QDialog):
             changes["Folder"] = folder
         app = self._app.currentData()
         if app != self._initial_app:
-            changes["App"] = app
+            # Приёмка 21.11.2026, Ф3: «Авто» пишется явно — так пишет платформа
+            # (`CREATEINFOBASE /AddToList`) [Ф] T-42, заметка 4; скил v8i-format, reference;
+            # секцию без `App` — [?].
+            changes["App"] = app if app is not None else "Auto"
         # T-30.2: снятый флажок — WA=0, а не удаление ключа: удалённый ключ  # noqa: RUF003
         # платформа читает как WA=1, и снять флажок было нельзя ([Ф] T-30).
         checked = self._os_auth.isChecked()
         if checked != self._initial_os_auth:
             changes["WA"] = "1" if checked else "0"
+        # Спека v4, §4.3: строка пишется как набрана (инвариант разбора §4.1, п. 5);
+        # пустая — ключ удаляется; нетронутая — не пишется вовсе (инвариант 3).
+        block = self._params_block
+        if block is not None:
+            text = block.enterprise_text()
+            if text != (self._initial_additional or ""):
+                changes["AdditionalParameters"] = text if text.strip() else None
         name = self._name.text().strip()
         return changes, (name if name != item.name else None)
 

@@ -36,7 +36,7 @@ def populate_tray_menu(
     menu: QMenu,
     favorites: Sequence[InfobaseItem],
     on_show: Callable[[], None],
-    on_launch: Callable[[str], None],
+    on_launch: Callable[[str], object],
     on_quit: Callable[[], None],
     *,
     theme_mode: Callable[[], ThemeMode],
@@ -75,7 +75,7 @@ def populate_tray_menu(
 def create_tray(
     window: QWidget,
     favorites_provider: Callable[[], list[InfobaseItem]],
-    on_launch: Callable[[str], None],
+    on_launch: Callable[[str], object],
     on_quit: Callable[[], None],
     *,
     theme_mode: Callable[[], ThemeMode],

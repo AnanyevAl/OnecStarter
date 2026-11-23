@@ -52,10 +52,24 @@ button box в него не вставить. Тот же дефект, что �
 места теперь зовут её вместо собственных копий.
 """  # noqa: RUF002
 
+from collections.abc import Sequence
+from dataclasses import dataclass
 from enum import Enum
-from typing import cast
+from typing import Final, Literal, cast
 
-from PySide6.QtWidgets import QDialogButtonBox, QMessageBox, QPushButton, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QLabel,
+    QMessageBox,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
+
+from onecstarter.ui.components import DialogFooter, FindingsList, Note, repolish
 
 
 class ButtonKind(Enum):
@@ -77,6 +91,33 @@ _ROLES: dict[ButtonKind, QDialogButtonBox.ButtonRole] = {
     ButtonKind.CANCEL: QDialogButtonBox.ButtonRole.RejectRole,
 }
 
+PRIMARY: Final = "primary"
+DANGER: Final = "danger"
+ButtonEmphasis = Literal["primary", "danger"]
+
+
+def mark_button(button: QPushButton, role: ButtonEmphasis | None) -> None:
+    """Жёлтая главная (`primary`) или красная опасная (`danger`) кнопка (решение заказчика 1).
+
+    Свойство, а не `:default`: у кнопок с `autoDefault` статус «по умолчанию» переходит к
+    кнопке в фокусе — жёлтой стала бы «…» или «Отмена» (аудит плана Б, раздел 4).
+    `None` снимает роль.
+    """  # noqa: RUF002
+    button.setProperty("role", role)
+    repolish(button)
+
+
+def accept_button(box: QDialogButtonBox) -> QPushButton:
+    """Кнопка с ролью `AcceptRole` — «ОК» окна (`russian_button_box` даёт `QPushButton`)."""  # noqa: RUF002
+    return cast(
+        QPushButton,
+        next(
+            b
+            for b in box.buttons()
+            if box.buttonRole(b) == QDialogButtonBox.ButtonRole.AcceptRole
+        ),
+    )
+
 
 def russian_button_box(*kinds: ButtonKind) -> QDialogButtonBox:
     """Собрать `QDialogButtonBox` с явными русскими подписями кнопок.
@@ -89,6 +130,18 @@ def russian_button_box(*kinds: ButtonKind) -> QDialogButtonBox:
     for kind in kinds:
         box.addButton(_LABELS[kind], _ROLES[kind])
     return box
+
+
+def accept_on_ctrl_enter(dialog: QDialog, box: QDialogButtonBox) -> None:
+    """Ctrl+Enter — «ОК» окна (пожелание пользователей, приёмка 21.11.2026, П1).
+
+    Нажимается сама кнопка: проверки окна срабатывают, неактивная «ОК» — нет.
+    """  # noqa: RUF002
+    ok = accept_button(box)
+    for sequence in ("Ctrl+Return", "Ctrl+Enter"):
+        shortcut = QShortcut(QKeySequence(sequence), dialog)
+        shortcut.setContext(Qt.ShortcutContext.WindowShortcut)
+        shortcut.activated.connect(lambda: ok.click() if ok.isEnabled() else None)
 
 
 def build_confirm_box(parent: QWidget | None, title: str, text: str) -> QMessageBox:
@@ -148,3 +201,92 @@ def ask_confirmation(parent: QWidget | None, title: str, text: str) -> bool:
         box.setDefaultButton(no_button)
     box.exec()
     return is_confirmed(box)
+
+
+@dataclass(frozen=True)
+class Choice:
+    """Кнопка `ChoiceDialog`: ключ ответа, подпись, роль, сторона полосы."""
+
+    key: str
+    label: str
+    role: ButtonEmphasis | None = None
+    left: bool = False
+
+
+class ChoiceDialog(QDialog):
+    """Вопрос с явными кнопками в полосе `.foot` (мокап v4, экраны 6 и 7).
+
+    `QMessageBox` раскладывает кнопки по ролям платформы и не умеет выноску (аудит плана Б,
+    раздел 4). Кнопка по умолчанию — `default`; у всех снят `autoDefault`: иначе статус «по
+    умолчанию» уходит к кнопке в фокусе, и Enter нажал бы её (урок v3.2). Esc и закрытие
+    окна — ответ `escape`.
+    """  # noqa: RUF002
+
+    def __init__(
+        self,
+        parent: QWidget | None,
+        *,
+        title: str,
+        text: str,
+        choices: Sequence[Choice],
+        default: str,
+        escape: str,
+        note: Note | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self._escape = escape
+        self._chosen: str | None = None
+        self._text = QLabel(text)
+        # В тексте бывает имя сценария от пользователя: только PlainText (GC).  # noqa: RUF003
+        self._text.setTextFormat(Qt.TextFormat.PlainText)
+        self._text.setWordWrap(True)
+        self._notes = FindingsList()
+        if note is not None:
+            self._notes.set_notes([note])
+        footer = DialogFooter()
+        self._buttons: dict[str, QPushButton] = {}
+        for choice in choices:
+            button = QPushButton(choice.label)
+            button.setAutoDefault(False)
+            mark_button(button, choice.role)
+            button.clicked.connect(lambda _checked=False, key=choice.key: self._choose(key))
+            if choice.left:
+                footer.add_left(button)
+            else:
+                footer.add_right(button)
+            self._buttons[choice.key] = button
+        self._buttons[default].setDefault(True)
+        content = QVBoxLayout()
+        content.setContentsMargins(16, 16, 16, 12)
+        content.addWidget(self._text)
+        content.addWidget(self._notes)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addLayout(content)
+        layout.addWidget(footer)
+        self._buttons[default].setFocus()
+
+    def text(self) -> str:
+        return self._text.text()
+
+    def text_label(self) -> QLabel:
+        return self._text
+
+    def chosen(self) -> str | None:
+        return self._chosen
+
+    def button(self, key: str) -> QPushButton:
+        return self._buttons[key]
+
+    def note_list(self) -> FindingsList:
+        return self._notes
+
+    def _choose(self, key: str) -> None:
+        self._chosen = key
+        self.accept()
+
+    def reject(self) -> None:
+        if self._chosen is None:
+            self._chosen = self._escape
+        super().reject()

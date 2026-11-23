@@ -67,12 +67,20 @@ a = Analysis(
     # schemes — набор цветовых схем поставки (T-24.1): `.csi` и LICENSE base16,
     # читаются через importlib.resources (services/edt_scheme.py::bundled_schemes_dir).
     # Гейт — строка `smoke: schemes=` в самопроверке.
+    # ui/resources — картинки индикаторов флажков (план Б, задача 4): читаются QSS по
+    # абсолютному пути из importlib.resources; гейт — `smoke: indicators=`.
+    # cli_catalog.toml (спека v4) — тот же случай; гейт — `smoke: cli_catalog=`.
     datas=[
         (
             str(ROOT / "src" / "onecstarter" / "platform_1c" / "registry.toml"),
             "onecstarter/platform_1c",
         ),
+        (
+            str(ROOT / "src" / "onecstarter" / "platform_1c" / "cli_catalog.toml"),
+            "onecstarter/platform_1c",
+        ),
         (str(ROOT / "src" / "onecstarter" / "schemes"), "onecstarter/schemes"),
+        (str(ROOT / "src" / "onecstarter" / "ui" / "resources"), "onecstarter/ui/resources"),
     ]
     + copy_metadata("onecstarter"),
     # keyring находит бэкенды через entry points — анализ импортов PyInstaller

@@ -178,6 +178,9 @@ class Settings:
     # Смысл идентификаторам дают виды (`ui/*/tree_model.py::COLUMN_IDS`), здесь
     # только хранение. Ширина колонки имени не пишется — она растягивается.
     column_widths: dict[str, dict[str, int]] = field(default_factory=dict)
+    # v4 (спека §7.1): свёрнут или развёрнут каждый сворачиваемый блок диалога свойств
+    # базы — {"launch_params": True}. Запись тихая, как у ширин колонок.  # noqa: RUF003
+    properties_blocks: dict[str, bool] = field(default_factory=dict)
 
 
 def load_settings(path: Path) -> Settings:
@@ -216,6 +219,7 @@ def load_settings(path: Path) -> Settings:
         editor_antigravity=_text_of(payload.get("editor_antigravity")),
         check_updates=_consent_of(payload.get("check_updates")),
         column_widths=_column_widths_of(payload.get("column_widths")),
+        properties_blocks=_flags_of(payload.get("properties_blocks")),
     )
 
 
@@ -242,6 +246,7 @@ def save_settings(path: Path, settings: Settings) -> None:
         "editor_antigravity": settings.editor_antigravity,
         "check_updates": settings.check_updates,
         "column_widths": settings.column_widths,
+        "properties_blocks": settings.properties_blocks,
     }
     text = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
     atomic_write(path, text.encode("utf-8"))
@@ -305,6 +310,17 @@ def _language_of(value: Any) -> str:
     """Незнакомый код — «по умолчанию», не порча."""
     codes = {code for code, _label in LANGUAGES}
     return value if isinstance(value, str) and value in codes else ""
+
+
+def _flags_of(value: Any) -> dict[str, bool]:
+    """Флажки блоков: негодная пара отбрасывается поштучно, не порча файла."""
+    if not isinstance(value, dict):
+        return {}
+    return {
+        name: flag
+        for name, flag in value.items()
+        if isinstance(name, str) and isinstance(flag, bool)
+    }
 
 
 def _column_widths_of(value: Any) -> dict[str, dict[str, int]]:

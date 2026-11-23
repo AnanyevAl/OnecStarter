@@ -170,3 +170,13 @@ def test_cache_confirm_box_has_yes_no_with_no_as_default(qtbot: Any) -> None:
     assert labels == ["Да", "Нет"]
     assert box.defaultButton().text() == "Нет"
     assert "Удалить программный кэш" in box.text()
+
+
+def test_busy_launch_question_names_the_base() -> None:
+    from onecstarter.ui.dialogs.confirm import busy_launch_question
+
+    assert busy_launch_question("Склад") == (
+        "Над базой «Склад» выполняется пакетная операция Конфигуратора. Она может держать "
+        "базу монопольно: запуск может завершиться ошибкой или помешать операции. "
+        "Всё равно запустить?"
+    )

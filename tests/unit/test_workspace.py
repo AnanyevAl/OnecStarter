@@ -16,7 +16,12 @@ from onecstarter.domain.launch import (
 )
 from onecstarter.domain.version import Arch, Installation, parse_version
 from onecstarter.platform_1c.elevation import ElevationDeclinedError
-from onecstarter.security.credentials import CredentialBackendError, CredentialStore, MemoryStore
+from onecstarter.security.credentials import (
+    CredentialBackendError,
+    CredentialStore,
+    MemoryStore,
+    repository_key,
+)
 from onecstarter.services.catalog import read_common_lists
 from onecstarter.services.errors import (
     CredentialStoreError,
@@ -32,8 +37,14 @@ from onecstarter.services.errors import (
 from onecstarter.services.groups import GroupRemoval
 from onecstarter.services.launch import LaunchKind
 from onecstarter.services.model import InfobaseSource, binding_key, group_binding_key
-from onecstarter.services.user_data import set_login
-from onecstarter.services.workspace import Workspace, WorkspacePaths, _records_word
+from onecstarter.services.user_data import set_designer_params, set_login
+from onecstarter.services.workspace import (
+    DESIGNER_QUOTE_REFUSAL,
+    RepositorySettings,
+    Workspace,
+    WorkspacePaths,
+    _records_word,
+)
 
 FIXTURE = Path(__file__).parent.parent / "fixtures" / "anonymized.v8i"
 CONVENTIONS = [
@@ -1514,3 +1525,536 @@ def test_ask_login_and_elevated_do_not_combine(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="не сочетаются"):
         workspace.launch(_key_of(workspace, "Файловая"), elevated=True, ask_login=True)
     assert calls == []
+
+
+def test_designer_params_are_stored_in_user_data_not_in_v8i(tmp_path: Path) -> None:
+    (tmp_path / "ibases.v8i").write_bytes(_FILE_AND_WEB.encode())
+    workspace = _raw_workspace(tmp_path, [])
+    key = _key_of(workspace, "Файловая")
+    before = (tmp_path / "ibases.v8i").read_bytes()
+
+    workspace.set_designer_params(key, "/DisableStartupMessages")
+
+    assert workspace.designer_params_of(key) == "/DisableStartupMessages"
+    assert (tmp_path / "ibases.v8i").read_bytes() == before
+
+
+def test_designer_params_survive_reload(tmp_path: Path) -> None:
+    (tmp_path / "ibases.v8i").write_bytes(_FILE_AND_WEB.encode())
+    workspace = _raw_workspace(tmp_path, [])
+    key = _key_of(workspace, "Файловая")
+    workspace.set_designer_params(key, "/Len")
+
+    reloaded = _raw_workspace(tmp_path, [])
+
+    assert reloaded.designer_params_of(key) == "/Len"
+
+
+@pytest.mark.parametrize("value", ["", "   ", None])
+def test_empty_designer_params_are_cleared(tmp_path: Path, value: str | None) -> None:
+    (tmp_path / "ibases.v8i").write_bytes(_FILE_AND_WEB.encode())
+    workspace = _raw_workspace(tmp_path, [])
+    key = _key_of(workspace, "Файловая")
+    workspace.set_designer_params(key, "/Len")
+    workspace.set_designer_params(key, value)
+    assert workspace.designer_params_of(key) is None
+
+
+def test_designer_params_with_line_break_are_rejected(tmp_path: Path) -> None:
+    (tmp_path / "ibases.v8i").write_bytes(_FILE_AND_WEB.encode())
+    workspace = _raw_workspace(tmp_path, [])
+    key = _key_of(workspace, "Файловая")
+    with pytest.raises(InvalidRequestError, match="перевод строки"):
+        workspace.set_designer_params(key, "/Len\n/C x")
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        "/WSP zzz",
+        '/P"zzz"',
+        "/P zzz",
+        "/UC zzz",
+        "/Proxy -PSrv srv -PPort 3128 -PUser u -PPwd zzz",
+        "/HttpsCert -file c.pfx -pwd zzz",
+        '/Len /ModifyPassword "zzz"',
+        "/AccessToken zzz",
+        "/Len\t/WSP zzz",
+    ],
+)
+def test_designer_params_with_secret_are_not_saved(tmp_path: Path, params: str) -> None:
+    """Мутационная проверка обязательна (финальное ревью, F1; решение заказчика 09.11.2026)."""
+    (tmp_path / "ibases.v8i").write_bytes(_FILE_AND_WEB.encode())
+    workspace = _raw_workspace(tmp_path, [])
+    key = _key_of(workspace, "Файловая")
+    workspace.set_designer_params(key, "/Len")
+    before = (tmp_path / "bases.json").read_bytes()
+
+    with pytest.raises(InvalidRequestError, match="Пароль") as error:
+        workspace.set_designer_params(key, params)
+
+    assert "zzz" not in str(error.value)
+    assert "поле «Пароль»" in str(error.value)
+    assert (tmp_path / "bases.json").read_bytes() == before
+    assert workspace.designer_params_of(key) == "/Len"
+
+
+def test_designer_params_with_unclosed_quote_get_their_own_refusal(tmp_path: Path) -> None:
+    """Приёмка 21.11.2026, Ф2/Р2: о кавычке — свой текст, не о пароле."""  # noqa: RUF002
+    (tmp_path / "ibases.v8i").write_bytes(_FILE_AND_WEB.encode())
+    workspace = _raw_workspace(tmp_path, [])
+    key = _key_of(workspace, "Файловая")
+    workspace.set_designer_params(key, "/Len")
+    before = (tmp_path / "bases.json").read_bytes()
+
+    with pytest.raises(InvalidRequestError) as error:
+        workspace.set_designer_params(key, '/Len /Out "C:\\a b.txt')
+
+    assert str(error.value) == DESIGNER_QUOTE_REFUSAL
+    assert "незакрытая кавычка" in str(error.value)
+    assert (tmp_path / "bases.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("params", ["/Proxy -PSrv srv -PPort 3128 -PUser u", '/C "a b"\t/Len'])
+def test_designer_params_without_secret_are_saved(tmp_path: Path, params: str) -> None:
+    (tmp_path / "ibases.v8i").write_bytes(_FILE_AND_WEB.encode())
+    workspace = _raw_workspace(tmp_path, [])
+    key = _key_of(workspace, "Файловая")
+    workspace.set_designer_params(key, params)
+    assert workspace.designer_params_of(key) == params
+
+
+def test_update_of_section_without_id_moves_designer_params(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    old_key = binding_key(None, 'File="C:\\Bases\\Manual";', "Без идентификатора")
+    workspace.set_designer_params(old_key, "/Len")
+    workspace.update_infobase(old_key, {"Version": "8.3.25"})
+    assert workspace.designer_params_of("id:99999999-9999-9999-9999-999999999999") == "/Len"
+
+
+@pytest.mark.parametrize(
+    ("forced", "expected"),
+    [
+        (None, None),
+        (LaunchTarget.THIN, None),
+        (LaunchTarget.THICK, None),
+        (LaunchTarget.DESIGNER, "/DisableStartupMessages"),
+    ],
+)
+def test_designer_params_go_only_to_designer(
+    tmp_path: Path, forced: LaunchTarget | None, expected: str | None
+) -> None:
+    """Мутационная проверка обязательна: строка Конфигуратора не уходит в Предприятие."""
+    (tmp_path / "ibases.v8i").write_bytes(_FILE_AND_WEB.encode())
+    calls: list[LaunchCommand] = []
+    workspace = _raw_workspace(tmp_path, calls)
+    key = _key_of(workspace, "Файловая")
+    workspace.set_designer_params(key, "/DisableStartupMessages")
+
+    workspace.launch(key, forced)
+
+    if expected is None:
+        assert "/DisableStartupMessages" not in calls[0].arguments
+    else:
+        assert f" {expected} /AppAutoCheckVersion" in calls[0].arguments
+
+
+def test_once_params_follow_designer_params(tmp_path: Path) -> None:
+    (tmp_path / "ibases.v8i").write_bytes(_FILE_AND_WEB.encode())
+    calls: list[LaunchCommand] = []
+    workspace = _raw_workspace(tmp_path, calls)
+    key = _key_of(workspace, "Файловая")
+    workspace.set_designer_params(key, "/Lru")
+
+    workspace.launch(key, LaunchTarget.DESIGNER, once="/Len")
+
+    assert " /Lru /Len /AppAutoCheckVersion" in calls[0].arguments
+
+
+def test_once_params_reach_enterprise(tmp_path: Path) -> None:
+    (tmp_path / "ibases.v8i").write_bytes(_FILE_AND_WEB.encode())
+    calls: list[LaunchCommand] = []
+    workspace = _raw_workspace(tmp_path, calls)
+    key = _key_of(workspace, "Файловая")
+
+    workspace.launch(key, once="/C x")
+
+    assert calls[0].arguments.startswith('ENTERPRISE /IBName"Файловая" /C x ')
+
+
+@pytest.mark.parametrize(("elevated", "ask_login"), [(True, False), (False, True)])
+def test_once_params_do_not_combine_with_elevation_or_login_prompt(
+    tmp_path: Path, elevated: bool, ask_login: bool
+) -> None:
+    (tmp_path / "ibases.v8i").write_bytes(_FILE_AND_WEB.encode())
+    workspace = _raw_workspace(tmp_path, [])
+    key = _key_of(workspace, "Файловая")
+    with pytest.raises(ValueError, match="не сочетаются"):
+        workspace.launch(key, once="/Len", elevated=elevated, ask_login=ask_login)
+
+
+def test_line_break_in_stored_designer_params_is_launch_error(tmp_path: Path) -> None:
+    """Руками правленный bases.json: сеттер обойдён, ошибка — понятная, процесса нет."""
+    (tmp_path / "ibases.v8i").write_bytes(_FILE_AND_WEB.encode())
+    calls: list[LaunchCommand] = []
+    workspace = _raw_workspace(tmp_path, calls)
+    key = _key_of(workspace, "Файловая")
+    workspace._user = set_designer_params(workspace._user, key, "/Len\n/C секрет")
+
+    with pytest.raises(LaunchError, match="перевод строки") as error:
+        workspace.launch(key, LaunchTarget.DESIGNER)
+
+    assert "секрет" not in str(error.value)
+    assert calls == []
+
+
+def test_line_break_in_once_params_is_launch_error(tmp_path: Path) -> None:
+    (tmp_path / "ibases.v8i").write_bytes(_FILE_AND_WEB.encode())
+    calls: list[LaunchCommand] = []
+    workspace = _raw_workspace(tmp_path, calls)
+    key = _key_of(workspace, "Файловая")
+
+    with pytest.raises(LaunchError, match="перевод строки") as error:
+        workspace.launch(key, once="/Len\n/C секрет")
+
+    assert "секрет" not in str(error.value)
+    assert calls == []
+
+
+@pytest.mark.parametrize("char", ["\x00", "\x0b", "\x0c", "\x1b", "\x1f"])
+def test_control_chars_in_once_and_designer_params_are_launch_errors(
+    tmp_path: Path, char: str
+) -> None:
+    """Мутационная проверка обязательна (финальное ревью, F7): Popen не получает NUL и т. п."""
+    (tmp_path / "ibases.v8i").write_bytes(_FILE_AND_WEB.encode())
+    calls: list[LaunchCommand] = []
+    workspace = _raw_workspace(tmp_path, calls)
+    key = _key_of(workspace, "Файловая")
+
+    with pytest.raises(LaunchError, match="управляющий символ") as once_error:
+        workspace.launch(key, once=f"/Len{char}/C секрет")
+    workspace._user = set_designer_params(workspace._user, key, f"/Len{char}/C секрет")
+    with pytest.raises(LaunchError, match="управляющий символ") as designer_error:
+        workspace.launch(key, LaunchTarget.DESIGNER)
+
+    assert "секрет" not in str(once_error.value) + str(designer_error.value)
+    assert calls == []
+
+
+def test_control_char_in_designer_params_is_not_saved(tmp_path: Path) -> None:
+    (tmp_path / "ibases.v8i").write_bytes(_FILE_AND_WEB.encode())
+    workspace = _raw_workspace(tmp_path, [])
+    key = _key_of(workspace, "Файловая")
+    with pytest.raises(InvalidRequestError, match="управляющие символы"):
+        workspace.set_designer_params(key, "/Len\x00/C x")
+    assert workspace.designer_params_of(key) is None
+
+
+def test_tab_in_once_params_is_allowed(tmp_path: Path) -> None:
+    (tmp_path / "ibases.v8i").write_bytes(_FILE_AND_WEB.encode())
+    calls: list[LaunchCommand] = []
+    workspace = _raw_workspace(tmp_path, calls)
+    workspace.launch(_key_of(workspace, "Файловая"), once="/C x\t/Len")
+    assert len(calls) == 1
+
+
+def test_padded_designer_params_and_once_are_joined_by_single_space(tmp_path: Path) -> None:
+    (tmp_path / "ibases.v8i").write_bytes(_FILE_AND_WEB.encode())
+    calls: list[LaunchCommand] = []
+    workspace = _raw_workspace(tmp_path, calls)
+    key = _key_of(workspace, "Файловая")
+    workspace._user = set_designer_params(workspace._user, key, "  /Lru  ")
+
+    workspace.launch(key, LaunchTarget.DESIGNER, once="  /Len  ")
+
+    assert " /Lru /Len /AppAutoCheckVersion" in calls[0].arguments
+
+
+def test_additional_parameters_write_touches_only_its_line(tmp_path: Path) -> None:
+    """Мутационная проверка обязательна (спека §10.1): порядок, кодировка, BOM, переводы строк."""
+    raw = (
+        "\ufeff[Файловая]\r\nConnect=File=\"C:\\B\";\r\nID=11111111-1111-1111-1111-111111111111\r\n"
+        "XTest=1\r\n[Вторая]\r\nConnect=File=\"C:\\C\";\r\n"
+    )
+    (tmp_path / "ibases.v8i").write_bytes(raw.encode("utf-8"))
+    workspace = _raw_workspace(tmp_path, [])
+    key = _key_of(workspace, "Файловая")
+
+    workspace.update_infobase(key, {"AdditionalParameters": '/Len /C "x ""y"""'})
+
+    expected = raw.replace(
+        "XTest=1\r\n", 'XTest=1\r\nAdditionalParameters=/Len /C "x ""y"""\r\n'
+    )
+    assert (tmp_path / "ibases.v8i").read_bytes() == expected.encode("utf-8")
+
+    workspace.update_infobase(key, {"AdditionalParameters": None})
+    assert (tmp_path / "ibases.v8i").read_bytes() == raw.encode("utf-8")
+
+
+# -- v4, блок 2, задача 3: хранилище конфигурации у базы ---------------------  # noqa: RUF003
+
+
+def test_repository_settings_are_stored_and_password_goes_to_the_store(tmp_path: Path) -> None:
+    store = MemoryStore()
+    workspace = _workspace(tmp_path, store=store)
+    key = _first_base_key(workspace)
+    workspace.set_repository(key, " tcp://repo/main ", " builder ", "s3cret", True)
+    assert workspace.repository_of(key) == RepositorySettings("tcp://repo/main", "builder", True)
+    assert store.data[repository_key(key)] == "s3cret"
+    assert "s3cret" not in (tmp_path / "bases.json").read_text(encoding="utf-8")
+
+
+def test_repository_password_is_deleted_without_user_or_remember(tmp_path: Path) -> None:
+    store = MemoryStore()
+    workspace = _workspace(tmp_path, store=store)
+    key = _first_base_key(workspace)
+    workspace.set_repository(key, "tcp://repo", "builder", "s3cret", True)
+    workspace.set_repository(key, "tcp://repo", "builder", None, False)
+    assert repository_key(key) not in store.data
+    workspace.set_repository(key, "tcp://repo", "builder", "s3cret", True)
+    workspace.set_repository(key, "tcp://repo", "", None, True)
+    assert repository_key(key) not in store.data
+
+
+def test_repository_password_kept_when_not_retyped(tmp_path: Path) -> None:
+    store = MemoryStore()
+    workspace = _workspace(tmp_path, store=store)
+    key = _first_base_key(workspace)
+    workspace.set_repository(key, "tcp://repo", "builder", "s3cret", True)
+    workspace.set_repository(key, "tcp://other", "builder", None, True)
+    assert store.data[repository_key(key)] == "s3cret"
+
+
+def test_repository_of_reports_unavailable_store(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path, store=_ReadRefused())
+    key = _first_base_key(workspace)
+    assert workspace.repository_of(key).has_password is None
+
+
+def test_repository_password_moves_with_the_record_key(tmp_path: Path) -> None:
+    store = MemoryStore()
+    workspace = _workspace(tmp_path, store=store)
+    # Приём теста test_rekey_moves_the_secret: запись без ID, новый ключ известен заранее.
+    old_key = _ID_LESS_KEY
+    workspace.set_repository(old_key, "tcp://repo", "builder", "s3cret", True)
+    workspace.update_infobase(old_key, {"Version": "8.3.25"})
+    assert store.data.get(repository_key(_REKEYED_KEY)) == "s3cret"
+    assert repository_key(old_key) not in store.data
+
+
+def test_removing_a_base_deletes_its_repository_password(tmp_path: Path) -> None:
+    store = MemoryStore()
+    workspace = _workspace(tmp_path, store=store)
+    key = _first_base_key(workspace)
+    workspace.set_repository(key, "tcp://repo", "builder", "s3cret", True)
+    workspace.remove_infobase(key)
+    assert repository_key(key) not in store.data
+
+
+def test_recursive_group_removal_deletes_the_repository_passwords(tmp_path: Path) -> None:
+    store = MemoryStore()
+    workspace = _workspace(tmp_path, store=store)
+    inside = "id:44444444-4444-4444-4444-444444444444"
+    outside = "id:66666666-6666-6666-6666-666666666666"
+    for key in (inside, outside):
+        workspace.set_repository(key, "tcp://repo", "builder", "s3cret", True)
+    assert workspace.remove_group(
+        "id:11111111-1111-1111-1111-111111111111", GroupRemoval.RECURSIVE
+    )
+    assert repository_key(inside) not in store.data
+    assert store.data[repository_key(outside)] == "s3cret"
+
+
+class _SelectiveStore(MemoryStore):
+    """Отказывает `delete`/`write` только для названных ключей."""
+
+    def __init__(
+        self, refuse_delete: Sequence[str] = (), refuse_write: Sequence[str] = ()
+    ) -> None:
+        super().__init__()
+        self.refuse_delete, self.refuse_write = set(refuse_delete), set(refuse_write)
+
+    def delete(self, key: str) -> None:
+        if key in self.refuse_delete:
+            raise CredentialBackendError("отказ удаления")
+        super().delete(key)
+
+    def write(self, key: str, secret: str) -> None:
+        if key in self.refuse_write:
+            raise CredentialBackendError("отказ записи")
+        super().write(key, secret)
+
+
+def test_removal_deletes_the_repository_password_even_if_the_base_password_fails(
+    tmp_path: Path,
+) -> None:
+    key = "id:44444444-4444-4444-4444-444444444444"
+    store = _SelectiveStore(refuse_delete=[key])
+    workspace = _workspace(tmp_path, store=store)
+    workspace.set_credentials(key, "tester", "p@ss", remember=True)
+    workspace.set_repository(key, "tcp://repo", "builder", "s3cret", True)
+    with pytest.raises(CredentialStoreError) as failure:
+        workspace.remove_infobase(key)
+    assert repository_key(key) not in store.data
+    assert store.data[key] == "p@ss"
+    text = str(failure.value)
+    assert key in text and "p@ss" not in text and "s3cret" not in text
+
+
+def test_removal_names_both_remaining_secrets(tmp_path: Path) -> None:
+    key = "id:44444444-4444-4444-4444-444444444444"
+    store = _SelectiveStore(refuse_delete=[key, repository_key(key)])
+    workspace = _workspace(tmp_path, store=store)
+    workspace.set_credentials(key, "tester", "p@ss", remember=True)
+    workspace.set_repository(key, "tcp://repo", "builder", "s3cret", True)
+    with pytest.raises(CredentialStoreError) as failure:
+        workspace.remove_infobase(key)
+    text = str(failure.value)
+    assert f"/{key}`" in text and f"/{repository_key(key)}`" in text
+    assert "пароль хранилища" in text
+    assert "p@ss" not in text and "s3cret" not in text
+
+
+def test_group_removal_deletes_the_repository_password_even_if_the_base_password_fails(
+    tmp_path: Path,
+) -> None:
+    inside = "id:44444444-4444-4444-4444-444444444444"
+    store = _SelectiveStore(refuse_delete=[inside])
+    workspace = _workspace(tmp_path, store=store)
+    workspace.set_credentials(inside, "tester", "p@ss", remember=True)
+    workspace.set_repository(inside, "tcp://repo", "builder", "s3cret", True)
+    with pytest.raises(CredentialStoreError) as failure:
+        workspace.remove_group("id:11111111-1111-1111-1111-111111111111", GroupRemoval.RECURSIVE)
+    assert repository_key(inside) not in store.data
+    assert inside in str(failure.value) and "p@ss" not in str(failure.value)
+
+
+def test_repository_password_move_failure_is_reported(tmp_path: Path) -> None:
+    store = _SelectiveStore(refuse_write=[repository_key(_REKEYED_KEY)])
+    workspace = _workspace(tmp_path, store=store)
+    workspace.set_repository(_ID_LESS_KEY, "tcp://repo", "builder", "s3cret", True)
+    with pytest.raises(CredentialStoreError, match="пароль хранилища не перенесён"):
+        workspace.update_infobase(_ID_LESS_KEY, {"Version": "8.3.25"})
+    assert store.data[repository_key(_ID_LESS_KEY)] == "s3cret"
+
+
+def test_repository_for_a_group_is_refused(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    group_key = next(item.key for item in workspace.items() if item.is_group)
+    with pytest.raises(InvalidRequestError):
+        workspace.set_repository(group_key, "tcp://repo", "builder", None, False)
+
+
+# -- T-41.5: готовность базы к пакетной операции -----------------------------
+
+
+def _first_file_base_key(workspace: Workspace) -> str:
+    return next(i.key for i in workspace.items() if i.kind is ConnectKind.FILE)
+
+
+def test_batch_target_of_a_file_base(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path, store=MemoryStore())
+    key = _first_file_base_key(workspace)
+    workspace.set_credentials(key, "Иванов", "pw", True)
+    workspace.set_repository(key, "tcp://repo", "builder", "rpw", True)
+    target = workspace.batch_target(key)
+    assert target.problems == ()
+    assert target.executable is not None and target.executable.name.lower() == "1cv8.exe"
+    assert target.version is not None
+    assert (target.login, target.password) == ("Иванов", "pw")
+    assert (target.repository_address, target.repository_user, target.repository_password) == (
+        "tcp://repo",
+        "builder",
+        "rpw",
+    )
+    assert target.file_path
+    assert "pw" not in repr(target)
+    assert "rpw" not in repr(target)
+
+
+def test_batch_target_problems(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    assert workspace.batch_target("нет такого").problems == ("база не найдена в списке",)
+    group = next(item.key for item in workspace.items() if item.is_group)
+    assert workspace.batch_target(group).problems == ("это группа, а не база",)  # noqa: RUF001
+    web = next(item.key for item in workspace.items() if item.kind is ConnectKind.WEB)
+    assert workspace.batch_target(web).problems == (
+        "веб-база: пакетный режим Конфигуратора с ней не работает",  # noqa: RUF001
+    )
+
+
+def test_batch_target_before_discovery_and_without_version(tmp_path: Path) -> None:
+    pending = _raw_workspace(tmp_path, installations=None)
+    key = _first_file_base_key(pending)
+    assert pending.batch_target(key).problems == ("обнаружение версий платформы ещё не завершено",)
+    empty = _raw_workspace(tmp_path, installations=[])
+    assert empty.batch_target(key).problems[0].startswith("версия платформы")
+
+
+def test_batch_target_reports_unavailable_credential_store(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path, store=MemoryStore())
+    key = _first_file_base_key(workspace)
+    workspace.set_credentials(key, "Иванов", "pw", True)
+    broken = _workspace(tmp_path, store=_ReadRefused())
+    target = broken.batch_target(key)
+    # Отказ диспетчера — не проблема: пароль можно ввести при запуске (F5).
+    assert target.problems == () and target.store_unavailable
+    assert (target.login, target.password) == ("Иванов", None)
+    assert not _workspace(tmp_path, store=MemoryStore()).batch_target(key).store_unavailable
+
+
+def test_batch_target_group_is_the_folder_path(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    nested = next(
+        item
+        for item in workspace.items()
+        if not item.is_group and item.kind is not ConnectKind.WEB and item.folder not in ("", "/")
+    )
+    assert workspace.batch_target(nested.key).group == nested.folder.strip("/")
+
+
+_SERVER_KEY = "id:66666666-6666-6666-6666-666666666666"  # «Учёт серверный», DefaultVersion
+_EXACT_VERSION_PROBLEM = (
+    "серверная база: задайте в свойствах точную версию платформы (например, 8.3.27.2214)"
+)
+
+
+def test_batch_target_of_a_server_base_without_version_is_not_ready(tmp_path: Path) -> None:
+    """DefaultVersion=8.3.25.1633 установлена, но подбор по умолчаниям для серверной базы
+    не применяется: клиент не той версии с /AppAutoCheckVersion- зависает ([Ф] T-05.16)."""  # noqa: RUF002
+    target = _workspace(tmp_path).batch_target(_SERVER_KEY)
+    assert target.problems == (_EXACT_VERSION_PROBLEM,)
+    assert target.executable is None and target.version is None
+
+
+def test_batch_target_of_a_server_base_with_a_partial_version(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    workspace.update_infobase(_SERVER_KEY, {"Version": "8.3.25"})
+    target = workspace.batch_target(_SERVER_KEY)
+    assert target.problems == (_EXACT_VERSION_PROBLEM,)
+    assert target.executable is None
+
+
+def test_batch_target_of_a_server_base_with_an_installed_exact_version(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    workspace.update_infobase(_SERVER_KEY, {"Version": "8.3.25.1633"})
+    target = workspace.batch_target(_SERVER_KEY)
+    assert target.problems == ()
+    assert target.version == parse_version("8.3.25.1633")
+    assert target.executable == Path(r"C:\Program Files\1cv8\8.3.25.1633\bin\1cv8.exe")
+    assert target.file_path is None
+
+
+def test_batch_target_of_a_server_base_with_a_missing_exact_version(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    workspace.update_infobase(_SERVER_KEY, {"Version": "8.3.27.2214"})
+    target = workspace.batch_target(_SERVER_KEY)
+    assert target.problems == ("версия платформы 8.3.27.2214 не установлена",)
+    assert target.executable is None and target.version is None
+
+
+def test_batch_target_reports_a_duplicate_name(tmp_path: Path) -> None:
+    workspace = _workspace(tmp_path)
+    workspace.add_infobase("Демо Бухгалтерия", 'File="C:\\Bases\\Dup";')
+    target = workspace.batch_target("id:44444444-4444-4444-4444-444444444444")
+    assert "имя базы в списке не единственное" in target.problems

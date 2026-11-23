@@ -11,6 +11,7 @@ from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QMessageBox, QVBoxLayout, QWidget
 
+from onecstarter.platform_1c.dll_search import clean_dll_search
 from onecstarter.services.connection import PanelCard, panel_card
 from onecstarter.ui.bases.icons import placement_icon
 from onecstarter.ui.path_link import PathLink, copy_to_clipboard
@@ -19,7 +20,9 @@ from onecstarter.ui.theme import DARK, Palette
 
 def open_in_explorer(path: str) -> bool:
     """Открыть каталог проводником. `False` — каталога нет или отказ системы."""
-    return QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+    # Н1: проводник, запущенный впервые, не наследует путь DLL `_internal`.  # noqa: RUF003
+    with clean_dll_search():
+        return QDesktopServices.openUrl(QUrl.fromLocalFile(path))
 
 
 _EMPTY_CARD = panel_card(None, None, "")

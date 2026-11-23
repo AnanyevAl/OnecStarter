@@ -133,6 +133,42 @@ class TestBuildArguments:
         )
         assert arguments == 'DESIGNER /IBName"empty" /AppAutoCheckVersion-'
 
+    def test_extra_goes_after_credentials_and_wa_before_version_check(self) -> None:
+        arguments = build_arguments(
+            ClientKind.THIN,
+            ib_name="b",
+            auto_check_version=False,
+            auto_check_mode=True,
+            credentials=Credentials("u", "p"),
+            deny_os_auth=True,
+            extra='  /Len /C "x y"  ',
+        )
+        assert arguments == (
+            'ENTERPRISE /IBName"b" /N"u" /P"p" /WA- /Len /C "x y" '
+            "/AppAutoCheckVersion- /AppAutoCheckMode"
+        )
+
+    @pytest.mark.parametrize("extra", [None, "", "   "])
+    def test_empty_extra_changes_nothing(self, extra: str | None) -> None:
+        arguments = build_arguments(
+            ClientKind.DESIGNER,
+            ib_name="b",
+            auto_check_version=False,
+            auto_check_mode=False,
+            extra=extra,
+        )
+        assert arguments == 'DESIGNER /IBName"b" /AppAutoCheckVersion-'
+
+    def test_extra_with_line_break_is_rejected(self) -> None:
+        with pytest.raises(ValueError, match="перевод строки"):
+            build_arguments(
+                ClientKind.THIN,
+                ib_name="b",
+                auto_check_version=False,
+                auto_check_mode=False,
+                extra="/Len\n/C x",
+            )
+
     def test_quotes_in_name_are_doubled(self) -> None:
         arguments = build_arguments(
             ClientKind.THIN,

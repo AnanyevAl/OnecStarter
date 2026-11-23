@@ -4,14 +4,29 @@ import re
 from typing import Any
 
 import pytest
-from PySide6.QtCore import QMimeData, QUrl
-from PySide6.QtWidgets import QDialog, QLineEdit
+from PySide6.QtCore import QEvent, QMimeData, QObject, QRect, Qt, QUrl
+from PySide6.QtGui import QShortcut
+from PySide6.QtWidgets import (
+    QDialog,
+    QFormLayout,
+    QLineEdit,
+    QPushButton,
+    QScrollArea,
+    QTableWidget,
+    QWidget,
+)
 
+from onecstarter.domain.cli_catalog import Mode
 from onecstarter.domain.connect import ConnectKind, classify_connect
+from onecstarter.services.cli_catalog import load_cli_catalog
 from onecstarter.services.model import InfobaseItem, InfobaseSource, NewInfobase
+from onecstarter.services.workspace import RepositorySettings
+from onecstarter.ui.components import FORM_LABEL_WIDTH, DialogFooter
 from onecstarter.ui.dialogs.group_picker import INDENT
 from onecstarter.ui.dialogs.infobase import (
     CREDENTIALS_UNAVAILABLE_NOTE,
+    DESIGNER_QUOTE_NOTE,
+    DESIGNER_SECRET_NOTE,
     HIDDEN_VALUE,
     OS_AUTH_TOOLTIP,
     PASSWORD_NOT_KEPT_NOTE,
@@ -23,6 +38,8 @@ from onecstarter.ui.dialogs.infobase import (
     dropped_directory,
     other_keys,
 )
+from onecstarter.ui.settings_group import chevron_pixmap
+from onecstarter.ui.theme import LIGHT
 from tests.ui.conftest import CONVENTIONS, INSTALLED  # noqa: F401
 
 
@@ -264,11 +281,11 @@ def test_untouched_dialog_with_uninstalled_version_reports_no_changes(qtbot: Any
 
 
 def test_untouched_dialog_with_app_auto_reports_no_changes(qtbot: Any) -> None:
-    """`App=Auto` — то же самое, что отсутствие ключа App (скил v8i-format).
+    """Нетронутый диалог с `App=Auto` ничего не пишет.
 
-    Комбобокс сопоставляет оба значения пункту «Авто» с данными `None`;
-    если бы сравнение в `changes()` шло с сырым `item.app` («Auto»), нетронутый
-    диалог решил бы, что App поменяли на `None`, и молча снял бы ключ.
+    Комбобокс сопоставляет `App=Auto` и отсутствие ключа пункту «Авто» с данными
+    `None`; если бы сравнение в `changes()` шло с сырым `item.app` («Auto»),
+    нетронутый диалог решил бы, что App поменяли на `None`, и переписал бы ключ.
     """  # noqa: RUF002
     item = _item('File="D:\\b";', (), app="Auto")
     dialog = InfobaseDialog(item, groups=["/"], installations=INSTALLED, cfg_rules=[])
@@ -296,6 +313,15 @@ def test_app_choice_is_written(qtbot: Any) -> None:
     qtbot.addWidget(dialog)
     dialog.set_app("ThinClient")
     assert dialog.changes() == ({"App": "ThinClient"}, None)
+
+
+def test_switching_back_to_auto_writes_app_auto_explicitly(qtbot: Any) -> None:
+    """Приёмка 21.11.2026, Ф3: «Авто» — `App=Auto`, а не удаление ключа."""  # noqa: RUF002
+    item = _item('File="D:\\b";', (), app="ThinClient")
+    dialog = InfobaseDialog(item, groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    dialog.set_app(None)
+    assert dialog.changes() == ({"App": "Auto"}, None)
 
 
 @pytest.mark.parametrize(
@@ -1477,3 +1503,466 @@ def test_server_field_has_no_inline_completion(qtbot: Any) -> None:
     )
     qtbot.addWidget(dialog)
     assert dialog._server_box.completer() is None
+
+
+def _params_dialog(qtbot: Any, keys: tuple[tuple[str, str], ...], **kwargs: Any) -> InfobaseDialog:
+    item = _item('File="D:\\b";', keys)
+    dialog = InfobaseDialog(
+        item, groups=["/"], installations=INSTALLED, cfg_rules=[],
+        catalog=load_cli_catalog(), **kwargs,
+    )
+    qtbot.addWidget(dialog)
+    return dialog
+
+
+@pytest.mark.parametrize(
+    ("keys", "typed", "expected"),
+    [
+        ((), "", {}),
+        ((), "/Len", {"AdditionalParameters": "/Len"}),
+        ((("AdditionalParameters", "/Lru"),), "/Lru", {}),
+        ((("AdditionalParameters", "/Lru"),), "  /Lru /C x", {"AdditionalParameters": "  /Lru /C x"}),  # noqa: E501
+        ((("AdditionalParameters", "/Lru"),), "", {"AdditionalParameters": None}),
+        ((("AdditionalParameters", "/Lru"),), "   ", {"AdditionalParameters": None}),
+    ],
+)
+def test_additional_parameters_written_only_when_changed(
+    qtbot: Any, keys: tuple[tuple[str, str], ...], typed: str, expected: dict[str, str | None]
+) -> None:
+    """Мутационная проверка обязательна: нетронутая строка не пишется, текст — как набран."""
+    dialog = _params_dialog(qtbot, keys)
+    block = dialog.launch_params_block()
+    assert block is not None
+    block.set_enterprise_text(typed)
+    assert dialog.changes() == (expected, None)
+
+
+def test_additional_parameters_not_duplicated_in_other_keys(qtbot: Any) -> None:
+    dialog = _params_dialog(qtbot, (("AdditionalParameters", "/Lru"), ("XTest", "1")))
+    assert dialog.other_rows() == [("XTest", "1")]
+
+
+def test_designer_params_are_reported_separately(qtbot: Any) -> None:
+    dialog = _params_dialog(qtbot, (), designer_params="/DisableStartupMessages")
+    block = dialog.launch_params_block()
+    assert block is not None
+    assert not dialog.designer_params_changed()
+    block.set_designer_text("")
+    assert dialog.designer_params_changed() and dialog.designer_params() is None
+    assert dialog.changes() == ({}, None)
+
+
+def test_expanded_callback_and_builder_are_wired(qtbot: Any) -> None:
+    states: list[bool] = []
+    dialog = _params_dialog(
+        qtbot, (), params_expanded=False, on_params_expanded=states.append,
+        open_builder=lambda mode, text: "/Len" if mode is Mode.ENTERPRISE else None,
+    )
+    block = dialog.launch_params_block()
+    assert block is not None
+    block.set_expanded(True)
+    block.run_builder(Mode.ENTERPRISE)
+    assert states == [True]
+    assert dialog.changes() == ({"AdditionalParameters": "/Len"}, None)
+
+
+def test_no_catalog_no_block(qtbot: Any) -> None:
+    item = _item('File="D:\\b";', ())
+    dialog = InfobaseDialog(item, groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    assert dialog.launch_params_block() is None
+
+
+def test_designer_params_never_go_into_v8i_changes(qtbot: Any) -> None:
+    """Мутационная проверка: строка Конфигуратора живёт в bases.json, не в .v8i (§4.3)."""
+    dialog = _params_dialog(qtbot, (), designer_params="/DisableStartupMessages")
+    block = dialog.launch_params_block()
+    assert block is not None
+    block.set_designer_text("/TechnicalSpecialistMode")
+    assert dialog.designer_params_changed()
+    assert dialog.designer_params() == "/TechnicalSpecialistMode"
+    assert dialog.changes() == ({}, None)
+
+
+@pytest.mark.parametrize(
+    ("typed", "note"),
+    [
+        ('/Len /Out "C:\\a b.txt', DESIGNER_QUOTE_NOTE),
+        ('/P"zzz"', DESIGNER_SECRET_NOTE),
+    ],
+)
+def test_designer_line_that_cannot_be_saved_locks_ok_before_the_click(
+    qtbot: Any, typed: str, note: str
+) -> None:
+    """Приёмка 21.11.2026, Р2: «ОК» неактивна, строка остаётся в поле, пояснение рядом."""  # noqa: RUF002
+    dialog = _params_dialog(qtbot, (), designer_params="/Len")
+    block = dialog.launch_params_block()
+    assert block is not None and dialog.accepts()
+
+    block.set_designer_text(typed)
+
+    assert not dialog.accepts()
+    assert dialog.required_hint() == note
+    assert "zzz" not in dialog.required_hint()
+    assert block.designer_text() == typed
+
+    block.set_designer_text("/Len /DisableStartupMessages")
+    assert dialog.accepts() and dialog.required_hint() == ""
+
+
+def test_untouched_designer_line_with_a_secret_does_not_lock_ok(qtbot: Any) -> None:
+    """Финальное ревью плана А, T2: нетронутая строка «ОК» не запирает (спека §4.3)."""  # noqa: RUF002
+    dialog = _params_dialog(qtbot, (), designer_params='/P"zzz"')
+    assert dialog.launch_params_block() is not None
+    assert dialog.accepts()
+    assert dialog.required_hint() == ""
+    assert not dialog.designer_params_changed()
+
+
+
+def _press_ctrl_enter(dialog: QDialog) -> None:
+    """Сочетание Ctrl+Enter: на offscreen `keyClick` не доходит до `QShortcut`,
+    поэтому проверяем подключение обоих ключей и испускаем `activated`."""
+    shortcuts = {s.key().toString(): s for s in dialog.findChildren(QShortcut)}
+    assert {"Ctrl+Return", "Ctrl+Enter"} <= shortcuts.keys()
+    shortcuts["Ctrl+Return"].activated.emit()
+
+
+def test_ctrl_enter_accepts_the_properties_dialog(qtbot: Any) -> None:
+    """П1."""
+    item = _item('File="D:\\b";', ())
+    dialog = InfobaseDialog(item, groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    dialog.show()
+    dialog.activateWindow()
+    qtbot.waitExposed(dialog)
+    _press_ctrl_enter(dialog)
+    assert dialog.result() == QDialog.DialogCode.Accepted
+
+
+def test_blocks_take_the_dialog_palette(qtbot: Any) -> None:
+    """Аудит плана Б, 0.4: без палитры шеврон блока в светлой теме — `DARK.text` по `#fafafa`."""
+    dialog = _params_dialog(
+        qtbot, (), palette=LIGHT, repository=RepositorySettings(None, None, False)
+    )
+    for block in (dialog.launch_params_block(), dialog.repository_block()):
+        assert block is not None
+        assert block.chevron().toImage() == chevron_pixmap(False, LIGHT.text).toImage()
+
+
+def test_expanding_a_block_with_findings_does_not_clip_the_notes(qtbot: Any) -> None:
+    """В4 (приёмка 21.11.2026): подпись под «Запомнить пароль» обрезалась.
+
+    Решение заказчика 21.11.2026: содержимое в `QScrollArea` — метки получают свою
+    `heightForWidth`, нижняя полоса остаётся. Без прокрутки (офскрин 800 на 800, потолок
+    `adjustSize` 533 px при sizeHint ~1100) тест красный.
+    """  # noqa: RUF002
+    dialog = _params_dialog(qtbot, (("AdditionalParameters", "/L en /Foo /Bar /Baz"),))
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    block = dialog.launch_params_block()
+    assert block is not None
+    block.set_expanded(True)
+    labels = [dialog.credentials_note(), *block.findings_list(Mode.ENTERPRISE).labels()]
+    assert len(labels) >= 3
+
+    def fits() -> bool:
+        return all(label.height() >= label.heightForWidth(label.width()) for label in labels)
+
+    qtbot.waitUntil(fits, timeout=2000)
+
+
+def test_form_labels_are_right_aligned_in_one_column(qtbot: Any) -> None:
+    """Мокап `.form label` (колонка 170px, справа): три формы окна — одна колонка подписей."""
+    dialog = _params_dialog(qtbot, (), repository=RepositorySettings(None, None, False))
+    params, repository = dialog.launch_params_block(), dialog.repository_block()
+    assert params is not None and repository is not None
+    forms = [
+        dialog._form,
+        params.findChildren(QFormLayout)[0],
+        repository.findChildren(QFormLayout)[0],
+    ]
+    for form in forms:
+        assert form.labelAlignment() & Qt.AlignmentFlag.AlignRight
+        for row in range(form.rowCount()):
+            item = form.itemAt(row, QFormLayout.ItemRole.LabelRole)
+            if item is not None:
+                label = item.widget()
+                assert label is not None
+                assert label.minimumWidth() == FORM_LABEL_WIDTH
+
+
+def test_ok_is_the_primary_button_in_the_footer(qtbot: Any) -> None:
+    """Мокап `.btn.pri` и `.foot` (стр. 123): жёлтая «ОК» в нижней полосе, подсказка — слева."""  # noqa: RUF002
+    item = _item('File="D:\b";', ())
+    dialog = InfobaseDialog(item, groups=["/"], installations=INSTALLED, cfg_rules=[])
+    qtbot.addWidget(dialog)
+    footer = dialog.findChild(DialogFooter)
+    assert footer is not None
+    buttons = {button.text(): button for button in footer.findChildren(QPushButton)}
+    assert buttons["ОК"].property("role") == "primary"  # noqa: RUF001
+    assert buttons["Отмена"].property("role") is None
+    # Пояснение — подсказка самой полосы (`.q` мокапа), а не вторая метка рядом.  # noqa: RUF003
+    dialog.set_name("")
+    assert dialog.required_hint() and footer.hint_text() == dialog.required_hint()
+    assert not footer.hint_label().isHidden()
+    assert footer.hint_label().objectName() == "Hint"
+
+
+def _spy_fit(dialog: InfobaseDialog, monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    calls: list[int] = []
+    original = dialog._fit_to_content
+
+    def spy() -> None:
+        calls.append(1)
+        original()
+
+    monkeypatch.setattr(dialog, "_fit_to_content", spy)
+    return calls
+
+
+class _ResizeCounter(QObject):
+    def __init__(self) -> None:
+        super().__init__()
+        self.count = 0
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
+        if event.type() == QEvent.Type.Resize:
+            self.count += 1
+        return False
+
+
+def test_block_toggle_and_content_change_fit_the_window_but_never_shrink_it(
+    qtbot: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """В4, механизм: раскрытие блока и смена содержимого — пересчёт, размер не отнимается.
+
+    Мутационная проверка (задача 12, шаг 6): без подключений пересчёт не зовётся, без
+    `max` окно, выбранное пользователем крупнее, сжимается. Финальное ревью плана Б, F1:
+    шпион — на `_fit_to_content` (`adjustSize` он больше не зовёт).
+    """  # noqa: RUF002
+    dialog = _params_dialog(qtbot, (("AdditionalParameters", "/L en /Foo"),))
+    dialog.resize(1100, 790)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    calls = _spy_fit(dialog, monkeypatch)
+    block = dialog.launch_params_block()
+    assert block is not None
+    size = dialog.size()
+    block.set_expanded(True)
+    assert len(calls) >= 1
+    calls.clear()
+    block.content_changed.emit()
+    assert len(calls) == 1
+    assert dialog.width() >= size.width() and dialog.height() >= size.height()
+
+
+def test_refit_never_shrinks_an_enlarged_window_even_for_a_moment(qtbot: Any) -> None:
+    """Финальное ревью плана Б, F1: пересчёт не сжимает окно до `sizeHint` и не растит обратно.
+
+    Замер ревьюера: при окне 1000 на 700 прежний `adjustSize` + `resize(max(...))` давал два
+    события Resize на каждый пересчёт — на живом Windows окно дрожало.
+    """
+    dialog = _params_dialog(qtbot, (("AdditionalParameters", "/L en /Foo"),))
+    dialog.resize(1000, 700)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    block = dialog.launch_params_block()
+    assert block is not None
+    size = dialog.size()
+    counter = _ResizeCounter()
+    dialog.installEventFilter(counter)
+    block.content_changed.emit()
+    dialog.removeEventFilter(counter)
+    assert counter.count == 0
+    assert dialog.size() == size
+
+
+def test_typing_in_the_params_line_does_not_touch_the_window_size(qtbot: Any) -> None:
+    """Финальное ревью плана Б, F1: ввод, не меняющий замечаний, размер не пересчитывает."""
+    dialog = _params_dialog(qtbot, (("AdditionalParameters", "/Lru /Foo"),))
+    dialog.resize(1000, 700)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    block = dialog.launch_params_block()
+    assert block is not None
+    block.set_expanded(True)
+    edit = block.findChildren(QLineEdit, "MonoEdit")[0]
+    before = block.findings_text(Mode.ENTERPRISE)
+    size = dialog.size()
+    counter = _ResizeCounter()
+    dialog.installEventFilter(counter)
+    edit.setCursorPosition(len("/Lru"))
+    qtbot.keyClicks(edit, "sxyz")
+    dialog.removeEventFilter(counter)
+    assert block.findings_text(Mode.ENTERPRISE) == before
+    assert counter.count == 0
+    assert dialog.size() == size
+
+
+def test_findings_change_refits_the_window(
+    qtbot: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Финальное ревью плана Б, F1: смена набора замечаний — пересчёт есть."""
+    dialog = _params_dialog(qtbot, (("AdditionalParameters", "/Lru"),))
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    block = dialog.launch_params_block()
+    assert block is not None
+    calls = _spy_fit(dialog, monkeypatch)
+    block.set_enterprise_text("/Lru /Foo")
+    assert calls
+
+
+def test_typing_does_not_refit_the_window_unless_the_hint_changes(
+    qtbot: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Б (решение заказчика 21.11.2026): пересчёт размера — при смене подсказки «ОК».
+
+    Мутация (задача 12, фикс-раунд): безусловный вызов в `_refresh_ok_state` — красный.
+    """  # noqa: RUF002
+    dialog = _params_dialog(qtbot, ())
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    calls = _spy_fit(dialog, monkeypatch)
+    dialog.set_name("A")
+    dialog.set_name("AB")
+    assert dialog.required_hint() == ""
+    assert calls == []
+    dialog.set_name("")
+    assert dialog.required_hint()
+    assert len(calls) == 1
+
+
+def _ceiling(dialog: InfobaseDialog) -> int:
+    return dialog.screen().availableGeometry().height() * 2 // 3
+
+
+def test_dialog_opens_no_smaller_than_its_content_below_the_ceiling(qtbot: Any) -> None:
+    """Фикс-раунд 2: sizeHint `QScrollArea` не должен урезать окно (432 на 324 вместо содержимого).
+
+    Мутация — голый `QScrollArea` вместо `_ContentScroll`: красный.
+    """
+    dialog = _params_dialog(qtbot, ())
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    content = dialog.findChild(QWidget, "PropertiesContent")
+    assert content is not None
+    hint = content.sizeHint()
+    # Окно при показе ограничено 2/3 экрана и по ширине (офскрин 800 на 800).
+    screen_width = dialog.screen().availableGeometry().width() * 2 // 3
+    assert dialog.width() >= min(hint.width(), screen_width)
+    assert dialog.height() >= min(hint.height(), _ceiling(dialog))
+
+
+def test_expanding_a_block_really_grows_the_window_up_to_the_ceiling(qtbot: Any) -> None:
+    """Фикс-раунд 2: раскрытие блока растит высоту окна (до 2/3 экрана)."""
+    dialog = _params_dialog(qtbot, (("AdditionalParameters", "/L en /Foo /Bar /Baz"),))
+    dialog.resize(780, 330)  # шире содержимого (702): горизонтальной полосы быть не должно
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    before = dialog.height()
+    block = dialog.launch_params_block()
+    assert block is not None
+    block.set_expanded(True)
+    assert dialog.height() > before
+    assert dialog.height() >= _ceiling(dialog) - 2
+    scroll = dialog.findChild(QScrollArea, "PropertiesScroll")
+    assert scroll is not None
+    # Содержимое выше потолка: вертикальная полоса есть, горизонтальной нет, метки целы.
+    qtbot.waitUntil(scroll.verticalScrollBar().isVisible, timeout=2000)
+    qtbot.waitUntil(lambda: not scroll.horizontalScrollBar().isVisible(), timeout=2000)
+    labels = [dialog.credentials_note(), *block.findings_list(Mode.ENTERPRISE).labels()]
+    qtbot.waitUntil(
+        lambda: all(label.height() >= label.heightForWidth(label.width()) for label in labels),
+        timeout=2000,
+    )
+
+
+def test_credentials_note_text_change_refits_the_window(
+    qtbot: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Фикс-раунд 2 (minor): смена текста подписи под «Запомнить пароль» — пересчёт размера."""
+    dialog = _params_dialog(qtbot, ())
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    calls: list[int] = []
+    monkeypatch.setattr(dialog, "_fit_to_content", lambda: calls.append(1))
+    before = dialog.credentials_note().text()
+    dialog.login_edit().setText("user")  # без логина менялась бы и подсказка «ОК»  # noqa: RUF003
+    calls.clear()
+    dialog.password_edit().setText("x")
+    dialog.remember_checkbox().setChecked(False)
+    assert dialog.credentials_note().text() != before
+    assert calls
+
+
+def test_long_repository_address_does_not_widen_the_form(qtbot: Any) -> None:
+    """План В, Б4: адрес в сводке блока не растягивает содержимое окна свойств.
+
+    Предпроверка 22.11.2026, п. 3: ширина 780 задаётся до показа — на офскрине `adjustSize`
+    даёт 533 (2/3 от 800) при минимуме содержимого 626, полоса была бы и без адреса. П. 7:
+    желаемая ширина окна с длинным адресом не больше, чем с коротким, — иначе при первом
+    показе окно открывалось бы шириной до 2/3 экрана.
+    """  # noqa: RUF002
+    address = "tcp://repository-server.very-long-domain-name.example.local:1742/dept/project/main"
+    short = _params_dialog(
+        qtbot, (), repository=RepositorySettings("tcp://repo/buh", "dev", False)
+    )
+    dialog = _params_dialog(qtbot, (), repository=RepositorySettings(address, None, False))
+    assert dialog.sizeHint().width() <= short.sizeHint().width()
+    dialog.resize(780, 500)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    content = dialog.findChild(QWidget, "PropertiesContent")
+    assert content is not None
+    assert content.minimumSizeHint().width() < 700
+    scroll = dialog.findChild(QScrollArea, "PropertiesScroll")
+    assert scroll is not None
+    qtbot.waitUntil(lambda: not scroll.horizontalScrollBar().isVisible(), timeout=2000)
+
+
+def test_dialog_opens_within_two_thirds_of_the_work_area(
+    qtbot: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """План В, Б6: `adjustSize` Qt ограничивал окно 2/3 экрана (1200 → 800), а не рабочей
+    области (1152 → 768). Рабочая область подменена: 800 на 450, потолок — 533 на 300."""  # noqa: RUF002
+    monkeypatch.setattr(
+        InfobaseDialog, "_available_area", lambda self: QRect(0, 0, 800, 450)
+    )
+    dialog = _params_dialog(qtbot, (("AdditionalParameters", "/L en /Foo"),))
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    assert dialog.height() <= 300
+    assert dialog.width() <= 533
+
+
+def test_size_set_before_show_is_not_capped(
+    qtbot: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Предпроверка плана В, п. 4: потолок — только у размера, выбранного `adjustSize` Qt.
+
+    Размер, заданный до показа, остаётся: тесты роста окна задают его ради ширины без
+    горизонтальной полосы. [проверено] 22.11.2026 пробой: `WA_Resized` в `showEvent` стоит
+    после `resize()` и снят после `adjustSize`.
+    """  # noqa: RUF002
+    monkeypatch.setattr(
+        InfobaseDialog, "_available_area", lambda self: QRect(0, 0, 800, 450)
+    )
+    dialog = _params_dialog(qtbot, (("AdditionalParameters", "/L en /Foo"),))
+    dialog.resize(780, 400)
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    assert (dialog.width(), dialog.height()) == (780, 400)
+
+
+def test_other_keys_table_header_spans_the_width(qtbot: Any) -> None:
+    """План В, Б10: шапка «Прочие ключи секции» — на всю ширину таблицы."""  # noqa: RUF002
+    dialog = _params_dialog(qtbot, (("XTest", "1"),))
+    table = dialog.findChild(QTableWidget)
+    assert table is not None
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    header = table.horizontalHeader()
+    last = header.count() - 1
+    assert header.sectionPosition(last) + header.sectionSize(last) >= table.viewport().width() - 1

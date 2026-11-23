@@ -44,6 +44,18 @@ def test_all_sections_have_different_icons(qapp: QApplication) -> None:
     assert len(set(blobs)) == len(blobs)
 
 
+@pytest.mark.parametrize("palette", (theme.DARK, theme.LIGHT), ids=("dark", "light"))
+def test_operations_icon_is_not_empty_and_follows_palette(
+    qapp: QApplication, palette: theme.Palette
+) -> None:
+    icon = rail_icons.operations_icon(palette)
+    assert not icon.isNull()
+    # Левая сторона контура треугольника «выполнить» проходит через пиксель (4, 8).
+    assert icon.pixmap(16, 16).toImage().pixelColor(4, 8).alpha() > 0
+    assert _dominant(icon, QIcon.State.Off) == palette.text_dim.casefold()
+    assert _dominant(icon, QIcon.State.On) == palette.accent.casefold()
+
+
 def test_edt_icon_is_not_empty(qapp: QApplication) -> None:
     icon = rail_icons.edt_icon(theme.DARK)
     assert not icon.isNull()

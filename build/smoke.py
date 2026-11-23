@@ -12,7 +12,9 @@ offscreen и обе фоновые задачи; (2) ярлык, созданн�
 означает заглушку вместо раздела и в сборке считается отказом); (7) версия в группе
 «О ПРОГРАММЕ» (ui/about.py) совпадает с pyproject.toml — строка `smoke: version=<x.y.z>`
 (спека v3.1 §7): без `copy_metadata("onecstarter")` в onecstarter.spec метаданные пакета
-в frozen-сборке отсутствуют, и версия показала бы «неизвестна». APPDATA подменяется —
+в frozen-сборке отсутствуют, и версия показала бы «неизвестна»; (8) картинки индикаторов
+флажков читаются — строка `smoke: indicators=ok` (план Б): без `datas` или модуля `qsvg`
+флажки деревьев голые. APPDATA подменяется —
 живые данные машины не трогаются.
 """  # noqa: RUF002
 
@@ -35,6 +37,8 @@ from pathlib import Path
 # реально пишет, — расхождение форматов ловится прогоном тестов, а не  # noqa: RUF003
 # только настоящей упаковкой PyInstaller.
 EDT_LINE_PATTERN = r"^.*smoke: edt=\d+(?:, отброшено=\d+)?\s*$"
+# Картинки индикаторов флажков (план Б, задача 4): `datas` spec-файла и модуль qsvg.
+INDICATORS_LINE_PATTERN = r"^.*smoke: indicators=ok\s*$"
 
 
 def shortcut_target(lnk: Path) -> str:
@@ -116,6 +120,25 @@ def main() -> int:
             print(
                 "smoke: схемы поставки не попали в сборку — "
                 "см. строку smoke: schemes= в логе"
+            )
+            return 1
+        # Спека v4, §10.1: каталог ключей — данные пакета; ноль — потерян при упаковке.
+        if not re.search(r"^.*smoke: cli_catalog=[1-9]\d*\s*$", log_text, re.MULTILINE):
+            print(
+                "smoke: каталог ключей командной строки не попал в сборку — "
+                "см. строку smoke: cli_catalog= в логе"
+            )
+            return 1
+        if not re.search(r"^.*smoke: operations=[1-9]\d*\s*$", log_text, re.MULTILINE):
+            print(
+                "smoke: команды пакетного режима Конфигуратора не попали в сборку "
+                "(или раздел «Операции» недоступен) — см. строку smoke: operations= в логе"
+            )
+            return 1
+        if not re.search(INDICATORS_LINE_PATTERN, log_text, re.MULTILINE):
+            print(
+                "smoke: картинки индикаторов флажков не читаются в сборке — "
+                "см. строку smoke: indicators= в логе"
             )
             return 1
         lnk = out / "smoke.lnk"

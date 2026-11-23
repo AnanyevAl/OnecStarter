@@ -4,8 +4,11 @@ import pytest
 
 from onecstarter.security.secrets import (
     HIDDEN_ARGUMENTS,
+    contains_secret_arguments,
+    has_unclosed_quote,
     is_secret_key,
     redact_arguments,
+    secret_name_at,
     strip_url_credentials,
 )
 
@@ -75,8 +78,10 @@ def test_ppasswd_is_a_secret() -> None:
             'ENTERPRISE /IBName"x" /AppAutoCheckVersion',
             'ENTERPRISE /IBName"x" /AppAutoCheckVersion',
         ),
-        ('ENTERPRISE /IBName"x" /N"u" /P"p@ss" /AppAutoCheckVersion',
-         'ENTERPRISE /IBName"x" /N"u" /P*** /AppAutoCheckVersion'),
+        (
+            'ENTERPRISE /IBName"x" /N"u" /P"p@ss" /AppAutoCheckVersion',
+            'ENTERPRISE /IBName"x" /N"u" /P*** /AppAutoCheckVersion',
+        ),
         # Кавычка внутри пароля удвоена формой quote_launch_value — закрывающая
         # граница остаётся однозначной. Удвоение принято [Д] по аналогии
         # с /IBConnectionString (T-05.1): T-05.15 его не измерял — кавычки  # noqa: RUF003
@@ -84,7 +89,7 @@ def test_ppasswd_is_a_secret() -> None:
         ('/IBName"x" /N"u" /P"a""b" /AppAutoCheckMode', '/IBName"x" /N"u" /P*** /AppAutoCheckMode'),
         # Форма без кавычек — справочник (B2 T-05.15), измерением не
         # подтверждена и не опровергнута: [Д]. Токенизатор режет и её.
-        ("/IBName\"x\" /Nu /Pp@ss /AppAutoCheckMode", '/IBName"x" /Nu /P*** /AppAutoCheckMode'),
+        ('/IBName"x" /Nu /Pp@ss /AppAutoCheckMode', '/IBName"x" /Nu /P*** /AppAutoCheckMode'),
         # Непарная кавычка — границы значений недостоверны, показывать нельзя.
         ('/IBName"x" /P"p@ss /AppAutoCheckMode', HIDDEN_ARGUMENTS),
         ("", ""),
@@ -100,7 +105,7 @@ def test_ppasswd_is_a_secret() -> None:
         # Пустое значение /P — токен всё равно начинается с /P и режется.  # noqa: RUF003
         ('/P"" /N"u"', '/P*** /N"u"'),
         # Два /P — оба токена заменены независимо.  # noqa: RUF003
-        ('/P"x" /P"y"', '/P*** /P***'),
+        ('/P"x" /P"y"', "/P*** /P***"),
         # /PP — тоже начинается с /P: переизбыточная редакция безопасна,  # noqa: RUF003
         # других ключей на /P* в режиме ENTERPRISE нет ([Д]).
         ('/PP"x"', "/P***"),
@@ -132,3 +137,136 @@ def test_redact_arguments_never_leaves_the_value() -> None:
     )
     for arguments in arguments_without_the_secret:
         assert "p@ss" not in redact_arguments(arguments)
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        ('/WSN "u" /WSP "секрет" /Len', '/WSN "u" /WSP *** /Len'),
+        ('/ModifyPassword новый /N"u"', '/ModifyPassword *** /N"u"'),
+        ("/AccessToken eyJh.x.y", "/AccessToken ***"),
+        ("/UC 1234", "/UC ***"),
+        # `/Proxy` — ключ каталога, а не пароль `/P`: платформа читает его как ключ  # noqa: RUF003
+        # (решение заказчика 08.11.2026), поэтому он не маскируется; пароль прокси — `-PPwd`.
+        ('/Proxy -PSrv srv -PUser u -PPwd "p p"', "/Proxy -PSrv srv -PUser u -PPwd ***"),
+        ("/proxy -PSrv a", "/proxy -PSrv a"),
+        ("/Proxyx", "/P***"),
+        ('/HttpsCert -file "c.pfx" -pwd x', '/HttpsCert -file "c.pfx" -pwd ***'),
+        ('/p"секрет" /n"u"', '/P*** /n"u"'),
+        ("/wsp x", "/wsp ***"),
+        # Имя в конце строки — маскировать нечего, вывод не падает.
+        ("/Len /WSP", "/Len /WSP"),
+        # Прижатая форма: значение не показывается, имя — как написано.
+        ('/WSP"zzz"', "/WSP***"),
+        ('/UC"zzz" /Len', "/UC*** /Len"),
+        ('/ModifyPassword"zzz"', "/ModifyPassword***"),
+        ("/AccessToken=abc", "/AccessToken***"),
+        ("/HttpsCert -pwd=x", "/HttpsCert -pwd***"),
+        ("-PPwdx", "-PPwd***"),
+        ("/wspX /MODIFYPASSWORDx", "/wsp*** /MODIFYPASSWORD***"),
+        # Финальное ревью, F3a: табуляция — разделитель, как в `cli_params._SPACES`.
+        ("/C x\t/WSP secret", "/C x /WSP ***"),
+        ("/WSP\tsecret", "/WSP ***"),
+        ("/UC\t\t1234 /Len", "/UC *** /Len"),
+        # Табуляция внутри кавычек — часть значения, не разделитель.
+        ('/C "a\tb" /Len', '/C "a\tb" /Len'),
+        # Финальное ревью, F3b: читает ли платформа слово после голого `/P` как пароль —
+        # [?], не измерено; маскирование ошибается в безопасную сторону.
+        ("/P secret", "/P*** ***"),
+        ('/p secret /N"u"', '/P*** *** /N"u"'),
+        ('/P "a b" /Len', "/P*** *** /Len"),
+        ("/P\tsecret", "/P*** ***"),
+        # Следующий токен — ключ или подпараметр: это не значение `/P`.
+        ('/P /N"u"', '/P*** /N"u"'),
+        ("/P -x", "/P*** -x"),
+        # Только голый `/P`: у прижатого значения следующее слово — уже не пароль.  # noqa: RUF003
+        ('/P"x" /C', '/P*** /C'),
+        ('/P"x" word', '/P*** word'),
+    ],
+)
+def test_redact_arguments_hides_values_after_secret_names(arguments: str, expected: str) -> None:
+    """Мутационная проверка обязательна: значение после секретного имени не выводится."""
+    assert redact_arguments(arguments) == expected
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    ["/C x\t/WSP secret", "/WSP\tsecret", "/P secret", "/P\tsecret", '/p "secret x"'],
+)
+def test_tab_and_detached_p_value_never_leak(arguments: str) -> None:
+    """Мутационная проверка обязательна (финальное ревью, F3): значения нет в выводе."""
+    assert "secret" not in redact_arguments(arguments)
+    assert contains_secret_arguments(arguments)
+
+
+@pytest.mark.parametrize(
+    ("word", "expected"),
+    [
+        ("/UCcode", "/UC"),
+        ("/WSPsecret", "/WSP"),
+        ("/wspX", "/wsp"),
+        ("/AccessTokenX", "/AccessToken"),
+        ("/ModifyPasswordX", "/ModifyPassword"),
+        ('/UC"zzz"', "/UC"),
+        ("-PPwdx", "-PPwd"),
+        ("-pwd=x", "-pwd"),
+        ("/Pass", "/P"),
+        ('/p"x"', "/p"),
+        ("/Proxyx", "/P"),
+        ("/Proxy", None),
+        ("/Foo", None),
+        ("/Len", None),
+        ("", None),
+    ],
+)
+def test_secret_name_at_names_only_the_secret_prefix(word: str, expected: str | None) -> None:
+    assert secret_name_at(word) == expected
+
+
+_MASKED_TAIL = '/ConfigurationRepositoryP *** /DumpCfg "a.cf"'
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected"),
+    [
+        (
+            '/ConfigurationRepositoryN "builder" '
+            '/ConfigurationRepositoryP "s3cret" /DumpCfg "a.cf"',
+            '/ConfigurationRepositoryN "builder" ' + _MASKED_TAIL,
+        ),
+        ("/configurationrepositoryp s3cret", "/configurationrepositoryp ***"),
+        ('/ConfigurationRepositoryP"s3cret"', "/ConfigurationRepositoryP***"),
+        # Форма build_step_arguments: значение в кавычках, внутренние удвоены.
+        ('/ConfigurationRepositoryP "s3 cret" /DumpCfg "a.cf"', _MASKED_TAIL),
+        ('/ConfigurationRepositoryP "" /DumpCfg "a.cf"', _MASKED_TAIL),
+        ('/ConfigurationRepositoryP "s3""cret" /DumpCfg "a.cf"', _MASKED_TAIL),
+        ('/ConfigurationRepositoryP "/s3cret" /DumpCfg "a.cf"', _MASKED_TAIL),
+        ('/ConfigurationRepositoryP "-s3cret" /DumpCfg "a.cf"', _MASKED_TAIL),
+    ],
+)
+def test_repository_password_is_masked(arguments: str, expected: str) -> None:
+    """Пароль хранилища замаскирован целиком: ни кусок после пробела, ни после
+    удвоенной кавычки, ни значение, похожее на ключ (`/…`, `-…`), не выходят наружу."""
+    redacted = redact_arguments(arguments)
+    assert redacted == expected
+    assert "s3" not in redacted and "cret" not in redacted
+    assert contains_secret_arguments(arguments)
+
+
+def test_repository_user_and_address_are_not_masked() -> None:
+    arguments = '/ConfigurationRepositoryF "tcp://repo" /ConfigurationRepositoryN "builder"'
+    assert redact_arguments(arguments) == arguments
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ('/C "abc', True),
+        ('/C "abc"', False),
+        ('/C "a""b"', False),
+        ("", False),
+        ('/Out "C:\\a b', True),
+    ],
+)
+def test_has_unclosed_quote(text: str, expected: bool) -> None:
+    assert has_unclosed_quote(text) is expected

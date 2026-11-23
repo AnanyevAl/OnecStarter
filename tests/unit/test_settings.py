@@ -61,6 +61,7 @@ def test_schema_is_written(tmp_path: Path) -> None:
         "editor_antigravity": "",
         "check_updates": None,
         "column_widths": {},
+        "properties_blocks": {},
     }
 
 
@@ -509,3 +510,23 @@ def test_column_widths_not_an_object_reads_empty(tmp_path: Path) -> None:
     path = tmp_path / "settings.json"
     path.write_text(json.dumps({"schema": 1, "column_widths": [1, 2]}), encoding="utf-8")
     assert load_settings(path).column_widths == {}
+
+
+def test_properties_blocks_round_trip(tmp_path: Path) -> None:
+    path = tmp_path / "settings.json"
+    save_settings(path, Settings(properties_blocks={"launch_params": True}))
+    assert load_settings(path).properties_blocks == {"launch_params": True}
+
+
+def test_properties_blocks_drop_garbage(tmp_path: Path) -> None:
+    path = tmp_path / "settings.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema": SCHEMA_VERSION,
+                "properties_blocks": {"launch_params": True, "x": 1, "2": "да"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert load_settings(path).properties_blocks == {"launch_params": True}

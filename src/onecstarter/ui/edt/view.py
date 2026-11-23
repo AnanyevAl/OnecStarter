@@ -60,6 +60,7 @@ from onecstarter.services.edt_scheme import (
 from onecstarter.services.errors import EdtLaunchRecordError, ServicesError
 from onecstarter.ui.bases.panel import open_in_explorer
 from onecstarter.ui.column_widths import ColumnWidths
+from onecstarter.ui.components import widen_for_shortcuts
 from onecstarter.ui.dialogs.buttons import ask_confirmation
 from onecstarter.ui.dialogs.infobase import dropped_directory
 from onecstarter.ui.edt.cli_import_dialog import CliImportDialog
@@ -594,6 +595,7 @@ class EdtView(QWidget):
         if kind != KIND_GROUP:
             menu.addSeparator()
             menu.addAction(MENU_IMPORT, self.import_from_edtstart)
+        widen_for_shortcuts(menu)
         return menu
 
     def _fill_project_menu(self, menu: QMenu, project: EdtProject) -> None:

@@ -17,7 +17,6 @@ MMC-консоль и запись в HKLM, а не про жизненный ц
 не требует — [Ф] Г2).
 """  # noqa: RUF002
 
-import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -25,6 +24,7 @@ from onecstarter.domain.server import ServerConvention
 from onecstarter.domain.server_match import version_from_exe_path
 from onecstarter.domain.version import VersionNumber
 from onecstarter.platform_1c import console, elevation
+from onecstarter.platform_1c.dll_search import startfile
 from onecstarter.platform_1c.elevation import ElevationDeclinedError
 from onecstarter.platform_1c.server_discovery import ServerInstallation, console_path
 from onecstarter.services.errors import (
@@ -43,7 +43,7 @@ class ConsoleAdmin:
         self,
         *,
         run_elevated: Callable[[str, str], int] = elevation.run_elevated,
-        open_file: Callable[[str], None] = os.startfile,
+        open_file: Callable[[str], None] = startfile,
         registered_radmin: Callable[[], Path | None] = console.registered_radmin_path,
     ) -> None:
         self._run_elevated = run_elevated

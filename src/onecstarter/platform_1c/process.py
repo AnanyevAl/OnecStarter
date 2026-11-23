@@ -11,14 +11,17 @@ import subprocess
 import warnings
 
 from onecstarter.domain.launch import LaunchCommand
+from onecstarter.platform_1c.dll_search import clean_dll_search
 
 
 def spawn(command: LaunchCommand) -> int:
-    process = subprocess.Popen(
-        command.command_line,
-        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
-        close_fds=True,
-    )
+    # Н1: клиент 1С не наследует путь DLL `_internal` собранной программы.  # noqa: RUF003
+    with clean_dll_search():
+        process = subprocess.Popen(
+            command.command_line,
+            creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP,
+            close_fds=True,
+        )
     pid = process.pid
     # Ожидание завершения намеренно пропущено: судьба клиента 1С не связана  # noqa: RUF003
     # с жизнью OneCStarter. Брошенный Popen издаёт в __del__ ResourceWarning  # noqa: RUF003

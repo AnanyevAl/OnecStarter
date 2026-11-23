@@ -60,6 +60,8 @@ class MainWindow(QMainWindow):
         # Контроллер обновлений (T-25) — ссылка на время жизни окна; `main()`
         # зовёт `start_on_launch` после того, как окно решило, показываться ли.
         self.update_controller: object | None = None
+        # Контроллер пакетных операций (v4): ссылка на время жизни окна и для тестов.
+        self.operations_controller: object | None = None
         # Доступность трея САМА ПО СЕБЕ, в отличие от close_to_tray (которое  # noqa: RUF003
         # уже смешивает настройку И доступность трея через AND, спека §2).
         # Показ окна на тихом старте (ui/app.py::main) обязан зависеть от

@@ -60,7 +60,7 @@ assets/2026-08-26-v2-servers-mockup.html), секции «Диалог проф�
 эту гарантию пользователю, а не только разработчику в докстринге.
 
 **Про цвета (круг исправлений 1, НАХОДКА 2).** Диалог по умолчанию не
-запекает `Palette` — как и `InfobaseDialog._required_hint`. Но бриф прямо
+запекает `Palette` — как и `InfobaseDialog` (`DialogFooter.set_hint`). Но бриф прямо
 требовал жёлтую строку у предупреждения и problem-цвет у ошибки; ревью
 подтвердило требование как буквальное, не как пожелание на будущее.
 Добавлен опциональный keyword `palette: Palette | None = None`
@@ -118,7 +118,7 @@ from onecstarter.domain.server import (
 from onecstarter.domain.server_match import normalize_cluster_dir
 from onecstarter.domain.version import VersionNumber
 from onecstarter.platform_1c.server_discovery import ServerInstallation
-from onecstarter.ui.dialogs.buttons import ButtonKind, russian_button_box
+from onecstarter.ui.dialogs.buttons import ButtonKind, accept_on_ctrl_enter, russian_button_box
 from onecstarter.ui.theme import Palette
 
 _RANGE_FORMAT_ERROR = "Диапазон — два числа через двоеточие"
@@ -292,6 +292,7 @@ class ServerProfileDialog(QDialog):
         self._buttons = russian_button_box(ButtonKind.OK, ButtonKind.CANCEL)
         self._buttons.accepted.connect(self.accept)
         self._buttons.rejected.connect(self.reject)
+        accept_on_ctrl_enter(self, self._buttons)
         # box.buttons() типизирован как list[QAbstractButton] в стабах PySide6 —
         # тот же cast, что и в dialogs/confirm.py: фактический тип рантайма
         # QPushButton гарантирован тем, что russian_button_box добавляет

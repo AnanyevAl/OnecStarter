@@ -43,6 +43,8 @@ BASES_SHORTCUTS: tuple[ShortcutSpec, ...] = (
         ("Shift+F3",),
     ),
     ShortcutSpec("Shift+F4", "Конфигуратор с запросом входа", ("Shift+F4",)),  # noqa: RUF001
+    ShortcutSpec("Ctrl+F3", "Запустить с параметрами (один раз)", ("Ctrl+F3",)),  # noqa: RUF001
+    ShortcutSpec("Ctrl+F4", "Конфигуратор с параметрами (один раз)", ("Ctrl+F4",)),  # noqa: RUF001
     ShortcutSpec("F5", "Обновить список и перепроверить доступность каталогов", ("F5",)),
     ShortcutSpec("Ctrl+1", "Тонкий клиент", ("Ctrl+1",)),
     ShortcutSpec("Ctrl+2", "Толстый клиент", ("Ctrl+2",)),
@@ -97,8 +99,8 @@ def window_shortcut_label(section_count: int) -> str:
 # Спека §2.2 запрещает ровно одно: копировать сюда ИМЕНА разделов — они
 # живут в проводке окна (`ui/app.py`) и разошлись бы со справочником при  # noqa: RUF003
 # первом же переименовании. ЧИСЛО разделов — наоборот, ровно то, из чего
-# диапазон обязан строиться (пример спеки на сегодняшних четырёх разделах:
-# «Alt+1 … Alt+4»). `window_shortcut_label(9)` ниже — не диапазон для показа,
+# диапазон обязан строиться (пример спеки на сегодняшних пяти разделах:
+# «Alt+1 … Alt+5»). `window_shortcut_label(9)` ниже — не диапазон для показа,
 # а запасное значение по умолчанию потолком механизма: этот модуль не видит  # noqa: RUF003
 # список разделов `ui/app.py` и не должен — настоящее число приходит после
 # сборки окна вызовом `SettingsView.set_window_section_count(len(sections))`,
@@ -110,4 +112,7 @@ WINDOW_SHORTCUTS: tuple[ShortcutSpec, ...] = (
         "Переход в раздел рельсы по его порядковому номеру",  # noqa: RUF001
         tuple(f"Alt+{number}" for number in range(1, 10)),
     ),
+    # Сочетание регистрируют сами диалоги (`accept_on_ctrl_enter`), не окно — пустой
+    # `sequences`, как у Enter/Insert/Delete в `BASES_SHORTCUTS`.  # noqa: RUF003
+    ShortcutSpec("Ctrl+Enter", "«ОК» в свойствах базы, записи EDT и профиля сервера", ()),  # noqa: RUF001
 )

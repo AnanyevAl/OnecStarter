@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import Protocol, cast
 
 from PySide6.QtCore import QEventLoop, QStandardPaths, Qt, QTimer
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtGui import QGuiApplication, QImage
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 from onecstarter.config.atomic import atomic_write
 from onecstarter.config.cestart_cfg import parse_cestart_cfg
 from onecstarter.config.shell_link import build_shell_link, shortcut_command
+from onecstarter.domain.cli_catalog import Catalog
 from onecstarter.domain.default_version import DefaultVersionRule, default_version_rules
 from onecstarter.domain.edt import EditorResolution, EdtInstallation
 from onecstarter.domain.launch import ClientConvention
@@ -40,6 +41,7 @@ from onecstarter.domain.server import ServerConvention
 from onecstarter.domain.version import Installation, VersionNumber
 from onecstarter.platform_1c import console, instance_lock
 from onecstarter.platform_1c.discovery import cfg_paths, find_installations
+from onecstarter.platform_1c.dll_search import startfile
 from onecstarter.platform_1c.editors import EditorKind, find_editor
 from onecstarter.platform_1c.edt_discovery import (
     EdtDiscovery,
@@ -58,13 +60,18 @@ from onecstarter.platform_1c.server_spawn import spawn_logged, spawn_server
 from onecstarter.security.credentials import KeyringStore
 from onecstarter.services import autostart
 from onecstarter.services.availability import probe_targets
+from onecstarter.services.cli_catalog import load_cli_catalog
 from onecstarter.services.catalog import CommonListData, read_common_lists
 from onecstarter.services.edt import EdtNotes, EdtWorkspace, settings_notes
 from onecstarter.services.edt_cli import EdtCli
 from onecstarter.services.edt_scheme import SchemeCatalog, bundled_schemes_dir
+from onecstarter.services.operations_runner import OperationsRunner
+from onecstarter.services.operations_store import load_operations
+from onecstarter.services.paths import ROOT, normalize_folder
 from onecstarter.services.errors import (
     ConsoleRegistrationDeclinedError,
     EdtUnavailableError,
+    OperationsUnavailableError,
     ServerError,
     ServicesError,
     UserDataUnavailableError,
@@ -90,6 +97,10 @@ from onecstarter.ui.edt.monitor import EdtMonitor
 from onecstarter.ui.edt.view import EdtView
 from onecstarter.ui.heartbeat import maybe_start_heartbeat
 from onecstarter.ui.hotkey import GlobalHotkey
+from onecstarter.ui.ops.controller import OperationsController
+from onecstarter.ui.ops.quit_dialog import QuitChoice, ask_operations_quit
+from onecstarter.ui.ops.quit_gate import QuitGate
+from onecstarter.ui.ops.view import OperationsView, PreviewBase
 from onecstarter.ui.servers.card_state import CardState, card_state
 from onecstarter.ui.servers.dialog import ConsoleDialog
 from onecstarter.ui.servers.monitor import ServerMonitor
@@ -103,6 +114,8 @@ from onecstarter.ui.tray import create_tray
 from onecstarter.ui.watcher import FileWatcher
 
 _log = logging.getLogger("onecstarter.startup")
+
+QUIT_WAIT_TITLE = "OneCStarter — сценарий завершается, затем программа закроется"
 
 
 @dataclass(frozen=True)
@@ -307,6 +320,18 @@ class _KeyringSmokeVault:
             pass
 
 
+def indicator_images_status() -> str:
+    """Читаются ли картинки индикаторов флажков: `ok` или `FAIL: <имя>`.
+
+    Без файла (`datas`) или без модуля `qsvg` в сборке `QImage` пуст — флажки деревьев
+    снова стали бы голыми галочками (В6).
+    """  # noqa: RUF002
+    for name in (theme.INDICATOR_CHECK, theme.INDICATOR_PARTIAL):
+        if QImage(str(theme.indicator_path(name))).isNull():
+            return f"FAIL: {name}"
+    return "ok"
+
+
 def _keyring_round_trip(vault: object) -> str:
     """`ok` либо причина отказа — одной строкой, без секрета.
 
@@ -504,6 +529,18 @@ def run_smoke(
         # Схемы поставки (T-24.1) — данные пакета, их легко потерять в `datas`
         # spec-файла; build/smoke.py требует число больше нуля.
         _log.info("smoke: schemes=%d", len(SchemeCatalog(str(bundled_schemes_dir())).entries()))
+        # Каталог ключей (спека v4, §10.1) — данные пакета, теряются в `datas` spec-файла
+        # так же легко, как схемы; build/smoke.py требует число больше нуля.
+        cli_catalog = load_cli_catalog()
+        _log.info("smoke: cli_catalog=%d", len(cli_catalog.keys))
+        # Картинки индикаторов (план Б, задача 4) — данные пакета и модуль qsvg.
+        _log.info("smoke: indicators=%s", indicator_images_status())
+        # Команды пакетного режима (спека v4, блок 2) — те же данные пакета; ноль — потеряны.
+        # `unavailable` — раздел «Операции» заменён заглушкой (как `edt=unavailable`).
+        if window.operations_controller is None:
+            _log.info("smoke: operations=unavailable")
+        else:
+            _log.info("smoke: operations=%d", len(cli_catalog.commands))
         # Настоящее (только чтение диска) обнаружение установок EDT — то же
         # обоснование не трогать процессы машины сборщика, что у NullScanner  # noqa: RUF003
         # выше, здесь неприменимо: discover_edt не сканирует процессы вовсе,
@@ -754,6 +791,69 @@ def _edt_unavailable_placeholder(reason: str) -> QLabel:
     return label
 
 
+def _ops_dir(env: Mapping[str, str], fallback: Path) -> Path:
+    """Каталог журналов пакетных операций (спека v4, §6.8): `%LOCALAPPDATA%\\OneCStarter\\ops`.
+
+    Тот же путь получает `prune_logs`: чистка удаляет только прямых детей этого каталога.
+    """
+    local = env.get("LOCALAPPDATA")
+    return Path(local) / "OneCStarter" / "ops" if local else fallback / "ops"
+
+
+def _operations_unavailable_placeholder(reason: str) -> QLabel:
+    """Заглушка раздела «Операции»: недоступный `operations.json` не роняет программу."""
+    label = QLabel(f"Раздел «Операции» недоступен: {reason}")
+    label.setObjectName("OperationsUnavailable")
+    label.setWordWrap(True)
+    label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+    label.setContentsMargins(16, 16, 16, 16)
+    return label
+
+
+def _preview_base(workspace: Workspace, key: str) -> PreviewBase | None:
+    """База для предпросмотра команды шага. Паролей не читает — только признаки и логины."""
+    item = next((i for i in workspace.items() if i.key == key and not i.is_group), None)
+    if item is None:
+        return None
+    login, _has_password = workspace.credentials_of(key)
+    repository = workspace.repository_of(key)
+    folder = normalize_folder(item.folder)
+    return PreviewBase(
+        item.name,
+        "" if folder == ROOT else folder,
+        item.requested_version or "",
+        login,
+        repository.address,
+        repository.user,
+    )
+
+
+def _load_catalog_or_none() -> Catalog | None:
+    """Каталог ключей или `None`, если он не загрузился (финальное ревью блока 1, F7).
+
+    Сбой каталога — данных поставки — не должен ронять запуск программы: раздел
+    «Базы» без каталога работает, только без пунктов и блока параметров запуска
+    (`BasesView(catalog=None)`). Причина — в журнал; самопроверка сборки (`run_smoke`)
+    каталог читает напрямую и о поломке скажет громко.
+    """  # noqa: RUF002
+    try:
+        return load_cli_catalog()
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        _log.warning("каталог ключей запуска не загружен, параметры недоступны: %s", error)
+        return None
+
+
+def _properties_blocks_saver(store: SettingsStore) -> Callable[[dict[str, bool]], None]:
+    """Свёрнутость блоков свойств базы (спека v4, §7.1) — тихая запись, как ширины колонок."""
+
+    def save(blocks: dict[str, bool]) -> None:
+        error = store.store_quietly(properties_blocks=blocks)
+        if error is not None:
+            _log.warning("состояние блоков свойств не сохранено: %s", error)
+
+    return save
+
+
 def _column_widths_saver(store: SettingsStore, list_id: str) -> Callable[[dict[str, int]], None]:
     """Запись ширин колонок одного списка (T-38) — тихая, без `store.changed`.
 
@@ -771,6 +871,15 @@ def _column_widths_saver(store: SettingsStore, list_id: str) -> Callable[[dict[s
     return save
 
 
+def _launch_installer(path: Path) -> None:
+    """Запустить скачанный установщик (T-25) — без пути DLL и окружения `_internal` (Н1).
+
+    Установщик заменяет файлы `_internal`; унаследуй он их путь — сам держал бы то, что
+    обязан заменить. Ревью задачи 10, п. 3: отдельная функция, чтобы покрыть тестом.
+    """  # noqa: RUF002
+    startfile(str(path))
+
+
 def _build_main_window(
     application: QApplication,
     runtime: Runtime,
@@ -781,6 +890,7 @@ def _build_main_window(
     registered_radmin: Callable[[], Path | None] | None = None,
     quit_dialog: Callable[[QWidget, str], bool] | None = None,
     job_factory: Callable[[], Job] | None = None,
+    operations_quit_dialog: Callable[[QWidget, str], QuitChoice] | None = None,
 ) -> tuple[MainWindow, StartupTasks, ServerMonitor, Callable[[], None], EdtMonitor | None]:
     """Собрать окно, трей, хоткей, watcher и фоновые задачи, не запуская их.
 
@@ -837,6 +947,9 @@ def _build_main_window(
     kernel-объектов вовсе, а не полагаться на то, что до `start()` дело
     не дойдёт.
 
+    `operations_quit_dialog` — тот же приём, что `quit_dialog`: `None` (тесты, `run_smoke`) —
+    о запуске сценария при выходе не спрашивают; настоящий диалог передаёт только `main()`.
+
     Значок приложения ставится здесь же, до создания трея (замечание
     заказчика на контрольной точке 16.08.2026): `setWindowIcon` до этой
     задачи не вызывался нигде, и заголовок окна с Alt-Tab получали
@@ -858,6 +971,36 @@ def _build_main_window(
     # installations=None: колонка версии покажет «…» до первого
     # apply_installations — Workspace на этом этапе тоже ещё pending
     # (build_runtime больше не обнаруживает платформы сам).
+    catalog = _load_catalog_or_none()
+    # Пакетные операции (спека v4, блок 2). Единственный `OperationsRunner` программы
+    # создаётся здесь (спека §6.4): «один активный запуск» — на экземпляр исполнителя.
+    ops_controller: OperationsController | None = None
+    ops_failure = ""
+    if catalog is None:
+        ops_failure = "каталог команд не загружен"
+    else:
+        operations_path = runtime.settings.with_name("operations.json")
+        ops_dir = _ops_dir(env, runtime.settings.parent)
+        try:
+            ops_data = load_operations(operations_path)
+        except OperationsUnavailableError as error:
+            _log.error("раздел «Операции» недоступен: %s", error)
+            ops_failure = str(error)
+        else:
+            ops_controller = OperationsController(
+                OperationsRunner(
+                    runtime.workspace.batch_target,
+                    catalog,
+                    ops_dir,
+                    job_factory=job_factory if job_factory is not None else ServerJob,
+                    spawn=spawn_logged,
+                ),
+                catalog,
+                ops_data,
+                operations_path,
+                ops_dir,
+                targets=runtime.workspace.batch_target,
+            )
     view = BasesView(
         runtime.workspace,
         installations=None,
@@ -868,6 +1011,12 @@ def _build_main_window(
         cache_env=env,
         column_widths=store.settings.column_widths.get("bases", {}),
         save_column_widths=_column_widths_saver(store, "bases"),
+        catalog=catalog,
+        properties_blocks=store.settings.properties_blocks,
+        save_properties_blocks=_properties_blocks_saver(store),
+        param_sets_path=runtime.settings.with_name("param_sets.json"),
+        scenarios=ops_controller.scenarios if ops_controller is not None else None,
+        busy_keys=ops_controller.busy_keys if ops_controller is not None else frozenset,
     )
     # Раздел «EDT» (спека v3). Всё, что ходит по диску, — лямбды над
     # текущими настройками: смена JDK или пути редактора в Настройках
@@ -1167,10 +1316,24 @@ def _build_main_window(
     else:
         edt_section_widget = _edt_unavailable_placeholder(edt_failure)
 
+    ops_view: OperationsView | None = None
+    ops_section_widget: QWidget
+    if ops_controller is not None:
+        ops_view = OperationsView(
+            ops_controller,
+            items=runtime.workspace.items,
+            preview_base=lambda key: _preview_base(runtime.workspace, key),
+            palette=controller.palette,
+        )
+        ops_section_widget = ops_view
+    else:
+        ops_section_widget = _operations_unavailable_placeholder(ops_failure)
+
     sections = [
         ("Базы", view),
         ("Серверы", servers_view),
         ("EDT", edt_section_widget),
+        ("Операции", ops_section_widget),
         ("Настройки", settings_view),
     ]
     # Ключ — сам объект вьюхи, а не подпись: подпись показывается пользователю  # noqa: RUF003
@@ -1179,11 +1342,13 @@ def _build_main_window(
     bases_section = next(i for i, (_t, w) in enumerate(sections) if w is view)
     servers_section = next(i for i, (_t, w) in enumerate(sections) if w is servers_view)
     edt_section = next(i for i, (_t, w) in enumerate(sections) if w is edt_section_widget)
+    ops_section = next(i for i, (_t, w) in enumerate(sections) if w is ops_section_widget)
     settings_section = next(i for i, (_t, w) in enumerate(sections) if w is settings_view)
     window = MainWindow(sections, palette=controller.palette)
     window.set_section_icon(bases_section, rail_icons.bases_icon)
     window.set_section_icon(servers_section, rail_icons.servers_icon)
     window.set_section_icon(edt_section, rail_icons.edt_icon)
+    window.set_section_icon(ops_section, rail_icons.operations_icon)
     window.set_section_icon(settings_section, rail_icons.settings_icon)
     # Живое число разделов — только теперь, когда `sections` уже собран: на
     # момент конструктора `SettingsView` он ещё не существует (`SettingsView`
@@ -1191,6 +1356,17 @@ def _build_main_window(
     # `set_hotkey_handler`/`set_section_icon` выше (задача 8, находка ревью —
     # справочник без этого вызова обещал бы Alt+5…Alt+9 при четырёх разделах).
     settings_view.set_window_section_count(len(sections))
+    window.operations_controller = ops_controller
+    if ops_controller is not None and ops_view is not None:
+        ops_controller.setParent(window)  # время жизни — окно, как у мониторов  # noqa: RUF003
+        operations_view = ops_view  # для mypy: замыкание ниже видит не-None
+
+        def run_scenario(scenario_id: str, keys: Sequence[str]) -> None:
+            window.show_section(ops_section)
+            operations_view.request_run(scenario_id, list(keys))
+
+        view.scenario_requested.connect(run_scenario)
+    view.operations_requested.connect(lambda: window.show_section(ops_section))
     if cli_watcher is not None:
         cli_watcher.setParent(window)  # время жизни — окно, как у мониторов  # noqa: RUF003
 
@@ -1241,6 +1417,8 @@ def _build_main_window(
         servers_view.apply_palette(controller.palette)
         if edt_view is not None:
             edt_view.apply_palette(controller.palette)
+        if ops_view is not None:
+            ops_view.apply_palette(controller.palette)
         window.apply_palette(controller.palette)
 
     controller.changed.connect(on_theme_changed)
@@ -1263,47 +1441,92 @@ def _build_main_window(
             if not item.is_group and item.favorite
         ]
 
-    def _build_confirm_quit(dialog: Callable[[QWidget, str], bool]) -> Callable[[], bool]:
-        def confirm_quit() -> bool:
-            confirmed = _confirm_quit_with_servers(
-                servers_workspace.running_count, lambda message: dialog(window, message)
-            )
-            if confirmed and edt_cli is not None:
-                # Второй вопрос — о живых командах CLI EDT (спека §14.4);  # noqa: RUF003
-                # без раздела EDT (`edt_cli is None`) спрашивать не о чем.  # noqa: RUF003
-                confirmed = _confirm_quit_with_cli(
-                    edt_cli.running_count, lambda message: dialog(window, message)
-                )
-            if confirmed and edt_cli is not None:
-                # Отметка выхода в журналах CLI — тем же приёмом, что у серверов  # noqa: RUF003
-                # ниже: согласие получено, отказ записи уходит в лог, не в отмену.
-                try:
-                    edt_cli.log_shutdown()
-                except OSError as error:
-                    _log.warning("не удалось отметить выход в журналах CLI EDT: %s", error)
-            if confirmed:
-                # НАХОДКА 4 ручного чек-листа T-10 (Minor): дерево гасит
-                # сама ОС (Job kill-on-close) без единой строки кода  # noqa: RUF003
-                # остановки — до этой правки конец сессии не оставлял
-                # следа в журнале работающего профиля. Один путь на оба  # noqa: RUF003
-                # вызывающих (`request_quit` и `MainWindow.closeEvent` —
-                # оба зовут именно этот `confirm_quit`), ДО `application.  # noqa: RUF003
-                # quit()`: после согласия, но раньше самого выхода.
-                #
-                # Волна финального ревью ветки T-12 (Important 1):
-                # `log_shutdown()` идёт по тем же `_job_pids` и отказывает
-                # тем же `ServerError`. Согласие уже получено — отменять
-                # его из-за ненаписанной строки журнала было бы  # noqa: RUF003
-                # враньём пользователю о его же ответе, поэтому  # noqa: RUF003
-                # отказ уходит
-                # в лог, тем же приёмом, что `OSError` в `log_event`.
-                try:
-                    servers_workspace.log_shutdown()
-                except ServicesError as error:
-                    _log.warning("не удалось отметить выход в журналах серверов: %s", error)
-            return confirmed
+    def finalize_quit() -> None:
+        """Согласие на выход получено: отметить его в журналах CLI и серверов."""  # noqa: RUF002
+        if edt_cli is not None:
+            # Отметка выхода в журналах CLI — тем же приёмом, что у серверов  # noqa: RUF003
+            # ниже: согласие получено, отказ записи уходит в лог, не в отмену.
+            try:
+                edt_cli.log_shutdown()
+            except OSError as error:
+                _log.warning("не удалось отметить выход в журналах CLI EDT: %s", error)
+        # НАХОДКА 4 ручного чек-листа T-10 (Minor): дерево гасит
+        # сама ОС (Job kill-on-close) без единой строки кода  # noqa: RUF003
+        # остановки — до этой правки конец сессии не оставлял
+        # следа в журнале работающего профиля. Один путь на оба  # noqa: RUF003
+        # вызывающих (`request_quit` и `MainWindow.closeEvent` —
+        # оба зовут именно этот `confirm_quit`), ДО `application.  # noqa: RUF003
+        # quit()`: после согласия, но раньше самого выхода.
+        #
+        # Волна финального ревью ветки T-12 (Important 1):
+        # `log_shutdown()` идёт по тем же `_job_pids` и отказывает
+        # тем же `ServerError`. Согласие уже получено — отменять
+        # его из-за ненаписанной строки журнала было бы  # noqa: RUF003
+        # враньём пользователю о его же ответе, поэтому  # noqa: RUF003
+        # отказ уходит
+        # в лог, тем же приёмом, что `OSError` в `log_event`.
+        try:
+            servers_workspace.log_shutdown()
+        except ServicesError as error:
+            _log.warning("не удалось отметить выход в журналах серверов: %s", error)
 
-        return confirm_quit
+    quit_gate: QuitGate | None = None
+    if ops_controller is not None and operations_quit_dialog is not None:
+        gate_controller = ops_controller
+        gate_dialog = operations_quit_dialog
+
+        def show_for_waiting() -> None:
+            window.show_section(ops_section)
+            if window.isHidden():
+                window.show()  # выход из трея: ожидание должно быть видно
+
+        # Ограничение (решение 5 плана 2б): выход, начатый установкой  # noqa: RUF003
+        # обновления, после ожидания закрывает программу без установки —
+        # `UpdateController` получил отказ и установщик не запускал.
+        quit_gate = QuitGate(
+            running=lambda: gate_controller.running,
+            question=lambda: gate_controller.quit_question(),
+            ask=lambda message: gate_dialog(window, message),
+            cancel_soft=lambda: gate_controller.cancel_soft_for_quit(),
+            cancel_hard=lambda: gate_controller.cancel_hard(),
+            revoke_soft=lambda: gate_controller.revoke_quit_cancel(),
+            finalize=finalize_quit,
+            quit_app=application.quit,
+            show_window=show_for_waiting,
+            get_title=window.windowTitle,
+            set_title=window.setWindowTitle,
+            wait_title=QUIT_WAIT_TITLE,
+        )
+        ops_controller.run_started.connect(lambda _info: quit_gate.on_run_started())
+        ops_controller.run_finished.connect(quit_gate.on_run_finished)
+
+    def confirm_quit_with_operations(dialog: Callable[[QWidget, str], bool]) -> bool:
+        if quit_gate is not None and quit_gate.consented:
+            # Согласие и отметка выхода уже сделаны `quit_gate`: `application.quit()`
+            # присылает окну closeEvent, и второй проход ничего не спрашивает.
+            return True
+        confirmed = _confirm_quit_with_servers(
+            servers_workspace.running_count, lambda message: dialog(window, message)
+        )
+        if confirmed and edt_cli is not None:
+            # Второй вопрос — о живых командах CLI EDT (спека §14.4);  # noqa: RUF003
+            # без раздела EDT (`edt_cli is None`) спрашивать не о чем.  # noqa: RUF003
+            confirmed = _confirm_quit_with_cli(
+                edt_cli.running_count, lambda message: dialog(window, message)
+            )
+        if confirmed and quit_gate is not None:
+            # Спека v4, §6.6: идёт сценарий — выход откладывается до конца запуска.
+            confirmed = quit_gate.check()
+            if quit_gate.consented:
+                # Конец запуска пришёл во вложенном цикле вопроса: `on_run_finished`
+                # уже отметил выход и закрыл программу — второй раз не отмечаем.
+                return True
+        if confirmed:
+            finalize_quit()
+        return confirmed
+
+    def _build_confirm_quit(dialog: Callable[[QWidget, str], bool]) -> Callable[[], bool]:
+        return lambda: confirm_quit_with_operations(dialog)
 
     # T-10, задача 6 (находка координатора, см. докстринг параметра
     # `quit_dialog` выше): гейт собирается ТОЛЬКО когда снаружи дали диалог —
@@ -1337,7 +1560,7 @@ def _build_main_window(
             "Решение можно поменять в Настройках → «О программе».",  # noqa: RUF001
         ),
         confirm_quit=confirm_quit if confirm_quit is not None else lambda: True,
-        launch=lambda path: os.startfile(path),  # noqa: RUF100, S606
+        launch=_launch_installer,
         quit_app=application.quit,
         on_status=settings_view.show_update_status,
         parent=window,
@@ -1689,7 +1912,11 @@ def main(
 
     try:
         window, tasks, monitor, start_probe, edt_monitor = _build_main_window(
-            application, runtime, os.environ, quit_dialog=_ask_quit_confirmation
+            application,
+            runtime,
+            os.environ,
+            quit_dialog=_ask_quit_confirmation,
+            operations_quit_dialog=ask_operations_quit,
         )
     except ServerError as error:
         # CRITICAL 2, финальное ревью ветки: try вокруг build_runtime выше

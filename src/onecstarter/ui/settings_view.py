@@ -61,6 +61,7 @@ from PySide6.QtWidgets import (
 )
 
 from onecstarter.domain.edt import LANGUAGES
+from onecstarter.platform_1c.dll_search import open_url as open_url_clean
 from onecstarter.services import autostart
 from onecstarter.services.edt import EdtNotes
 from onecstarter.services.settings import (
@@ -434,7 +435,10 @@ class SettingsView(QWidget):
         # задокументировано в докстринге `about.py`.
         self._add_row("Версия", "Установленная версия программы", self._version_label)
         self._repository_label = QLabel()
-        self._repository_label.setOpenExternalLinks(True)
+        # Ссылку открывает `dll_search`, не метка сама (предпроверка, п. 9): браузер,
+        # запущенный ссылкой впервые, не должен держать DLL `_internal`.
+        self._repository_label.setOpenExternalLinks(False)
+        self._repository_label.linkActivated.connect(lambda url: open_url_clean(url))
         self._repository_label.setTextInteractionFlags(
             Qt.TextInteractionFlag.LinksAccessibleByMouse
             | Qt.TextInteractionFlag.LinksAccessibleByKeyboard
