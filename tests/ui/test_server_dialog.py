@@ -548,3 +548,10 @@ def test_empty_installed_list_has_no_rows(application: QApplication) -> None:
     assert dialog.version_rows() == []
     assert dialog.selected_installation() is None
     assert dialog.register_button().isEnabled() is False
+
+
+def test_ok_is_the_primary_button(qtbot: Any) -> None:
+    """Замечание к 4.0.0 (T-45): «ОК» жёлтая, как в свойствах базы."""  # noqa: RUF002
+    dialog = ServerProfileDialog.for_edit(_profile(), [], [_installation()], "")
+    qtbot.addWidget(dialog)
+    assert dialog.ok_button().property("role") == "primary"

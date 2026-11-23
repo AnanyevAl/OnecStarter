@@ -145,7 +145,6 @@ def test_redact_arguments_never_leaves_the_value() -> None:
         ('/WSN "u" /WSP "секрет" /Len', '/WSN "u" /WSP *** /Len'),
         ('/ModifyPassword новый /N"u"', '/ModifyPassword *** /N"u"'),
         ("/AccessToken eyJh.x.y", "/AccessToken ***"),
-        ("/UC 1234", "/UC ***"),
         # `/Proxy` — ключ каталога, а не пароль `/P`: платформа читает его как ключ  # noqa: RUF003
         # (решение заказчика 08.11.2026), поэтому он не маскируется; пароль прокси — `-PPwd`.
         ('/Proxy -PSrv srv -PUser u -PPwd "p p"', "/Proxy -PSrv srv -PUser u -PPwd ***"),
@@ -158,7 +157,6 @@ def test_redact_arguments_never_leaves_the_value() -> None:
         ("/Len /WSP", "/Len /WSP"),
         # Прижатая форма: значение не показывается, имя — как написано.
         ('/WSP"zzz"', "/WSP***"),
-        ('/UC"zzz" /Len', "/UC*** /Len"),
         ('/ModifyPassword"zzz"', "/ModifyPassword***"),
         ("/AccessToken=abc", "/AccessToken***"),
         ("/HttpsCert -pwd=x", "/HttpsCert -pwd***"),
@@ -167,7 +165,7 @@ def test_redact_arguments_never_leaves_the_value() -> None:
         # Финальное ревью, F3a: табуляция — разделитель, как в `cli_params._SPACES`.
         ("/C x\t/WSP secret", "/C x /WSP ***"),
         ("/WSP\tsecret", "/WSP ***"),
-        ("/UC\t\t1234 /Len", "/UC *** /Len"),
+        ("/WSP\t\t1234 /Len", "/WSP *** /Len"),
         # Табуляция внутри кавычек — часть значения, не разделитель.
         ('/C "a\tb" /Len', '/C "a\tb" /Len'),
         # Финальное ревью, F3b: читает ли платформа слово после голого `/P` как пароль —
@@ -202,12 +200,10 @@ def test_tab_and_detached_p_value_never_leak(arguments: str) -> None:
 @pytest.mark.parametrize(
     ("word", "expected"),
     [
-        ("/UCcode", "/UC"),
         ("/WSPsecret", "/WSP"),
         ("/wspX", "/wsp"),
         ("/AccessTokenX", "/AccessToken"),
         ("/ModifyPasswordX", "/ModifyPassword"),
-        ('/UC"zzz"', "/UC"),
         ("-PPwdx", "-PPwd"),
         ("-pwd=x", "-pwd"),
         ("/Pass", "/P"),
@@ -270,3 +266,14 @@ def test_repository_user_and_address_are_not_masked() -> None:
 )
 def test_has_unclosed_quote(text: str, expected: bool) -> None:
     assert has_unclosed_quote(text) is expected
+
+
+@pytest.mark.parametrize("arguments", ["/UC 1234", '/UC "12 34" /Len', '/UC"1234"', "/uc\t1234"])
+def test_access_code_uc_is_not_a_secret(arguments: str) -> None:
+    """Решение заказчика 23.11.2026 (T-44): код доступа `/UC` — не пароль, его не прячут.
+
+    Код снимает только блокировку соединений; имя и пароль пользователя всё равно нужны.
+    """  # noqa: RUF002
+    assert redact_arguments(arguments) == " ".join(arguments.split())
+    assert not contains_secret_arguments(arguments)
+    assert secret_name_at(arguments.split()[0]) is None

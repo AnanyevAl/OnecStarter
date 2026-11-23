@@ -87,6 +87,7 @@ from onecstarter.ui.edt.tree_model import (
     KIND_ROLE,
     build_edt_model,
 )
+from onecstarter.ui.item_view_menu import route_keyboard_menu
 from onecstarter.ui.search_field import SearchField
 from onecstarter.ui.theme import Palette
 
@@ -142,6 +143,8 @@ class _EdtTree(QTreeView):
         self.setDragDropMode(QTreeView.DragDropMode.InternalMove)
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._view._show_menu)
+        # T-46: клавиша меню — меню текущей строки; без этого курсор съезжал вниз.
+        route_keyboard_menu(self)
         self.setItemDelegateForColumn(0, _RightDecorationDelegate(self))
         # Ревью Task 21: с удалением третьей колонки «EDT» стала последней и по  # noqa: RUF003
         # умолчанию наследует растяжение Qt (`stretchLastSection`) — версия

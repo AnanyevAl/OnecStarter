@@ -176,21 +176,16 @@ def test_unknown_key_is_named_without_its_attached_value() -> None:
 @pytest.mark.parametrize(
     ("text", "name"),
     [
-        ("/UCzzz", "/UC"),
         ("/WSPzzz", "/WSP"),
         ("/wspzzz", "/wsp"),
         ("/AccessTokenzzz", "/AccessToken"),
         ("/ModifyPasswordzzz", "/ModifyPassword"),
-        ('/UC"zzz"', "/UC"),
     ],
 )
 def test_unknown_key_glued_to_secret_name_shows_only_the_name(text: str, name: str) -> None:
     """Мутационная проверка обязательна (финальное ревью, F2): приклеенный секрет не виден.
 
-    `('/UC"zzz"', "/UC")` здесь — неизвестный ключ только потому, что в тестовом каталоге
-    нет `/UC`. На реальном каталоге это прижатый `/UC` (Ф1): предупреждение про пробел,
-    а в постоянной строке ещё и ошибка о пароле — см.
-    `test_glued_secret_in_stored_line_is_also_a_plaintext_password_error`.
+    `/UC` здесь нет: с 23.11.2026 (T-44) код доступа — не секрет.
     """  # noqa: RUF002
     findings = _check(text)
     assert [(f.key, f.text) for f in findings] == [
@@ -278,7 +273,6 @@ def test_glued_secret_value_is_not_quoted_in_the_warning() -> None:
     ("text", "name", "mode"),
     [
         ('/WSP"секрет"', "/WSP", Mode.ENTERPRISE),
-        ('/UC"секрет"', "/UC", Mode.ENTERPRISE),
         ('/AccessToken"секрет"', "/AccessToken", Mode.ENTERPRISE),
         ('/WSP"секрет"', "/WSP", Mode.DESIGNER),
     ],
@@ -331,3 +325,11 @@ def test_glued_non_secret_value_of_a_key_with_secret_flag_is_not_a_password() ->
         CheckContext(where=Where.PERMANENT, mode=Mode.ENTERPRISE),
     )
     assert all("открытым текстом" not in f.text for f in findings)
+
+
+@pytest.mark.parametrize("where", [Where.PERMANENT, Where.DESIGNER_LINE, Where.ONCE])
+@pytest.mark.parametrize("mode", [Mode.ENTERPRISE, Mode.DESIGNER])
+def test_access_code_uc_is_not_a_plaintext_password(where: Where, mode: Mode) -> None:
+    """Решение заказчика 23.11.2026 (T-44): `/UC код` хранится в строке без ошибки."""
+    findings = check(parse("/UC 1234", load_cli_catalog()), CheckContext(where=where, mode=mode))
+    assert list(findings) == []

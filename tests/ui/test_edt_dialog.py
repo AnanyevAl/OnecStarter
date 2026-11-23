@@ -167,3 +167,8 @@ def test_ctrl_enter_accepts_the_edt_record_dialog(qtbot) -> None:  # type: ignor
     assert dialog.ok_button().isEnabled() is True
     _press_ctrl_enter(dialog)
     assert dialog.result() == QDialog.DialogCode.Accepted
+
+
+def test_ok_is_the_primary_button(qtbot) -> None:  # type: ignore[no-untyped-def]
+    """Замечание к 4.0.0 (T-45): «ОК» жёлтая, как в свойствах базы."""  # noqa: RUF002
+    assert _new(qtbot).ok_button().property("role") == "primary"

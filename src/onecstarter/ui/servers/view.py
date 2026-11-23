@@ -128,7 +128,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QMouseEvent
+from PySide6.QtGui import QContextMenuEvent, QFocusEvent, QKeyEvent, QMouseEvent
 from PySide6.QtWidgets import (
     QDialog,
     QHBoxLayout,
@@ -207,6 +207,56 @@ class _ProfileCard(QWidget):
         if event.button() == Qt.MouseButton.LeftButton:
             self._on_clicked(self._profile_id)
         super().mouseReleaseEvent(event)
+
+
+class _ProfileList(QWidget):
+    """Список карточек профилей — он, а не карточки, держит фокус клавиатуры (T-48).
+
+    Карточки пересоздаются целиком каждым `rebuild()` — раз в 5 с по скану и после
+    каждого выделения, — и фокус на карточке терялся бы вместе с ней. Список живёт
+    всё время жизни раздела: стрелки двигают выделение (`on_step`), клавиша меню
+    открывает меню выделенной карточки (`on_menu`). Меню мышью по-прежнему у самой
+    карточки: правый щелчок до списка не доходит, а щелчок в зазоре между
+    карточками (причина `Mouse`) списку не принадлежит и уходит дальше.
+
+    Tab в список без выделения выделяет первый профиль (`on_focus`): иначе фокус
+    в списке не был бы виден ничем.
+    """  # noqa: RUF002
+
+    def __init__(
+        self,
+        on_step: Callable[[int], None],
+        on_menu: Callable[[], None],
+        on_focus: Callable[[], None],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._on_step = on_step
+        self._on_menu = on_menu
+        self._on_focus = on_focus
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 — имя Qt
+        if event.modifiers() == Qt.KeyboardModifier.NoModifier and event.key() in (
+            Qt.Key.Key_Up,
+            Qt.Key.Key_Down,
+        ):
+            self._on_step(-1 if event.key() == Qt.Key.Key_Up else 1)
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:  # noqa: N802 — имя Qt
+        if event.reason() == QContextMenuEvent.Reason.Keyboard:
+            self._on_menu()
+            event.accept()
+            return
+        event.ignore()
+
+    def focusInEvent(self, event: QFocusEvent) -> None:  # noqa: N802 — имя Qt
+        super().focusInEvent(event)
+        if event.reason() in (Qt.FocusReason.TabFocusReason, Qt.FocusReason.BacktabFocusReason):
+            self._on_focus()
 
 
 class ServersView(QWidget):
@@ -304,7 +354,12 @@ class ServersView(QWidget):
         self._path_label.setObjectName("ServersSub")
         self._path_label.setWordWrap(True)
 
-        self._cards_layout = QVBoxLayout()
+        # T-48: карточки — внутри списка, который держит фокус клавиатуры.
+        self._profile_list = _ProfileList(
+            self._step_selection, self._open_selected_menu, self._select_first_if_none, self
+        )
+        self._cards_layout = QVBoxLayout(self._profile_list)
+        self._cards_layout.setContentsMargins(0, 0, 0, 0)
         self._cards_layout.setSpacing(10)
 
         self._foreign_label = QLabel("ДРУГИЕ СЕРВЕРЫ НА МАШИНЕ")  # noqa: RUF001
@@ -323,7 +378,7 @@ class ServersView(QWidget):
         layout.addLayout(head_row)
         layout.addWidget(self._path_label)
         layout.addSpacing(10)
-        layout.addLayout(self._cards_layout)
+        layout.addWidget(self._profile_list)
         layout.addSpacing(14)
         layout.addWidget(self._foreign_label)
         layout.addLayout(self._foreign_layout)
@@ -536,7 +591,7 @@ class ServersView(QWidget):
 
         # Задача 5 (T-10): _ProfileCard — тот же QWidget, что и раньше, плюс
         # mouseReleaseEvent, выделяющий карточку кликом (см. её докстринг).
-        card = _ProfileCard(profile.id, self._select_profile, parent=self)
+        card = _ProfileCard(profile.id, self._on_card_clicked, parent=self)
         card.setObjectName("ServerCard")
         card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         card.setStyleSheet(card_border_style(profile.id == self._selected_profile_id, palette))
@@ -734,6 +789,42 @@ class ServersView(QWidget):
         self._journal_panel.show_journal(profile.name, self._workspace.journal_path(profile_id))
         self.rebuild()
 
+    def _on_card_clicked(self, profile_id: str) -> None:
+        """Щелчок по карточке — выделить её и отдать фокус списку (T-48).
+
+        Без фокуса в списке стрелки и клавиша меню уходили виджету, у которого
+        фокус был до щелчка, — заказчик видел чужое меню вместо меню профиля.
+        """  # noqa: RUF002
+        self._profile_list.setFocus(Qt.FocusReason.MouseFocusReason)
+        self._select_profile(profile_id)
+
+    def _step_selection(self, delta: int) -> None:
+        """Стрелка в списке: соседний профиль; у края — остаёмся (T-48)."""  # noqa: RUF002
+        ids = [profile_id for profile_id, _state in self._profile_menu_args]
+        if not ids:
+            return
+        if self._selected_profile_id not in ids:
+            target = ids[0] if delta > 0 else ids[-1]
+        else:
+            at = ids.index(self._selected_profile_id) + delta
+            target = ids[max(0, min(at, len(ids) - 1))]
+        if target != self._selected_profile_id:
+            self._select_profile(target)
+
+    def _select_first_if_none(self) -> None:
+        if self._selected_profile_id is None and self._profile_menu_args:
+            self._select_profile(self._profile_menu_args[0][0])
+
+    def _open_selected_menu(self) -> None:
+        """Клавиша меню в списке — меню выделенной карточки, над ней (T-48)."""
+        ids = [profile_id for profile_id, _state in self._profile_menu_args]
+        if self._selected_profile_id not in ids:
+            return
+        index = ids.index(self._selected_profile_id)
+        profile_id, state = self._profile_menu_args[index]
+        card = self._profile_cards[index]
+        self._build_card_menu(profile_id, state).exec(card.mapToGlobal(card.rect().center()))
+
     def _clear_selection(self) -> None:
         self._selected_profile_id = None
         self._journal_panel.show_journal("", None)
@@ -907,6 +998,10 @@ class ServersView(QWidget):
 
     def selected_profile_id(self) -> str | None:
         return self._selected_profile_id
+
+    def profile_list(self) -> QWidget:
+        """Список карточек, держащий фокус клавиатуры (T-48) — тестам."""
+        return self._profile_list
 
     def journal_panel(self) -> JournalPanel:
         return self._journal_panel

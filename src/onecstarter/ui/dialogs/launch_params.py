@@ -181,10 +181,12 @@ class LaunchParamsBlock(CollapsibleGroup):
         self._designer_row = self._line_row(self._designer, Mode.DESIGNER)
         form.addRow(accent_label(DESIGNER_ROW), self._designer_row)
         form.addRow("", self._designer_findings)
+        align_form(form)
+        # Сначала в тело блока, потом видимость строк: показ строки формы, ещё не
+        # прикреплённой к виджету, делает её виджеты окнами верхнего уровня (T-43).
+        self.body_layout().addLayout(form)
         form.setRowVisible(self._designer_row, show_designer)
         form.setRowVisible(self._designer_findings, show_designer)
-        align_form(form)
-        self.body_layout().addLayout(form)
         self._enterprise.textChanged.connect(self.refresh)
         self._designer.textChanged.connect(self.refresh)
         self._designer.textChanged.connect(self.designer_text_changed)

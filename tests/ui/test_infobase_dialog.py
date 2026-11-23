@@ -7,6 +7,7 @@ import pytest
 from PySide6.QtCore import QEvent, QMimeData, QObject, QRect, Qt, QUrl
 from PySide6.QtGui import QShortcut
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QFormLayout,
     QLineEdit,
@@ -1966,3 +1967,44 @@ def test_other_keys_table_header_spans_the_width(qtbot: Any) -> None:
     header = table.horizontalHeader()
     last = header.count() - 1
     assert header.sectionPosition(last) + header.sectionSize(last) >= table.viewport().width() - 1
+
+
+class _WindowShowRecorder(QObject):
+    """Записывает показ окон верхнего уровня — то, что пользователь видит мельканием."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.shown: list[str] = []
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
+        if event.type() == QEvent.Type.Show and isinstance(watched, QWidget) and watched.isWindow():
+            self.shown.append(type(watched).__name__)
+        return False
+
+
+@pytest.mark.parametrize(
+    "connect", ['File="D:\\Bases\\Demo";', 'Srvr="localhost";Ref="demo";', 'ws="http://h/b";']
+)
+def test_building_the_dialog_shows_no_stray_windows(qtbot: Any, connect: str) -> None:
+    """Замечание к 4.0.0 (T-43): при открытии свойств мелькали пустые окна.
+
+    `QFormLayout.setRowVisible(..., True)` до того, как форма прикреплена к виджету, —
+    `show()` виджета без родителя, то есть отдельное окно верхнего уровня до переподчинения.
+    Так вели себя строки размещения (`_update_kind_visibility`) и строка «Конфигуратор»
+    блока параметров (`LaunchParamsBlock`). Сам диалог в `__init__` не показывается,
+    поэтому любое показанное окно — лишнее.
+    """
+    recorder = _WindowShowRecorder()
+    app = QApplication.instance()
+    assert app is not None
+    app.installEventFilter(recorder)
+    try:
+        dialog = InfobaseDialog(
+            _item(connect, (("Connect", connect),)),
+            groups=["/"], installations=INSTALLED, cfg_rules=[],
+            catalog=load_cli_catalog(), repository=RepositorySettings(None, None, False),
+        )
+    finally:
+        app.removeEventFilter(recorder)
+    qtbot.addWidget(dialog)
+    assert recorder.shown == []

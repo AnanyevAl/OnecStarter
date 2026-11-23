@@ -504,7 +504,7 @@ def test_copy_button_copies_preview(qtbot: Any) -> None:
     assert copied == ["/Lru"]
 
 
-@pytest.mark.parametrize("text", ['/WSP"zzz"', '/UC"zzz"', '/ModifyPassword"zzz"'])
+@pytest.mark.parametrize("text", ['/WSP"zzz"', '/AccessToken"zzz"', '/ModifyPassword"zzz"'])
 def test_attached_secrets_are_masked_and_not_saved(qtbot: Any, text: str) -> None:
     """Мутационная проверка обязательна: прижатый пароль в набор не попадает."""
 
@@ -571,7 +571,11 @@ def test_proxy_password_blocks_saving(qtbot: Any) -> None:
 
 @pytest.mark.parametrize(
     ("text", "name"),
-    [("/UCzzz", "/UC"), ("/WSPzzz", "/WSP"), ("/AccessTokenzzz", "/AccessToken")],
+    [
+        ("/ModifyPasswordzzz", "/ModifyPassword"),
+        ("/WSPzzz", "/WSP"),
+        ("/AccessTokenzzz", "/AccessToken"),
+    ],
 )
 def test_secret_glued_to_unknown_key_name_is_never_shown(
     qtbot: Any, text: str, name: str
@@ -813,3 +817,29 @@ def test_layout_follows_the_mockup(qtbot: Any) -> None:
     assert dialog.action_button() in footer_buttons
     assert dialog.action_button().property("role") == "primary"
     assert [b.text() for b in footer_buttons if b.text() == "Копировать строку"]
+
+
+def test_access_code_uc_is_shown_and_saved_in_a_set(qtbot: Any) -> None:
+    """Решение заказчика 23.11.2026 (T-44): код доступа `/UC` — не пароль.
+
+    Реальный каталог: виден в предпросмотре и уходит в набор, как любое значение.
+    """
+    saved: list[ParamSet] = []
+
+    def save(param_set: ParamSet) -> str | None:
+        saved.append(param_set)
+        return None
+
+    dialog = ParamBuilderDialog(
+        load_cli_catalog(),
+        title="Параметры запуска — База",
+        mode=Mode.ENTERPRISE,
+        purpose=BuilderPurpose.ONCE,
+        text="/UC 1234",
+        save_set=save,
+        ask_name=lambda _parent: "Обновление",
+    )
+    qtbot.addWidget(dialog)
+    assert "/UC 1234" in dialog.preview_text()
+    dialog.save_as_set()
+    assert saved == [ParamSet("Обновление", Mode.ENTERPRISE, "/UC 1234")]

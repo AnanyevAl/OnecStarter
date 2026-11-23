@@ -1574,7 +1574,6 @@ def test_designer_params_with_line_break_are_rejected(tmp_path: Path) -> None:
         "/WSP zzz",
         '/P"zzz"',
         "/P zzz",
-        "/UC zzz",
         "/Proxy -PSrv srv -PPort 3128 -PUser u -PPwd zzz",
         "/HttpsCert -file c.pfx -pwd zzz",
         '/Len /ModifyPassword "zzz"',
@@ -2058,3 +2057,12 @@ def test_batch_target_reports_a_duplicate_name(tmp_path: Path) -> None:
     workspace.add_infobase("Демо Бухгалтерия", 'File="C:\\Bases\\Dup";')
     target = workspace.batch_target("id:44444444-4444-4444-4444-444444444444")
     assert "имя базы в списке не единственное" in target.problems
+
+
+def test_designer_params_keep_access_code_uc(tmp_path: Path) -> None:
+    """Решение заказчика 23.11.2026 (T-44): код доступа `/UC` — не пароль, строка сохраняется."""
+    (tmp_path / "ibases.v8i").write_bytes(_FILE_AND_WEB.encode())
+    workspace = _raw_workspace(tmp_path, [])
+    key = _key_of(workspace, "Файловая")
+    workspace.set_designer_params(key, "/UC 1234")
+    assert workspace.designer_params_of(key) == "/UC 1234"

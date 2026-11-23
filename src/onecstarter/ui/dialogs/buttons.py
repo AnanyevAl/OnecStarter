@@ -125,10 +125,16 @@ def russian_button_box(*kinds: ButtonKind) -> QDialogButtonBox:
     Порядок кнопок — порядок аргументов. `accepted`/`rejected` работают как
     обычно: подписаться на них можно сразу после вызова, без дополнительной
     возни с ролями отдельных кнопок.
+
+    «ОК» — жёлтая главная кнопка окна (мокап `.btn.pri`, решение заказчика 1) во всех
+    диалогах сразу: роль ставится здесь, а не в каждом диалоге, — так «ОК» профиля сервера
+    и проекта EDT разошлись со свойствами базы (замечание к 4.0.0, T-45).
     """  # noqa: RUF002
     box = QDialogButtonBox()
     for kind in kinds:
-        box.addButton(_LABELS[kind], _ROLES[kind])
+        button = box.addButton(_LABELS[kind], _ROLES[kind])
+        if kind is ButtonKind.OK:
+            mark_button(button, PRIMARY)
     return box
 
 

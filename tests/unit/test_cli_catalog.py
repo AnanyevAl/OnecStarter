@@ -187,7 +187,7 @@ def test_connection_keys_are_managed(name: str) -> None:
 
 
 @pytest.mark.parametrize(
-    "name", ["/P", "/WSP", "/ModifyPassword", "/AccessToken", "/UC"]
+    "name", ["/P", "/WSP", "/ModifyPassword", "/AccessToken"]
 )
 def test_password_like_keys_are_secret(name: str) -> None:
     key = load_cli_catalog().key(name)
@@ -396,3 +396,9 @@ def test_every_shipped_command_has_a_since_version() -> None:
 def test_only_dump_ib_is_measured_fact() -> None:
     facts = {c.name for c in load_cli_catalog().commands if c.reliability is Reliability.FACT}
     assert facts == {"/DumpIB"}
+
+
+def test_access_code_uc_is_not_secret() -> None:
+    """Решение заказчика 23.11.2026 (T-44): код доступа — не пароль."""
+    key = load_cli_catalog().key("/UC")
+    assert key is not None and not key.secret

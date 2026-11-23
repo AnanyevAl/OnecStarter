@@ -213,11 +213,9 @@ from onecstarter.services.paths import ROOT, normalize_folder
 from onecstarter.services.workspace import RepositorySettings
 from onecstarter.ui.components import DialogFooter, align_form, dim_label
 from onecstarter.ui.dialogs.buttons import (
-    PRIMARY,
     ButtonKind,
     accept_button,
     accept_on_ctrl_enter,
-    mark_button,
     russian_button_box,
 )
 from onecstarter.ui.dialogs.group_picker import GroupPicker
@@ -571,7 +569,9 @@ class InfobaseDialog(QDialog):
                 form.addRow(label, widget)
         form.addRow("Группа", self._folder)
         self._form = form
-        self._update_kind_visibility()
+        # Первый вызов `_update_kind_visibility` — после `body.setLayout(content)` ниже:
+        # пока родителя нет, показанная строка формы становится отдельным окном
+        # верхнего уровня — пустые окна, мелькавшие при открытии свойств (T-43).
         self._kind_box.currentIndexChanged.connect(self._update_kind_visibility)
 
         # Задача 7: «Версия» и «Клиент» строятся всегда — и для новой записи
@@ -719,9 +719,8 @@ class InfobaseDialog(QDialog):
         self._buttons = russian_button_box(ButtonKind.OK, ButtonKind.CANCEL)
         self._buttons.accepted.connect(self._on_accept)
         self._buttons.rejected.connect(self.reject)
+        # Жёлтую роль главной кнопки ставит сама `russian_button_box` (T-45).
         self._ok_button = accept_button(self._buttons)
-        # Мокап `.btn.pri` (решение заказчика 1): «ОК» — жёлтая главная кнопка окна.  # noqa: RUF003
-        mark_button(self._ok_button, PRIMARY)
         accept_on_ctrl_enter(self, self._buttons)
         # Пояснение к неактивной «ОК» — рядом с ней, а не окном после клика  # noqa: RUF003
         # (решение заказчика: отказ показывается раньше, до действия). Это подсказка самой
@@ -745,6 +744,7 @@ class InfobaseDialog(QDialog):
         body = QWidget()
         body.setObjectName("PropertiesContent")
         body.setLayout(content)
+        self._update_kind_visibility()
         scroll = _ContentScroll()
         scroll.setObjectName("PropertiesScroll")
         scroll.viewport().setObjectName("PropertiesViewport")

@@ -44,8 +44,7 @@ from onecstarter.config.shell_link import (
     safe_file_name,
     shortcut_command,
 )
-from onecstarter.domain.cli_catalog import CLIENT_TITLES, MODE_TITLES, Catalog, Mode
-from onecstarter.domain.cli_params import CheckContext, Level, Where, check, parse
+from onecstarter.domain.cli_catalog import CLIENT_TITLES, Catalog, Mode
 from onecstarter.domain.connect import ConnectKind
 from onecstarter.domain.default_version import DefaultVersionRule
 from onecstarter.domain.launch import LaunchTarget
@@ -110,6 +109,7 @@ from onecstarter.ui.dialogs.param_builder import (
     run_builder_dialog,
 )
 from onecstarter.ui.dialogs.repository import BLOCK_ID as REPOSITORY_BLOCK_ID
+from onecstarter.ui.item_view_menu import route_keyboard_menu
 from onecstarter.ui.search_field import SearchField
 from onecstarter.ui.theme import Palette
 
@@ -539,6 +539,8 @@ class BasesView(QWidget):
         # Одиночные действия (F3/F4, свойства, перетаскивание) берут текущую строку.
         self._tree.setSelectionMode(QTreeView.SelectionMode.ExtendedSelection)
         self._tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        # T-46: клавиша меню открывает меню текущей строки (не строки под ней).
+        route_keyboard_menu(self._tree)
         # Задача 14: перенос по группам перетаскиванием. InternalMove, а не  # noqa: RUF003
         # DragDrop — иначе дерево приняло бы и чужое перетаскивание вообще
         # любого содержимого (текст из другого окна и т. п.): без источника
@@ -1243,41 +1245,6 @@ class BasesView(QWidget):
         """
         self._on_error(InvalidRequestError(f"«{item.name}» {BROWSER_PARAMS_NOTE}"))
 
-    def launch_set(self, key: str, param_set: ParamSet) -> None:
-        """«Набор параметров ▸»: запуск без конструктора; проверка не блокирует (спека §4.6).
-
-        Строки состояния у раздела нет, поэтому ошибки проверки — сообщением после
-        запуска (отступление от §4.6, записано в спеке).
-        """  # noqa: RUF002
-        item = next((i for i in self._workspace.items() if i.key == key), None)
-        if item is None or self._catalog is None:
-            return
-        if param_set.mode is Mode.DESIGNER and item.kind is ConnectKind.WEB:
-            self._refuse_designer_on_web(item)
-            return
-        if self._workspace.opens_in_browser(key):
-            self._refuse_params_in_browser(item)
-            return
-        context = CheckContext(
-            where=Where.ONCE,
-            mode=param_set.mode,
-            client=base_client(item.app) if param_set.mode is Mode.ENTERPRISE else None,
-            version=base_version(item, self._installations or [], self._cfg_rules),
-            permanent=parse(additional_parameters(item), self._catalog),
-        )
-        findings = check(parse(param_set.params, self._catalog), context)
-        target = LaunchTarget.DESIGNER if param_set.mode is Mode.DESIGNER else None
-        launched = self.launch_key(key, target, once=param_set.params)
-        errors = [finding.text for finding in findings if finding.level is Level.ERROR]
-        # Решение заказчика 09.11.2026: замечания — только после состоявшегося запуска;
-        # при сбое или отказе ошибка запуска уже показана, второго сообщения нет.  # noqa: RUF003
-        if launched and errors:
-            self._on_error(
-                InvalidRequestError(
-                    f"Набор «{param_set.name}»: {'; '.join(errors)}. Запуск выполнен."  # noqa: RUF001
-                )
-            )
-
     def _add_scenario_menu(self, menu: QMenu, key: str) -> None:
         """«Выполнить сценарий ▸» (спека v4, §7.3) — по выделенным базам.
 
@@ -1308,10 +1275,13 @@ class BasesView(QWidget):
         неактивны и объясняют себя подсказкой — тот же приём, что у записи общего
         списка (`_build_menu`); спека §4.5, решение заказчика 09.11.2026 (F4).
         «Конфигуратора с параметрами…» у веб-базы нет вовсе, как и «Конфигуратора».
+
+        Подменю «Набор параметров ▸» убрано (решение заказчика 23.11.2026, T-47):
+        набор в меню нельзя ни выбрать с правкой, ни изменить, а постоянные параметры
+        задаются в свойствах базы. Наборы остаются в конструкторе (спека §4.6).
         """  # noqa: RUF002
         if self._catalog is None:
             return
-        browser = web and self._workspace.opens_in_browser(key)
         launch = menu.addAction(
             "Запустить с параметрами…\tCtrl+F3",  # noqa: RUF001
             lambda: self.launch_with_params(key, Mode.ENTERPRISE),
@@ -1321,28 +1291,10 @@ class BasesView(QWidget):
                 "Конфигуратор с параметрами…\tCtrl+F4",  # noqa: RUF001
                 lambda: self.launch_with_params(key, Mode.DESIGNER),
             )
-        # Явный родитель и addMenu(QMenu): подменю от addMenu(str) PySide удаляло
-        # вместе с обёрткой, и тест видел «Internal C++ object already deleted».  # noqa: RUF003
-        submenu = QMenu("Набор параметров", menu)  # noqa: RUF001
-        menu.addMenu(submenu)
-        if browser:
+        if web and self._workspace.opens_in_browser(key):
             menu.setToolTipsVisible(True)
-            for action in (launch, submenu.menuAction()):
-                action.setEnabled(False)
-                action.setToolTip(f"База {BROWSER_PARAMS_NOTE}")
-            return
-        sets = [
-            s for s in self._load_param_sets(quiet=True) if not web or s.mode is Mode.ENTERPRISE
-        ]
-        if not sets:
-            note = submenu.addAction("Наборов нет")
-            note.setEnabled(False)
-            return
-        for param_set in sets:
-            submenu.addAction(
-                f"{param_set.name} — {MODE_TITLES[param_set.mode]}",
-                lambda chosen=param_set: self.launch_set(key, chosen),
-            )
+            launch.setEnabled(False)
+            launch.setToolTip(f"База {BROWSER_PARAMS_NOTE}")
 
     def _toggle_current_favorite(self) -> None:
         key = self._current_base_key()

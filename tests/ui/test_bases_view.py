@@ -62,6 +62,7 @@ from onecstarter.ui.dialogs.group import GroupDialog
 from onecstarter.ui.dialogs.infobase import InfobaseDialog
 from onecstarter.ui.settings_group import chevron_pixmap
 from onecstarter.ui.shortcuts import BASES_SHORTCUTS
+from tests.ui.test_item_view_menu import keyboard_event
 from tests.unit.test_cache import FakeCacheOps
 
 from .conftest import (
@@ -593,6 +594,52 @@ def test_empty_space_menu_has_room_for_the_shortcut(qtbot, workspace_factory):
     """Предпроверка плана В, п. 22: у «Обновить» в меню пустого места — сочетание F5."""  # noqa: RUF002
     view, _, _, _ = _view(qtbot, workspace_factory)
     assert view._build_empty_space_menu().minimumWidth() > 0
+
+
+class _MenuStub:
+    """Меню-заглушка: `exec` настоящего QMenu заблокировал бы офскрин-тест."""
+
+    def exec(self, *_args: Any) -> None:
+        return None
+
+
+def _record_menus(monkeypatch: Any, view: BasesView) -> list[str]:
+    """Подменить ВСЕ построители меню `_show_menu` и записывать, для чего строится меню.
+
+    Подменены все четыре, а не только меню базы: на сломанной маршрутизации
+    позиция попадает на соседнюю строку, и если там группа, настоящее меню
+    заблокировало бы тест `exec()`-ом вместо понятного падения.
+    """  # noqa: RUF002
+    built: list[str] = []
+
+    def record(label: str) -> Callable[..., _MenuStub]:
+        def build(*args: Any) -> _MenuStub:
+            built.append(label if label != "base" else args[1])
+            return _MenuStub()
+
+        return build
+
+    monkeypatch.setattr(view, "_build_menu", record("base"))
+    monkeypatch.setattr(view, "_group_menu_for", record("group"))
+    monkeypatch.setattr(view, "_build_implicit_group_menu", record("implicit"))
+    monkeypatch.setattr(view, "_build_empty_space_menu", record("empty"))
+    return built
+
+
+def test_menu_key_opens_the_menu_of_the_current_base(qtbot, workspace_factory, monkeypatch):
+    """T-46: клавиша меню — меню ТЕКУЩЕЙ базы, а не строки под ней.
+
+    Позиция события в координатах дерева, а не viewport, и `indexAt` раньше
+    попадал на строку ниже: «Свойства…» открывали чужую базу.
+    """  # noqa: RUF002
+    view, _, _, _ = _view(qtbot, workspace_factory)
+    _show_exposed(qtbot, view)
+    built = _record_menus(monkeypatch, view)
+    keys = [i.key for i in view.workspace().items() if not i.is_group]
+    for key in keys:
+        _select_key(view, key)
+        keyboard_event(view._tree)
+    assert built == keys
 
 
 # -- отказ записи bases.json доходит до пользователя (финальное ревью, I9) ----
@@ -5178,40 +5225,10 @@ def test_cancelled_builder_launches_nothing(qtbot: Any, workspace_factory: Any) 
     assert calls == []
 
 
-def test_launch_set_runs_and_reports_errors_after_launch(
-    qtbot: Any, workspace_factory: Any
-) -> None:
-    view, calls, errors, _ = _view(
-        qtbot, workspace_factory, view_kwargs={"catalog": load_cli_catalog()}
-    )
-    item = _file_item(view)
-    view.launch_set(item.key, ParamSet("Кривой", Mode.ENTERPRISE, "/Foo /DisableStartupMessages"))
-    assert " /Foo /DisableStartupMessages " in calls[-1].arguments
-    assert len(errors) == 1
-    assert "Набор «Кривой»" in str(errors[0]) and "неизвестный ключ" in str(errors[0])  # noqa: RUF001
-
-
-@pytest.mark.parametrize(
-    ("params", "name"),
-    [("/UCzzz", "/UC"), ("/WSPzzz", "/WSP"), ("/ModifyPasswordzzz", "/ModifyPassword")],
-)
-def test_launch_set_message_does_not_show_secret_glued_to_unknown_key(
-    qtbot: Any, workspace_factory: Any, params: str, name: str
-) -> None:
-    """Мутационная проверка обязательна (финальное ревью, F2): сообщение называет только имя."""
-    view, calls, errors, _ = _view(
-        qtbot, workspace_factory, view_kwargs={"catalog": load_cli_catalog()}
-    )
-    item = _file_item(view)
-    view.launch_set(item.key, ParamSet("Ручной", Mode.ENTERPRISE, params))
-    assert len(calls) == 1 and len(errors) == 1
-    assert f"{name} — неизвестный ключ" in str(errors[0])
-    assert "zzz" not in str(errors[0])
-
-
-def test_menu_has_param_items_and_sets(
+def test_menu_has_param_items_but_no_sets_submenu(
     qtbot: Any, workspace_factory: Any, tmp_path: Path
 ) -> None:
+    """T-47 (решение заказчика 23.11.2026): подменю «Набор параметров» нет и при наборах."""  # noqa: RUF002
     sets_path = tmp_path / "param_sets.json"
     save_param_sets(
         sets_path,
@@ -5233,22 +5250,9 @@ def test_menu_has_param_items_and_sets(
         "",
         "Запустить с параметрами…\tCtrl+F3",  # noqa: RUF001
         "Конфигуратор с параметрами…\tCtrl+F4",  # noqa: RUF001
-        "Набор параметров",  # noqa: RUF001
+        "",
     ]
-    submenu = cast(QMenu, menu.actions()[designer_at + 4].menu())
-    assert [a.text() for a in submenu.actions()] == [
-        "Отладка — 1С:Предприятие",  # noqa: RUF001
-        "Тихо — Конфигуратор",
-    ]
-
-
-def test_empty_sets_submenu_has_disabled_note(qtbot: Any, workspace_factory: Any) -> None:
-    view, _, _, _ = _view(qtbot, workspace_factory, view_kwargs={"catalog": load_cli_catalog()})
-    item = _file_item(view)
-    menu = view._build_menu(item, item.key)
-    submenu = cast(QMenu, next(a.menu() for a in menu.actions() if a.text() == "Набор параметров"))  # noqa: RUF001
-    (only,) = submenu.actions()
-    assert only.text() == "Наборов нет" and not only.isEnabled()
+    assert not any(action.menu() for action in menu.actions() if "араметр" in action.text())
 
 
 def test_web_menu_offers_only_enterprise_params(qtbot: Any, workspace_factory: Any) -> None:
@@ -5278,7 +5282,7 @@ def _param_actions(menu: QMenu) -> dict[str, Any]:
     return {
         action.text(): action
         for action in menu.actions()
-        if action.text() in ("Запустить с параметрами…\tCtrl+F3", "Набор параметров")  # noqa: RUF001
+        if action.text() == "Запустить с параметрами…\tCtrl+F3"  # noqa: RUF001
     }
 
 
@@ -5288,7 +5292,7 @@ def test_browser_web_base_has_param_items_disabled(
     """Финальное ревью, F4 (решение заказчика 09.11.2026): пункт недоступен (спека §4.5)."""
     view, item, _, _, _ = _browser_web_view(qtbot, workspace_factory, tmp_path, browser=True)
     actions = _param_actions(view._build_menu(item, item.key))
-    assert set(actions) == {"Запустить с параметрами…\tCtrl+F3", "Набор параметров"}  # noqa: RUF001
+    assert set(actions) == {"Запустить с параметрами…\tCtrl+F3"}  # noqa: RUF001
     assert not any(action.isEnabled() for action in actions.values())
     assert all("браузер" in action.toolTip() for action in actions.values())
 
@@ -5298,13 +5302,13 @@ def test_thin_client_web_base_keeps_param_items_enabled(
 ) -> None:
     view, item, _, _, _ = _browser_web_view(qtbot, workspace_factory, tmp_path, browser=False)
     actions = _param_actions(view._build_menu(item, item.key))
-    assert len(actions) == 2 and all(action.isEnabled() for action in actions.values())
+    assert len(actions) == 1 and all(action.isEnabled() for action in actions.values())
 
 
 def test_browser_web_base_refuses_params_before_builder(
     qtbot: Any, workspace_factory: Any, tmp_path: Path
 ) -> None:
-    """Мутационная проверка: Ctrl+F3 и набор отказывают сразу, браузер не открывается."""
+    """Мутационная проверка: Ctrl+F3 отказывает сразу, браузер не открывается."""
 
     def never(_dialog: Any) -> bool:
         raise AssertionError("конструктор не должен открываться")
@@ -5313,11 +5317,10 @@ def test_browser_web_base_refuses_params_before_builder(
         qtbot, workspace_factory, tmp_path, browser=True, run_builder=never
     )
     view.launch_with_params(item.key, Mode.ENTERPRISE)
-    view.launch_set(item.key, ParamSet("Отладка", Mode.ENTERPRISE, "/Debug"))
     assert calls == [] and opened == []
     # Текст — отказа представления, а не запуска (`launch_infobase` отказал бы позже  # noqa: RUF003
     # своим «разовые параметры не передать»): отказ пришёл до запуска.
-    assert [str(error) for error in errors] == [f"«{item.name}» {BROWSER_PARAMS_NOTE}"] * 2
+    assert [str(error) for error in errors] == [f"«{item.name}» {BROWSER_PARAMS_NOTE}"]
 
 
 def test_thin_client_web_base_launches_with_params(
@@ -5341,9 +5344,9 @@ def test_base_menu_is_grouped_by_meaning(qtbot: Any, workspace_factory: Any) -> 
     view, _errors = _scenario_view(qtbot, workspace_factory)
     item = _file_item(view)
     layout = _menu_layout(view._build_menu(item, item.key))
-    assert layout[:16] == [
+    assert layout[:15] == [
         "Запустить", "Тонкий клиент", "Толстый клиент", "Конфигуратор", "—",
-        "Запустить с параметрами…", "Конфигуратор с параметрами…", "Набор параметров", "—",  # noqa: RUF001
+        "Запустить с параметрами…", "Конфигуратор с параметрами…", "—",  # noqa: RUF001
         "Запустить с запросом входа", "Конфигуратор с запросом входа",  # noqa: RUF001
         "Запустить от имени администратора", "Конфигуратор от имени администратора", "—",
         "Выполнить сценарий", "—",
@@ -5358,7 +5361,7 @@ def test_web_base_menu_is_grouped_by_meaning(qtbot: Any, workspace_factory: Any)
     layout = _menu_layout(view._build_menu(item, item.key))
     assert layout[:6] == [
         "Запустить", "Тонкий клиент", "Открыть в браузере", "—",
-        "Запустить с параметрами…", "Набор параметров",  # noqa: RUF001
+        "Запустить с параметрами…", "—",  # noqa: RUF001
     ]
     assert layout[-3:] == ["В избранное", "—", "Удалить из списка…"]  # noqa: RUF001
 
@@ -5368,35 +5371,6 @@ def test_menu_without_catalog_has_no_param_items(qtbot: Any, workspace_factory: 
     item = _file_item(view)
     labels = [action.text() for action in view._build_menu(item, item.key).actions()]
     assert not any("с параметрами" in label for label in labels)  # noqa: RUF001
-
-
-def test_launch_set_failed_launch_shows_only_launch_error(
-    qtbot: Any, workspace_factory: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    view, _, errors, _ = _view(
-        qtbot, workspace_factory, view_kwargs={"catalog": load_cli_catalog()}
-    )
-
-    def fail(*_args: Any, **_kwargs: Any) -> None:
-        raise LaunchError("Платформа не найдена")
-
-    monkeypatch.setattr(view.workspace(), "launch", fail)
-    item = _file_item(view)
-    view.launch_set(item.key, ParamSet("Кривой", Mode.ENTERPRISE, "/Foo"))
-    assert [str(e) for e in errors] == ["Платформа не найдена"]
-    assert not any("Запуск выполнен" in str(e) for e in errors)
-
-
-def test_launch_set_successful_launch_keeps_single_check_message(
-    qtbot: Any, workspace_factory: Any
-) -> None:
-    view, calls, errors, _ = _view(
-        qtbot, workspace_factory, view_kwargs={"catalog": load_cli_catalog()}
-    )
-    item = _file_item(view)
-    view.launch_set(item.key, ParamSet("Кривой", Mode.ENTERPRISE, "/Foo"))
-    assert len(calls) == 1 and len(errors) == 1
-    assert str(errors[0]).endswith("Запуск выполнен.")
 
 
 def test_designer_on_web_base_refuses_before_builder(
@@ -5411,9 +5385,8 @@ def test_designer_on_web_base_refuses_before_builder(
     )
     item = next(i for i in view.workspace().items() if i.kind is ConnectKind.WEB)
     view.launch_with_params(item.key, Mode.DESIGNER)
-    view.launch_set(item.key, ParamSet("Конф", Mode.DESIGNER, "/DisableStartupMessages"))
     assert calls == []
-    assert len(errors) == 2
+    assert len(errors) == 1
     assert all("Конфигуратор к ней не подключается" in str(e) for e in errors)
 
 

@@ -51,6 +51,7 @@ from onecstarter.ui.edt.view import (
 )
 from onecstarter.ui.shortcuts import EDT_SHORTCUTS
 from onecstarter.ui.theme import DARK
+from tests.ui.test_item_view_menu import keyboard_event
 
 INSTALLED = [
     EdtInstallation("2025.2.6+4", Path(r"C:\e\1cedt.exe"), Path(r"C:\j\bin"), "", 17, "auto")
@@ -660,6 +661,41 @@ def test_group_and_empty_menus(harness: Harness, qtbot) -> None:  # type: ignore
     assert MENU_OPEN_EDT not in group_actions
     empty_actions = _actions(view.build_menu(None, None))
     assert set(empty_actions) == {MENU_ADD, MENU_ADD_GROUP, MENU_IMPORT}
+
+
+class _MenuStub:
+    """Меню-заглушка: `exec` настоящего QMenu заблокировал бы офскрин-тест."""
+
+    def exec(self, *_args: object) -> None:
+        return None
+
+
+def test_menu_key_opens_the_menu_of_the_current_row(  # type: ignore[no-untyped-def]
+    harness: Harness, qtbot, monkeypatch
+) -> None:
+    """T-46: клавиша меню — меню ТЕКУЩЕЙ строки, и курсор остаётся на ней.
+
+    Позиция события в координатах дерева, а не viewport: `indexAt` попадал
+    на строку ниже, а `_show_menu` ещё и делал её текущей — курсор съезжал вниз
+    на каждое нажатие.
+    """  # noqa: RUF002
+    projects = [_add(harness, name) for name in ("a", "b", "c", "d")]
+    view = harness.view()
+    qtbot.addWidget(view)
+    with qtbot.waitExposed(view):
+        view.show()
+    built: list[tuple[object, object]] = []
+
+    def build(kind: object, item_id: object) -> _MenuStub:
+        built.append((kind, item_id))
+        return _MenuStub()
+
+    monkeypatch.setattr(view, "build_menu", build)
+    _select(view, projects[1].id)
+    keyboard_event(view.tree())
+    keyboard_event(view.tree())
+    assert built == [("project", projects[1].id)] * 2
+    assert view.tree().currentIndex().data(ID_ROLE) == projects[1].id
 
 
 def test_add_project_via_dialog(harness: Harness, qtbot, monkeypatch) -> None:  # type: ignore[no-untyped-def]

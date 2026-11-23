@@ -319,3 +319,18 @@ def test_left_flag_wins_over_the_order_of_choices(qtbot: Any) -> None:
     qtbot.waitExposed(dialog)
     assert dialog.button("no").x() < dialog.button("yes").x()
     assert not dialog.note_list().isVisible()
+
+
+def test_ok_of_the_button_box_is_the_primary_button(qtbot: Any) -> None:
+    """Замечание к 4.0.0 (T-45): «ОК» жёлтая во всех диалогах, как в свойствах базы.
+
+    Роль ставит сама `russian_button_box` — диалог не может её забыть. «Отмена»
+    и «Закрыть» — без роли.
+    """  # noqa: RUF002
+    box = russian_button_box(ButtonKind.OK, ButtonKind.CANCEL)
+    qtbot.addWidget(box)
+    roles = {b.text(): b.property("role") for b in box.buttons()}
+    assert roles == {"ОК": PRIMARY, "Отмена": None}  # noqa: RUF001
+    close = russian_button_box(ButtonKind.CLOSE)
+    qtbot.addWidget(close)
+    assert [b.property("role") for b in close.buttons()] == [None]

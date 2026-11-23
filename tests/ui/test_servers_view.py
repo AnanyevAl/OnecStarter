@@ -31,6 +31,7 @@ from typing import Any
 
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QContextMenuEvent
 from PySide6.QtWidgets import QApplication, QDialog, QLabel, QPushButton
 
 from onecstarter.domain.launch import LaunchCommand
@@ -1628,6 +1629,122 @@ def test_selecting_another_card_moves_the_border(
     assert view.selected_profile_id() == profile_b.id
     assert theme.DARK.accent in view.profile_card(1).styleSheet()
     assert theme.DARK.accent not in view.profile_card(0).styleSheet()
+
+
+# -- клавиатура в списке профилей (T-48) -----------------------------------------
+#
+# Замечание заказчика 23.11.2026: стрелки не перемещали по профилям, а клавиша меню  # noqa: RUF003
+# открывала чужое меню. Карточки не держали фокуса вовсе; фокус держит теперь список
+# карточек — он, в отличие от карточек, не пересоздаётся каждым `rebuild()`.
+
+
+def _three_profiles_view(tmp_path: Path, qtbot: Any) -> tuple[ServersView, list[str]]:
+    profiles = tuple(
+        _profile(
+            id=pid,
+            name=pid.upper(),
+            port=1540 + 100 * n,
+            regport=1541 + 100 * n,
+            range_start=1560 + 100 * n,
+            range_end=1591 + 100 * n,
+            cluster_dir=rf"E:\srv\{pid}",
+        )
+        for n, pid in enumerate(("a", "b", "c"))
+    )
+    workspace = _workspace(tmp_path, profiles)
+    workspace.apply_scan(ScanSnapshot(agents=(), managers=()))
+    view = ServersView(workspace, installed=lambda: [_installation()], palette=theme.DARK)
+    with qtbot.waitExposed(view):
+        view.show()
+    view.activateWindow()
+    # Исходная позиция — фокус вне списка, в тексте журнала: при показе Qt сам
+    # отдаёт фокус списку, и без этого тесты щелчка и Tab проходили бы на пустышке.
+    journal_text = view.journal_panel().text_widget()
+    journal_text.setFocus()
+    assert journal_text.hasFocus()
+    return view, [p.id for p in profiles]
+
+
+def test_card_click_puts_keyboard_focus_into_the_profile_list(
+    application: QApplication, tmp_path: Path, qtbot: Any
+) -> None:
+    view, ids = _three_profiles_view(tmp_path, qtbot)
+    qtbot.mouseRelease(view.profile_card(1), Qt.MouseButton.LeftButton)
+    assert view.selected_profile_id() == ids[1]
+    assert view.profile_list().hasFocus()
+
+
+def test_arrow_keys_move_the_selection_between_profiles(
+    application: QApplication, tmp_path: Path, qtbot: Any
+) -> None:
+    view, ids = _three_profiles_view(tmp_path, qtbot)
+    qtbot.mouseRelease(view.profile_card(0), Qt.MouseButton.LeftButton)
+    seen = []
+    for key in (Qt.Key.Key_Down, Qt.Key.Key_Down, Qt.Key.Key_Down, Qt.Key.Key_Up):
+        qtbot.keyClick(view.profile_list(), key)
+        seen.append(view.selected_profile_id())
+    assert seen == [ids[1], ids[2], ids[2], ids[1]]
+    assert "B" in view.journal_panel().title_label().text()
+    assert theme.DARK.accent in view.profile_card(1).styleSheet()
+    # Карточки пересобраны, а фокус остался в списке — следующая стрелка дойдёт.  # noqa: RUF003
+    assert view.profile_list().hasFocus()
+
+
+def test_down_without_selection_selects_the_first_profile(
+    application: QApplication, tmp_path: Path, qtbot: Any
+) -> None:
+    view, ids = _three_profiles_view(tmp_path, qtbot)
+    view.profile_list().setFocus()
+    qtbot.keyClick(view.profile_list(), Qt.Key.Key_Down)
+    assert view.selected_profile_id() == ids[0]
+
+
+def test_tab_into_the_list_selects_the_first_profile(
+    application: QApplication, tmp_path: Path, qtbot: Any
+) -> None:
+    """Иначе фокус в списке без выделения не виден ничем."""
+    view, ids = _three_profiles_view(tmp_path, qtbot)
+    view.profile_list().setFocus(Qt.FocusReason.TabFocusReason)
+    assert view.selected_profile_id() == ids[0]
+
+
+def test_focus_survives_the_periodic_rebuild(
+    application: QApplication, tmp_path: Path, qtbot: Any
+) -> None:
+    view, ids = _three_profiles_view(tmp_path, qtbot)
+    qtbot.mouseRelease(view.profile_card(0), Qt.MouseButton.LeftButton)
+    view.rebuild()
+    qtbot.keyClick(view.profile_list(), Qt.Key.Key_Down)
+    assert view.selected_profile_id() == ids[1]
+
+
+class _MenuStub:
+    """Меню-заглушка: `exec` настоящего QMenu заблокировал бы офскрин-тест."""
+
+    def exec(self, *_args: object) -> None:
+        return None
+
+
+def test_menu_key_opens_the_menu_of_the_selected_profile(
+    application: QApplication, tmp_path: Path, qtbot: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    view, ids = _three_profiles_view(tmp_path, qtbot)
+    built: list[str] = []
+
+    def build(profile_id: str, _state: CardState) -> _MenuStub:
+        built.append(profile_id)
+        return _MenuStub()
+
+    monkeypatch.setattr(view, "_build_card_menu", build)
+    qtbot.mouseRelease(view.profile_card(2), Qt.MouseButton.LeftButton)
+    focused = QApplication.focusWidget()
+    assert focused is not None
+    pos = focused.rect().center()
+    QApplication.sendEvent(
+        focused,
+        QContextMenuEvent(QContextMenuEvent.Reason.Keyboard, pos, focused.mapToGlobal(pos)),
+    )
+    assert built == [ids[2]]
 
 
 def test_deleting_the_selected_profile_resets_the_panel_to_placeholder(
